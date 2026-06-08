@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "element": "protobuf",
+  "summary": {
+    "total": 11,
+    "net_new": 11,
+    "already_flagged": 0,
+    "by_severity": {
+      "high": 5,
+      "low": 2,
+      "medium": 4
+    }
+  },
+  "findings": [
+    {
+      "category": "flag",
+      "severity": "high",
+      "summary": "libprotoc is missing GOOGLE_PROTOBUF_CMAKE_BUILD and HAVE_ZLIB compile definitions",
+      "evidence": "cmake/protobuf-configure-target.cmake calls protobuf_configure_target(libprotoc) which unconditionally adds -DGOOGLE_PROTOBUF_CMAKE_BUILD (line 38) and conditionally adds -DHAVE_ZLIB (line 53) to every library it is called on. In Bazel, libprotobuf and libprotobuf-lite have local_defines=[\"GOOGLE_PROTOBUF_CMAKE_BUILD\",\"HAVE_ZLIB\"] and libupb has the same, but libprotoc (BUILD.bazel line 461) has only defines=[\"LIBPROTOC_EXPORTS\"] with no local_defines at all—GOOGLE_PROTOBUF_CMAKE_BUILD and HAVE_ZLIB are silently absent.",
+      "cmake_ref": "cmake/protobuf-configure-target.cmake:38",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "high",
+      "summary": "No pkg_files install targets for cmake config files — cmake/protobuf/ install tree not wired",
+      "evidence": "cmake/install.cmake lines 153-176 install protobuf-config.cmake, protobuf-config-version.cmake, protobuf-module.cmake, protobuf-options.cmake, and protobuf-generate.cmake to CMAKE_INSTALL_CMAKEDIR (lib/cmake/protobuf). Bazel generates write_file rules that produce these files in cmake/protobuf/, but there are no pkg_files rules with prefix=\"lib/cmake/protobuf\" to actually place them in the install tree. All 39 pkg_files rules have include-only prefixes.",
+      "cmake_ref": "cmake/install.cmake:172",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "high",
+      "summary": "No pkg_files install targets for compiled library artifacts (lib/*.a) or binaries (bin/)",
+      "evidence": "cmake/install.cmake lines 44-56 install libprotobuf-lite, libprotobuf, libprotoc, libupb to CMAKE_INSTALL_LIBDIR (lib/) and lines 60-62 install protoc to CMAKE_INSTALL_BINDIR (bin/), and lines 64-69 install protoc-gen-upb and protoc-gen-upbdefs to bin/. The Bazel output has 39 pkg_files targets all with prefix=\"include/...\"; there are zero pkg_files targets with prefix=\"lib\" or prefix=\"bin\". The installed_lib_static_golden.txt confirms libprotobuf-lite.a, libprotobuf.a, libprotoc.a, libupb.a must be in the install tree.",
+      "cmake_ref": "cmake/install.cmake:44",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "high",
+      "summary": "No pkg_files install targets for pkg-config files to lib/pkgconfig/",
+      "evidence": "cmake/install.cmake line 82 installs protobuf.pc and protobuf-lite.pc to CMAKE_INSTALL_LIBDIR/pkgconfig, line 84 installs upb.pc to the same location. third_party/utf8_range/CMakeLists.txt line 87 installs utf8_range.pc to lib/pkgconfig. Bazel generates write_file rules (gen_protobuf_pc, gen_protobuf_lite_pc, gen_upb_pc, gen_third_party_utf8_range_utf8_range_pc) that produce the .pc files, but none of those files are referenced by any pkg_files rule with a lib/pkgconfig prefix. The installed_lib_static_golden.txt confirms pkgconfig/protobuf.pc, pkgconfig/protobuf-lite.pc, pkgconfig/upb.pc, pkgconfig/utf8_range.pc must be present.",
+      "cmake_ref": "cmake/install.cmake:82",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "high",
+      "summary": "protobuf-targets.cmake is not generated in Bazel — cmake consumer install tree is broken",
+      "evidence": "cmake/install.cmake line 166 generates an install(EXPORT protobuf-targets ...) which produces protobuf-targets.cmake in the install tree under CMAKE_INSTALL_CMAKEDIR (lib/cmake/protobuf). The generated protobuf-config.cmake content in Bazel (BUILD.bazel line 998) calls include(protobuf-targets.cmake) but no write_file rule exists to actually create that file. The installed_lib_static_golden.txt lists cmake/protobuf/protobuf-targets.cmake as required.",
+      "cmake_ref": "cmake/install.cmake:166",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "No Android-platform -llog link for libprotobuf and libprotobuf-lite",
+      "evidence": "cmake/libprotobuf-lite.cmake lines 23-25 and cmake/libprotobuf.cmake lines 26-28 link -llog when CMAKE_SYSTEM_NAME equals Android, because protobuf uses the Android logging API on that platform. Bazel BUILD.bazel has no select() or platform-conditional linkopts that add -llog; the Android build would silently have unresolved log symbols.",
+      "cmake_ref": "cmake/libprotobuf-lite.cmake:23",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "No conditional libatomic link for platforms without builtin 64-bit atomics",
+      "evidence": "CMakeLists.txt lines 183-200 detect whether the platform has builtin 8-byte atomics; if not, protobuf_LINK_LIBATOMIC is set to true. cmake/libprotobuf-lite.cmake line 22 and cmake/libprotobuf.cmake line 25 then link -latomic when protobuf_LINK_LIBATOMIC is true. Bazel BUILD.bazel has no linkopts or select() entry that links -latomic on any platform; this silently fails on architectures (e.g., 32-bit ARM, MIPS) that lack __atomic builtins.",
+      "cmake_ref": "CMakeLists.txt:186",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "utf8_range-config.cmake is not generated in Bazel",
+      "evidence": "third_party/utf8_range/CMakeLists.txt lines 75-81 use configure_package_config_file() to generate utf8_range-config.cmake from cmake/utf8_range-config.cmake.in and install it to lib/cmake/utf8_range. Bazel generates utf8_range-targets.cmake (BUILD.bazel line 2416) but has no write_file for utf8_range-config.cmake. Without it, find_package(utf8_range CONFIG) cannot locate the package on the install tree. installed_lib_static_golden.txt lists cmake/utf8_range/utf8_range-config.cmake as required.",
+      "cmake_ref": "third_party/utf8_range/CMakeLists.txt:75",
+      "status": "net-new"
+    },
+    {
+      "category": "visibility",
+      "severity": "medium",
+      "summary": "ELF symbol-visibility linker version scripts not applied in Bazel",
+      "evidence": "cmake/libprotobuf-lite.cmake lines 10-18, cmake/libprotobuf.cmake lines 10-17, and cmake/libprotoc.cmake lines 10-17 each apply -Wl,--version-script=src/libprotobuf-lite.map, libprotobuf.map, libprotoc.map respectively when the linker supports it (protobuf_HAVE_LD_VERSION_SCRIPT). These scripts restrict which symbols are exported, providing ABI stability. Bazel BUILD.bazel has no linkopts with --version-script for any of the three libraries; all symbols are exported in any ELF shared build.",
+      "cmake_ref": "cmake/libprotobuf-lite.cmake:10",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "low",
+      "summary": "UNICODE/-D_UNICODE compile definitions for Windows builds not represented in Bazel",
+      "evidence": "cmake/protobuf-configure-target.cmake lines 35-37 conditionally add -DUNICODE and -D_UNICODE when protobuf_UNICODE is set (used in appveyor.bat). This option has no cmake option() declaration (so its default is effectively unset/false), but its existence as a MSVC-targeted build option is not captured anywhere in the Bazel output—there is no select() or constraint covering this.",
+      "cmake_ref": "cmake/protobuf-configure-target.cmake:35",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "low",
+      "summary": "No install pkg_files for utf8_range cmake config directory (lib/cmake/utf8_range/utf8_range-targets.cmake)",
+      "evidence": "third_party/utf8_range/CMakeLists.txt lines 65-67 install the export target set to lib/cmake/utf8_range (DESTINATION CMAKE_INSTALL_LIBDIR/cmake/utf8_range). Bazel generates the utf8_range-targets.cmake file via write_file (BUILD.bazel line 2416) but there is no pkg_files rule with prefix=\"lib/cmake/utf8_range\" to place it in the install tree. installed_lib_static_golden.txt lists cmake/utf8_range/utf8_range-targets.cmake as required.",
+      "cmake_ref": "third_party/utf8_range/CMakeLists.txt:65",
+      "status": "net-new"
+    }
+  ]
+}

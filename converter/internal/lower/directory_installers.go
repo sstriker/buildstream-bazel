@@ -84,6 +84,12 @@ func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool) []ir.Target {
 	exportTargets := lowerExportInstallers(r, emitConfig)
 
 	cmakeSrc := r.Codemodel.Paths.Source
+	// Build root: install(FILES) of a GENERATED file (e.g. zlib's
+	// configure_file'd zconf.h) records an absolute path under the build dir,
+	// which projectToSourceRoot rejects (outside source). decodeInstallerPath
+	// falls back to the build-relative form so the generated output still
+	// packages — the converter already emits it as a same-package rule output.
+	cmakeBuild := r.Codemodel.Paths.Build
 
 	// Per-(type, destination) accumulators. Files / directories
 	// stored in a map to dedupe (the same path can appear in
@@ -135,7 +141,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool) []ir.Target {
 				byKey[key] = b
 			}
 			for _, raw := range inst.Paths {
-				rel, info, ok := decodeInstallerPath(raw, dirSrc, cmakeSrc, inst.Type)
+				rel, info, ok := decodeInstallerPath(raw, dirSrc, cmakeSrc, cmakeBuild, inst.Type)
 				if !ok {
 					continue
 				}
@@ -199,7 +205,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool) []ir.Target {
 			// as the prefix attribute so consumers reconstruct the
 			// install layout.
 			PkgPrefix:  b.dest,
-			Visibility: []string{"//visibility:public"},
+			Visibility: publicVisibility(),
 		}
 		if b.kind == "file" {
 			// install(FILES ... RENAME <to>): the File API records the
@@ -401,6 +407,19 @@ func lowerExportInstallers(r *fileapi.Reply, emitConfig bool) []ir.Target {
 					// surfacing this sibling would
 					// duplicate it.
 					declarative[i].Tags = appendTag(declarative[i].Tags, "cmake-codegen-install-export-import")
+					// The facade's static_library/shared_library points at the
+					// INSTALLED artifact (e.g. "lib/libzstd.so"), which has no
+					// producer in the standalone in-element graph — it only
+					// exists after `cmake --install`, and is consumed by a
+					// downstream find_package(<Pkg> CONFIG) element that
+					// references this facade explicitly. So exclude it from the
+					// standalone wildcard build/aquery (`bazel build //...`):
+					// without "manual" the build lens (and the compile-db
+					// fidelity aquery) fail "no such target …:lib<x>.so" once a
+					// split homes the artifact in a sub-package. Explicit
+					// downstream refs still resolve — "manual" only drops it from
+					// `...` expansion.
+					declarative[i].Tags = appendTag(declarative[i].Tags, "manual")
 				}
 				merge(declarative[i])
 			}
@@ -448,9 +467,12 @@ type instFile struct {
 //     the trailing-slash install(DIRECTORY) "contents into dest" shape
 //     ("to":".", instFile.dirTree false).
 //
-// ok is false when the entry can't be decoded or resolves outside the
-// source tree.
-func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, instType string) (rel string, info instFile, ok bool) {
+// The returned path is source-tree-relative for a normal entry, or
+// build-tree-relative (via projectToBuildRoot) for a GENERATED entry recorded
+// by an absolute path under the cmake build dir (e.g. a configure_file output).
+// ok is false when the entry can't be decoded or resolves outside BOTH the
+// source tree and the build dir.
+func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, cmakeBuild, instType string) (rel string, info instFile, ok bool) {
 	// Try plain string first (un-renamed file installer; directory
 	// installer's no-trailing-slash short form).
 	var s string
@@ -459,6 +481,12 @@ func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, instType string)
 			return "", instFile{}, false
 		}
 		rel = projectToSourceRoot(s, dirSrc, cmakeSrc)
+		if rel == "" && instType == "file" {
+			// Generated-file fallback is FILES-only: a generated FILE
+			// resolves to a same-package rule output, but a build-tree
+			// install(DIRECTORY) isn't a representable Bazel dir output.
+			rel = projectToBuildRoot(s, cmakeBuild)
+		}
 		if rel == "" {
 			return "", instFile{}, false
 		}
@@ -478,6 +506,12 @@ func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, instType string)
 		return "", instFile{}, false
 	}
 	rel = projectToSourceRoot(obj.From, dirSrc, cmakeSrc)
+	if rel == "" && instType == "file" {
+		// FILES-only build-dir fallback (see the string-form site): a
+		// generated FILE resolves to a same-package rule output, but a
+		// build-tree install(DIRECTORY) glob has no on-disk dir to match.
+		rel = projectToBuildRoot(obj.From, cmakeBuild)
+	}
 	if rel == "" {
 		return "", instFile{}, false
 	}
@@ -531,9 +565,31 @@ func projectToSourceRoot(p, dirSrc, cmakeSrc string) string {
 	if err != nil {
 		return ""
 	}
-	// filepath.Rel returns "../..." when abs is outside cmakeSrc;
-	// reject those — Bazel labels can't traverse up the source root.
-	if strings.HasPrefix(rel, "..") {
+	// filepath.Rel returns a "../" sequence when abs is outside cmakeSrc;
+	// reject those — Bazel labels can't traverse up the source root. Match the
+	// ".." path ELEMENT, not a mere "..foo" prefix.
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return filepath.ToSlash(rel)
+}
+
+// projectToBuildRoot returns the build-root-relative form of p when p is an
+// ABSOLUTE path under the cmake build dir — i.e. a GENERATED install entry
+// (configure_file / genrule / write_file output, e.g. zlib's
+// `${CMAKE_CURRENT_BINARY_DIR}/zconf.h`). The converter emits that output as a
+// same-package rule whose `out` is this build-relative path, so packaging it by
+// the returned name resolves to the generating rule's output. Returns "" for a
+// non-absolute path (a source-relative entry handled by projectToSourceRoot),
+// when no build dir is known, or when p escapes the build root.
+func projectToBuildRoot(p, cmakeBuild string) string {
+	if cmakeBuild == "" || !filepath.IsAbs(p) {
+		return ""
+	}
+	rel, err := filepath.Rel(cmakeBuild, filepath.Clean(p))
+	// Reject a path that escapes the build root — the ".." path ELEMENT, not a
+	// mere "..foo" prefix.
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return ""
 	}
 	return filepath.ToSlash(rel)
@@ -577,5 +633,61 @@ func sanitizeDestination(dest string) string {
 	}
 	out := sb.String()
 	out = strings.Trim(out, "_")
+	return out
+}
+
+// synthesizeTargetInstallPkgFiles emits a pkg_files for each install(TARGETS)
+// artifact — a built cc_library / cc_binary carrying an InstallDest — packaging
+// the target's output under the install destination. cmake's
+// `install(TARGETS foo DESTINATION lib)` otherwise has no producer-side Bazel
+// representation: the per-target Install slot feeds only the cc_import facade
+// (a downstream-consumer import) and the round-2 install tree, so the built
+// library / binary lands in no install package (the "library binary not in any
+// pkg_files install rule" survey gap across curl / fmt / libevent / libxml2 /
+// openblas / protobuf / sdl / zlib). Mirrors install(FILES)/install(DIRECTORY)
+// → pkg_files: the pkg_files src is the target label itself, so rules_pkg
+// packages its DefaultInfo artifact(s) under `prefix = <dest>`.
+//
+// Header-only / INTERFACE libraries (no ArtifactName) install no artifact and
+// are skipped — matching cmake, where install(TARGETS) of an INTERFACE library
+// packages nothing. Names are `install_target__<target>`, deduped against the
+// existing target set; output is sorted for byte-stable emission.
+func synthesizeTargetInstallPkgFiles(targets []ir.Target) []ir.Target {
+	used := make(map[string]bool, len(targets))
+	for _, t := range targets {
+		used[t.Name] = true
+	}
+	var out []ir.Target
+	for _, t := range targets {
+		if t.InstallDest == "" || t.ArtifactName == "" {
+			continue
+		}
+		if t.Kind != ir.KindCCLibrary && t.Kind != ir.KindCCBinary {
+			continue
+		}
+		// Normalize/validate the destination before using it as the pkg_files
+		// prefix. ABSOLUTE dests are kept: cmake's GNUInstallDirs commonly
+		// yields /usr/local/lib, and rules_pkg packages an absolute prefix
+		// as-is (the existing install(FILES)→pkg_files path does the same). But
+		// a ".." that escapes the install prefix is unsafe / rules_pkg-invalid,
+		// so skip that target's packaging.
+		dest := path.Clean(t.InstallDest)
+		if dest == ".." || strings.HasPrefix(dest, "../") {
+			continue
+		}
+		name := "install_target__" + sanitizeDestination(t.Name)
+		for used[name] {
+			name += "_"
+		}
+		used[name] = true
+		out = append(out, ir.Target{
+			Name:       name,
+			Kind:       ir.KindPkgFiles,
+			Srcs:       []string{":" + t.Name},
+			PkgPrefix:  dest,
+			Visibility: publicVisibility(),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }

@@ -1,0 +1,104 @@
+{
+  "version": 1,
+  "element": "catch2",
+  "summary": {
+    "total": 11,
+    "net_new": 11,
+    "already_flagged": 0,
+    "by_severity": {
+      "high": 3,
+      "low": 3,
+      "medium": 5
+    }
+  },
+  "findings": [
+    {
+      "category": "install",
+      "severity": "high",
+      "summary": "Catch2Config.cmake and Catch2ConfigVersion.cmake (SameMajorVersion) install targets are missing",
+      "evidence": "CMakeLists.txt:114-133 uses configure_package_config_file to produce Catch2Config.cmake and write_basic_package_version_file (COMPATIBILITY SameMajorVersion) to produce Catch2ConfigVersion.cmake, both installed to lib/cmake/Catch2. The Bazel BUILD.bazel emits Catch2Targets.cmake via write_file but omits both the config wrapper and the version-compatibility file. Downstream find_package(Catch2 CONFIG) cannot resolve without Catch2Config.cmake; the generated Catch2Targets.cmake is therefore unreachable by consumers.",
+      "cmake_ref": "CMakeLists.txt:114",
+      "status": "net-new"
+    },
+    {
+      "category": "test",
+      "severity": "high",
+      "summary": "SelfTest executable and all 40+ CTest test cases are absent",
+      "evidence": "CMake defines an add_executable(SelfTest ...) with 50+ .cpp sources and registers named CTest tests including RunTests, List::Tests::Output, ApprovalTests, RandomTestOrdering, Benchmarking::*, ErrorHandling::*, Reporters::*, etc. The Bazel BUILD files contain no cc_test or test-binary targets whatsoever. The converter recorded CATCH_DEVELOPMENT_BUILD = OFF, which suppresses test registration in CMake, but no corresponding Bazel test targets were emitted and no TODO/rejection flags the omission.",
+      "cmake_ref": "tests/CMakeLists.txt:162",
+      "status": "net-new"
+    },
+    {
+      "category": "test",
+      "severity": "high",
+      "summary": "~20 ExtraTest cc_binary targets (PrefixedMacros, DisabledExceptions, BazelReporter, FallbackStringifier, DuplicatedTestCases-*, NoTests, AllSkipped, AmalgamatedTestCompilation, etc.) are absent",
+      "evidence": "tests/ExtraTests/CMakeLists.txt defines a large set of per-option executable targets that each compile with a different CATCH_CONFIG define and register CTest cases (CATCH_CONFIG_PREFIX_ALL, CATCH_CONFIG_DISABLE, CATCH_CONFIG_DISABLE_EXCEPTIONS-1..4, CATCH_CONFIG_BAZEL_REPORTER-1, DuplicatedTestCases::*, TestSpecs::EmptySpecWithNoTestsFails, etc.). None appear in any Bazel BUILD file. Gated by CATCH_BUILD_EXTRA_TESTS, but not flagged anywhere in the conversion output.",
+      "cmake_ref": "tests/ExtraTests/CMakeLists.txt:68",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "-ffile-prefix-map reproducible-build compiler flag is not applied despite CATCH_ENABLE_REPRODUCIBLE_BUILD = ON",
+      "evidence": "src/CMakeLists.txt:351-353 calls add_build_reproducibility_settings(Catch2) and add_build_reproducibility_settings(Catch2WithMain). CMake/CatchMiscFunctions.cmake:116-121 implements this as adding -ffile-prefix-map=${CATCH_DIR}/= (stripping absolute source paths) for GCC/Clang when the flag is supported. CATCH_ENABLE_REPRODUCIBLE_BUILD defaults to ON. The Bazel BUILD.bazel records CATCH_ENABLE_REPRODUCIBLE_BUILD = ON in comments, but the copts for both Catch2 and Catch2WithMain contain only -g / -DNDEBUG / -O flags; the -ffile-prefix-map flag is absent.",
+      "cmake_ref": "src/CMakeLists.txt:351",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "C++14 compile-feature public requirement (target_compile_features PUBLIC) is not expressed",
+      "evidence": "src/CMakeLists.txt:366-388 calls target_compile_features(Catch2 PUBLIC cxx_alignas cxx_alignof cxx_attributes cxx_auto_type cxx_constexpr ... cxx_variable_templates) — 21 C++14-level features as PUBLIC, meaning any target that links Catch2 inherits the C++14 language floor. The Bazel cc_library for Catch2 and Catch2WithMain carry no copts= or features= entries enforcing cxx_std_14, so the C++ standard is not propagated to downstream consumers.",
+      "cmake_ref": "src/CMakeLists.txt:366",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "docs/ directory install rule is absent despite CATCH_INSTALL_DOCS = ON",
+      "evidence": "CMakeLists.txt:136-144: when CATCH_INSTALL_DOCS=ON (the default), the docs/ directory minus doxygen/ is installed to ${CMAKE_INSTALL_DOCDIR}. The converter noted CATCH_INSTALL_DOCS = ON in the generated BUILD.bazel comment block but emitted no pkg_files target for the docs directory. The documentation install intent is completely absent from the Bazel output.",
+      "cmake_ref": "CMakeLists.txt:136",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "pkg-config files catch2.pc and catch2-with-main.pc are generated but never installed",
+      "evidence": "CMakeLists.txt:169-190 installs both .pc files to ${CMAKE_INSTALL_DATAROOTDIR}/pkgconfig (default share/pkgconfig). The Bazel BUILD.bazel correctly generates them via write_file (gen_catch2_pc, gen_catch2_with_main_pc) but no pkg_files target routes them to share/pkgconfig/ or any other install prefix. The generated artifacts have no install destination.",
+      "cmake_ref": "CMakeLists.txt:184",
+      "status": "net-new"
+    },
+    {
+      "category": "target",
+      "severity": "medium",
+      "summary": "Catch2_buildall_interface INTERFACE library (full recompile target with CATCH_CONFIG_STATIC) is absent",
+      "evidence": "src/CMakeLists.txt:460 creates an INTERFACE library that re-exposes all sources inline (not via the prebuilt Catch2 archive) with CATCH_CONFIG_STATIC defined (line 472-475). It is used by DisabledExceptions-DefaultHandler, DisabledExceptions-CustomHandler, BazelReporter, and examples that must recompile Catch2 sources with different compile flags. No equivalent Bazel target exists; any consumer needing a full source recompile has no target to depend on.",
+      "cmake_ref": "src/CMakeLists.txt:460",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "low",
+      "summary": "Android-specific log library link dependency is absent",
+      "evidence": "src/CMakeLists.txt:356-358: if (ANDROID) target_link_libraries(Catch2 PRIVATE log). The Bazel Catch2 cc_library has no platform-conditional dependency on the Android log library under any select() branch.",
+      "cmake_ref": "src/CMakeLists.txt:356",
+      "status": "net-new"
+    },
+    {
+      "category": "target",
+      "severity": "low",
+      "summary": "Example executable targets (010-TestCase, 020-MultiFile, 030-..., 311-Gen-CustomCapture, 231-Cfg_OutputStreams) are absent",
+      "evidence": "examples/CMakeLists.txt:10-58 defines 14 named cc_binary example targets, one of which (231-Cfg_OutputStreams) uses Catch2_buildall_interface and CATCH_CONFIG_NOSTDOUT. Gated by CATCH_BUILD_EXAMPLES=OFF but the BUILD file records this option and no TODO/rejection notes the omission.",
+      "cmake_ref": "examples/CMakeLists.txt:10",
+      "status": "net-new"
+    },
+    {
+      "category": "target",
+      "severity": "low",
+      "summary": "Fuzzer targets (fuzz_TestSpecParser, fuzz_XmlWriter, fuzz_textflow) and fuzzhelper library are absent",
+      "evidence": "fuzzing/CMakeLists.txt:6-19 creates a fuzzhelper cc_library (PUBLIC -fsanitize=fuzzer link option, cxx_std_17) and three fuzz_* cc_binary targets linking against it. Gated by CATCH_BUILD_FUZZERS=OFF but no Bazel BUILD file exists under the fuzzing/ directory and no TODO/rejection flags the omission.",
+      "cmake_ref": "fuzzing/CMakeLists.txt:6",
+      "status": "net-new"
+    }
+  ]
+}

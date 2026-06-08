@@ -20,36 +20,49 @@ corpus** and **how to survey them faithfully** (so two runs are comparable).
 
 ## Status at a glance
 
-State per project across the four lenses (each lens is defined in the
+State per project across the six lenses (each lens is defined in the
 sections below). The three **convertibility** lenses report finding
 counts — `0` is healthy; the **build** lens reports the survey's
-`build` token. Per-project build-lens detail is in *Build-lens status*
-below; the full corpus roster + rationale is under *The corpus*.
+`build` token. The two opt-in lenses report the **2026-06-08 full-corpus
+run** (detail in *Full-corpus lens snapshot* below, raw output in
+[`survey-artifacts/`](survey-artifacts/)): **Fidelity** = matched
+`CppCompile` TUs from the compile-db lens (`n/a` = header-only / no TUs);
+**Intent** = the judge's net-new `missed` count — **non-deterministic, a
+triage pointer not a comparable metric**. Per-project build-lens detail is
+in *Build-lens status* below; the full corpus roster + rationale is under
+*The corpus*.
 
-| Project | Rejections | Idiom | Coverage | Build lens |
-| --- | --- | --- | --- | --- |
-| **fmt** | 0 | 0 | 0 | `ok` |
-| **libxml2** | 0 | 0 | 0 | `ok` |
-| **brotli** | 0 | 0 | 0 | `ok` |
-| **glm** | 0 | 0 | 0 | `ok` |
-| **googletest** | 0 | 0 | 0 | `ok` |
-| **abseil** | 0 | 0 | 0 | `ok` |
-| **zstd** | 0 | 0 | 0 | `ok` (repo-root overlay) |
-| **glog** | 0† | 30 | 0 | `ok` |
-| **eigen** | 0 | 16‡ | 0 | `ok` |
-| **cutlass** | 1§ | 0 | 0 | `ok` (header lib; CUDA tier) |
-| **OpenBLAS** | 0¶ | 0 | 0 | `ok` (C-LAPACK; ~2460 targets) |
-| **curl** | 0 | 1 | 0 | `ok` (library + CLI + test surface; ~238 actions) |
-| **zlib** | 0 | 0 | 0 | `ok` (lib + examples; shared-only linkopt drop) |
-| **boost-core** | 0 | 0 | 0 | `ok` (header lib) |
-| **spdlog** | 0 | 0 | 0 | `ok` |
-| **catch2** | 1 | 0 | 0 | `ok` |
-| **nlohmann-json** | 0 | 0 | 0 | `ok` (header lib; tests off) |
-| **libpng** | 0 | 0 | 0 | `ok` (cmake -P script-bake; host zlib) |
-| **libevent** | 0 | 5 | 0 | `ok` (libs; regress tests off) |
-| **mbedtls** | 0 | 0 | 0 | `ok` (crypto libs; tests+programs off, link_to_source in==out drop) |
-| **protobuf** | 0 | 8 | 0 | `ok` (libs + protoc + upb generators; find_package(absl) via @abseil-cpp + //absl_umbrella, host zlib) |
-| **sdl** | 2 | 5 | 0 | `ok` (multi-config × per-platform; file(GENERATE) $<CONFIG> headers, PCH drop, select-arm relabel; host X11 + GL/GLES/EGL dev headers) |
+| Project | Rejections | Idiom | Coverage | Build lens | Fidelity | Intent |
+| --- | --- | --- | --- | --- | --- | --- |
+| **fmt** | 0 | 0 | 0 | `ok` | 29 | 7 |
+| **libxml2** | 0 | 0 | 0 | `ok` | 52 | 10 |
+| **brotli** | 0 | 0 | 0 | `ok` | 36 | 8 |
+| **glm** | 0 | 0 | 0 | `ok` | 1 | 8 |
+| **googletest** | 0 | 0 | 0 | `ok` | 4 | 5 |
+| **abseil** | 0 | 0 | 0 | `ok` | 156 | 7 |
+| **zstd** | 0 | 0 | 0 | `ok` (repo-root overlay) | n/a‖ | 8 |
+| **glog** | 0† | 30 | 0 | `ok` | 20 | 0 |
+| **eigen** | 0 | 16‡ | 0 | `ok` | n/a | 8 |
+| **cutlass** | 1§ | 0 | 0 | `ok` (header lib; CUDA tier) | n/a | 12 |
+| **OpenBLAS** | 0¶ | 0 | 0 | `ok` (C-LAPACK; ~2460 targets) | 6277 | 9 |
+| **curl** | 0 | 1 | 0 | `ok` (library + CLI + test surface; ~238 actions) | 213 | 9 |
+| **zlib** | 0 | 0 | 0 | `ok` (lib + examples; shared-only linkopt drop) | 17 | 5 |
+| **boost-core** | 0 | 0 | 0 | `ok` (header lib) | n/a | 6 |
+| **spdlog** | 0 | 0 | 0 | `ok` | 8 | 10 |
+| **catch2** | 1 | 0 | 0 | `ok` | 107 | 11 |
+| **nlohmann-json** | 0 | 0 | 0 | `ok` (header lib; tests off) | n/a | 6 |
+| **libpng** | 0 | 0 | 0 | `ok` (cmake -P script-bake; host zlib) | 24 | 9 |
+| **libevent** | 0 | 5 | 0 | `ok` (libs; regress tests off) | 40 | 7 |
+| **mbedtls** | 0 | 0 | 0 | `ok` (crypto libs; tests+programs off, link_to_source in==out drop) | 113 | 14 |
+| **protobuf** | 0 | 8 | 0 | `ok` (libs + protoc + upb generators; find_package(absl) via @abseil-cpp + //absl_umbrella, host zlib) | 286 | 11 |
+| **sdl** | 2 | 5 | 0 | `ok` (multi-config × per-platform; file(GENERATE) $<CONFIG> headers, PCH drop, select-arm relabel; host X11 + GL/GLES/EGL dev headers) | 259 | 9 |
+
+The four large members driven for convertibility but not the build lens
+(`grpc`, `llvm`, `vtk`, `cuda-samples`) aren't in this table but DO have
+fidelity + intent rows in *Full-corpus lens snapshot* below.
+‖ zstd's fidelity is **blocked by a converter regression** (split-emit
+emits an invalid subpackage label), not the lens — see the snapshot's
+footnote and `ROADMAP.md`.
 
 `rej` = surveys with rejections, so the build lens skips it; for
 protobuf these are honest external `find_package` deps
@@ -670,6 +683,163 @@ manage their own toolchains (CI via
 - Fetches are **shallow** (`--depth 1`) — the survey only needs a tree to
   configure, not history.
 
+## The intent-capture lens (6th lens, opt-in)
+
+The lenses above are deterministic — they count what the converter *knows* it
+couldn't do (rejections, idiom, coverage, the conversion-todos worklist) or
+mechanically-diffable per-TU drift (compile-commands fidelity). The
+**intent-capture** lens is the qualitative complement: an agent-as-oracle "what
+did we miss?" pass that hunts the **silent** intent loss — a dropped test
+target, an install layout, an option default, a visibility constraint, a
+build-time codegen step — that compiles fine and is flagged nowhere. It's the
+inverse of the conversion-todos producer, so a real miss it surfaces that isn't
+already a todo/rejection is a **producer/lowering gap**.
+
+It's opt-in and cost-gated because it calls an LLM. Turn it on with
+`SURVEY_INTENT=1` and a pluggable judge command in `INTENT_LENS_JUDGE` (the
+judge reads the prompt on stdin and writes the findings JSON on stdout).
+
+**The judge must be a CAPABLE agent with filesystem access to the bundle.** The
+prompt (`converter/cmd/intent-lens prompt`) hands the judge the project-derived
+context it needs — that the output targets **Bazel 9** (native `cc`/`sh` rules
+removed, so the BUILDs load `@rules_cc` / `@rules_shell` / `@rules_pkg` /
+`@bazel_skylib` providers), that the BUILDs are **gazelle-cc-maintained**, and the
+paths to the converted bundle (`MODULE.bazel`, every `BUILD.bazel`/`.bzl`) and
+the original CMake sources — then asks it to READ them and report net-new misses.
+So the judge needs (a) a model strong enough to reason over the bundle and (b)
+read access to the bundle + cmake-source paths.
+
+Local-CLI judge (`claude -p`) in the **remote/cloud environment** needs two
+tweaks — the bare `claude -p` the older docs showed does NOT work here:
+
+```sh
+# - env -u CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES: the remote shell exports this,
+#   which makes a nested `claude -p` demand --output-format=stream-json; unset it.
+# - --add-dir /tmp: the judge is sandboxed to the repo, but the survey out-dir +
+#   cmake sources live under /tmp; grant access so it can read them. (Point the
+#   survey at in-repo paths instead and you can drop --add-dir.)
+# - SURVEY_SKIP_BUILD=1: run the convert + fidelity + intent lenses but skip the
+#   (redundant, slow) `bazel build //...` — for refreshing lens rows on an
+#   already-green corpus.
+# - SURVEY_BAZEL_BUILD selects which projects the lenses act on (the lenses live
+#   on the build-lens path); SURVEY_SKIP_BUILD then drops the build itself.
+export INTENT_LENS_JUDGE='env -u CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES claude -p --add-dir /tmp'
+SURVEY_BAZEL_BUILD=fmt SURVEY_SKIP_BUILD=1 SURVEY_COMPILE_DB=1 SURVEY_INTENT=1 \
+  scripts/run-survey.sh --out-dir /tmp/survey-lens fmt=$FMT_DIR
+```
+
+The judge is heavy (it reads the whole bundle): budget several minutes per
+project and bump `SURVEY_BAZEL_BUILD_TIMEOUT` for big members (grpc/llvm/vtk list
+100+ files). A non-`claude` judge is any command that takes the prompt on stdin
+and emits the findings JSON on stdout.
+
+For each build-lens-selected project it writes `<out>/<name>/intent-capture.json`
+— the judge's findings, each triaged **net-new vs already-flagged** (deduped
+against that element's own `conversion-todos.json` + `rejections.json`) and
+bucketed by severity. The `summary.txt` table gains a **`missed` column** = the
+net-new finding count (`-` when the lens didn't run). Because the judge is
+non-deterministic the output is a **triage queue, not a pass/fail gate** —
+net-new findings are the producer-gap candidates to investigate, and unlike the
+other columns `missed` is **not comparable across runs** (a different judge pass
+can return a different number); treat it as a pointer into `intent-capture.json`,
+not a metric to diff. The pipeline (`scripts/intent-capture-lens.sh` →
+`converter/cmd/intent-lens prompt|triage`) can also be run standalone on any
+converted bundle; the deterministic halves are gated by
+`scripts/meta-intent-capture-lens.sh` (stub judge). See the intent-capture lens
+item in `ROADMAP.md` for the open scoring/grounding questions.
+
+### Full-corpus lens snapshot (2026-06-08)
+
+Both opt-in lenses were run over the **whole corpus** (judge = `claude -p`;
+build lens skipped — the corpus is already build-green). The full per-member
+output is committed under [`survey-artifacts/`](survey-artifacts/) (triaged +
+raw judge findings, the exact prompts, and the signature-grouped fidelity
+diffs). The numbers below are a **snapshot pointer into those artifacts**, not
+a gate: `missed` (intent net-new) is judge-non-deterministic and not
+comparable across runs (see the lens caveats above).
+
+| Member | Fidelity (matched TUs) | Intent `missed` | net-new High |
+| --- | --- | --- | --- |
+| abseil | 156 | 7 | 2 |
+| boost-core | —† | 6 | 2 |
+| brotli | 36 | 8 | 3 |
+| catch2 | 107 | 11 | 3 |
+| cuda-samples | 0‡ | 0 | 0 |
+| curl | 213 | 9 | 4 |
+| cutlass | —† | 12 | 5 |
+| eigen | —† | 8 | 2 |
+| fmt | 29 | 7 | 2 |
+| glm | 1 | 8 | 2 |
+| glog | 20 | 0 | 0 |
+| googletest | 4 | 5 | 2 |
+| grpc | 1061 | 7 | 1 |
+| libevent | 40 | 7 | 1 |
+| libpng | 24 | 9 | 2 |
+| libxml2 | 52 | 10 | 3 |
+| llvm | 2054 | 29 | 14 |
+| mbedtls | 113 | 14 | 5 |
+| nlohmann-json | —† | 6 | 2 |
+| openblas | 6277 | 9 | 3 |
+| protobuf | 286 | 11 | 5 |
+| sdl | 259 | 9 | 2 |
+| spdlog | 8 | 10 | 3 |
+| vtk | 4218 | 8 | 4 |
+| zlib | 17 | 5 | 3 |
+| zstd | —§ | 8 | 2 |
+
+† **header-only** library — no `CppCompile` TUs, so no compile-db fidelity row
+(`boost-core`, `cutlass`, `eigen`, `nlohmann-json`).
+‡ `cuda-samples` `.cu` sources lower to `CudaCompile`, which the lens's
+`CppCompile` aquery doesn't see (0 TUs).
+§ `zstd` fidelity is **blocked by a real converter regression** (not a survey
+artifact): split-emit's cross-package relabel emits an invalid subpackage
+label `//elements/zstd:lib/libzstd.so` (where `elements/zstd/lib` is a
+subpackage). zstd is otherwise docs-green, so this is a main-drift regression
+to fix; tracked in `ROADMAP.md`.
+
+#### Producer-gap themes (the intent backlog)
+
+The net-new intent findings are **producer/lowering-gap candidates** — intent
+the converter silently dropped. Across the corpus the **77 high-severity**
+net-new findings cluster into six recurring themes (full detail, with
+`evidence` + `cmake_ref` per finding, in each member's
+`survey-artifacts/<member>/intent-capture.json`):
+
+1. **Dropped link libraries** (25× high) — system/threading linkopts CMake
+   resolves but the converter omits: `-lm` (`brotli`, `libpng`, `libxml2`),
+   `-ldl` (`libxml2`, `llvm`), `-lpthread` (`googletest`, `spdlog`, `zstd`,
+   `grpc`, `llvm`'s `${LLVM_PTHREAD_LIB}`). Also build-type-conditional
+   defines hardcoded on (LLVM's `LLVM_ENABLE_ABI_BREAKING_CHECKS`,
+   `LLVM_ENABLE_PLUGINS`, …, all forced `1` regardless of `//config`),
+   dropped `target_compile_features` (`googletest`'s PUBLIC `cxx_std_17`),
+   and `openblas`'s missing SONAME/VERSION (no versioned `.so` symlinks).
+2. **Unmodeled install/export layout** (25× high) — the convert builds the
+   artifacts but ships no install tree: no `pkg_files` for libs / public
+   headers / binaries / `.pc` files (`curl`, `protobuf`, `zlib`, `sdl`,
+   `libevent`, `fmt`, `openblas`, …), and the `find_package(CONFIG)` entry
+   points (`<Pkg>Config.cmake` / `<Pkg>Targets.cmake`) are never generated
+   (`eigen`, `catch2`, `zstd`, `cutlass`, `protobuf`, `nlohmann-json`).
+   This is the single biggest cluster and the most mechanical to close.
+3. **Absent targets / subpackages** (9× high) — whole targets with no
+   `BUILD.bazel`: `abseil`'s 7 interface subpackages, `llvm`'s 19/20
+   backends under default `LLVM_TARGETS_TO_BUILD=all`, `mbedtls`'s
+   programs, `vtk`'s `VolumeAMR` module.
+4. **Dropped test suites** (10× high) — `enable_testing()` trees lowered
+   nowhere: `abseil` (232 `absl_cc_test`), `glm` (~130), `sdl` (~50),
+   `catch2`, `boost-core`, `mbedtls`, `vtk`, `openblas`.
+5. **Unrepresented codegen** (5× high) — `configure_file` / script codegen
+   with no genrule: `vtk`'s libproj `proj_config.h`, `mbedtls`'s
+   `test_certs.h`, `curl`'s `configurehelp.pm` (bakes a convert-time temp
+   path), `cutlass`'s `version_extended.h`.
+6. **Optional-feature deps** (3× high) — `LLVM_ENABLE_ZLIB` / `_ZSTD` /
+   `_OPENCSD` conditional deps not linked, so `Compression.cpp` would fail
+   to link.
+
+These are the concrete converter-improvement leads; pick a theme and the
+artifacts give the per-member evidence to drive a fix + a regression guard.
+Each theme is tracked as its own entry in `ROADMAP.md` (the six intent-lens
+producer-gap bullets, biggest cluster first).
+
 ## Running a faithful survey
 
 The cardinal rule: **a survey number is only comparable to another survey
@@ -774,6 +944,20 @@ SURVEY_BUILD_TYPES=Release,Debug scripts/run-survey.sh
 SURVEY_SPLIT_PACKAGES=0 scripts/run-survey.sh
 # Narrowest/fastest pass (single-config monolithic):
 SURVEY_BUILD_TYPES=single SURVEY_SPLIT_PACKAGES=0 scripts/run-survey.sh
+
+# --- Opt-in lenses (off by default; each acts on build-lens-selected projects).
+# 4th lens — build: does `bazel build //...` succeed? (see "The build lens")
+SURVEY_BAZEL_BUILD=fmt scripts/run-survey.sh fmt=$FMT_DIR
+# 5th lens — compile-commands fidelity (per-TU defines/-std/includes drift):
+SURVEY_BAZEL_BUILD=fmt SURVEY_COMPILE_DB=1 scripts/run-survey.sh fmt=$FMT_DIR
+# 6th lens — intent-capture (agent-as-oracle "what did we miss?"); needs a
+# CAPABLE judge in INTENT_LENS_JUDGE with read access to the bundle (writes
+# <out>/<name>/intent-capture.json + the `missed` column). See "The
+# intent-capture lens" for the judge contract + the remote-env tweaks.
+# Run BOTH non-build lenses on an already-green corpus WITHOUT rebuilding:
+export INTENT_LENS_JUDGE='env -u CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES claude -p --add-dir /tmp'
+SURVEY_BAZEL_BUILD=fmt SURVEY_SKIP_BUILD=1 SURVEY_COMPILE_DB=1 SURVEY_INTENT=1 \
+  scripts/run-survey.sh --out-dir /tmp/survey-lens fmt=$FMT_DIR
 ```
 
 > **Multi-config under the default `auto`.** The converter folds every

@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "element": "boost-core",
+  "summary": {
+    "total": 6,
+    "net_new": 6,
+    "already_flagged": 0,
+    "by_severity": {
+      "high": 2,
+      "medium": 4
+    }
+  },
+  "findings": [
+    {
+      "category": "target",
+      "severity": "high",
+      "summary": "Interface deps (Boost::assert, Boost::config, Boost::throw_exception) silently dropped from cc_library",
+      "evidence": "CMakeLists.txt:15-19 calls target_link_libraries(boost_core INTERFACE Boost::assert Boost::config Boost::throw_exception). The Bazel cc_library at elements/boost-core/BUILD.bazel has no deps attribute at all — these three transitive interface deps are silently absent. Any consumer that transitively includes headers from assert/config/throw_exception will fail to find their include paths through the Bazel dep graph.",
+      "cmake_ref": "CMakeLists.txt:15",
+      "status": "net-new"
+    },
+    {
+      "category": "test",
+      "severity": "high",
+      "summary": "All 9 explicit boost_test(TYPE run) targets are missing — no cc_test targets exist anywhere in the converted output",
+      "evidence": "test/CMakeLists.txt:13-39 defines nine explicit boost_test(TYPE run SOURCES ...) targets: no_exceptions_support_test.cpp, sv_conversion_test2.cpp, sv_hash_test.cpp, fclose_deleter_test.cpp, serialization_nvp_test.cpp, serialization_split_free_test.cpp, serialization_split_member_test.cpp, serialization_construct_data_test.cpp, yield_prim_pthread_cancel_test.cpp. The Bazel output (elements/boost-core/BUILD.bazel) contains only a cc_library and an alias — zero cc_test targets.",
+      "cmake_ref": "test/CMakeLists.txt:13",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "THREADS_PREFER_PTHREAD_FLAG / Threads::Threads link requirement for yield_prim_pthread_cancel_test is silently lost",
+      "evidence": "test/CMakeLists.txt:34-39 sets THREADS_PREFER_PTHREAD_FLAG ON, calls find_package(Threads REQUIRED), and links yield_prim_pthread_cancel_test.cpp against Threads::Threads. This is a distinct pthread linkage intent beyond simply listing the source file — in Bazel it requires linkopts=[\"-lpthread\"] or a system dep. Even if the cc_test target were added (finding #2), the explicit pthread linkage requirement would be missed without this.",
+      "cmake_ref": "test/CMakeLists.txt:34",
+      "status": "net-new"
+    },
+    {
+      "category": "test",
+      "severity": "medium",
+      "summary": "Jamfile.v2 test suite (481 lines, many tests) referenced by boost_test_jamfile is entirely absent from Bazel output",
+      "evidence": "test/CMakeLists.txt:9 calls boost_test_jamfile(FILE Jamfile.v2 LINK_LIBRARIES Boost::core Boost::static_assert Boost::type_traits). test/Jamfile.v2 is 481 lines and defines a large set of compile/run tests with per-target flags (CPP11 requirements, pedantic-errors, warnings-as-errors). No Bazel cc_test targets correspond to any of these.",
+      "cmake_ref": "test/CMakeLists.txt:9",
+      "status": "net-new"
+    },
+    {
+      "category": "test",
+      "severity": "medium",
+      "summary": "Swap test subdirectory (22 source files, Jamfile.v2) is unconditionally added but has no Bazel targets",
+      "evidence": "test/CMakeLists.txt:43 calls add_subdirectory(swap) unconditionally (outside the HAVE_BOOST_TEST guard). test/swap/ contains 22 .cpp test files and a Jamfile.v2 that compiles/runs them all (test/swap/CMakeLists.txt:9 invokes boost_test_jamfile(FILE Jamfile.v2 LINK_LIBRARIES Boost::core)). No cc_test targets exist for any swap test.",
+      "cmake_ref": "test/CMakeLists.txt:43",
+      "status": "net-new"
+    },
+    {
+      "category": "test",
+      "severity": "medium",
+      "summary": "quick.cpp consumer integration test is missing — both cmake_install_test and cmake_subdir_test build and run it, but no Bazel cc_test equivalent exists",
+      "evidence": "test/cmake_install_test/CMakeLists.txt:11-15 and test/cmake_subdir_test/CMakeLists.txt:14-18 each build test/quick.cpp as add_executable(quick) linked against Boost::core and register it as a ctest. quick.cpp (#include boost/core/addressof.hpp, checked_delete.hpp, and 20 other headers, int main(){}) is a smoke test verifying a consumer can include and link the full library. No Bazel cc_test for quick.cpp exists anywhere in the converted output.",
+      "cmake_ref": "test/cmake_install_test/CMakeLists.txt:11",
+      "status": "net-new"
+    }
+  ]
+}

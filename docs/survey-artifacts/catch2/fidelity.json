@@ -1,0 +1,49 @@
+{
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 107,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch": {},
+ "std_mismatch_total_tus": 107,
+ "std_mismatch_by_signature": [
+  {
+   "signature": [
+    "",
+    "c++17"
+   ],
+   "tu_count": 107,
+   "examples": [
+    "src/catch2/benchmark/catch_chronometer.cpp",
+    "src/catch2/benchmark/detail/catch_analyse.cpp",
+    "src/catch2/benchmark/detail/catch_benchmark_function.cpp",
+    "src/catch2/benchmark/detail/catch_run_for_at_least.cpp",
+    "src/catch2/benchmark/detail/catch_stats.cpp"
+   ]
+  }
+ ],
+ "include_mismatch_total_tus": 107,
+ "include_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "generated-includes"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 107,
+   "examples": [
+    "src/catch2/benchmark/catch_chronometer.cpp",
+    "src/catch2/benchmark/detail/catch_analyse.cpp",
+    "src/catch2/benchmark/detail/catch_benchmark_function.cpp",
+    "src/catch2/benchmark/detail/catch_run_for_at_least.cpp",
+    "src/catch2/benchmark/detail/catch_stats.cpp"
+   ]
+  }
+ ],
+ "copt_mismatch": {},
+ "gen_root_missing": {},
+ "tu_key_collisions": 0,
+ "param_file_skipped": 0
+}

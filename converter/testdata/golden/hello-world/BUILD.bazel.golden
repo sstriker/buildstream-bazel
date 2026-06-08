@@ -25,5 +25,14 @@ pkg_files(
 cc_import(
     name = "hello_import",
     static_library = "lib/libhello.a",
-    tags = ["cmake-codegen-install-export-import"],
+    tags = [
+        "cmake-codegen-install-export-import",
+        "manual",
+    ],
+)  # keep
+
+pkg_files(
+    name = "install_target__hello",
+    srcs = [":hello"],
+    prefix = "lib",
 )  # keep

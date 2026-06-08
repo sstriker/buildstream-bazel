@@ -53,5 +53,14 @@ pkg_files(
 cc_import(
     name = "multilang_import",
     static_library = "lib/libmultilang.a",
-    tags = ["cmake-codegen-install-export-import"],
+    tags = [
+        "cmake-codegen-install-export-import",
+        "manual",
+    ],
+)  # keep
+
+pkg_files(
+    name = "install_target__multilang",
+    srcs = [":multilang"],
+    prefix = "lib",
 )  # keep

@@ -1,0 +1,111 @@
+{
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 286,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch_total_tus": 1,
+ "define_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "LIBPROTOC_EXPORTS"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "src/google/protobuf/compiler/main.cc"
+   ]
+  }
+ ],
+ "std_mismatch_total_tus": 224,
+ "std_mismatch_by_signature": [
+  {
+   "signature": [
+    "",
+    "c++17"
+   ],
+   "tu_count": 224,
+   "examples": [
+    "src/google/protobuf/any.cc",
+    "src/google/protobuf/any.pb.cc",
+    "src/google/protobuf/any_lite.cc",
+    "src/google/protobuf/api.pb.cc",
+    "src/google/protobuf/arena.cc"
+   ]
+  }
+ ],
+ "include_mismatch_total_tus": 215,
+ "include_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "upb_generator/cmake"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 188,
+   "examples": [
+    "src/google/protobuf/compiler/command_line_interface.cc",
+    "src/google/protobuf/compiler/cpp/enum.cc",
+    "src/google/protobuf/compiler/cpp/extension.cc",
+    "src/google/protobuf/compiler/cpp/field.cc",
+    "src/google/protobuf/compiler/cpp/field_chunk.cc"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "upb/reflection/cmake",
+     "upb_generator/cmake"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 26,
+   "examples": [
+    "src/google/protobuf/any.pb.cc",
+    "src/google/protobuf/api.pb.cc",
+    "src/google/protobuf/compiler/importer.cc",
+    "src/google/protobuf/compiler/parser.cc",
+    "src/google/protobuf/duration.pb.cc"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "third_party/utf8_range",
+     "upb/reflection/cmake",
+     "upb_generator/cmake"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "third_party/utf8_range/utf8_range.c"
+   ]
+  }
+ ],
+ "copt_mismatch_total_tus": 60,
+ "copt_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "-fvisibility-inlines-hidden"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 60,
+   "examples": [
+    "upb/base/status.c",
+    "upb/hash/common.c",
+    "upb/json/decode.c",
+    "upb/json/encode.c",
+    "upb/lex/atoi.c"
+   ]
+  }
+ ],
+ "gen_root_missing": {},
+ "tu_key_collisions": 308,
+ "param_file_skipped": 0
+}

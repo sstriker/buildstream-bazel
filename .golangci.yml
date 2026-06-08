@@ -1,0 +1,51 @@
+# golangci-lint config — COMPLEXITY LENS ONLY.
+#
+# This repo's correctness/style gates are `go vet` + `gofmt` + `staticcheck`
+# (see the Makefile). golangci-lint is wired here for ONE purpose: the code-
+# complexity lens (cyclomatic / cognitive / nesting / length / maintainability),
+# which none of the above cover. `default: none` keeps it from second-guessing
+# staticcheck — only the complexity linters run.
+#
+# SOFT-LAUNCH: the CI step is NON-BLOCKING (continue-on-error) until the tree is
+# green against these thresholds, then it flips to blocking. The thresholds are
+# the bar we intend to GATE on, so the step's output is the gap-to-green
+# worklist, not noise. Run locally with `make lint-complexity`.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - gocyclo   # cyclomatic complexity (branch count)
+    - gocognit  # cognitive complexity (nesting-weighted; "is this hard to read")
+    - cyclop    # cyclomatic, per-func (complements gocyclo's reporting)
+    - nestif    # deeply nested if blocks
+    - funlen    # over-long functions
+    - maintidx  # maintainability index (composite: cyclomatic + halstead + LoC)
+  settings:
+    gocyclo:
+      min-complexity: 30
+    gocognit:
+      min-complexity: 50
+    cyclop:
+      max-complexity: 30
+    nestif:
+      min-complexity: 10
+    funlen:
+      lines: 150
+      statements: 100
+      ignore-comments: true
+    maintidx:
+      under: 15
+  exclusions:
+    generated: lax
+    rules:
+      # Tests carry table-driven setup and long fixtures that read fine despite
+      # high counts; the lens targets production complexity, not test scaffolds.
+      - path: _test\.go
+        linters: [gocyclo, gocognit, cyclop, nestif, funlen, maintidx]
+
+issues:
+  # Report every offender (no per-linter cap) so the soft-launch worklist is
+  # complete.
+  max-issues-per-linter: 0
+  max-same-issues: 0

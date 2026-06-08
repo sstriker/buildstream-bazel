@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "element": "zstd",
+  "summary": {
+    "total": 8,
+    "net_new": 8,
+    "already_flagged": 0,
+    "by_severity": {
+      "high": 2,
+      "low": 1,
+      "medium": 5
+    }
+  },
+  "findings": [
+    {
+      "category": "flag",
+      "severity": "high",
+      "summary": "pthread not linked to libzstd_shared, libzstd_static, or zstd binary despite ZSTD_MULTITHREAD_SUPPORT=ON: ZSTD_MULTITHREAD is defined so threading.c and zstdmt_compress.c will emit pthread calls, but no -lpthread is in linkopts or deps",
+      "evidence": "cmake: ZstdDependencies.cmake:22 find_package(Threads REQUIRED), lib/CMakeLists.txt:132 target_link_libraries(libzstd_shared ${THREADS_LIBS}), :145 target_link_libraries(libzstd_static ${THREADS_LIBS}), programs/CMakeLists.txt:96 target_link_libraries(zstd ${THREADS_LIBS}); Bazel libzstd_shared and libzstd_static have defines=[\"ZSTD_MULTITHREAD\"] but no linkopts or deps entry for pthread in either library or the zstd cc_binary",
+      "cmake_ref": "build/cmake/CMakeModules/ZstdDependencies.cmake:22",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "high",
+      "summary": "zstdConfig.cmake and zstdConfigVersion.cmake not generated: find_package(zstd CONFIG) consumers require these entry-point files but only the Export cmake files are present",
+      "evidence": "cmake: ZstdPackage.cmake:8-12 write_basic_package_version_file(zstdConfigVersion.cmake VERSION ${zstd_VERSION} COMPATIBILITY SameMajorVersion), :34-37 configure_package_config_file(zstdConfig.cmake.in → zstdConfig.cmake), :41-44 install(FILES zstdConfig.cmake zstdConfigVersion.cmake DESTINATION lib/cmake/zstd); Bazel lib/BUILD.bazel generates only zstdExports_shared.cmake and zstdExports_static.cmake via write_file; zstdConfig.cmake and zstdConfigVersion.cmake are entirely absent",
+      "cmake_ref": "build/cmake/CMakeModules/ZstdPackage.cmake:8",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "-DDEBUGLEVEL=1 not added to the debug build config despite AddZstdCompilationFlags setting it for CMAKE_BUILD_TYPE=Debug",
+      "evidence": "cmake: AddZstdCompilationFlags.cmake:79-81 'if (CMAKE_BUILD_TYPE MATCHES \"Debug\") EnableCompilerFlag(\"-DDEBUGLEVEL=1\" _C _CXX false)'; Bazel //config:debug copts=['-g'] only — DEBUGLEVEL=1 is absent, so debug assertions in zstd source are silently suppressed in Bazel debug builds",
+      "cmake_ref": "build/cmake/CMakeModules/AddZstdCompilationFlags.cmake:79",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "Compiler warning and hardening flags from AddZstdCompilationFlags.cmake are absent from all Bazel copts: -Wall, -Wextra, -Wundef, -Wshadow, -Wcast-align, -Wcast-qual, -Wstrict-prototypes, -Wa,--noexecstack, -Wl,-z,noexecstack",
+      "evidence": "cmake: AddZstdCompilationFlags.cmake:70-87 EnableCompilerFlag calls for -Wall -Wextra -Wundef -Wshadow -Wcast-align -Wcast-qual -Wstrict-prototypes -Wa,--noexecstack and linker flag -Wl,-z,noexecstack; Bazel copts for libzstd_shared, libzstd_static, and zstd cc_binary contain only build-type flags (-g, -O3, -DNDEBUG, -O2); none of the warning or hardening flags are present",
+      "cmake_ref": "build/cmake/CMakeModules/AddZstdCompilationFlags.cmake:70",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "No rules_pkg install targets wired for any artifact despite rules_pkg being declared in MODULE.bazel: zstd binary, libzstd headers, libzstd.so/libzstd.a, and libzstd.pc all have install() calls with no Bazel equivalent",
+      "evidence": "cmake: programs/CMakeLists.txt:45 install(TARGETS zstd RUNTIME DESTINATION ...), lib/CMakeLists.txt:266 install(FILES libzstd.pc DESTINATION .../pkgconfig), lib/CMakeLists.txt:273 install(TARGETS libzstd_shared/libzstd_static ...), lib/CMakeLists.txt install(FILES PublicHeaders DESTINATION include); MODULE.bazel has bazel_dep(rules_pkg, 1.0.1) but no BUILD.bazel file contains pkg_files, pkg_install, or install_dirs rules",
+      "cmake_ref": "build/cmake/programs/CMakeLists.txt:45",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "libzstd.pc Libs.private is hardcoded empty but should contain -lpthread when ZSTD_MULTITHREAD_SUPPORT=ON",
+      "evidence": "cmake: lib/CMakeLists.txt:262 set(LIBS_PRIVATE \"${THREADS_LIBS}\") then configure_file(libzstd.pc.in @ONLY) — with MULTITHREAD ON and UNIX, THREADS_LIBS=-lpthread; Bazel gen_lib_libzstd_pc write_file emits 'Libs.private: ' (empty string), making the pkg-config file incorrect for static linking consumers that depend on pthread",
+      "cmake_ref": "build/cmake/lib/CMakeLists.txt:262",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "zstdgrep and zstdless shell scripts have no Bazel target at all and are not installed",
+      "evidence": "cmake: programs/CMakeLists.txt:54-55 install(PROGRAMS ${PROGRAMS_DIR}/zstdgrep DESTINATION \"${CMAKE_INSTALL_BINDIR}\") and install(PROGRAMS ${PROGRAMS_DIR}/zstdless DESTINATION \"${CMAKE_INSTALL_BINDIR}\"); no Bazel BUILD.bazel contains a filegroup, sh_binary, or pkg_files target for zstdgrep or zstdless — these helper scripts are completely absent from the Bazel graph",
+      "cmake_ref": "build/cmake/programs/CMakeLists.txt:54",
+      "status": "net-new"
+    },
+    {
+      "category": "codegen",
+      "severity": "low",
+      "summary": "huf_decompress_amd64.S assembly optimization unconditionally baked off: ZSTD_DISABLE_ASM is always set even for x86_64 targets where the optimised ASM path would be selected",
+      "evidence": "cmake: lib/CMakeLists.txt:42-46 'if CMAKE_SYSTEM_PROCESSOR matches x86_64 AND ZSTD_HAS_NOEXECSTACK then enable_language(ASM) and append huf_decompress_amd64.S; else add_compile_options(-DZSTD_DISABLE_ASM)'; Bazel bakes ZSTD_DISABLE_ASM unconditionally in defines for both libzstd_shared and libzstd_static with no select() branch for x86_64, silently losing the hand-written assembly decompression path on x86_64 production hosts",
+      "cmake_ref": "build/cmake/lib/CMakeLists.txt:42",
+      "status": "net-new"
+    }
+  ]
+}

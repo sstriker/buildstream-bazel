@@ -7,30 +7,21 @@ transition cleanly.
 
 ## Now
 
-- **Refactor: source-classification chokepoints in `lower` (largely done).** The
-  "is this path a cc compile/link/header input, and which attribute does it go
-  in (srcs/hdrs/data/drop)?" decision was duplicated across ~6 sites in
-  `converter/internal/lower/lower.go`. Two chokepoints now own it:
-  `classifyAndAttach(irt, path, seen, dropNonCc)` (header→hdrs, non-cc→data or
-  drop, cc→srcs, with dedup) serves the two IDENTICAL consumer-attribution
-  blocks — the file(GENERATE) and execute_process sister blocks, where the VTK
-  wrap-hierarchy `.args/.data` fix had to be repeated; and
-  `attachGeneratedSource(irt, path, inCG, dropNonCc, embedHdr)` (compile-group
-  source→srcs + its cc_embed sibling header, header→hdrs, else→srcs, optional
-  non-cc drop) serves the three per-source generated branches in the main
-  lowerTarget walk — the IsGenerated recovered-genrule branch, the on-disk
-  generated-source branch, and the OutToGenrule branch — which previously
-  open-coded the same compile-group/CcEmbed routing three times.
-  Guarded behavior-preserving by the full goldens + new `classify_and_attach_test.go`
-  + the render gates for every handler touched (`meta-file-generate`,
-  `meta-cmake-execute-process-rescue`, `meta-cc-embed`, `meta-cc-embed-recognize`,
-  `meta-cmake-cc-hash`).
-  REMAINING: a thin per-source header-only attach (the `!inCompileGroup`
-  target_sources header branch) and the configure-time-build-dir drop are
-  single-disposition and not worth folding. Next, audit the wider converter for
-  the same pattern OUTSIDE source routing — cross-package relabeling, visibility
-  publicizing, and exports_files recur at multiple sites — and capture any
-  further consolidations. Keep the goldens + abseil/glm/VTK surveys as the guard.
+- **Complexity lens — soft-launched, drive to green then flip to blocking.**
+  `make lint-complexity` (golangci-lint, complexity-only config in
+  `.golangci.yml`: gocyclo / gocognit / cyclop / nestif / funlen / maintidx) is
+  the code-complexity axis `go vet` / `gofmt` / `staticcheck` don't cover. The CI
+  step runs in the `Build + unit tests` job as **non-blocking
+  (`continue-on-error`)** so its output is the gap-to-green worklist, not a wall.
+  At launch it flags **55** issues against the gate thresholds (gocyclo>30:6,
+  gocognit>50:25, nestif>10:21, funlen:3) — the worst offenders are
+  `lower.lowerTarget` (cyclomatic 304 / cognitive 699), `convert-element-cmake`'s
+  `run` (167/291), `lower.ToIR` (130/275), and `emit/bazel` `rewriteTarget` /
+  `planSplit`. **What's left:** break these down (extract per-concern helpers the
+  way the duplicate-logic audit consolidations did — see git history for the
+  source-classification chokepoints + the cross-package label / exports_files
+  chokepoints), then **drop `continue-on-error`** so the lens gates like the
+  others. Tune thresholds in `.golangci.yml` if a class proves low-yield.
 
 - **Generator-parity uplift for the cmake converter.** The
   current cmake converter reads File API codemodel-v2 +
@@ -1035,6 +1026,16 @@ transition cleanly.
   Caveats still open: TU keying is by basename (collides across dirs in big
   trees; disambiguate by relative-suffix), config alignment (cmake db is
   single-config; defines/-std/includes are largely config-stable).
+  **zstd surfaces a sharper TU-keying gap (2026-06-08):** once the subpackage-
+  label regression is fixed and zstd's fidelity row produces, it reports
+  `matched: 0` (41 only_cmake basenames like `cover.c` vs 41 only_bazel
+  package-relative paths like `lib/common/debug.c`, 70 key-collisions). zstd's
+  buildable cmake root is `build/cmake` but its sources are overlaid siblings
+  under `lib/`, so cmake's compile_commands keys them one way and the Bazel
+  aquery another — they never align under basename keying. Disambiguating by a
+  normalized relative-suffix (matching the on-disk source identity, not the
+  cmake-vs-Bazel path framing) would let split / overlaid-source members
+  produce a meaningful fidelity row instead of an all-divergent one.
 
 - **Derive `target_libc` / target triple from the probed sysroot.**
   `builtin_sysroot` now ships: the probe lifts `CMAKE_SYSROOT` into
@@ -1128,6 +1129,133 @@ transition cleanly.
   post-pass author a `tests/` package *with its own* `exports_files` by
   staging the sources there; (c) relax rule (1) to permit append-only
   `exports_files` blocks. Pick one when the consumer ships.
+
+- **Intent-capture survey lens — an agent-as-oracle "what did we miss?"
+  pass.** A new, qualitative survey lens complementing the deterministic
+  ones (`rejections` / `bazel-idiom` / `coverage` / `conversion-todos` /
+  compile-commands `fidelity`). Those catch what the converter *knows* it
+  couldn't do (Tier-1 refusals, flagged bakes, the no-mechanical-form
+  worklist) or mechanically-diffable per-TU drift; this lens hunts the
+  **silent** intent loss — things that aren't a rejection, aren't a bake,
+  aren't in the todos, and compile fine, but that a reader comparing the two
+  trees would see is missing (a dropped test target, an install layout, an
+  option default, a visibility constraint, a build-time codegen step). The
+  shape: hand a subagent the **converted Bazel project** (the same handoff
+  bundle the post-pass gets — rendered `BUILD.bazel` + `MODULE.bazel` + the
+  original CMake sources) plus standing context (this is a cmake→Bazel
+  conversion targeting Bazel 9, authored against `@rules_cc` / `@rules_shell`
+  / `bazel_skylib` / `rules_pkg`, gazelle-cc-maintained, …), and ask the one
+  question: *did the Bazel project capture all the intent of the cmake
+  project, and what did it miss?* It is the inverse of the `conversion-todos`
+  producer — the worklist is what the converter flagged; this is what the
+  converter *didn't know* it dropped — so the lens doubles as a **producer-gap
+  finder**: a real miss it surfaces that isn't already a todo/rejection is a
+  bug in the producers or the lowering.
+  **Shipped — the deterministic harness with a pluggable judge.**
+  `converter/cmd/intent-lens` has two deterministic subcommands —
+  `prompt` (assemble the grounded prompt: standing context + the one question +
+  the converted-bundle file manifest + the ALREADY-FLAGGED set + the
+  cite-a-cmake-ref grounding rule) and `triage` (classify each finding net-new
+  vs already-flagged by deduping its `cmake_ref` against the todos' anchors /
+  group_keys and the rejections' sources, bucket by severity, write
+  `intent-capture.json`). The LLM judgment in between is a **pluggable command**
+  (`$INTENT_LENS_JUDGE`, e.g. `claude -p`), so the non-determinism is quarantined
+  to one step and CI stubs it. `scripts/intent-capture-lens.sh` runs the
+  pipeline; `run-survey.sh` wires it as the 6th, opt-in lens (`SURVEY_INTENT=1` +
+  `$INTENT_LENS_JUDGE`); `scripts/meta-intent-capture-lens.sh` is the render gate
+  (stub judge, in the `RENDER_GATES` aggregate). Output is a triage queue, not a
+  pass/fail gate — open question (a) below stands by design.
+  The `run-survey.sh` `summary.txt` carries a per-element **`missed` column**
+  (the net-new finding count; non-deterministic, so a triage pointer not a
+  comparable metric).
+  **What's left:** (a) **corpus-level scoring** — roll the per-element triage
+  queues into an aggregate signal beyond the per-row count (a confirmed-miss
+  tally after human triage? severity-weighting? a stable subset that reproduces
+  across judge passes?), since the `missed` column itself isn't run-comparable;
+  (b) **richer grounding** —
+  the dedup currently grounds on `cmake_ref` vs the todos/rejections; feeding the
+  judge the cmake codemodel/fileapi facts (targets, tests, install rules) would
+  let triage *verify* a claimed miss against structured truth, not just dedup it
+  (and would sharpen if the todo producers populated structured `Anchor.File`
+  uniformly — today only the rejection-mirror does); (c) a **real-judge corpus
+  pass** to calibrate false-positive rate and confirm the producer-gaps it finds
+  — **done (2026-06-08)**: a full-corpus run with `claude -p` as judge, output
+  committed under `docs/survey-artifacts/` and summarized in
+  `docs/survey-corpus.md` ("Full-corpus lens snapshot"). It surfaced 77
+  high-severity net-new findings clustering into six producer-gap themes (the
+  entries below); the open calibration work is now (a) scoring the queue, not
+  whether the lens finds real gaps.
+
+The six intent-lens producer-gap themes follow as their own entries
+(2026-06-08 full-corpus run, biggest cluster first). Each member's
+`docs/survey-artifacts/<member>/intent-capture.json` carries the per-finding
+`evidence` + `cmake_ref` to drive a fix + a regression guard.
+
+- **Install/export emission — close the gaps the intent lens flagged (25×
+  high, biggest cluster).** The full-corpus run showed standalone-surveyed
+  members shipping no install tree for their built artifacts. The gap decomposes
+  into four sub-features; **A is done**:
+  - **A. `install(TARGETS)` → `pkg_files` — DONE.** The "why isn't pkg_files
+    firing" question resolved to: install(FILES)/install(DIRECTORY) lowered to
+    `pkg_files` already, but `install(TARGETS)` (the built library / binary) had
+    NO producer-side `pkg_files` — the per-target Install slot fed only the
+    cc_import facade + round-2 tree. `synthesizeTargetInstallPkgFiles` now emits
+    one `pkg_files(srcs=[":<t>"], prefix=<dest>)` per built cc_library/cc_binary
+    carrying an InstallDest (header-only/no-artifact skipped); the split's
+    `:<name>`-ref relabel extends to `pkg_files` so a re-homed lib still
+    resolves. zlib's build lens stays green and its libs now package.
+  - **B. generated-header install — DONE.** A generated header
+    (`configure_file`/genrule output, e.g. zlib's `zconf.h`) is recorded in
+    `install(FILES)` by an absolute build-dir path, which `projectToSourceRoot`
+    rejected (outside source) → dropped. `projectToBuildRoot` now resolves a
+    build-dir install entry to its build-relative output name so it packages
+    (the converter already emits that output as a same-package rule). zlib's
+    header `pkg_files` now carries `zconf.h` + `zlib.h`; build lens stays green.
+  - **C. pkg-config `.pc`** — the `.pc` is generated but never placed in a
+    `pkg_files` (brotli, fmt, grpc, protobuf, sdl, zlib).
+  - **D. `<Pkg>Config.cmake`/`<Pkg>Targets.cmake` generation** — the
+    `find_package(CONFIG)` entry points aren't generated at all (eigen, catch2,
+    zstd, cutlass, protobuf, nlohmann-json). A genuinely new producer — scope
+    deliberately.
+
+- **System/threading linkopt propagation — extend the host-system-library
+  fallback (25× high).** Extends "Make the host-system-library fallback
+  EXPLICIT" (above, the `systemLibName` sites): the lens shows `-lm`
+  (`brotli`, `libpng`, `libxml2`), `-ldl` (`libxml2`, `llvm`), and `-lpthread`
+  (`googletest`, `spdlog`, `zstd`, `grpc`, `llvm`'s `${LLVM_PTHREAD_LIB}`)
+  still dropped — the link fragment either isn't attributed or `systemLibName`
+  doesn't cover it. Same entry also covers two adjacent flag drops: build-type
+  -conditional defines hardcoded `1` regardless of `//config` (LLVM's
+  `LLVM_ENABLE_ABI_BREAKING_CHECKS` / `LLVM_ENABLE_PLUGINS` / …) and dropped
+  `target_compile_features` (googletest's PUBLIC `cxx_std_17`).
+
+- **Optional-feature conditional deps (find_package under a feature flag, 3×
+  high).** LLVM's `LLVM_ENABLE_ZLIB` / `_ZSTD` / `_OPENCSD` deps aren't linked,
+  so `Compression.cpp` would fail to link. Same find_package→linkopt mechanism
+  as the entry above, tracked distinctly because the dep is gated on a CMake
+  feature option the converter must honor (or default).
+
+- **Emit absent targets / subpackages (9× high).** Whole targets the converter
+  produces no `BUILD.bazel` for: abseil's 7 interface subpackages (algorithm,
+  cleanup, functional, memory, meta, types, utility), llvm's 19/20 backends
+  under default `LLVM_TARGETS_TO_BUILD=all`, mbedtls's `programs/` executables,
+  vtk's `Rendering::VolumeAMR` module. Investigate the emit/skip decision that
+  drops them.
+
+- **Lower dropped test trees to `cc_test` — extend test-target coverage (10×
+  high).** Extends "Test-target coverage" (below): the faithful survey convert
+  emits no `cc_test` for abseil (232 `absl_cc_test`), glm (~130), sdl (~50),
+  catch2, boost-core, mbedtls, vtk, openblas. **Caveat:** confirm each is a
+  real `add_test`/`enable_testing` lowering gap vs. an intentional build-lens
+  scope-out before fixing — some members deliberately disable their test tree.
+
+- **`configure_file` / script-codegen genrule coverage — specific instances
+  (5× high).** Extends the configure_file-lift work (above): generated headers
+  with no genrule — vtk's libproj `proj_config.h`, mbedtls's `test_certs.h` /
+  `test_keys.h` Python codegen, cutlass's `version_extended.h`. Plus a
+  **correctness** case: curl's `configurehelp.pm` bakes a convert-time temp
+  path (`/tmp/convert-element-build-*/`) into the emitted output, breaking the
+  Perl test infra at build time.
 
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the
@@ -1419,6 +1547,21 @@ transition cleanly.
   record of why.
 ## Later (research / open questions)
 
+
+- **Genrule command-rewrite token-replace consolidation (deferred from the
+  2026-06-08 refactoring audit).** `replaceBareToken` (genrule.go) and
+  `replaceBareAnchorAtBoundary` (lower.go) share the same whole-word
+  token-boundary logic (space/`=`/`:` guards), and the genrule rewrite chain
+  (`rewriteGenruleCmd` → `rewriteToolFromTarget` → `anchorGenruleOutputsToRuledir`
+  → `reanchorBuildDirCopyGenrule`) does several similar path/flag substitutions.
+  A shared `tokenReplace(str, matchers)` could unify them — but this is the
+  correctness-sensitive path the LLVM `$(RULEDIR)`/exec-root anchoring fixes live
+  in, so merge it deliberately with the genrule render gates as the guard, not as
+  a casual dedup. (The audit's other broad candidate — a unified string-set/dedup
+  family — was examined and declined: `stringSliceContains` is already a single
+  shared helper, and the dedup variants are semantically distinct
+  order-preserving / sorted-adjacent / skip-empty / append-unique forms, not true
+  duplicates.)
 
 - **Source-side AC narrowing for autotools.** Bazel's hermetic-action
   model says inputs in → outputs out; you can't have a byte be

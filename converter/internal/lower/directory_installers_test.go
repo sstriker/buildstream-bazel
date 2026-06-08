@@ -602,3 +602,49 @@ func TestLowerExportInstallers_BundleFilegroupsMerge(t *testing.T) {
 		t.Errorf("missing srcs from merged bundle: %v (got %v)", wantSrcs, bundle.Srcs)
 	}
 }
+
+// TestSynthesizeTargetInstallPkgFiles pins install(TARGETS) → pkg_files: a
+// built cc_library / cc_binary with an InstallDest gets a pkg_files packaging
+// it under that destination; header-only / no-artifact and non-cc kinds are
+// skipped; output is sorted + deduped.
+func TestSynthesizeTargetInstallPkgFiles(t *testing.T) {
+	in := []ir.Target{
+		// install(TARGETS) shared lib → pkg_files.
+		{Name: "zlib", Kind: ir.KindCCLibrary, InstallDest: "lib", ArtifactName: "libz.so"},
+		// install(TARGETS) static lib → pkg_files.
+		{Name: "zlibstatic", Kind: ir.KindCCLibrary, InstallDest: "lib", ArtifactName: "libz.a"},
+		// install(TARGETS) executable → pkg_files.
+		{Name: "minigzip", Kind: ir.KindCCBinary, InstallDest: "bin", ArtifactName: "minigzip"},
+		// ABSOLUTE dest (GNUInstallDirs shape) → kept verbatim.
+		{Name: "abslib", Kind: ir.KindCCLibrary, InstallDest: "/usr/local/lib", ArtifactName: "libabs.so"},
+		// INTERFACE / header-only: has a dest but no artifact → skipped.
+		{Name: "zlib_headers", Kind: ir.KindCCLibrary, InstallDest: "lib"},
+		// No install dest → skipped.
+		{Name: "internal", Kind: ir.KindCCLibrary, ArtifactName: "libinternal.a"},
+		// Non-cc kind with a dest (defensive) → skipped.
+		{Name: "gen_x", Kind: ir.KindGenrule, InstallDest: "share", ArtifactName: "x"},
+		// ".." escapes the install prefix (unsafe / rules_pkg-invalid) → skipped.
+		{Name: "escapelib", Kind: ir.KindCCLibrary, InstallDest: "../evil", ArtifactName: "libe.a"},
+	}
+	got := synthesizeTargetInstallPkgFiles(in)
+	want := []struct{ name, src, prefix string }{
+		{"install_target__abslib", ":abslib", "/usr/local/lib"},
+		{"install_target__minigzip", ":minigzip", "bin"},
+		{"install_target__zlib", ":zlib", "lib"},
+		{"install_target__zlibstatic", ":zlibstatic", "lib"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d pkg_files, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		g := got[i]
+		if g.Name != w.name || g.Kind != ir.KindPkgFiles || g.PkgPrefix != w.prefix ||
+			len(g.Srcs) != 1 || g.Srcs[0] != w.src {
+			t.Errorf("got[%d] = {name:%q kind:%v srcs:%v prefix:%q}, want {name:%q srcs:[%q] prefix:%q}",
+				i, g.Name, g.Kind, g.Srcs, g.PkgPrefix, w.name, w.src, w.prefix)
+		}
+		if len(g.Visibility) == 0 {
+			t.Errorf("got[%d] %q: expected public visibility", i, g.Name)
+		}
+	}
+}

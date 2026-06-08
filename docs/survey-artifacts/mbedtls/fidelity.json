@@ -1,0 +1,50 @@
+{
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 113,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch": {},
+ "std_mismatch": {},
+ "include_mismatch_total_tus": 113,
+ "include_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "3rdparty/everest/include/everest",
+     "3rdparty/everest/include/everest/kremlib"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 108,
+   "examples": [
+    "library/aes.c",
+    "library/aesce.c",
+    "library/aesni.c",
+    "library/aria.c",
+    "library/asn1parse.c"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "."
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 5,
+   "examples": [
+    "3rdparty/everest/library/Hacl_Curve25519_joined.c",
+    "3rdparty/everest/library/everest.c",
+    "3rdparty/everest/library/x25519.c",
+    "3rdparty/p256-m/p256-m/p256-m.c",
+    "3rdparty/p256-m/p256-m_driver_entrypoints.c"
+   ]
+  }
+ ],
+ "copt_mismatch": {},
+ "gen_root_missing": {},
+ "tu_key_collisions": 8,
+ "param_file_skipped": 0
+}

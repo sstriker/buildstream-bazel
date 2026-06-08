@@ -93,6 +93,14 @@ case "$split_packages" in 0|no|off|false) split_packages="" ;; esac
 # (defines, -std, source includes), writing <out>/<name>/fidelity.json. Runs
 # after the convert but BEFORE the build's compile (aquery needs only analysis),
 # so it catches per-TU flag drift cheaply. Report-only; see cmd/compile-commands-diff.
+# SURVEY_INTENT=1 turns on the sixth lens — intent-capture, the agent-as-oracle
+# "what did we miss?" pass. For each build-lens-selected project it hands the
+# converted bundle (workspace BUILD/MODULE + the cmake sources) to a PLUGGABLE
+# judge ($INTENT_LENS_JUDGE, e.g. 'claude -p'), then triages the findings against
+# the element's own conversion-todos / rejections, writing <out>/<name>/
+# intent-capture.json. Opt-in + cost-gated (skips silently with no judge);
+# non-deterministic, so it's a triage queue, not a gate. See
+# scripts/intent-capture-lens.sh + converter/cmd/intent-lens.
 # SURVEY_SHARED=1 builds the FAITHFUL link model for build-lens members: the
 # project's natural config (no forced BUILD_SHARED_LIBS=OFF) with real
 # cc_shared_library .so's (--emit-shared-libraries) and consumers' dynamic_deps
@@ -366,6 +374,17 @@ EOF
     _bb_bzlflags="$BAZEL_FLAGS"
     _bb_to=""
     command -v timeout >/dev/null 2>&1 && _bb_to="timeout ${SURVEY_BAZEL_BUILD_TIMEOUT:-900}"
+    # Shared Bazel repository cache, deliberately OUTSIDE the per-member
+    # --output_user_root ($_bb_po/.bzcache, which a marathon driver typically
+    # rm -rf's after each member to reclaim disk). Without a shared cache every
+    # member (and every retry) re-downloads the BCR dep tarballs from the GitHub
+    # release CDN, so a single transient 504 on any one of them (platforms,
+    # bazel_features, protobuf, …) silently drops that member's fidelity row. A
+    # content-addressable cache fetched once is reused by all members + retries,
+    # insulating the lens from CDN flakiness. Default to a stable home-dir path
+    # (survives across marathon runs); override with SURVEY_REPO_CACHE.
+    _bb_repocache="${SURVEY_REPO_CACHE:-${HOME:-/tmp}/.cache/bsb-survey-repos}"
+    mkdir -p "$_bb_repocache" 2>/dev/null || true
 
     # Fifth lens — compile-commands FIDELITY (SURVEY_COMPILE_DB=1). Runs HERE,
     # after the convert + MODULE/workspace are in place but BEFORE the build's
@@ -376,7 +395,12 @@ EOF
     # + the .conf's --cmake-define pairs). Report-only (writes fidelity.json); it
     # does not gate the build. See cmd/compile-commands-diff + docs.
     if [ "${SURVEY_COMPILE_DB:-0}" != "0" ]; then
-        _cc_defs="-DBUILD_SHARED_LIBS=OFF"
+        # CMAKE_POLICY_VERSION_MINIMUM=3.5: cmake 4.x removed compat with
+        # cmake_minimum_required(<3.5); the converter auto-retries with this on
+        # the policy-floor error (cmakerun/run.go), so the fidelity configure
+        # must pass it too or it fails for old-floor projects (libevent) and the
+        # fidelity row is silently absent. Harmless for projects that don't need it.
+        _cc_defs="-DBUILD_SHARED_LIBS=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
         # shellcheck disable=SC2086
         set -- $CONVERT_FLAGS
         while [ $# -gt 0 ]; do
@@ -390,12 +414,19 @@ EOF
         # shellcheck disable=SC2086
         if cmake -S "$_bb_src" -B "$_cc_cm" -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON $_cc_defs \
                 >> "$_bb_po/fidelity.log" 2>&1 && [ -f "$_cc_cm/compile_commands.json" ]; then
+            # Thread the conf's BAZEL_FLAGS ($_bb_bzlflags, e.g.
+            # --incompatible_autoload_externally) into the aquery: ANALYSIS still
+            # loads the BCR deps' BUILD files, so a member whose deps need the
+            # autoload shim (re2/abseil/protobuf cc_library on bazel 9) fails the
+            # aquery without it — exactly as the build at the bottom does.
+            # shellcheck disable=SC2086
             if ( cd "$_bb_ws" && $bzl_bin --output_user_root="$_bb_po/.bzcache" --noworkspace_rc \
-                    ${META_BAZEL_STARTUP_ARGS:-} aquery --output=jsonproto 'mnemonic("CppCompile", //...)' ) \
+                    ${META_BAZEL_STARTUP_ARGS:-} aquery --repository_cache="$_bb_repocache" $_bb_bzlflags --output=jsonproto 'mnemonic("CppCompile", //...)' ) \
                     > "$_bb_po/cc-aquery.json" 2>> "$_bb_po/fidelity.log"; then
                 # CppLink aquery for the link-order check (best-effort).
+                # shellcheck disable=SC2086
                 ( cd "$_bb_ws" && $bzl_bin --output_user_root="$_bb_po/.bzcache" --noworkspace_rc \
-                    ${META_BAZEL_STARTUP_ARGS:-} aquery --output=jsonproto 'mnemonic("CppLink", //...)' ) \
+                    ${META_BAZEL_STARTUP_ARGS:-} aquery --repository_cache="$_bb_repocache" $_bb_bzlflags --output=jsonproto 'mnemonic("CppLink", //...)' ) \
                     > "$_bb_po/cc-aquery-link.json" 2>> "$_bb_po/fidelity.log" || true
                 _cc_diff="$repo_root/build/bin/compile-commands-diff"
                 ( cd "$repo_root" && go build -o "$_cc_diff" ./converter/cmd/compile-commands-diff ) 2>>"$_bb_po/fidelity.log" || _cc_diff="go run $repo_root/converter/cmd/compile-commands-diff"
@@ -409,13 +440,34 @@ EOF
             fi
         fi
     fi
+    # Sixth lens — intent-capture (SURVEY_INTENT=1 + $INTENT_LENS_JUDGE). The
+    # agent-as-oracle "what did we miss?" pass over the converted bundle (this
+    # workspace's BUILD/MODULE + the cmake sources), triaged against the
+    # conversion-todos / rejections this element already wrote to $_bb_po. Runs
+    # here, after convert + MODULE are in place; needs no build. Best-effort.
+    if [ "${SURVEY_INTENT:-0}" != "0" ] && [ -n "${INTENT_LENS_JUDGE:-}" ]; then
+        if sh "$repo_root/scripts/intent-capture-lens.sh" \
+                "$_bb_ws" "$_bb_src" "$_bb_po" "$_bb_name" >> "$_bb_po/intent.log" 2>&1; then
+            echo "  $_bb_name: intent-capture -> $_bb_po/intent-capture.json" >&2
+        else
+            echo "  $_bb_name: intent-capture lens failed (see $_bb_po/intent.log)" >&2
+        fi
+    fi
     # --noworkspace_rc: the lens measures whether OUR emitted module/build graph
     # builds, so ignore any workspace .bazelrc (matches the repo's other survey
     # scripts, and is belt-and-suspenders with the .bazelrc strip above). Thread
     # both startup-arg and build-arg passthrough too (META_BAZEL_STARTUP_ARGS
     # goes before the subcommand — registry tweaks for sandboxed/offline runs).
+    # SURVEY_SKIP_BUILD=1 runs the convert + the opt-in fidelity/intent lenses
+    # above but SKIPS the final `bazel build //...` — for refreshing the
+    # compile-db + intent rows across an already-green corpus without paying for
+    # the (redundant) full rebuild. The build-status column shows "skip".
+    if [ "${SURVEY_SKIP_BUILD:-0}" != "0" ]; then
+        echo "skip"
+        return
+    fi
     if ( cd "$_bb_ws" && $_bb_to "$bzl_bin" --output_user_root="$_bb_po/.bzcache" \
-            --noworkspace_rc ${META_BAZEL_STARTUP_ARGS:-} build ${META_BAZEL_BUILD_ARGS:-} $_bb_bzlflags //... ) >> "$_bb_po/build.log" 2>&1; then
+            --noworkspace_rc ${META_BAZEL_STARTUP_ARGS:-} build --repository_cache="$_bb_repocache" ${META_BAZEL_BUILD_ARGS:-} $_bb_bzlflags //... ) >> "$_bb_po/build.log" 2>&1; then
         echo "ok"
     else
         echo "FAIL"
@@ -427,8 +479,13 @@ mkdir -p "$out_dir"
 summary="$out_dir/summary.txt"
 : > "$summary"
 
-printf '%-14s %10s %10s %10s %6s %8s %s\n' project rejections idioms coverage todos build status | tee "$summary"
-printf '%-14s %10s %10s %10s %6s %8s %s\n' ------- ---------- ------ -------- ----- ----- ------ | tee -a "$summary"
+# The `missed` column is the intent-capture lens's net-new finding count (6th
+# lens; "-" unless SURVEY_INTENT ran). UNLIKE every other column it is
+# NON-DETERMINISTIC (an LLM judge produced it) — a triage pointer to
+# producer-gap candidates, NOT a count comparable across runs. See the
+# intent-capture lens section in docs/survey-corpus.md.
+printf '%-14s %10s %10s %10s %6s %7s %8s %s\n' project rejections idioms coverage todos missed build status | tee "$summary"
+printf '%-14s %10s %10s %10s %6s %7s %8s %s\n' ------- ---------- ------ -------- ----- ------ ----- ------ | tee -a "$summary"
 
 for entry in $projects; do
     name="${entry%%=*}"
@@ -437,7 +494,7 @@ for entry in $projects; do
     mkdir -p "$proj_out"
 
     if [ ! -d "$src" ]; then
-        printf '%-14s %10s %10s %10s %8s %s\n' "$name" - - - - "MISSING ($src) — run 'make fetch-$name'" | tee -a "$summary"
+        printf '%-14s %10s %10s %10s %6s %7s %s\n' "$name" - - - - - "MISSING ($src) — run 'make fetch-$name'" | tee -a "$summary"
         continue
     fi
 
@@ -612,8 +669,16 @@ for entry in $projects; do
         fi
     fi
 
-    printf '%-14s %10s %10s %10s %6s %8s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "${todo_n:--}" "$build_status" "$status" | tee -a "$summary"
+    # 6th lens: intent-capture net-new count (written by try_bazel_build via
+    # intent-capture-lens.sh when SURVEY_INTENT ran). "-" when the lens didn't
+    # run. NON-DETERMINISTIC (LLM judge) — a triage pointer, not a comparable
+    # metric; the per-finding detail lives in $proj_out/intent-capture.json.
+    intent="$proj_out/intent-capture.json"
+    missed_n=$( [ -f "$intent" ] && grep -oE '"net_new"[[:space:]]*:[[:space:]]*[0-9]+' "$intent" 2>/dev/null | grep -oE '[0-9]+' | head -1 || echo "-" )
+    missed_n="${missed_n:--}"
+
+    printf '%-14s %10s %10s %10s %6s %7s %8s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "${todo_n:--}" "$missed_n" "$build_status" "$status" | tee -a "$summary"
 done
 
 echo ""
-echo "Reports under $out_dir/<project>/{rejections,bazel-idiom,coverage,conversion-todos}.json; summary at $summary"
+echo "Reports under $out_dir/<project>/{rejections,bazel-idiom,coverage,conversion-todos,intent-capture}.json; summary at $summary"

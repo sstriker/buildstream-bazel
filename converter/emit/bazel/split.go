@@ -235,6 +235,7 @@ func primaryGeneratedOutput(t ir.Target) string {
 // headers physically under each include-root.
 type splitPlan struct {
 	sub        map[string]string   // target name → declaring dir ("" = root)
+	placed     map[string]string   // target name → landingDir (incl. synthesized producers homed by output path); see populate in planSplit
 	headerLibs map[string]string   // include-root dir → header-lib name
 	headersIn  map[string][]string // include-root dir → element-root-relative header paths under it
 	base       string              // repo-root-relative element package path (label base)
@@ -376,12 +377,9 @@ func (p *splitPlan) headerLibTarget(inc, name string, local bool, exportsByDir m
 				// (file=="") isn't a file label, so it falls through to the
 				// package-relative path below.
 				if file, _ := relUnder(dh, h); file != "" {
-					hdrs = append(hdrs, crossPkgFileLabel(p, dh, file))
+					hdrs = append(hdrs, crossPkgLabel(p, dh, file))
 					if !p.genOuts[h] {
-						if exportsByDir[dh] == nil {
-							exportsByDir[dh] = map[string]struct{}{}
-						}
-						exportsByDir[dh][file] = struct{}{}
+						recordExportedFile(exportsByDir, dh, file)
 					}
 					continue
 				}
@@ -418,7 +416,7 @@ func (p *splitPlan) headerLibTarget(inc, name string, local bool, exportsByDir m
 			continue
 		}
 		if _, ok := relUnder(inc, r2); ok {
-			deps = append(deps, headerLibLabel(p, r2, n2))
+			deps = append(deps, crossPkgLabel(p, r2, n2))
 		}
 	}
 	sort.Strings(deps)
@@ -490,7 +488,7 @@ func (p *splitPlan) rootHdrLibTarget(owner, name string) ir.Target {
 func (p *splitPlan) rootHdrAggTarget() ir.Target {
 	deps := make([]string, 0, len(p.rootHdrLibs))
 	for owner, name := range p.rootHdrLibs {
-		deps = append(deps, headerLibLabel(p, owner, name))
+		deps = append(deps, crossPkgLabel(p, owner, name))
 	}
 	sort.Strings(deps)
 	return ir.Target{
@@ -530,7 +528,7 @@ func (p *splitPlan) globSrcFilegroups(pkg *ir.Package) (byDir map[string][]ir.Ta
 				pattern = rel + "/" + pattern
 			}
 			name := globSrcName(rel, g.Pattern)
-			label := headerLibLabel(p, owningDir, name)
+			label := crossPkgLabel(p, owningDir, name)
 			if !seenLabel[label] {
 				seenLabel[label] = true
 				labels = append(labels, label)
@@ -648,7 +646,7 @@ func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][
 			if _, ok := relUnder(dir, o); !ok {
 				continue
 			}
-			label := headerLibLabel(p, dir, generatedIncludesName)
+			label := crossPkgLabel(p, dir, generatedIncludesName)
 			if !seen[label] {
 				seen[label] = true
 				labels = append(labels, label)
@@ -725,6 +723,7 @@ func dropGlobSrcFiles(t ir.Target) ir.Target {
 func planSplit(pkg *ir.Package, local bool) *splitPlan {
 	p := &splitPlan{
 		sub:              map[string]string{},
+		placed:           map[string]string{},
 		headerLibs:       map[string]string{},
 		headersIn:        map[string][]string{},
 		genOuts:          map[string]bool{},
@@ -945,6 +944,15 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 		return p.pkgs[i] < p.pkgs[j]
 	})
 
+	// Index every target's landing dir (where the partition actually places it
+	// — incl. synthesized producers homed by their output path, which carry no
+	// SubPackages entry). Needs p.pkgs ready (landingDir → deepestPkg). Lets a
+	// cross-package consumer (e.g. cmake_config_bundle's filegroup srcs) relabel
+	// a ":<name>" ref whose producer was re-homed into a sub-package.
+	for _, t := range pkg.Targets {
+		p.placed[t.Name] = p.landingDir(t, local)
+	}
+
 	// Publicize any producer whose generated output is referenced directly (in
 	// srcs) by a consumer landing in a DIFFERENT package — the producer's
 	// private default would make that output unreachable cross-package (Bazel
@@ -962,10 +970,25 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 			p.publicize[prod] = true
 		}
 	}
+	// A direct intra-element target ref (":<name>", e.g. cmake_config_bundle's
+	// filegroup srcs pointing at the per-file write_file generators) likewise
+	// needs the producer public when it lands in a different package than the
+	// consumer — rewriteTarget relabels the ref cross-package, so a private
+	// producer would be unreachable.
+	publicizeIfCrossPkgTarget := func(ref, consumerDir, selfName string) {
+		name, ok := strings.CutPrefix(ref, ":")
+		if !ok || name == selfName {
+			return
+		}
+		if d, known := p.placed[name]; known && d != consumerDir {
+			p.publicize[name] = true
+		}
+	}
 	for _, t := range pkg.Targets {
 		consumerDir := p.landingDir(t, local)
 		for _, s := range t.Srcs {
 			publicizeIfCrossPkgGen(s, consumerDir, t.Name)
+			publicizeIfCrossPkgTarget(s, consumerDir, t.Name)
 		}
 		// hdrs/textual_hdrs that are a GENERATED output owned by another package
 		// are referenced by a direct cross-package file label too (rewriteTarget),
@@ -1074,6 +1097,19 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 		rt.StripIncludePrefix = "/" + plan.base + "/" + rt.StripIncludePrefix
 	}
 
+	// cc_import's static_library/shared_library are single element-root-relative
+	// artifact paths (e.g. install-export's "lib/libzstd.so"). When the
+	// artifact's dir is a sub-package, the bare path is an invalid same-package
+	// label ("lib is a subpackage"); relabel it cross-package. NOT gated on
+	// `local`: this is about emitted-BUILD package boundaries (which a split
+	// creates in both regimes), not src/hdr path framing — the same reason deps
+	// rewrite to cross-package labels under SourceKey too. A non-sub-package
+	// path returns unchanged, so the SourceKey/non-split cases don't churn.
+	if rt.Kind == ir.KindCCImport {
+		rt.StaticLibrary = relabelImportArtifact(plan, dir, rt.StaticLibrary)
+		rt.SharedLibrary = relabelImportArtifact(plan, dir, rt.SharedLibrary)
+	}
+
 	// Multi-package RootInclude fast-path (abseil's element-root grant spanning
 	// many packages): planSplit re-homed the HEADER surface (every RootInclude
 	// target's t.Hdrs) into per-package header libs behind plan.rootHdrAgg, so
@@ -1112,7 +1148,7 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 		}
 		if name, ok := plan.headerLibs[n]; ok {
 			incRoots[n] = struct{}{}
-			headerDeps = append(headerDeps, headerLibLabel(plan, n, name))
+			headerDeps = append(headerDeps, crossPkgLabel(plan, n, name))
 		}
 	}
 	rt.Includes = nil
@@ -1146,7 +1182,7 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 				}
 				if name, isRoot := plan.headerLibs[n]; isRoot {
 					incRoots[n] = struct{}{}
-					label := headerLibLabel(plan, n, name)
+					label := crossPkgLabel(plan, n, name)
 					if t.Kind == ir.KindCCLibrary || t.Kind == ir.KindCCInterface {
 						privHeaderDeps = append(privHeaderDeps, label)
 					} else {
@@ -1201,16 +1237,13 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 		// (file == "") isn't a file label, so that case still drops.
 		dh := plan.deepestPkg(h)
 		if file, _ := relUnder(dh, h); file != "" {
-			keepHdrs = append(keepHdrs, crossPkgFileLabel(plan, dh, file))
+			keepHdrs = append(keepHdrs, crossPkgLabel(plan, dh, file))
 			// A generated file (write_file/genrule out) is already a target in
 			// its package; exports_files() over it would error ("source file
 			// conflicts with existing generated file"). The label resolves to
 			// the rule's output regardless. Only on-disk sources need the export.
 			if !plan.genOuts[h] {
-				if exportsByDir[dh] == nil {
-					exportsByDir[dh] = map[string]struct{}{}
-				}
-				exportsByDir[dh][file] = struct{}{}
+				recordExportedFile(exportsByDir, dh, file)
 			}
 		}
 	}
@@ -1242,12 +1275,9 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 			}
 			dh := plan.deepestPkg(h)
 			if file, _ := relUnder(dh, h); file != "" {
-				keepTextual = append(keepTextual, crossPkgFileLabel(plan, dh, file))
+				keepTextual = append(keepTextual, crossPkgLabel(plan, dh, file))
 				if !plan.genOuts[h] {
-					if exportsByDir[dh] == nil {
-						exportsByDir[dh] = map[string]struct{}{}
-					}
-					exportsByDir[dh][file] = struct{}{}
+					recordExportedFile(exportsByDir, dh, file)
 				}
 			}
 		}
@@ -1285,12 +1315,9 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 				if file == "" {
 					continue
 				}
-				out = append(out, crossPkgFileLabel(plan, d, file))
+				out = append(out, crossPkgLabel(plan, d, file))
 				if !plan.genOuts[s] {
-					if exportsByDir[d] == nil {
-						exportsByDir[d] = map[string]struct{}{}
-					}
-					exportsByDir[d][file] = struct{}{}
+					recordExportedFile(exportsByDir, d, file)
 				}
 			}
 			return out
@@ -1311,6 +1338,29 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 			pp["srcs"] = newArms
 			rt.PerPlatform = pp
 		}
+	}
+	// A filegroup's srcs may be intra-element target refs (":<name>") whose
+	// producers the split re-homed into a sub-package (install-export's
+	// cmake_config_bundle references the per-file write_file generators, which
+	// land in the install dir's package by their output path while the filegroup
+	// stays at root). rewriteSrcList above leaves a ":<name>" ref untouched
+	// (deepestPkg sees no package), so relabel them cross-package here, after the
+	// srcs rewrite, via the target's landing dir. Same-package and non-target
+	// srcs pass through.
+	// Also covers pkg_files: an install(TARGETS) pkg_files lands at root with
+	// srcs = [":<lib>"], but the split may re-home <lib> into a sub-package.
+	if local && (rt.Kind == ir.KindFilegroup || rt.Kind == ir.KindPkgFiles) && len(rt.Srcs) > 0 {
+		srcs := make([]string, len(rt.Srcs))
+		for i, s := range rt.Srcs {
+			if name, ok := strings.CutPrefix(s, ":"); ok {
+				if d, known := plan.placed[name]; known && d != dir {
+					srcs[i] = crossPkgLabel(plan, d, name)
+					continue
+				}
+			}
+			srcs[i] = s
+		}
+		rt.Srcs = srcs
 	}
 	// (SourceKey regime: srcs/hdrs are left element-root-relative;
 	// EmitWithOptions prefixes them with @src_<key>//: unchanged.)
@@ -1481,7 +1531,7 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// empty and falls through.)
 	if rootHdrFastPath {
 		rt.Hdrs = nil
-		rt.Deps = rewriteDeps(rt.Deps, plan, []string{headerLibLabel(plan, "", plan.rootHdrAgg)})
+		rt.Deps = rewriteDeps(rt.Deps, plan, []string{crossPkgLabel(plan, "", plan.rootHdrAgg)})
 		return rt
 	}
 
@@ -1611,33 +1661,47 @@ func rewriteDeps(deps []string, plan *splitPlan, extra []string) []string {
 	return out
 }
 
-// targetLabel returns the cross-package label for an intra-element
-// target name. A name with no SubPackages entry (install-derived /
-// synthesized) resolves to the root package.
-func targetLabel(plan *splitPlan, name string) string {
-	dir := plan.targetDir(name)
+// crossPkgLabel returns the cross-package label `//<pkg>:<name>` for an
+// element-root-relative directory dir and a target name or package-relative
+// file path (callers pass a relUnder result for files). dir == ""
+// resolves to the element's root package. This is the single chokepoint for
+// cross-package label formation; the named wrappers below delegate to it so
+// the package-path computation lives in one place.
+func crossPkgLabel(plan *splitPlan, dir, name string) string {
 	if dir == "" {
 		return fmt.Sprintf("//%s:%s", plan.bazelRoot(), name)
 	}
 	return fmt.Sprintf("//%s:%s", joinPkgPath(plan.bazelRoot(), dir), name)
 }
 
-// headerLibLabel returns the label of a synthesized header lib living in
-// include-root dir inc.
-func headerLibLabel(plan *splitPlan, inc, name string) string {
-	if inc == "" {
-		return fmt.Sprintf("//%s:%s", plan.bazelRoot(), name)
-	}
-	return fmt.Sprintf("//%s:%s", joinPkgPath(plan.bazelRoot(), inc), name)
+// targetLabel returns the cross-package label for an intra-element
+// target name. A name with no SubPackages entry (install-derived /
+// synthesized) resolves to the root package.
+func targetLabel(plan *splitPlan, name string) string {
+	return crossPkgLabel(plan, plan.targetDir(name), name)
 }
 
-// crossPkgFileLabel returns a label for a source file exported via
-// exports_files() from the package owning its directory.
-func crossPkgFileLabel(plan *splitPlan, sdir, file string) string {
-	if sdir == "" {
-		return fmt.Sprintf("//%s:%s", plan.bazelRoot(), file)
+// relabelImportArtifact rewrites a cc_import's single library file path (its
+// element-root-relative install artifact, e.g. "lib/libzstd.so") to a
+// cross-package label when the artifact lives in a SUB-package of the target's
+// own package. Bazel reads a bare "lib/libzstd.so" in package P as the file
+// label P:lib/libzstd.so, which is invalid when "lib" is itself a package
+// ("lib is a subpackage") — exactly the relabel srcs/hdrs already get. A path
+// in the target's own package, or one not under any known package, is returned
+// unchanged.
+func relabelImportArtifact(plan *splitPlan, dir, p string) string {
+	if p == "" {
+		return p
 	}
-	return fmt.Sprintf("//%s:%s", joinPkgPath(plan.bazelRoot(), sdir), file)
+	d := plan.deepestPkg(p)
+	if d == dir {
+		return p
+	}
+	file, ok := relUnder(d, p)
+	if !ok || file == "" {
+		return p
+	}
+	return crossPkgLabel(plan, d, file)
 }
 
 // bazelRoot is the repo-root-relative base package path. The split plan
@@ -1648,6 +1712,17 @@ func (p *splitPlan) bazelRoot() string { return p.base }
 // (Stored on the plan so label helpers don't thread it through every
 // call.)
 func (p *splitPlan) setBase(b string) { p.base = b }
+
+// recordExportedFile notes that file (a package-relative path within dir —
+// from relUnder, so it may include subdirectories) must be reachable
+// cross-package, so the owning package emits it in exports_files(). Single
+// chokepoint for the per-package collection the rewrite paths feed.
+func recordExportedFile(exportsByDir map[string]map[string]struct{}, dir, file string) {
+	if exportsByDir[dir] == nil {
+		exportsByDir[dir] = map[string]struct{}{}
+	}
+	exportsByDir[dir][file] = struct{}{}
+}
 
 // appendExportsFiles renders an exports_files([...]) block for the
 // supplied files and appends it to an already-rendered BUILD body,

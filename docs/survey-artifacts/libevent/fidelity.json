@@ -1,0 +1,74 @@
+{
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 40,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch_total_tus": 25,
+ "define_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [],
+    "missing_in_bazel": [
+     "event_shared_EXPORTS"
+    ]
+   },
+   "tu_count": 23,
+   "examples": [
+    "buffer.c",
+    "bufferevent.c",
+    "bufferevent_filter.c",
+    "bufferevent_pair.c",
+    "bufferevent_ratelim.c"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [],
+    "missing_in_bazel": [
+     "event_openssl_shared_EXPORTS"
+    ]
+   },
+   "tu_count": 1,
+   "examples": [
+    "bufferevent_openssl.c"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [],
+    "missing_in_bazel": [
+     "event_pthreads_shared_EXPORTS"
+    ]
+   },
+   "tu_count": 1,
+   "examples": [
+    "evthread_pthread.c"
+   ]
+  }
+ ],
+ "std_mismatch": {},
+ "include_mismatch": {},
+ "copt_mismatch_total_tus": 25,
+ "copt_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [],
+    "missing_in_bazel": [
+     "-fvisibility=hidden"
+    ]
+   },
+   "tu_count": 25,
+   "examples": [
+    "buffer.c",
+    "bufferevent.c",
+    "bufferevent_filter.c",
+    "bufferevent_openssl.c",
+    "bufferevent_pair.c"
+   ]
+  }
+ ],
+ "gen_root_missing": {},
+ "tu_key_collisions": 142,
+ "param_file_skipped": 0
+}

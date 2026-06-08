@@ -678,7 +678,7 @@ func wireDefineDrivenGeneratedHeaders(pkg *ir.Package) {
 		Kind:       ir.KindCCLibrary,
 		Hdrs:       hdrs,
 		Includes:   includes, // propagate -I<dir> so the BASENAME include resolves
-		Visibility: []string{"//visibility:public"},
+		Visibility: publicVisibility(),
 		Tags:       []string{"cmake-define-driven-generated-headers"},
 	})
 	for i := range pkg.Targets {
@@ -1605,6 +1605,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// rules (pkg_files for FILES/DIRECTORY, cmake_config_bundle
 	// filegroup for declarative install(EXPORT)).
 	pkg.Targets = append(pkg.Targets, lowerDirectoryInstallers(r, opts.EmitInstallExportConfig)...)
+	// install(TARGETS) → pkg_files: package each built library / binary under
+	// its install destination (the per-target Install slot otherwise only feeds
+	// the cc_import facade + round-2 tree, leaving the artifact in no install
+	// package). Faithful, same as install(FILES)/install(DIRECTORY) above; runs
+	// over the lowered codemodel targets (the appended pkg_files carry no
+	// InstallDest so they're skipped).
+	pkg.Targets = append(pkg.Targets, synthesizeTargetInstallPkgFiles(pkg.Targets)...)
 	// INTERFACE-only library lift. cmake's File API codemodel
 	// omits INTERFACE_LIBRARY targets from its targets[] array —
 	// they're header-only declarations with no link step to
@@ -3833,7 +3840,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	}
 
 	if t.Install != nil && len(t.Install.Destinations) > 0 {
-		irt.Visibility = []string{"//visibility:public"}
+		irt.Visibility = publicVisibility()
 		irt.InstallDest = t.Install.Destinations[0].Path
 	}
 
@@ -5338,7 +5345,7 @@ func partitionFortranSources(pkg *ir.Package) {
 			Name:       t.Name + "_fortran_srcs",
 			Kind:       ir.KindFilegroup,
 			Srcs:       ftn,
-			Visibility: []string{"//visibility:public"},
+			Visibility: publicVisibility(),
 			Tags:       []string{"cmake-codegen-fortran-target"},
 		}
 		added = append(added, fg)
@@ -5837,6 +5844,12 @@ func cmakeTruthy(v string) bool {
 	}
 	return false
 }
+
+// publicVisibility returns the visibility list for a target that must be
+// reachable cross-package (synthesized install / import / interface targets,
+// install-derived targets). Centralizes the `//visibility:public` convention;
+// returns a fresh slice so callers can't alias a shared one.
+func publicVisibility() []string { return []string{"//visibility:public"} }
 
 // isAddDependenciesEdge reports whether a TargetDependency came
 // from an `add_dependencies(target dep)` call rather than a
