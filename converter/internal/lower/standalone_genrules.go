@@ -240,117 +240,13 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		if len(outs) == 0 {
 			continue
 		}
-		// Skip cmake-internal bookkeeping edges. cmake's Ninja
-		// generator adds standalone CUSTOM_COMMAND edges for its
-		// own IDE / regen workflows: `CMakeFiles/edit_cache.util`,
-		// `CMakeFiles/rebuild_cache.util`, and a handful more
-		// (install / package / package_source / test / list_install
-		// _components) under multi-target generators. These run
-		// cmake itself or echo a message; lifting them to genrules
-		// in the rendered BUILD.bazel adds noise without
-		// operator-visible value (the cmake re-invoke shape
-		// doesn't work outside cmake's own build dir, and the IDE
-		// hooks are no-ops under bazel anyway). Filter every edge
-		// whose first output is `CMakeFiles/<name>.util` —
-		// cmake's bookkeeping outputs uniformly land under that
-		// path with the .util suffix.
-		if isCMakeBookkeepingOutput(outs[0]) {
-			continue
-		}
-		// Skip cmake-internal install / regen / cpack edges
-		// regardless of output path. These run cmake (or
-		// cpack/rpmbuild) at action time against cmake's own
-		// build-dir layout — they don't translate to the Bazel
-		// sandbox AT ALL. Filtering at the cmd-shape level
-		// catches every install-component variant
-		// (DCMAKE_INSTALL_COMPONENT, DCMAKE_INSTALL_DO_STRIP,
-		// DCMAKE_INSTALL_LOCAL_ONLY) plus cpack/rpmbuild +
-		// regen-during-build edges whose output paths land
-		// outside the `.util` filter above (e.g.
-		// `CMakeFiles/install-<component>` shapes from
-		// add_subdirectory-spawned install components).
-		if kind := cmakeInternalCmdKind(cmd); kind != "" {
-			// These edges have no Bazel analogue (they run cmake/cpack/ctest
-			// against cmake's own build-dir layout or submit to a CDash
-			// server) — dropping is correct, but record a breadcrumb so the
-			// drop isn't silent. Keyed by first output for a stable, readable
-			// identifier; value is the category.
-			if filteredInternal != nil {
-				key := kind
-				if len(outs) > 0 {
-					key = outs[0]
-				}
-				filteredInternal[key] = kind
-			}
-			continue
-		}
-		// Skip `cmake -E create_symlink` edges. Projects use create_symlink to
-		// make tool aliases (zstd's zstdcat / unzstd / zstdmt → zstd), library
-		// SONAME links, and manpage aliases — a symlink side-effect in the
-		// build/install tree, not a content-producing build step. The recovered
-		// shape can't model it: cmake's Ninja generator gives the custom target
-		// a stamp output (`CMakeFiles/<name>-<config>`) the symlink cmd never
-		// creates, and the link target is a built binary referenced by its
-		// multi-config output path (`Debug/zstd`) that is no Bazel file — so the
-		// genrule fails analysis on a missing input + an uncreated output. Bazel
-		// models tool aliases natively; drop with a breadcrumb (the stamp is
-		// never consumed, so nothing depends on it).
-		if isCreateSymlinkCmd(cmd) {
-			if filteredInternal != nil {
-				key := "symlink"
-				if len(outs) > 0 {
-					key = outs[0]
-				}
-				filteredInternal[key] = "symlink"
-			}
-			continue
-		}
-		// Use genruleSrcs so source-tree-absolute inputs
-		// (e.g. `/tmp/<src>/foo.c` from a `cmake -P` build line
-		// that the ninja generator resolved with the cmake build
-		// dir's absolute prefix) get re-anchored to workspace-
-		// relative form. The pre-genruleSrcs path appended the
-		// raw ninja inputs verbatim, leaking convert-time
-		// absolute paths into the rendered genrule.
+		// Recover the genrule srcs up front (re-anchors source-tree-absolute
+		// inputs to workspace-relative form), then drop the edges with no
+		// faithful Bazel build-graph form — cmake bookkeeping, install/regen/
+		// cpack, create_symlink, a source-less copy, make_directory — recording
+		// a breadcrumb for each categorized drop. See standaloneEdgeFiltered.
 		srcs := genruleSrcs(b, cmakeSrc, buildDir, umbrellaPrefix)
-
-		// A copy command (`cmake -E copy <src> <dst>`) with no recovered srcs
-		// has no staged input to read: its source is a cmd-arg-only reference to
-		// a file the ninja edge never declared as an input. zstd's manpages hit
-		// this — `add_custom_target(zstd.1 ALL ${CMAKE_COMMAND} -E copy
-		// ${PROGRAMS_DIR}/zstd.1 .)` with PROGRAMS_DIR a sibling dir OUTSIDE the
-		// surveyed build/cmake element root and no DEPENDS, so genruleSrcs (which
-		// rejects element-escaping inputs) yields nothing. Such a genrule always
-		// fails under Bazel (nothing to copy from in the sandbox), so emitting it
-		// is strictly worse than dropping it; record a `copy` breadcrumb.
-		if len(srcs) == 0 && isCopyCmd(cmd) {
-			if filteredInternal != nil {
-				key := "copy"
-				if len(outs) > 0 {
-					key = outs[0]
-				}
-				filteredInternal[key] = "copy"
-			}
-			continue
-		}
-
-		// A make_directory-only custom command (`cmake -E make_directory <dir>`
-		// / `mkdir -p <dir>`) has no Bazel build-graph analogue — the same
-		// reasoning as the cmake -E make_directory execute_process no-op
-		// (noopExecuteProcessOps): a Bazel action creates its output's parents
-		// implicitly under $(RULEDIR), and the files later written into the dir
-		// are recovered by their own genrules. Worse, cmake's make_directory
-		// custom command declares a STAMP output (CMakeFiles/<name>-<cfg>) that
-		// the mkdir cmd never writes, so a genrule fails "declared output was
-		// not created" (LLVM's OCaml-bindings ocaml_make_directory). Drop it.
-		if isMakeDirOnlyCmd(cmd) {
-			if filteredInternal != nil {
-				key := "make_directory"
-				if len(outs) > 0 {
-					key = outs[0]
-				}
-				filteredInternal[key] = "make_directory"
-			}
+		if standaloneEdgeFiltered(cmd, outs, srcs, filteredInternal) {
 			continue
 		}
 
@@ -495,6 +391,47 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		})
 	}
 	return out
+}
+
+// standaloneEdgeFiltered reports whether a custom-command edge should be
+// DROPPED rather than lifted to a genrule, recording a breadcrumb in
+// filteredInternal for each categorized drop (the cmake-bookkeeping `.util`
+// skip is silent — it carries no operator-visible intent). The drops, each with
+// no faithful Bazel build-graph form (see the inline rationale at the former
+// call sites): cmake-internal bookkeeping outputs; install / regen / cpack
+// edges; `cmake -E create_symlink`; a source-less `cmake -E copy`; and a
+// make_directory-only command.
+func standaloneEdgeFiltered(cmd string, outs, srcs []string, filteredInternal map[string]string) bool {
+	record := func(kind string) {
+		if filteredInternal == nil {
+			return
+		}
+		key := kind
+		if len(outs) > 0 {
+			key = outs[0]
+		}
+		filteredInternal[key] = kind
+	}
+	if isCMakeBookkeepingOutput(outs[0]) {
+		return true // cmake IDE/regen bookkeeping (.util) — silent drop
+	}
+	// cmakeInternalCmdKind does non-trivial string normalization; compute once.
+	if kind := cmakeInternalCmdKind(cmd); kind != "" {
+		record(kind)
+		return true
+	}
+	switch {
+	case isCreateSymlinkCmd(cmd):
+		record("symlink")
+		return true
+	case len(srcs) == 0 && isCopyCmd(cmd):
+		record("copy")
+		return true
+	case isMakeDirOnlyCmd(cmd):
+		record("make_directory")
+		return true
+	}
+	return false
 }
 
 // dropLiftedToolSrcs removes srcs that rewriteToolFromTarget already
