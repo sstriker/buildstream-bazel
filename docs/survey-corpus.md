@@ -20,36 +20,49 @@ corpus** and **how to survey them faithfully** (so two runs are comparable).
 
 ## Status at a glance
 
-State per project across the four lenses (each lens is defined in the
+State per project across the six lenses (each lens is defined in the
 sections below). The three **convertibility** lenses report finding
 counts — `0` is healthy; the **build** lens reports the survey's
-`build` token. Per-project build-lens detail is in *Build-lens status*
-below; the full corpus roster + rationale is under *The corpus*.
+`build` token. The two opt-in lenses report the **2026-06-08 full-corpus
+run** (detail in *Full-corpus lens snapshot* below, raw output in
+[`survey-artifacts/`](survey-artifacts/)): **Fidelity** = matched
+`CppCompile` TUs from the compile-db lens (`n/a` = header-only / no TUs);
+**Intent** = the judge's net-new `missed` count — **non-deterministic, a
+triage pointer not a comparable metric**. Per-project build-lens detail is
+in *Build-lens status* below; the full corpus roster + rationale is under
+*The corpus*.
 
-| Project | Rejections | Idiom | Coverage | Build lens |
-| --- | --- | --- | --- | --- |
-| **fmt** | 0 | 0 | 0 | `ok` |
-| **libxml2** | 0 | 0 | 0 | `ok` |
-| **brotli** | 0 | 0 | 0 | `ok` |
-| **glm** | 0 | 0 | 0 | `ok` |
-| **googletest** | 0 | 0 | 0 | `ok` |
-| **abseil** | 0 | 0 | 0 | `ok` |
-| **zstd** | 0 | 0 | 0 | `ok` (repo-root overlay) |
-| **glog** | 0† | 30 | 0 | `ok` |
-| **eigen** | 0 | 16‡ | 0 | `ok` |
-| **cutlass** | 1§ | 0 | 0 | `ok` (header lib; CUDA tier) |
-| **OpenBLAS** | 0¶ | 0 | 0 | `ok` (C-LAPACK; ~2460 targets) |
-| **curl** | 0 | 1 | 0 | `ok` (library + CLI + test surface; ~238 actions) |
-| **zlib** | 0 | 0 | 0 | `ok` (lib + examples; shared-only linkopt drop) |
-| **boost-core** | 0 | 0 | 0 | `ok` (header lib) |
-| **spdlog** | 0 | 0 | 0 | `ok` |
-| **catch2** | 1 | 0 | 0 | `ok` |
-| **nlohmann-json** | 0 | 0 | 0 | `ok` (header lib; tests off) |
-| **libpng** | 0 | 0 | 0 | `ok` (cmake -P script-bake; host zlib) |
-| **libevent** | 0 | 5 | 0 | `ok` (libs; regress tests off) |
-| **mbedtls** | 0 | 0 | 0 | `ok` (crypto libs; tests+programs off, link_to_source in==out drop) |
-| **protobuf** | 0 | 8 | 0 | `ok` (libs + protoc + upb generators; find_package(absl) via @abseil-cpp + //absl_umbrella, host zlib) |
-| **sdl** | 2 | 5 | 0 | `ok` (multi-config × per-platform; file(GENERATE) $<CONFIG> headers, PCH drop, select-arm relabel; host X11 + GL/GLES/EGL dev headers) |
+| Project | Rejections | Idiom | Coverage | Build lens | Fidelity | Intent |
+| --- | --- | --- | --- | --- | --- | --- |
+| **fmt** | 0 | 0 | 0 | `ok` | 29 | 7 |
+| **libxml2** | 0 | 0 | 0 | `ok` | 52 | 10 |
+| **brotli** | 0 | 0 | 0 | `ok` | 36 | 8 |
+| **glm** | 0 | 0 | 0 | `ok` | 1 | 8 |
+| **googletest** | 0 | 0 | 0 | `ok` | 4 | 5 |
+| **abseil** | 0 | 0 | 0 | `ok` | 156 | 7 |
+| **zstd** | 0 | 0 | 0 | `ok` (repo-root overlay) | n/a‖ | 8 |
+| **glog** | 0† | 30 | 0 | `ok` | 20 | 0 |
+| **eigen** | 0 | 16‡ | 0 | `ok` | n/a | 8 |
+| **cutlass** | 1§ | 0 | 0 | `ok` (header lib; CUDA tier) | n/a | 12 |
+| **OpenBLAS** | 0¶ | 0 | 0 | `ok` (C-LAPACK; ~2460 targets) | 6277 | 9 |
+| **curl** | 0 | 1 | 0 | `ok` (library + CLI + test surface; ~238 actions) | 213 | 9 |
+| **zlib** | 0 | 0 | 0 | `ok` (lib + examples; shared-only linkopt drop) | 17 | 5 |
+| **boost-core** | 0 | 0 | 0 | `ok` (header lib) | n/a | 6 |
+| **spdlog** | 0 | 0 | 0 | `ok` | 8 | 10 |
+| **catch2** | 1 | 0 | 0 | `ok` | 107 | 11 |
+| **nlohmann-json** | 0 | 0 | 0 | `ok` (header lib; tests off) | n/a | 6 |
+| **libpng** | 0 | 0 | 0 | `ok` (cmake -P script-bake; host zlib) | 24 | 9 |
+| **libevent** | 0 | 5 | 0 | `ok` (libs; regress tests off) | 40 | 7 |
+| **mbedtls** | 0 | 0 | 0 | `ok` (crypto libs; tests+programs off, link_to_source in==out drop) | 113 | 14 |
+| **protobuf** | 0 | 8 | 0 | `ok` (libs + protoc + upb generators; find_package(absl) via @abseil-cpp + //absl_umbrella, host zlib) | 286 | 11 |
+| **sdl** | 2 | 5 | 0 | `ok` (multi-config × per-platform; file(GENERATE) $<CONFIG> headers, PCH drop, select-arm relabel; host X11 + GL/GLES/EGL dev headers) | 259 | 9 |
+
+The four large members driven for convertibility but not the build lens
+(`grpc`, `llvm`, `vtk`, `cuda-samples`) aren't in this table but DO have
+fidelity + intent rows in *Full-corpus lens snapshot* below.
+‖ zstd's fidelity is **blocked by a converter regression** (split-emit
+emits an invalid subpackage label), not the lens — see the snapshot's
+footnote and `ROADMAP.md`.
 
 `rej` = surveys with rejections, so the build lens skips it; for
 protobuf these are honest external `find_package` deps
