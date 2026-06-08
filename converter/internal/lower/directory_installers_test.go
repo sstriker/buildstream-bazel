@@ -615,15 +615,20 @@ func TestSynthesizeTargetInstallPkgFiles(t *testing.T) {
 		{Name: "zlibstatic", Kind: ir.KindCCLibrary, InstallDest: "lib", ArtifactName: "libz.a"},
 		// install(TARGETS) executable → pkg_files.
 		{Name: "minigzip", Kind: ir.KindCCBinary, InstallDest: "bin", ArtifactName: "minigzip"},
+		// ABSOLUTE dest (GNUInstallDirs shape) → kept verbatim.
+		{Name: "abslib", Kind: ir.KindCCLibrary, InstallDest: "/usr/local/lib", ArtifactName: "libabs.so"},
 		// INTERFACE / header-only: has a dest but no artifact → skipped.
 		{Name: "zlib_headers", Kind: ir.KindCCLibrary, InstallDest: "lib"},
 		// No install dest → skipped.
 		{Name: "internal", Kind: ir.KindCCLibrary, ArtifactName: "libinternal.a"},
 		// Non-cc kind with a dest (defensive) → skipped.
 		{Name: "gen_x", Kind: ir.KindGenrule, InstallDest: "share", ArtifactName: "x"},
+		// ".." escapes the install prefix (unsafe / rules_pkg-invalid) → skipped.
+		{Name: "escapelib", Kind: ir.KindCCLibrary, InstallDest: "../evil", ArtifactName: "libe.a"},
 	}
 	got := synthesizeTargetInstallPkgFiles(in)
 	want := []struct{ name, src, prefix string }{
+		{"install_target__abslib", ":abslib", "/usr/local/lib"},
 		{"install_target__minigzip", ":minigzip", "bin"},
 		{"install_target__zlib", ":zlib", "lib"},
 		{"install_target__zlibstatic", ":zlibstatic", "lib"},

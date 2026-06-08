@@ -622,6 +622,16 @@ func synthesizeTargetInstallPkgFiles(targets []ir.Target) []ir.Target {
 		if t.Kind != ir.KindCCLibrary && t.Kind != ir.KindCCBinary {
 			continue
 		}
+		// Normalize/validate the destination before using it as the pkg_files
+		// prefix. ABSOLUTE dests are kept: cmake's GNUInstallDirs commonly
+		// yields /usr/local/lib, and rules_pkg packages an absolute prefix
+		// as-is (the existing install(FILES)→pkg_files path does the same). But
+		// a ".." that escapes the install prefix is unsafe / rules_pkg-invalid,
+		// so skip that target's packaging.
+		dest := path.Clean(t.InstallDest)
+		if dest == ".." || strings.HasPrefix(dest, "../") {
+			continue
+		}
 		name := "install_target__" + sanitizeDestination(t.Name)
 		for used[name] {
 			name += "_"
@@ -631,7 +641,7 @@ func synthesizeTargetInstallPkgFiles(targets []ir.Target) []ir.Target {
 			Name:       name,
 			Kind:       ir.KindPkgFiles,
 			Srcs:       []string{":" + t.Name},
-			PkgPrefix:  t.InstallDest,
+			PkgPrefix:  dest,
 			Visibility: publicVisibility(),
 		})
 	}
