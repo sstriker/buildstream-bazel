@@ -412,12 +412,15 @@ func standaloneEdgeFiltered(cmd string, outs, srcs []string, filteredInternal ma
 		}
 		filteredInternal[key] = kind
 	}
-	switch {
-	case isCMakeBookkeepingOutput(outs[0]):
+	if isCMakeBookkeepingOutput(outs[0]) {
 		return true // cmake IDE/regen bookkeeping (.util) — silent drop
-	case cmakeInternalCmdKind(cmd) != "":
-		record(cmakeInternalCmdKind(cmd))
+	}
+	// cmakeInternalCmdKind does non-trivial string normalization; compute once.
+	if kind := cmakeInternalCmdKind(cmd); kind != "" {
+		record(kind)
 		return true
+	}
+	switch {
 	case isCreateSymlinkCmd(cmd):
 		record("symlink")
 		return true
