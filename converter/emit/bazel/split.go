@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/cclang"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
@@ -370,7 +371,7 @@ func (p *splitPlan) headerLibTarget(inc, name string, local bool, exportsByDir m
 				// A generated compiled source owned by a deeper package is a
 				// translation unit that package compiles itself — drop it from
 				// the header aggregation rather than relabel+expose it.
-				if p.genOuts[h] && isCompiledSourceExt(h) {
+				if p.genOuts[h] && cclang.IsCompiledSource(h) {
 					continue
 				}
 				// Header owned by a deeper package: cross-package label (+
@@ -1015,7 +1016,7 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 	// dropped by headerLibTarget, so only header outputs matter here.)
 	for inc, hs := range p.headersIn {
 		for _, h := range hs {
-			if p.genOuts[h] && isCompiledSourceExt(h) {
+			if p.genOuts[h] && cclang.IsCompiledSource(h) {
 				continue
 			}
 			publicizeIfCrossPkgGen(h, inc, "")
@@ -1833,32 +1834,6 @@ func joinPkgPath(base, dir string) string {
 	default:
 		return base + "/" + dir
 	}
-}
-
-// compiledSourceExts are the extensions Bazel's cc rules treat as COMPILED
-// translation units (a file with one in a cc_library's srcs is compiled
-// standalone). A GENERATED file with one of these is never a header — it's a
-// codegenned source its owning package compiles — so the header-lib synthesis
-// (headerLibTarget) drops such a cross-package generated entry instead of
-// listing it as a header. Mirrors lower's ccSourceExts plus the asm
-// extensions cc_library compiles (.S/.s/.asm).
-var compiledSourceExts = map[string]bool{
-	".c": true, ".cc": true, ".cpp": true, ".cxx": true, ".c++": true,
-	".cu": true, ".cl": true, ".cppm": true, ".ixx": true,
-	".s": true, ".asm": true,
-	// ".S" matched case-insensitively below (a capital-S asm is preprocessed
-	// then assembled — OpenBLAS's kernel/CMakeFiles/<k>.S codegen).
-}
-
-// isCompiledSourceExt reports whether path p ends in a compiled-source
-// extension (case-insensitive). Used to identify generated translation units
-// that don't belong in a synthesized header library.
-func isCompiledSourceExt(p string) bool {
-	dot := strings.LastIndex(p, ".")
-	if dot < 0 {
-		return false
-	}
-	return compiledSourceExts[strings.ToLower(p[dot:])]
 }
 
 // headerLibName derives a deterministic sanitized cc_library name from an

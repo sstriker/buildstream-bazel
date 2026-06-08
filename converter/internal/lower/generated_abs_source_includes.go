@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/cclang"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
@@ -151,7 +152,7 @@ func rewriteGeneratedWrapperIncludes(pkg *ir.Package, hostSrc, bazelPackagePath 
 				continue
 			}
 			rel = filepath.ToSlash(rel)
-			if !ccSourceExts[strings.ToLower(filepath.Ext(rel))] {
+			if !cclang.IsCompiledSource(rel) {
 				// Only the "textually include a compiled source" idiom; an
 				// absolute header include is a different (rarer) shape.
 				continue
