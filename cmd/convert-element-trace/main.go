@@ -188,7 +188,7 @@ func main() {
 	// generated-headers fold runs once per action.
 	if *outIRJSON != "" {
 		if err := writeIRJSON(*outIRJSON, rules); err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-trace: write ir.json: %v\n", err)
+			fmt.Fprintf(os.Stderr, "convert-element-trace: ir.json sidecar: %v\n", err)
 			os.Exit(1)
 		}
 	}
@@ -203,7 +203,7 @@ func main() {
 	if *outMapping != "" && makeDB != nil {
 		mapping := buildInstallMapping(makeDB, buildRules(graph, imports, makeDB))
 		if err := writeInstallMapping(*outMapping, mapping); err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-trace: write install-mapping: %v\n", err)
+			fmt.Fprintf(os.Stderr, "convert-element-trace: install-mapping sidecar: %v\n", err)
 			os.Exit(1)
 		}
 	}
@@ -242,12 +242,15 @@ func writePlaceholderIRJSON(outPath string) error {
 func writeIRJSON(outPath string, rules []CCRule) error {
 	body, err := json.MarshalIndent(toIR(rules), "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal ir.Package: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return err
+		return fmt.Errorf("mkdir: %w", err)
 	}
-	return os.WriteFile(outPath, append(body, '\n'), 0o644)
+	if err := os.WriteFile(outPath, append(body, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	return nil
 }
 
 // writeInstallMapping renders the install-mapping sidecar (source →
@@ -256,15 +259,18 @@ func writeIRJSON(outPath string, rules []CCRule) error {
 func writeInstallMapping(outPath string, mapping *InstallMapping) error {
 	body, err := renderInstallMappingJSON(mapping)
 	if err != nil {
-		return err
+		return fmt.Errorf("render: %w", err)
 	}
 	if body == nil {
 		body = []byte(`{"version":1,"mappings":[]}` + "\n")
 	}
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return err
+		return fmt.Errorf("mkdir: %w", err)
 	}
-	return os.WriteFile(outPath, body, 0o644)
+	if err := os.WriteFile(outPath, body, 0o644); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	return nil
 }
 
 // recoveredRules returns the same CCRule slice emitBuild
