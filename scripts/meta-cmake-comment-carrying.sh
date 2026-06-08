@@ -75,11 +75,21 @@ echo "ok  meta-cmake-comment-carrying: file header + target (leading+trailing) +
   sed 's/^/   stderr: /' "$work_dir/convert2.stderr"
   exit 1
 }
-if grep -qF "wraps the vendored widget code" "$ws/BUILD.nocomments"; then
-  echo "FAIL: author comment present with --emit-source-comments=false"
-  exit 1
-fi
-echo "ok  meta-cmake-comment-carrying: --emit-source-comments=false suppresses author comments"
+# Assert EVERY carried-comment class is suppressed — the same four markers the
+# positive check asserts present (file-header, target leading, codegen leading,
+# target trailing) — so a partial regression (e.g. only the header leaks) can't
+# slip through.
+for marker in \
+  "Copyright 2026 the comment-carrying authors." \
+  "wraps the vendored widget code" \
+  "Generate the lookup table from the spec" \
+  "the widget core lib"; do
+  if grep -qF "$marker" "$ws/BUILD.nocomments"; then
+    echo "FAIL: author comment present with --emit-source-comments=false: $marker"
+    exit 1
+  fi
+done
+echo "ok  meta-cmake-comment-carrying: --emit-source-comments=false suppresses all author comments"
 
 # (4) buildifier -mode=diff must be a no-op (canonical comment placement).
 if ! command -v buildifier >/dev/null 2>&1; then
