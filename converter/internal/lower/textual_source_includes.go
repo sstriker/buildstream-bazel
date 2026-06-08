@@ -3,6 +3,7 @@ package lower
 import (
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,7 +22,7 @@ import (
 // converter's include handling — not a full preprocessor.
 var quoteIncludeRe = regexp.MustCompile(`(?m)^[ \t]*#[ \t]*include[ \t]*"([^"]+)"`)
 
-// CCSourceExts are the compiled-source extensions whose presence in a
+// ccSourceExts are the compiled-source extensions whose presence in a
 // quote-include marks a "textually include a compiled source to intercept its
 // internals" idiom (fmt's posix-mock-test does `#include "../src/os.cc"`;
 // OpenBLAS's GenerateNamedObjects wrappers do `#include "kernel/x86_64/amax_sse.S"`).
@@ -31,13 +32,22 @@ var quoteIncludeRe = regexp.MustCompile(`(?m)^[ \t]*#[ \t]*include[ \t]*"([^"]+)
 // textual_hdrs slot instead. Keys are lowercase; callers lowercase the ext
 // before lookup (so preprocessed-assembly `.S` matches `.s`).
 //
-// Exported so the split-emit side's compiledSourceExts can be drift-guarded
-// against it — the two must stay reconciled (see bazel's
-// TestCompiledSourceExtsMatchesLowering).
-var CCSourceExts = map[string]bool{
+// Unexported and accessed read-only; CompiledSourceExts() returns a copy for the
+// split-emit drift guard (bazel's TestCompiledSourceExtsMatchesLowering) so the
+// two sets can be reconciled without exposing this one to mutation.
+var ccSourceExts = map[string]bool{
 	".cc": true, ".cpp": true, ".cxx": true, ".c++": true, ".c": true,
 	".cu": true, ".cl": true, ".cppm": true, ".ixx": true,
 	".s": true, ".sx": true, ".asm": true,
+}
+
+// CompiledSourceExts returns a copy of the lowering-side compiled-source
+// extension set (lowercase keys). It exists so the split-emit side can
+// drift-guard its compiledSourceExts against this set without being able to
+// mutate lowering's behavior — the returned map is a clone. See bazel's
+// TestCompiledSourceExtsMatchesLowering.
+func CompiledSourceExts() map[string]bool {
+	return maps.Clone(ccSourceExts)
 }
 
 // findTextualSourceIncludes scans a target's compiled source files for
@@ -81,7 +91,7 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) []string {
 		dir := filepath.Dir(s)
 		for _, m := range quoteIncludeRe.FindAllSubmatch(data, -1) {
 			inc := string(m[1])
-			if !CCSourceExts[strings.ToLower(filepath.Ext(inc))] {
+			if !ccSourceExts[strings.ToLower(filepath.Ext(inc))] {
 				continue
 			}
 			// An absolute include ("/usr/...", "C:\\...") is non-portable and
@@ -237,7 +247,7 @@ func textualIncludeClosure(hostSrc string, seeds []string, compiled map[string]b
 		dir := filepath.Dir(cur)
 		for _, m := range quoteIncludeRe.FindAllSubmatch(data, -1) {
 			inc := string(m[1])
-			if !CCSourceExts[strings.ToLower(filepath.Ext(inc))] {
+			if !ccSourceExts[strings.ToLower(filepath.Ext(inc))] {
 				continue
 			}
 			if strings.HasPrefix(inc, "/") || filepath.IsAbs(inc) {

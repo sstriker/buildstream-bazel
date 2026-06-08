@@ -151,7 +151,7 @@ func rewriteGeneratedWrapperIncludes(pkg *ir.Package, hostSrc, bazelPackagePath 
 				continue
 			}
 			rel = filepath.ToSlash(rel)
-			if !CCSourceExts[strings.ToLower(filepath.Ext(rel))] {
+			if !ccSourceExts[strings.ToLower(filepath.Ext(rel))] {
 				// Only the "textually include a compiled source" idiom; an
 				// absolute header include is a different (rarer) shape.
 				continue

@@ -7,48 +7,48 @@ import (
 )
 
 // compiledSourceExtsLowerOnly lists extensions intentionally present in
-// lowering's lower.CCSourceExts but deliberately absent from split-emit's
-// compiledSourceExts. Every divergence between the two compiled-source sets must
-// be enumerated here with a rationale — TestCompiledSourceExtsMatchesLowering
+// lowering's compiled-source set (lower.CompiledSourceExts) but deliberately
+// absent from split-emit's compiledSourceExts. Every divergence between the two
+// sets must be enumerated here with a rationale — TestCompiledSourceExtsMatchesLowering
 // fails on any un-enumerated difference, so adding an extension to one set
 // forces either adding it to the other or justifying the asymmetry here.
 //
-//   - ".sx": a preprocessed-assembly TU lowering recognizes (CCSourceExts) but
-//     split-emit's compiledSourceExts currently omits. PRE-EXISTING divergence,
-//     flagged for review (PR #506): if a project ships .sx TUs, split-emit won't
-//     classify them as compiled. Remove this entry once the sets are reconciled.
+//   - ".sx": a preprocessed-assembly TU lowering recognizes but split-emit's
+//     compiledSourceExts currently omits. PRE-EXISTING divergence, flagged for
+//     review (PR #506): if a project ships .sx TUs, split-emit won't classify
+//     them as compiled. Remove this entry once the sets are reconciled.
 var compiledSourceExtsLowerOnly = map[string]bool{
 	".sx": true,
 }
 
 // TestCompiledSourceExtsMatchesLowering is the real drift guard: it mechanically
-// enforces that split-emit's compiledSourceExts equals lowering's
-// lower.CCSourceExts minus the enumerated, justified deltas. Unlike a per-set
-// content pin, this fails whenever the two sets diverge in an un-enumerated way —
-// so a future edit to either set (in either package) that isn't mirrored in the
-// other trips the test.
+// enforces that split-emit's compiledSourceExts equals lowering's compiled-source
+// set minus the enumerated, justified deltas. Unlike a per-set content pin, this
+// fails whenever the two sets diverge in an un-enumerated way — so a future edit
+// to either set (in either package) that isn't mirrored in the other trips it.
 func TestCompiledSourceExtsMatchesLowering(t *testing.T) {
+	loweringExts := lower.CompiledSourceExts() // a copy; safe to read freely
 	want := map[string]bool{}
-	for e := range lower.CCSourceExts {
+	for e := range loweringExts {
 		if !compiledSourceExtsLowerOnly[e] {
 			want[e] = true
 		}
 	}
 	for e := range want {
 		if !compiledSourceExts[e] {
-			t.Errorf("compiledSourceExts is missing %q (present in lower.CCSourceExts and not listed as a known delta) — add it to compiledSourceExts or to compiledSourceExtsLowerOnly with a rationale", e)
+			t.Errorf("compiledSourceExts is missing %q (in lowering's set, not listed as a known delta) — add it to compiledSourceExts or to compiledSourceExtsLowerOnly with a rationale", e)
 		}
 	}
 	for e := range compiledSourceExts {
 		if !want[e] {
-			t.Errorf("compiledSourceExts has %q not in lower.CCSourceExts — add it to lower.CCSourceExts or reconcile the two sets", e)
+			t.Errorf("compiledSourceExts has %q not in lowering's set — add it to lower.ccSourceExts or reconcile the two sets", e)
 		}
 	}
 	// Guard the delta list itself: every lower-only ext must actually be in
 	// lowering's set (else the entry is stale) and must NOT be in compiledSourceExts.
 	for e := range compiledSourceExtsLowerOnly {
-		if !lower.CCSourceExts[e] {
-			t.Errorf("compiledSourceExtsLowerOnly lists %q but it's not in lower.CCSourceExts — remove the stale delta entry", e)
+		if !loweringExts[e] {
+			t.Errorf("compiledSourceExtsLowerOnly lists %q but it's not in lowering's set — remove the stale delta entry", e)
 		}
 		if compiledSourceExts[e] {
 			t.Errorf("compiledSourceExtsLowerOnly lists %q but compiledSourceExts also has it — the sets no longer diverge here; drop the delta entry", e)
