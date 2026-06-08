@@ -120,6 +120,20 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 			// pre-trace shape.
 			continue
 		}
+		// Scrub convert-time absolute build/source path prefixes cmake
+		// baked into the rendered bytes. The build dir is an ephemeral
+		// os.MkdirTemp dir (/tmp/convert-element-build-XXXX) with a
+		// per-run random suffix: baking it makes BUILD.bazel
+		// non-deterministic AND points at a path that doesn't exist at
+		// Bazel build time (curl's configurehelp.pm bakes
+		// `$Cpreprocessor = ... -I/tmp/convert-element-build-XXXX/lib`,
+		// breaking the Perl test infra). A no-op for the common output
+		// that bakes no such path — so lift-eligible files keep lifting;
+		// a path-baking file instead fails the lift's verify-pass on the
+		// scrubbed bytes and bakes the scrubbed content, which is the
+		// correct result (the lift would re-introduce the abs path from
+		// the captured cmake var namespace).
+		body = []byte(reanchorConvertTimePaths(string(body), recordedSrcDir, recordedBuildDir))
 
 		name := configureFileGenruleName(rel)
 		gen := buildConfigureFileGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars, cc.StampVars)
@@ -136,6 +150,31 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RelOutput < out[j].RelOutput })
 	return out, nil
+}
+
+// reanchorConvertTimePaths rewrites convert-time absolute build- and
+// source-directory prefixes that cmake baked into configure_file output
+// content into package-relative paths (stripping the prefix and its
+// trailing slash). The build dir is the ephemeral os.MkdirTemp dir
+// convert-element-cmake creates (/tmp/convert-element-build-XXXX); its
+// per-run random suffix makes any baked reference both non-deterministic
+// across convert runs and dangling at Bazel build time. The source dir is
+// the convert-time checkout root, also absent at Bazel build time.
+//
+// The longer prefix is stripped first so an in-source build dir nested
+// under the source dir isn't half-rewritten by the source-dir pass.
+// Empty prefixes are skipped (an unguarded "" would turn `prefix+"/"`
+// into "/" and delete every slash in the content).
+func reanchorConvertTimePaths(content, recordedSrcDir, recordedBuildDir string) string {
+	prefixes := []string{recordedBuildDir, recordedSrcDir}
+	sort.Slice(prefixes, func(i, j int) bool { return len(prefixes[i]) > len(prefixes[j]) })
+	for _, p := range prefixes {
+		if p == "" {
+			continue
+		}
+		content = strings.ReplaceAll(content, filepath.ToSlash(p)+"/", "")
+	}
+	return content
 }
 
 // buildConfigureFileGenrule decides between the lifted shape (a

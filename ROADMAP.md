@@ -1291,10 +1291,13 @@ The six intent-lens producer-gap themes follow as their own entries
 - **`configure_file` / script-codegen genrule coverage — specific instances
   (5× high).** Extends the configure_file-lift work (above): generated headers
   with no genrule — vtk's libproj `proj_config.h`, mbedtls's `test_certs.h` /
-  `test_keys.h` Python codegen, cutlass's `version_extended.h`. Plus a
-  **correctness** case: curl's `configurehelp.pm` bakes a convert-time temp
-  path (`/tmp/convert-element-build-*/`) into the emitted output, breaking the
-  Perl test infra at build time.
+  `test_keys.h` Python codegen, cutlass's `version_extended.h`. (The curl
+  `configurehelp.pm` correctness case — a convert-time temp path
+  `/tmp/convert-element-build-*/` baked into the emitted output — is FIXED:
+  `recoverConfigureFiles` now scrubs the ephemeral build/source-dir prefixes
+  from configure_file content to package-relative paths. A sibling check worth
+  doing: whether `file(GENERATE)` bakes the same prefixes and needs the same
+  scrub.)
 
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the

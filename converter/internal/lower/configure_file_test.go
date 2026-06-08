@@ -511,6 +511,83 @@ func TestRecoverConfigureFilesFromCalls_HappyPath(t *testing.T) {
 	}
 }
 
+func TestReanchorConvertTimePaths(t *testing.T) {
+	cases := []struct {
+		name                      string
+		content, src, build, want string
+	}{
+		{
+			name:    "curl configurehelp $Cpreprocessor",
+			content: `$Cpreprocessor = '"/usr/bin/cc" -E -I/tmp/curl/include -I/tmp/convert-element-build-1910530120/lib -I/tmp/curl/lib';`,
+			src:     "/tmp/curl",
+			build:   "/tmp/convert-element-build-1910530120",
+			want:    `$Cpreprocessor = '"/usr/bin/cc" -E -Iinclude -Ilib -Ilib';`,
+		},
+		{
+			name:    "no convert-time paths is a no-op",
+			content: "#define VER \"1.2.3\"\n",
+			src:     "/tmp/curl",
+			build:   "/tmp/convert-element-build-1910530120",
+			want:    "#define VER \"1.2.3\"\n",
+		},
+		{
+			name:    "in-source build strips the longer (build) prefix first",
+			content: "-I/tmp/proj/build/gen -I/tmp/proj/include",
+			src:     "/tmp/proj",
+			build:   "/tmp/proj/build",
+			want:    "-Igen -Iinclude",
+		},
+		{
+			name:    "empty prefixes do not eat slashes",
+			content: "a/b/c",
+			src:     "",
+			build:   "",
+			want:    "a/b/c",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := reanchorConvertTimePaths(c.content, c.src, c.build); got != c.want {
+				t.Errorf("reanchorConvertTimePaths() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// TestRecoverConfigureFilesFromCalls_ScrubsConvertTimePaths is the
+// end-to-end guard: a configure_file output whose rendered bytes bake the
+// ephemeral convert-time build dir (and source dir) is recovered with
+// those prefixes stripped, so the emitted genrule content is deterministic
+// and free of the dangling /tmp/convert-element-build-XXXX path.
+func TestRecoverConfigureFilesFromCalls_ScrubsConvertTimePaths(t *testing.T) {
+	hostSrc := t.TempDir()
+	hostBuild := t.TempDir()
+	rendered := []byte("preproc = '-I" + hostSrc + "/include -I" + hostBuild + "/lib';\n")
+	if err := os.WriteFile(filepath.Join(hostBuild, "configurehelp.pm"), rendered, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ConfigureFileCall{{
+		Input:  filepath.Join(hostSrc, "configurehelp.pm.in"),
+		Output: filepath.Join(hostBuild, "configurehelp.pm"),
+	}}
+	cc := newCodegenContext()
+	// recorded == host here (online-convert shape), so the baked prefixes
+	// match what the scrub strips.
+	if _, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, false, nil, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules = %d; want 1", len(cc.Genrules))
+	}
+	content := strings.Join(cc.Genrules[0].WriteFileContent, "\n")
+	if strings.Contains(content, hostBuild) || strings.Contains(content, hostSrc) {
+		t.Errorf("emitted content still carries a convert-time abs path:\n%s", content)
+	}
+	if want := "preproc = '-Iinclude -Ilib';"; !strings.Contains(content, want) {
+		t.Errorf("emitted content = %q, want it to contain %q", content, want)
+	}
+}
+
 // TestRecoverConfigureFilesFromCalls_SkipsAndDedupes locks the
 // silent-skip paths:
 //   - empty calls → nil, no error.
