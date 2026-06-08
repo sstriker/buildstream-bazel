@@ -3,6 +3,7 @@ package lower
 import (
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,10 +31,23 @@ var quoteIncludeRe = regexp.MustCompile(`(?m)^[ \t]*#[ \t]*include[ \t]*"([^"]+)
 // compiled standalone, duplicating its symbols), so the caller routes it to a
 // textual_hdrs slot instead. Keys are lowercase; callers lowercase the ext
 // before lookup (so preprocessed-assembly `.S` matches `.s`).
+//
+// Unexported and accessed read-only; CompiledSourceExts() returns a copy for the
+// split-emit drift guard (bazel's TestCompiledSourceExtsMatchesLowering) so the
+// two sets can be reconciled without exposing this one to mutation.
 var ccSourceExts = map[string]bool{
 	".cc": true, ".cpp": true, ".cxx": true, ".c++": true, ".c": true,
 	".cu": true, ".cl": true, ".cppm": true, ".ixx": true,
 	".s": true, ".sx": true, ".asm": true,
+}
+
+// CompiledSourceExts returns a copy of the lowering-side compiled-source
+// extension set (lowercase keys). It exists so the split-emit side can
+// drift-guard its compiledSourceExts against this set without being able to
+// mutate lowering's behavior — the returned map is a clone. See bazel's
+// TestCompiledSourceExtsMatchesLowering.
+func CompiledSourceExts() map[string]bool {
+	return maps.Clone(ccSourceExts)
 }
 
 // findTextualSourceIncludes scans a target's compiled source files for
