@@ -7,6 +7,22 @@ transition cleanly.
 
 ## Now
 
+- **Complexity lens — soft-launched, drive to green then flip to blocking.**
+  `make lint-complexity` (golangci-lint, complexity-only config in
+  `.golangci.yml`: gocyclo / gocognit / cyclop / nestif / funlen / maintidx) is
+  the code-complexity axis `go vet` / `gofmt` / `staticcheck` don't cover. The CI
+  step runs in the `Build + unit tests` job as **non-blocking
+  (`continue-on-error`)** so its output is the gap-to-green worklist, not a wall.
+  At launch it flags **55** issues against the gate thresholds (gocyclo>30:6,
+  gocognit>50:25, nestif>10:21, funlen:3) — the worst offenders are
+  `lower.lowerTarget` (cyclomatic 304 / cognitive 699), `convert-element-cmake`'s
+  `run` (167/291), `lower.ToIR` (130/275), and `emit/bazel` `rewriteTarget` /
+  `planSplit`. **What's left:** break these down (extract per-concern helpers the
+  way the duplicate-logic audit consolidations did — see git history for the
+  source-classification chokepoints + the cross-package label / exports_files
+  chokepoints), then **drop `continue-on-error`** so the lens gates like the
+  others. Tune thresholds in `.golangci.yml` if a class proves low-yield.
+
 - **Generator-parity uplift for the cmake converter.** The
   current cmake converter reads File API codemodel-v2 +
   `--trace-expand` and emits BUILD files; that recovers

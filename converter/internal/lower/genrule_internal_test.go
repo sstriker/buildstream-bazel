@@ -46,6 +46,15 @@ func TestUsesCmakeScriptMode(t *testing.T) {
 			want: true,
 		},
 		{
+			// A wrapper whose flag takes a separate-token argument
+			// (taskset -c <cpulist>) must still resolve to the cmake driver
+			// so the -P refusal fires — else we'd emit an unsupported raw
+			// genrule for a wrapped cmake -P.
+			name: "taskset -c wrapper + cmake -P",
+			cmd:  "taskset -c 0 /usr/bin/cmake -P /src/scripts/gen.cmake",
+			want: true,
+		},
+		{
 			name: "cmake -E (not script mode)",
 			cmd:  "/usr/bin/cmake -E touch /build/marker",
 			want: false,
@@ -476,6 +485,28 @@ func TestExtractDriver(t *testing.T) {
 			name: "bash -lc keeps the shell as driver",
 			cmd:  `env K=v bash -lc 'python3 gen.py'`,
 			want: "bash",
+		},
+		{
+			// taskset -c <cpulist> — the cpulist is a SEPARATE-token flag
+			// argument that must be skipped, not mistaken for argv0.
+			name: "taskset -c cpulist then cmake",
+			cmd:  "taskset -c 0-3 /usr/bin/cmake -E touch x",
+			want: "cmake",
+		},
+		{
+			name: "nice -n adjustment then cmake",
+			cmd:  "nice -n 5 cmake -E touch x",
+			want: "cmake",
+		},
+		{
+			name: "ionice -c class then python3",
+			cmd:  "ionice -c 2 /usr/bin/python3 gen.py",
+			want: "python3",
+		},
+		{
+			name: "env -u unsets key then cmake",
+			cmd:  "env -u SOURCE_DATE_EPOCH /usr/bin/cmake -E touch x",
+			want: "cmake",
 		},
 		{
 			name: "cd-prefix without && remains in driver position",

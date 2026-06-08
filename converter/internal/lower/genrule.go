@@ -752,14 +752,28 @@ func stripWrapperPrefix(tokens []string) []string {
 			(tokens[1] == "-c" || tokens[1] == "-lc") {
 			break
 		}
-		// env may carry KEY=VAL pairs and -i/-u flags before the real
-		// command; skip tokens starting with '-' or containing '=' until a
-		// clean argv0 appears.
+		// A wrapper carries KEY=VAL pairs (env) and flags before the real
+		// command; skip them until a clean argv0 appears. A flag that takes a
+		// SEPARATE-token argument (taskset/ionice `-c <cpulist>`, nice/ionice
+		// `-n <prio>`, env `-u <KEY>`) must skip its argument too — otherwise
+		// the argument ("0"/"5"/"FOO") is mistaken for argv0, which both
+		// mis-tags the driver and (worse) makes usesCmakeScriptMode miss a
+		// wrapped `cmake -P`. No-argument flags (env `-i`) skip just the flag.
+		// argFlags is exact-match, so attached forms (`-c0`, `--cpu-list=0`)
+		// already carry their value in one token and need no peek.
+		argFlags := map[string]bool{"-c": true, "-n": true, "-u": true}
 		tokens = tokens[1:]
 		for len(tokens) > 0 {
 			t := tokens[0]
-			if strings.HasPrefix(t, "-") || strings.Contains(t, "=") {
+			if strings.Contains(t, "=") { // env KEY=VAL pair
 				tokens = tokens[1:]
+				continue
+			}
+			if strings.HasPrefix(t, "-") {
+				tokens = tokens[1:]
+				if argFlags[t] && len(tokens) > 0 {
+					tokens = tokens[1:] // skip the flag's separate-token argument
+				}
 				continue
 			}
 			break
