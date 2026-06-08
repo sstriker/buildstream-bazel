@@ -467,8 +467,11 @@ type instFile struct {
 //     the trailing-slash install(DIRECTORY) "contents into dest" shape
 //     ("to":".", instFile.dirTree false).
 //
-// ok is false when the entry can't be decoded or resolves outside the
-// source tree.
+// The returned path is source-tree-relative for a normal entry, or
+// build-tree-relative (via projectToBuildRoot) for a GENERATED entry recorded
+// by an absolute path under the cmake build dir (e.g. a configure_file output).
+// ok is false when the entry can't be decoded or resolves outside BOTH the
+// source tree and the build dir.
 func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, cmakeBuild, instType string) (rel string, info instFile, ok bool) {
 	// Try plain string first (un-renamed file installer; directory
 	// installer's no-trailing-slash short form).
@@ -556,9 +559,10 @@ func projectToSourceRoot(p, dirSrc, cmakeSrc string) string {
 	if err != nil {
 		return ""
 	}
-	// filepath.Rel returns "../..." when abs is outside cmakeSrc;
-	// reject those — Bazel labels can't traverse up the source root.
-	if strings.HasPrefix(rel, "..") {
+	// filepath.Rel returns a "../" sequence when abs is outside cmakeSrc;
+	// reject those — Bazel labels can't traverse up the source root. Match the
+	// ".." path ELEMENT, not a mere "..foo" prefix.
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return ""
 	}
 	return filepath.ToSlash(rel)
@@ -577,7 +581,9 @@ func projectToBuildRoot(p, cmakeBuild string) string {
 		return ""
 	}
 	rel, err := filepath.Rel(cmakeBuild, filepath.Clean(p))
-	if err != nil || strings.HasPrefix(rel, "..") {
+	// Reject a path that escapes the build root — the ".." path ELEMENT, not a
+	// mere "..foo" prefix.
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return ""
 	}
 	return filepath.ToSlash(rel)

@@ -75,6 +75,7 @@ func TestProjectToBuildRoot(t *testing.T) {
 	}{
 		{"generated header under build", build + "/zconf.h", build, "zconf.h"},
 		{"generated nested under build", build + "/include/cfg.h", build, "include/cfg.h"},
+		{"dir element merely starting with .. is kept", build + "/..weird/cfg.h", build, "..weird/cfg.h"},
 		{"relative path (source-relative) → empty", "include/zlib.h", build, ""},
 		{"absolute outside build → empty", "/usr/include/x.h", build, ""},
 		{"escapes build root → empty", build + "/../evil.h", build, ""},
