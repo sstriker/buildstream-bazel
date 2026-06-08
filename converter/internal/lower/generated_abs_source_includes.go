@@ -46,61 +46,7 @@ func stageGeneratedSourceRootIncludes(pkg *ir.Package, hostSrc, bazelPackagePath
 	if pkg == nil || !hostSrcOnDisk || hostSrc == "" {
 		return
 	}
-	// included[generated-output-path] = the source-root-relative sources that
-	// output's wrapper textually includes (sorted, deduped) — the textual_hdrs
-	// to stage on whatever target compiles that wrapper.
-	included := map[string][]string{}
-	var rewritten, wrappers int
-	for i := range pkg.Targets {
-		t := &pkg.Targets[i]
-		if t.Kind != ir.KindWriteFile || len(t.WriteFileContent) == 0 {
-			continue
-		}
-		var incs []string
-		for li, line := range t.WriteFileContent {
-			m := quoteIncludeRe.FindStringSubmatch(line)
-			if m == nil {
-				continue
-			}
-			inc := m[1]
-			if !filepath.IsAbs(inc) {
-				// A relative include in generated content already resolves
-				// against the includer / its -I path — not our concern.
-				continue
-			}
-			rel, inside := relativeIfInside(hostSrc, filepath.Clean(inc))
-			if !inside {
-				// Absolute but outside the source tree (e.g. /usr/include) —
-				// leave it for the toolchain.
-				continue
-			}
-			rel = filepath.ToSlash(rel)
-			if !ccSourceExts[strings.ToLower(filepath.Ext(rel))] {
-				// Only the "textually include a compiled source" idiom; an
-				// absolute header include is a different (rarer) shape.
-				continue
-			}
-			if st, err := os.Stat(filepath.Join(hostSrc, filepath.FromSlash(rel))); err != nil || st.IsDir() {
-				// Not a real in-tree file — can't stage it; leave the line so
-				// the failure is honest rather than silently mis-rewritten.
-				continue
-			}
-			ws := rel
-			if !pkgPathIsRoot(bazelPackagePath) {
-				ws = bazelPackagePath + "/" + rel
-			}
-			// Replace the exact original quoted path (robust to `..` and to
-			// whitespace variants the regex tolerated).
-			t.WriteFileContent[li] = strings.Replace(line, "\""+inc+"\"", "\""+ws+"\"", 1)
-			rewritten++
-			incs = appendUnique(incs, rel)
-		}
-		if len(incs) > 0 {
-			sort.Strings(incs)
-			included[filepath.ToSlash(filepath.Clean(t.WriteFileOut))] = incs
-			wrappers++
-		}
-	}
+	included, rewritten, wrappers := rewriteGeneratedWrapperIncludes(pkg, hostSrc, bazelPackagePath)
 	if len(included) == 0 {
 		return
 	}
@@ -165,4 +111,70 @@ func stageGeneratedSourceRootIncludes(pkg *ir.Package, hostSrc, bazelPackagePath
 			fmt.Fprintf(warn, "  %s [synth carrier] (textual_hdrs: %s)\n", r.target, strings.Join(r.srcs, ", "))
 		}
 	}
+}
+
+// rewriteGeneratedWrapperIncludes scans WriteFile targets for the
+// "generated wrapper textually #includes a source-root-ABSOLUTE compiled
+// source" idiom (the GenerateNamedObjects-style codegen shape), rewrites each
+// such include in place to its workspace-relative path, and returns the
+// per-wrapper-output map of source-root-relative sources to stage as
+// textual_hdrs on whatever compiles the wrapper (plus the rewritten-line and
+// wrapper counts for the warning). hostSrc / hostSrcOnDisk are pre-validated by
+// the caller.
+func rewriteGeneratedWrapperIncludes(pkg *ir.Package, hostSrc, bazelPackagePath string) (map[string][]string, int, int) {
+	// included[generated-output-path] = the source-root-relative sources that
+	// output's wrapper textually includes (sorted, deduped).
+	included := map[string][]string{}
+	var rewritten, wrappers int
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if t.Kind != ir.KindWriteFile || len(t.WriteFileContent) == 0 {
+			continue
+		}
+		var incs []string
+		for li, line := range t.WriteFileContent {
+			m := quoteIncludeRe.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			inc := m[1]
+			if !filepath.IsAbs(inc) {
+				// A relative include in generated content already resolves
+				// against the includer / its -I path — not our concern.
+				continue
+			}
+			rel, inside := relativeIfInside(hostSrc, filepath.Clean(inc))
+			if !inside {
+				// Absolute but outside the source tree (e.g. /usr/include) —
+				// leave it for the toolchain.
+				continue
+			}
+			rel = filepath.ToSlash(rel)
+			if !ccSourceExts[strings.ToLower(filepath.Ext(rel))] {
+				// Only the "textually include a compiled source" idiom; an
+				// absolute header include is a different (rarer) shape.
+				continue
+			}
+			if st, err := os.Stat(filepath.Join(hostSrc, filepath.FromSlash(rel))); err != nil || st.IsDir() {
+				// Not a real in-tree file — can't stage it; leave the line so
+				// the failure is honest rather than silently mis-rewritten.
+				continue
+			}
+			ws := rel
+			if !pkgPathIsRoot(bazelPackagePath) {
+				ws = bazelPackagePath + "/" + rel
+			}
+			// Replace the exact original quoted path (robust to `..` and to
+			// whitespace variants the regex tolerated).
+			t.WriteFileContent[li] = strings.Replace(line, "\""+inc+"\"", "\""+ws+"\"", 1)
+			rewritten++
+			incs = appendUnique(incs, rel)
+		}
+		if len(incs) > 0 {
+			sort.Strings(incs)
+			included[filepath.ToSlash(filepath.Clean(t.WriteFileOut))] = incs
+			wrappers++
+		}
+	}
+	return included, rewritten, wrappers
 }
