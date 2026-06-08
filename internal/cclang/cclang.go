@@ -58,7 +58,9 @@ var headerExts = map[string]bool{
 
 // IsHeaderExt reports whether ext — a filename extension including the leading
 // dot, already lowercased by the caller (e.g. ".hpp") — names a C/C++ header.
-// For callers that already have the extension in hand; IsHeader takes a path.
+// "" (the filepath.Ext of an extension-less path) is a valid input and is not a
+// header. For callers that already have the extension in hand; IsHeader takes a
+// path.
 func IsHeaderExt(ext string) bool {
 	return headerExts[ext]
 }
