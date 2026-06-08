@@ -59,12 +59,32 @@ func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string
 		lineCache[path] = v
 		return v
 	}
-	// Codemodel targets already carry the correct declaration site in their
-	// Provenance (populated from the codemodel backtrace). Recover the leading
-	// comment from that site, reading the host file (Provenance.File is source-
-	// root-relative; join it with hostSrc, or use it directly when absolute).
-	// Sites shared by >1 target (a helper invoked N times) are skipped to avoid
-	// misattributing one body comment to many targets.
+	recoverTargetComments(pkg, hostSrc, fileLines)
+
+	// File header (scope A): the top-level CMakeLists license/doc block,
+	// prepended to HeaderComments so it sits at the very top of the BUILD.
+	// HeaderComments are plain text (the emitter prefixes "# "), so strip the
+	// recovered raw tokens' leading "#".
+	if hostSrc != "" {
+		hdr := cmakeargv.FileHeaderCommentLines(fileLines(filepath.Join(hostSrc, "CMakeLists.txt")))
+		if len(hdr) > 0 {
+			stripped := make([]string, 0, len(hdr))
+			for _, ln := range hdr {
+				stripped = append(stripped, stripCommentPrefix(ln))
+			}
+			pkg.HeaderComments = append(stripped, pkg.HeaderComments...)
+		}
+	}
+
+	recoverCodegenGenruleComments(pkg, cmakeSrc, cmakeBuild, fileLines, execProcs, customCmds, customTgts)
+}
+
+// recoverTargetComments recovers each codemodel target's leading/trailing
+// source comment from its Provenance declaration site (populated from the
+// codemodel backtrace). Sites shared by >1 target (a helper invoked N times)
+// are skipped to avoid misattributing one body comment to many targets.
+// fileLines reads + caches source files.
+func recoverTargetComments(pkg *ir.Package, hostSrc string, fileLines func(string) []string) {
 	type site struct {
 		file string
 		line int
@@ -101,56 +121,44 @@ func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string
 			t.TrailingComment = tc
 		}
 	}
+}
 
-	// File header (scope A): the top-level CMakeLists license/doc block,
-	// prepended to HeaderComments so it sits at the very top of the BUILD.
-	// HeaderComments are plain text (the emitter prefixes "# "), so strip the
-	// recovered raw tokens' leading "#".
-	if hostSrc != "" {
-		hdr := cmakeargv.FileHeaderCommentLines(fileLines(filepath.Join(hostSrc, "CMakeLists.txt")))
-		if len(hdr) > 0 {
-			stripped := make([]string, 0, len(hdr))
-			for _, ln := range hdr {
-				stripped = append(stripped, stripCommentPrefix(ln))
-			}
-			pkg.HeaderComments = append(stripped, pkg.HeaderComments...)
-		}
-	}
-
-	// Codegen genrules (the "comments before a codegen" case): synthesized
-	// genrules aren't codemodel targets, so they carry no backtrace. Match
-	// each to its originating trace call (execute_process / add_custom_command
-	// / add_custom_target — all carry File/Line + outputs) by output basename,
-	// then recover the leading comment there and stamp Provenance. Best-effort:
-	// an unmatched or ambiguous-basename genrule simply gets no comment.
+// recoverCodegenGenruleComments recovers leading/trailing comments for
+// synthesized codegen genrules (which carry no codemodel backtrace) by matching
+// each genrule output basename to its originating trace call (execute_process /
+// add_custom_command / add_custom_target — all carry File/Line + outputs), then
+// stamping Provenance. Best-effort: an unmatched or ambiguous-basename genrule
+// simply gets no comment.
+func recoverCodegenGenruleComments(pkg *ir.Package, cmakeSrc, cmakeBuild string, fileLines func(string) []string, execProcs []shadow.ExecuteProcessCall, customCmds []shadow.AddCustomCommandCall, customTgts []shadow.AddCustomTargetCall) {
 	siteByBase := buildCodegenSiteIndex(execProcs, customCmds, customTgts)
-	if len(siteByBase) > 0 {
-		for i := range pkg.Targets {
-			t := &pkg.Targets[i]
-			if t.Kind != ir.KindGenrule || len(t.LeadingComment) > 0 {
+	if len(siteByBase) == 0 {
+		return
+	}
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if t.Kind != ir.KindGenrule || len(t.LeadingComment) > 0 {
+			continue
+		}
+		for _, out := range t.GenruleOuts {
+			s, ok := siteByBase[filepath.Base(out)]
+			if !ok || s.file == "" || isCMakeInternalPath(filepath.ToSlash(s.file)) {
 				continue
 			}
-			for _, out := range t.GenruleOuts {
-				s, ok := siteByBase[filepath.Base(out)]
-				if !ok || s.file == "" || isCMakeInternalPath(filepath.ToSlash(s.file)) {
-					continue
-				}
-				gls := fileLines(s.file)
-				if lc := cmakeargv.LeadingCommentLines(gls, s.line); len(lc) > 0 {
-					t.LeadingComment = lc
-				}
-				if tc := cmakeargv.TrailingCommentLines(gls, s.line); tc != "" {
-					t.TrailingComment = tc
-				}
-				if t.Provenance.IsZero() {
-					t.Provenance = ir.Provenance{
-						File:    reanchorProvenanceFile(s.file, cmakeSrc, cmakeBuild),
-						Line:    s.line,
-						Command: s.command,
-					}
-				}
-				break
+			gls := fileLines(s.file)
+			if lc := cmakeargv.LeadingCommentLines(gls, s.line); len(lc) > 0 {
+				t.LeadingComment = lc
 			}
+			if tc := cmakeargv.TrailingCommentLines(gls, s.line); tc != "" {
+				t.TrailingComment = tc
+			}
+			if t.Provenance.IsZero() {
+				t.Provenance = ir.Provenance{
+					File:    reanchorProvenanceFile(s.file, cmakeSrc, cmakeBuild),
+					Line:    s.line,
+					Command: s.command,
+				}
+			}
+			break
 		}
 	}
 }

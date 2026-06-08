@@ -14,8 +14,8 @@ transition cleanly.
   step runs in the `Build + unit tests` job as **non-blocking
   (`continue-on-error`)** so its output is the gap-to-green worklist, not a wall.
   At launch it flagged **55** issues against the gate thresholds (gocyclo>30,
-  gocognit>50, nestif>10, funlen); the burndown is underway (**50** now — passes
-  1-4 cleared `lowerInterfaceLibraries` (60→15), `applyProbeGenexProperties`
+  gocognit>50, nestif>10, funlen); the burndown is underway (**49** now — passes
+  1-5 cleared `recoverSourceComments` (55→11), `lowerInterfaceLibraries` (60→15), `applyProbeGenexProperties`
   (84→6), `lowerDirectoryInstallers` (72→24), and `stageGeneratedSourceRootIncludes`
   (53→26), each via behavior-preserving extraction of cohesive sub-passes into
   helpers — the established pattern). The
