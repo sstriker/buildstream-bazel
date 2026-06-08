@@ -18,31 +18,6 @@ transition cleanly.
   fidelity row. Likely main-drift since zstd last went green — guard with the
   zstd survey once fixed.
 
-- **Refactor: source-classification chokepoints in `lower` (largely done).** The
-  "is this path a cc compile/link/header input, and which attribute does it go
-  in (srcs/hdrs/data/drop)?" decision was duplicated across ~6 sites in
-  `converter/internal/lower/lower.go`. Two chokepoints now own it:
-  `classifyAndAttach(irt, path, seen, dropNonCc)` (header→hdrs, non-cc→data or
-  drop, cc→srcs, with dedup) serves the two IDENTICAL consumer-attribution
-  blocks — the file(GENERATE) and execute_process sister blocks, where the VTK
-  wrap-hierarchy `.args/.data` fix had to be repeated; and
-  `attachGeneratedSource(irt, path, inCG, dropNonCc, embedHdr)` (compile-group
-  source→srcs + its cc_embed sibling header, header→hdrs, else→srcs, optional
-  non-cc drop) serves the three per-source generated branches in the main
-  lowerTarget walk — the IsGenerated recovered-genrule branch, the on-disk
-  generated-source branch, and the OutToGenrule branch — which previously
-  open-coded the same compile-group/CcEmbed routing three times.
-  Guarded behavior-preserving by the full goldens + new `classify_and_attach_test.go`
-  + the render gates for every handler touched (`meta-file-generate`,
-  `meta-cmake-execute-process-rescue`, `meta-cc-embed`, `meta-cc-embed-recognize`,
-  `meta-cmake-cc-hash`).
-  REMAINING: a thin per-source header-only attach (the `!inCompileGroup`
-  target_sources header branch) and the configure-time-build-dir drop are
-  single-disposition and not worth folding. Next, audit the wider converter for
-  the same pattern OUTSIDE source routing — cross-package relabeling, visibility
-  publicizing, and exports_files recur at multiple sites — and capture any
-  further consolidations. Keep the goldens + abseil/glm/VTK surveys as the guard.
-
 - **Generator-parity uplift for the cmake converter.** The
   current cmake converter reads File API codemodel-v2 +
   `--trace-expand` and emits BUILD files; that recovers
@@ -1549,6 +1524,21 @@ The six intent-lens producer-gap themes follow as their own entries
   record of why.
 ## Later (research / open questions)
 
+
+- **Genrule command-rewrite token-replace consolidation (deferred from the
+  2026-06-08 refactoring audit).** `replaceBareToken` (genrule.go) and
+  `replaceBareAnchorAtBoundary` (lower.go) share the same whole-word
+  token-boundary logic (space/`=`/`:` guards), and the genrule rewrite chain
+  (`rewriteGenruleCmd` → `rewriteToolFromTarget` → `anchorGenruleOutputsToRuledir`
+  → `reanchorBuildDirCopyGenrule`) does several similar path/flag substitutions.
+  A shared `tokenReplace(str, matchers)` could unify them — but this is the
+  correctness-sensitive path the LLVM `$(RULEDIR)`/exec-root anchoring fixes live
+  in, so merge it deliberately with the genrule render gates as the guard, not as
+  a casual dedup. (The audit's other broad candidate — a unified string-set/dedup
+  family — was examined and declined: `stringSliceContains` is already a single
+  shared helper, and the dedup variants are semantically distinct
+  order-preserving / sorted-adjacent / skip-empty / append-unique forms, not true
+  duplicates.)
 
 - **Source-side AC narrowing for autotools.** Bazel's hermetic-action
   model says inputs in → outputs out; you can't have a byte be
