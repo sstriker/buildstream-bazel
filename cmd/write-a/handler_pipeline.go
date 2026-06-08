@@ -315,53 +315,28 @@ func (h pipelineHandler) renderInstallGenruleBody(elem *element, elemPkg string,
 			return pipelinePhases{}, fmt.Errorf("element %q (kind:%s) resolve variables%s: %w",
 				elem.Name, h.kindName, tupleSuffix(tuple), err)
 		}
-		// Apply config: (?): per-arch overrides for the matching
-		// branches. Each branch's Overrides is a partial pipelineCfg
-		// shape (e.g. just configure-commands); decode and replace
-		// fields where the override pointer is non-nil.
-		tupleConfigure := rawConfigure
-		tupleBuild := rawBuild
-		tupleInstall := rawInstall
-		tupleStrip := rawStrip
-		for _, b := range elem.Bst.ConfigConditionals {
-			if !branchMatchesTuple(b, tuple) {
-				continue
-			}
-			var override pipelineCfg
-			if err := b.Overrides.Decode(&override); err != nil {
-				return pipelinePhases{}, fmt.Errorf("element %q (kind:%s) decode config:(?): branch%s: %w",
-					elem.Name, h.kindName, tupleSuffix(tuple), err)
-			}
-			if override.ConfigureCommands != nil {
-				tupleConfigure = *override.ConfigureCommands
-			}
-			if override.BuildCommands != nil {
-				tupleBuild = *override.BuildCommands
-			}
-			if override.InstallCommands != nil {
-				tupleInstall = *override.InstallCommands
-			}
-			if override.StripCommands != nil {
-				tupleStrip = *override.StripCommands
-			}
-			if override.Commands != nil {
-				tupleInstall = *override.Commands
-			}
+		// Apply config: (?): per-arch overrides for the matching branches,
+		// then variable-substitute each phase's commands.
+		tc, err := applyConfigConditionalOverrides(
+			phaseCommands{rawConfigure, rawBuild, rawInstall, rawStrip},
+			elem.Bst.ConfigConditionals, tuple, elem.Name, h.kindName)
+		if err != nil {
+			return pipelinePhases{}, err
 		}
 		var p pipelinePhases
-		p.Configure, err = substituteCmds(tupleConfigure, vars, elem.Name, h.kindName, "configure-commands")
+		p.Configure, err = substituteCmds(tc.Configure, vars, elem.Name, h.kindName, "configure-commands")
 		if err != nil {
 			return pipelinePhases{}, err
 		}
-		p.Build, err = substituteCmds(tupleBuild, vars, elem.Name, h.kindName, "build-commands")
+		p.Build, err = substituteCmds(tc.Build, vars, elem.Name, h.kindName, "build-commands")
 		if err != nil {
 			return pipelinePhases{}, err
 		}
-		p.Install, err = substituteCmds(tupleInstall, vars, elem.Name, h.kindName, "install-commands")
+		p.Install, err = substituteCmds(tc.Install, vars, elem.Name, h.kindName, "install-commands")
 		if err != nil {
 			return pipelinePhases{}, err
 		}
-		p.Strip, err = substituteCmds(tupleStrip, vars, elem.Name, h.kindName, "strip-commands")
+		p.Strip, err = substituteCmds(tc.Strip, vars, elem.Name, h.kindName, "strip-commands")
 		if err != nil {
 			return pipelinePhases{}, err
 		}
@@ -416,41 +391,9 @@ func (h pipelineHandler) renderInstallGenruleBody(elem *element, elemPkg string,
 	// the whole element render. Preserves render robustness on
 	// real-world graphs where dispatch values overshoot what
 	// the (?): branches actually cover.
-	type groupKey [4]string
-	groupIdx := map[groupKey]int{}
-	var groups []dispatchGroup
-	var lastSkipErr error
-	for _, tuple := range cartesianTuples(dispatch) {
-		phases, err := resolveAt(tuple)
-		if err != nil {
-			if strings.Contains(err.Error(), "referenced but not defined") {
-				// Tuple silently dropped from the rendered
-				// select(); bazel surfaces the missing platform
-				// at build time as "no matching select() arm,"
-				// which is louder than write-a aborting render.
-				// Future --verbose flag can echo the skip to
-				// stderr; for now the BUILD content is the
-				// canonical record of which dispatch arms exist.
-				lastSkipErr = err
-				continue
-			}
-			return "", err
-		}
-		key := groupKey{
-			strings.Join(phases.Configure, "\x00"),
-			strings.Join(phases.Build, "\x00"),
-			strings.Join(phases.Install, "\x00"),
-			strings.Join(phases.Strip, "\x00") + "\x01" + envKey(phases.Env),
-		}
-		if idx, ok := groupIdx[key]; ok {
-			groups[idx].Tuples = append(groups[idx].Tuples, tuple)
-		} else {
-			groupIdx[key] = len(groups)
-			groups = append(groups, dispatchGroup{
-				Tuples: []map[string]string{tuple},
-				Phases: phases,
-			})
-		}
+	groups, lastSkipErr, err := groupDispatchTuples(cartesianTuples(dispatch), resolveAt)
+	if err != nil {
+		return "", err
 	}
 	// All tuples skipped → nothing to emit. Surface as error so
 	// the operator knows nothing's buildable rather than silently
@@ -470,6 +413,89 @@ func (h pipelineHandler) renderInstallGenruleBody(elem *element, elemPkg string,
 		return renderPipelineBuild(elem, nil, groups, fuseKey, h.extension), nil
 	}
 	return renderPipelineBuild(elem, dispatch, groups, fuseKey, h.extension), nil
+}
+
+// phaseCommands holds the four raw pipeline command lists before variable
+// substitution — the carrier applyConfigConditionalOverrides folds config:(?):
+// branch overrides into.
+type phaseCommands struct {
+	Configure, Build, Install, Strip []string
+}
+
+// applyConfigConditionalOverrides returns base with any config:(?): branch
+// matching `tuple` applied on top. Each matching branch's Overrides is a partial
+// pipelineCfg (e.g. just configure-commands); a non-nil field replaces the
+// corresponding base list. `commands:` (the flat kind:script shape) replaces the
+// install list. Branches are applied in declaration order, so a later branch's
+// non-nil field wins.
+func applyConfigConditionalOverrides(base phaseCommands, branches []conditionalBranch, tuple map[string]string, elemName, kindName string) (phaseCommands, error) {
+	out := base
+	for _, b := range branches {
+		if !branchMatchesTuple(b, tuple) {
+			continue
+		}
+		var override pipelineCfg
+		if err := b.Overrides.Decode(&override); err != nil {
+			return out, fmt.Errorf("element %q (kind:%s) decode config:(?): branch%s: %w",
+				elemName, kindName, tupleSuffix(tuple), err)
+		}
+		if override.ConfigureCommands != nil {
+			out.Configure = *override.ConfigureCommands
+		}
+		if override.BuildCommands != nil {
+			out.Build = *override.BuildCommands
+		}
+		if override.InstallCommands != nil {
+			out.Install = *override.InstallCommands
+		}
+		if override.StripCommands != nil {
+			out.Strip = *override.StripCommands
+		}
+		if override.Commands != nil {
+			out.Install = *override.Commands
+		}
+	}
+	return out, nil
+}
+
+// groupDispatchTuples resolves each dispatch tuple's pipeline phases (via the
+// resolveAt callback) and groups tuples by identical resolution, so the emitted
+// select() doesn't duplicate identical branches. Soft-skip semantics: a tuple
+// whose resolution fails with a "variable referenced but not defined" error
+// (the FDSDK pattern where flags.yml has (?): branches for a subset of an
+// option's enumerated values) is dropped from the result and its error returned
+// as lastSkipErr — Bazel surfaces the missing platform at build time as "no
+// matching select() arm" rather than write-a aborting the whole render. Any
+// other resolution error is returned as a hard err.
+func groupDispatchTuples(tuples []map[string]string, resolveAt func(map[string]string) (pipelinePhases, error)) (groups []dispatchGroup, lastSkipErr error, err error) {
+	type groupKey [4]string
+	groupIdx := map[groupKey]int{}
+	for _, tuple := range tuples {
+		phases, rerr := resolveAt(tuple)
+		if rerr != nil {
+			if strings.Contains(rerr.Error(), "referenced but not defined") {
+				lastSkipErr = rerr
+				continue
+			}
+			return nil, lastSkipErr, rerr
+		}
+		key := groupKey{
+			strings.Join(phases.Configure, "\x00"),
+			strings.Join(phases.Build, "\x00"),
+			strings.Join(phases.Install, "\x00"),
+			strings.Join(phases.Strip, "\x00") + "\x01" + envKey(phases.Env),
+		}
+		if idx, ok := groupIdx[key]; ok {
+			groups[idx].Tuples = append(groups[idx].Tuples, tuple)
+		} else {
+			groupIdx[key] = len(groups)
+			groups = append(groups, dispatchGroup{
+				Tuples: []map[string]string{tuple},
+				Phases: phases,
+			})
+		}
+	}
+	return groups, lastSkipErr, nil
 }
 
 // tupleSuffix formats the dispatch tuple for error messages. Empty
