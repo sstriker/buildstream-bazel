@@ -446,26 +446,25 @@ trees, optional-feature deps, codegen instances). Each member's
   BUILD.bazel even though the libs themselves are present + consumable from root.
   (Placement-by-`SubPackages`-entry is regression-guarded by
   `TestEmit_Split_InterfaceLib_PlacedBySubPackageEntry`.)
-  **Fix is harder than first scoped (2026-06 investigation).** The obvious
-  approach — set `pkg.SubPackages[name]` from the trace `add_library(<name>
-  INTERFACE)` call's `AddLibraryCall.File` — does NOT work for abseil: its
-  interface libs are declared via the `absl_cc_library` **function** in
-  `CMake/AbseilHelpers.cmake` (`add_library(${_NAME} INTERFACE)` at line 321),
-  so the trace's `file` for that call is the helper module, not the declaring
-  `absl/<m>/CMakeLists.txt`. `dir(AddLibraryCall.File)` would put every interface
-  lib in `CMake/`, not its real subpackage. `AddLibraryCall` carries only
-  `{File, Line, Name, Type, Aliases, RawArgs}` — no call-stack/frame — so
-  recovering the true declaring scope needs NEW trace infrastructure (capture the
-  `--trace` frame stack and resolve the parent frame = the `absl/<m>/CMakeLists.txt`
-  call site; the `subPackageDir`/`dirScopeRel` helpers can then relativize it).
-  **Plus the original caveat:** abseil's interface libs carry the repo-ROOT
-  include root (so `#include "absl/<m>/<h>.h"` resolves), ABOVE their declaring
-  subpackage — moving them into subpackages exercises split's
-  include-root/include_prefix machinery, so a full abseil `--split-packages`
-  convert + build AND the other green members must be re-validated (the fmt /
-  cp-dir regression lesson). Net: this is a real-but-LAYOUT-only improvement (the
-  libs are present + consumable from root today) gated on frame-stack recovery +
-  heavy build validation — deprioritized accordingly.
+  **SHIPPED (2026-06).** Recovered the declaring scope via the cmake trace
+  **frame stack**: an earlier idea — set `pkg.SubPackages[name]` from the trace
+  `add_library(<name> INTERFACE)` call's `AddLibraryCall.File` — does NOT work
+  for abseil, because its interface libs are declared via the `absl_cc_library`
+  **function** in `CMake/AbseilHelpers.cmake` (`add_library(${_NAME} INTERFACE)`
+  at line 321), so the trace's `file` for that call is the helper module, not the
+  declaring `absl/<m>/CMakeLists.txt`. So `TraceEvent` now decodes cmake's
+  `frame` depth and `AddLibraryCall.DeclFile` resolves to the nearest enclosing
+  `CMakeLists.txt` frame (`declaringScopeFile`); `lower` sets `pkg.SubPackages`
+  from it via `subPackageDirFromFile`. The repo-ROOT include-root caveat resolved
+  itself — split wires `element_root_headers` as a dep so `#include
+  "absl/<m>/<h>.h"` still resolves from the subpackage. Validated end-to-end:
+  `SURVEY_BAZEL_BUILD=abseil SURVEY_SPLIT_PACKAGES=1 run-survey.sh` →
+  `abseil 0 0 0 … ok ok` (0-rej, analyze + `bazel build //...` both green under
+  `--split-packages` + multi-config); 21 sub-package BUILD.bazel files, 18
+  interface libs placed (`atomic_hook` → `absl/base`). `pkg.SubPackages` is
+  consumed only by `EmitSplit`, so non-split output is byte-identical. Guards:
+  `TestExtractAddLibrary_DeclFileFromFrameStack` +
+  `TestToIR_TraceInterfaceLib_PlacedInDeclaringSubPackage`.
 
 - **Lower dropped test trees to `cc_test` — investigated; not a lowering bug,
   folded into "Test-target coverage."** The intent lens flagged no `cc_test` for
