@@ -58,6 +58,15 @@ jobs:
       - name: staticcheck
         run: make staticcheck 2>&1 | tee -a /tmp/cijob.log
 
+      # Code-complexity lens (cyclomatic / cognitive / nesting / length /
+      # maintainability) — the axis vet/gofmt/staticcheck don't cover.
+      # SOFT-LAUNCH: non-blocking (continue-on-error) until the tree is green
+      # against .golangci.yml's thresholds; the step's output is the gap-to-green
+      # worklist. Flip to blocking (drop continue-on-error) once it's clean.
+      - name: complexity lens (soft-launch, non-blocking)
+        continue-on-error: true
+        run: make lint-complexity 2>&1 | tee -a /tmp/cijob.log
+
       - name: Unit tests
         run: make test 2>&1 | tee -a /tmp/cijob.log
 

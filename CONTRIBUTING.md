@@ -30,6 +30,13 @@ go build ./...
 go vet ./...
 gofmt -l .                 # must print nothing
 
+# 1b. Complexity lens (advisory for now). Cyclomatic / cognitive / nesting /
+#     length / maintainability — the axis the above don't cover. SOFT-LAUNCH:
+#     the CI step is non-blocking until the tree is green against
+#     .golangci.yml's thresholds, then it flips to blocking. Run it when you
+#     touch a hot-spot file so you don't add to the backlog.
+make lint-complexity       # advisory (non-blocking in CI today)
+
 # 2. Unit tests pass.
 go test ./...
 
