@@ -1214,8 +1214,16 @@ The six intent-lens producer-gap themes follow as their own entries
     build-dir install entry to its build-relative output name so it packages
     (the converter already emits that output as a same-package rule). zlib's
     header `pkg_files` now carries `zconf.h` + `zlib.h`; build lens stays green.
-  - **C. pkg-config `.pc`** — the `.pc` is generated but never placed in a
-    `pkg_files` (brotli, fmt, grpc, protobuf, sdl, zlib).
+  - **C. pkg-config `.pc` — DONE.** A `.pc` is an `install(FILES <build>/x.pc
+    DESTINATION lib/pkgconfig)` of a configure_file-generated file, so the B
+    generated-file fallback packages it (zlib's `zlib.pc`, fmt's `fmt.pc`). That
+    fallback is now GATED to outputs the convert actually produces
+    (`producedOutputs`): an unproduced build-dir install entry — fmt's
+    `configure_package_config_file` `fmt-config.cmake`, which the converter
+    doesn't lift — is dropped rather than packaged as a missing pkg_files input
+    (it had regressed fmt's build lens). Remaining: brotli's `.pc` isn't
+    GENERATED at all (its `.pc.in` configure_file isn't lifted) — a codegen-lift
+    gap tracked with theme 6, not a packaging gap.
   - **D. `<Pkg>Config.cmake`/`<Pkg>Targets.cmake` generation** — the
     `find_package(CONFIG)` entry points aren't generated at all (eigen, catch2,
     zstd, cutlass, protobuf, nlohmann-json). A genuinely new producer — scope

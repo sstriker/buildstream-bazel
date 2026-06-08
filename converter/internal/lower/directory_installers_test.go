@@ -38,7 +38,7 @@ func TestLowerDirectoryInstallers_FileInstaller(t *testing.T) {
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r, false)
+	got := lowerDirectoryInstallers(r, false, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 filegroup; got %d (%+v)", len(got), got)
 	}
@@ -90,7 +90,7 @@ func TestLowerDirectoryInstallers_GroupsByDestination(t *testing.T) {
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r, false)
+	got := lowerDirectoryInstallers(r, false, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 filegroup (merged); got %d", len(got))
 	}
@@ -123,7 +123,7 @@ func TestLowerDirectoryInstallers_SanitizeNameCollisionDisambiguated(t *testing.
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r, false)
+	got := lowerDirectoryInstallers(r, false, nil)
 	if len(got) != 2 {
 		t.Fatalf("want 2 distinct targets; got %d (%v)", len(got), got)
 	}
@@ -166,7 +166,7 @@ func TestLowerDirectoryInstallers_SkipsNonFileNonDirectoryTypes(t *testing.T) {
 			},
 		},
 	}
-	if got := lowerDirectoryInstallers(r, false); got != nil {
+	if got := lowerDirectoryInstallers(r, false, nil); got != nil {
 		t.Errorf("expected nil for target/export only; got %v", got)
 	}
 }
@@ -191,7 +191,7 @@ func TestLowerDirectoryInstallers_DirectoryInstaller_ObjectPath(t *testing.T) {
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r, false)
+	got := lowerDirectoryInstallers(r, false, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 filegroup; got %d", len(got))
 	}
@@ -240,7 +240,7 @@ func TestLowerDirectoryInstallers_DirectoryInstaller_StringShortForm(t *testing.
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r, false)
+	got := lowerDirectoryInstallers(r, false, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 filegroup; got %d", len(got))
 	}
@@ -276,7 +276,7 @@ func TestLowerDirectoryInstallers_DirectoryTree_RootDir(t *testing.T) {
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r, false)
+	got := lowerDirectoryInstallers(r, false, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 target; got %d", len(got))
 	}
@@ -310,7 +310,7 @@ func TestLowerDirectoryInstallers_FileRename(t *testing.T) {
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r, false)
+	got := lowerDirectoryInstallers(r, false, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 target; got %d", len(got))
 	}
@@ -350,7 +350,7 @@ func TestLowerDirectoryInstallers_SkipsExcludeAndOptional(t *testing.T) {
 			},
 		},
 	}
-	if got := lowerDirectoryInstallers(r, false); got != nil {
+	if got := lowerDirectoryInstallers(r, false, nil); got != nil {
 		t.Errorf("expected nil for excluded/optional installers; got %v", got)
 	}
 }
@@ -373,7 +373,7 @@ func TestLowerDirectoryInstallers_SkipsOutOfTreePaths(t *testing.T) {
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r, false)
+	got := lowerDirectoryInstallers(r, false, nil)
 	if len(got) != 1 {
 		t.Fatalf("want 1 filegroup; got %d", len(got))
 	}
@@ -402,7 +402,7 @@ func TestLowerDirectoryInstallers_DeterministicOrder(t *testing.T) {
 			},
 		},
 	}
-	got := lowerDirectoryInstallers(r, false)
+	got := lowerDirectoryInstallers(r, false, nil)
 	wantOrder := []string{"install_files__alpha", "install_files__middle", "install_files__zeta"}
 	if len(got) != len(wantOrder) {
 		t.Fatalf("len: %d", len(got))
@@ -646,5 +646,65 @@ func TestSynthesizeTargetInstallPkgFiles(t *testing.T) {
 		if len(g.Visibility) == 0 {
 			t.Errorf("got[%d] %q: expected public visibility", i, g.Name)
 		}
+	}
+}
+
+// TestDecodeInstallerPath_GeneratedFileGate pins the produced-output gate on the
+// build-dir install(FILES) fallback: a generated FILE under the build dir is
+// packaged only when a rule actually produces it (else the pkg_files would
+// reference a missing input, e.g. fmt's unlifted fmt-config.cmake); the
+// build-dir fallback never applies to install(DIRECTORY).
+func TestDecodeInstallerPath_GeneratedFileGate(t *testing.T) {
+	const cmakeSrc, cmakeBuild = "/src", "/build"
+	raw := func(s string) json.RawMessage { b, _ := json.Marshal(s); return b }
+
+	// Produced build-dir file → accepted as its build-relative output name.
+	rel, _, ok := decodeInstallerPath(raw("/build/foo.pc"), cmakeSrc, cmakeSrc, cmakeBuild,
+		map[string]bool{"foo.pc": true}, "file")
+	if !ok || rel != "foo.pc" {
+		t.Errorf("produced build-dir file: got (%q, ok=%v), want (\"foo.pc\", true)", rel, ok)
+	}
+
+	// Unproduced build-dir file (fmt-config.cmake shape) → dropped.
+	if _, _, ok := decodeInstallerPath(raw("/build/foo-config.cmake"), cmakeSrc, cmakeSrc, cmakeBuild,
+		map[string]bool{}, "file"); ok {
+		t.Errorf("unproduced build-dir file: expected drop, got ok=true")
+	}
+
+	// A real source-tree file is unaffected by the gate.
+	if rel, _, ok := decodeInstallerPath(raw("include/foo.h"), cmakeSrc, cmakeSrc, cmakeBuild,
+		nil, "file"); !ok || rel != "include/foo.h" {
+		t.Errorf("source file: got (%q, ok=%v), want (\"include/foo.h\", true)", rel, ok)
+	}
+
+	// install(DIRECTORY) build-dir entry → never packaged via the fallback,
+	// even when "produced" (a directory has no representable Bazel glob target).
+	if _, _, ok := decodeInstallerPath(raw("/build/gen"), cmakeSrc, cmakeSrc, cmakeBuild,
+		map[string]bool{"gen": true}, "directory"); ok {
+		t.Errorf("build-dir install(DIRECTORY): expected drop, got ok=true")
+	}
+}
+
+// TestProducedOutputs covers the full set of producing rule kinds the gate must
+// recognize: genrule, write_file, cmake_configure_file, cc_embed (header +
+// source), and cc_hash (header). A missing kind would wrongly drop an installed
+// generated file.
+func TestProducedOutputs(t *testing.T) {
+	targets := []ir.Target{
+		{Name: "g", Kind: ir.KindGenrule, GenruleOuts: []string{"gen/a.h", "gen/b.c"}},
+		{Name: "w", Kind: ir.KindWriteFile, WriteFileOut: "zconf.h"},
+		{Name: "cf", Kind: ir.KindCMakeConfigureFile, CMakeConfigureFile: &ir.CMakeConfigureFileSpec{Out: "config.h"}},
+		{Name: "e", Kind: ir.KindCCEmbed, CCEmbed: &ir.CCEmbedSpec{OutHeader: "embed.h", OutSource: "embed.c"}},
+		{Name: "h", Kind: ir.KindCCHash, CCHash: &ir.CCHashSpec{OutHeader: "hash.h"}},
+		{Name: "lib", Kind: ir.KindCCLibrary, Srcs: []string{"x.c"}}, // no output → contributes nothing
+	}
+	got := producedOutputs(targets)
+	for _, want := range []string{"gen/a.h", "gen/b.c", "zconf.h", "config.h", "embed.h", "embed.c", "hash.h"} {
+		if !got[want] {
+			t.Errorf("producedOutputs missing %q; got %v", want, got)
+		}
+	}
+	if got["x.c"] {
+		t.Errorf("producedOutputs should not record a cc_library source as a produced output")
 	}
 }
