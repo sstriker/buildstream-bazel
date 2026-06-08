@@ -99,15 +99,18 @@ func TestEmit_SubdirLibrary_Split_Golden(t *testing.T) {
 }
 
 // TestEmit_Split_InterfaceLib_PlacedBySubPackageEntry pins the theme-4
-// "absent subpackages" mechanism: under --split-packages a target's landing
-// package is decided SOLELY by its pkg.SubPackages entry, regardless of Kind.
+// "absent subpackages" mechanism: for a NON-output-producing target (a library,
+// not a genrule/write_file), --split-packages placement is decided by its
+// pkg.SubPackages entry, regardless of Kind. (Output-producing rules are the
+// exception — landingDir re-homes a genrule/write_file to its primary output's
+// package in the local regime so the out is package-local; not exercised here.)
 // A codemodel INTERFACE_LIBRARY (KindCCInterface) gets a SubPackages entry in
 // the lower (lower.go: every codemodel target does), so it lands in — and
 // MATERIALIZES — its own sub-package BUILD.bazel, exactly like a compiled lib.
-// Only a target with NO SubPackages entry (a trace-synthesized interface lib,
-// a synthesized filegroup, …) falls to the root package. This is why abseil's
+// A library with NO SubPackages entry (a trace-synthesized interface lib, a
+// synthesized filegroup, …) falls to the root package. This is why abseil's
 // header-only interface subpackages do get a BUILD.bazel when their libs are
-// codemodel-present; an absent subdir BUILD.bazel would mean the lib was
+// codemodel-present; an absent subdir BUILD.bazel means the lib was
 // trace-synthesized (no entry), not that the target was dropped.
 func TestEmit_Split_InterfaceLib_PlacedBySubPackageEntry(t *testing.T) {
 	pkg := &ir.Package{
