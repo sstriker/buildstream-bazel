@@ -692,6 +692,73 @@ func wireDefineDrivenGeneratedHeaders(pkg *ir.Package) {
 // enables genrule recovery for targets with isGenerated sources; pass nil to
 // disable (M1-style behavior — generated sources then trigger
 // unsupported-custom-command).
+// buildPrivateIncludeDirs collects the PRIVATE include directories per target
+// from the decoded target_include_directories trace calls.
+func buildPrivateIncludeDirs(includes []shadow.TargetIncludeCall) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for _, call := range includes {
+		for _, grp := range call.Groups {
+			if grp.Visibility != "PRIVATE" {
+				continue
+			}
+			if _, ok := out[call.Target]; !ok {
+				out[call.Target] = map[string]bool{}
+			}
+			for _, dir := range grp.Dirs {
+				out[call.Target][dir] = true
+			}
+		}
+	}
+	return out
+}
+
+// buildTraceLinkInfo collects, per target, the ordered deduped link libraries
+// and each library's link-scope keyword from the decoded target_link_libraries
+// trace calls. Scope is first-write-wins so an earlier PUBLIC arm isn't
+// overwritten by a later PRIVATE one for the same library — cmake's own
+// semantics for a doubly-listed library with differing keywords are undefined,
+// but the upstream-most call governs header propagation in the typical case.
+func buildTraceLinkInfo(links []shadow.TargetLinkCall) (map[string][]string, map[string]map[string]string) {
+	traceLinkLibs := map[string][]string{}
+	traceLinkScope := map[string]map[string]string{}
+	for _, call := range links {
+		seen := map[string]bool{}
+		if _, ok := traceLinkScope[call.Target]; !ok {
+			traceLinkScope[call.Target] = map[string]string{}
+		}
+		for _, grp := range call.Groups {
+			for _, lib := range grp.Libs {
+				if seen[lib] {
+					continue
+				}
+				seen[lib] = true
+				traceLinkLibs[call.Target] = append(traceLinkLibs[call.Target], lib)
+				if _, ok := traceLinkScope[call.Target][lib]; !ok {
+					traceLinkScope[call.Target][lib] = grp.Visibility
+				}
+			}
+		}
+	}
+	return traceLinkLibs, traceLinkScope
+}
+
+// buildPlatformConditionalSrcs maps each (target, source) recovered from
+// platform-conditional if-blocks to its select key. First-write-wins: if the
+// same (target, src) shows up under two conditionals (rare — nested elseif arms
+// adding the same source on different platforms), the first SelectKey governs.
+func buildPlatformConditionalSrcs(pcsList []shadow.PlatformConditionalSource) map[string]map[string]string {
+	out := map[string]map[string]string{}
+	for _, pcs := range pcsList {
+		if _, ok := out[pcs.Target]; !ok {
+			out[pcs.Target] = map[string]string{}
+		}
+		if _, ok := out[pcs.Target][pcs.Source]; !ok {
+			out[pcs.Target][pcs.Source] = pcs.SelectKey
+		}
+	}
+	return out
+}
+
 func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	if got := len(r.Codemodel.Configurations); got != 1 {
 		// The multi-config fold (lowerMultiConfigDeltas, at the
@@ -891,49 +958,8 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		decoded := &decodedVal
 		decodedTrace = decoded
 		traceDecoded = true
-		privateIncludeDirs = map[string]map[string]bool{}
-		for _, call := range decoded.Includes {
-			for _, grp := range call.Groups {
-				if grp.Visibility != "PRIVATE" {
-					continue
-				}
-				if _, ok := privateIncludeDirs[call.Target]; !ok {
-					privateIncludeDirs[call.Target] = map[string]bool{}
-				}
-				for _, dir := range grp.Dirs {
-					privateIncludeDirs[call.Target][dir] = true
-				}
-			}
-		}
-		traceLinkLibs = map[string][]string{}
-		traceLinkScope = map[string]map[string]string{}
-		for _, call := range decoded.Links {
-			seen := map[string]bool{}
-			if _, ok := traceLinkScope[call.Target]; !ok {
-				traceLinkScope[call.Target] = map[string]string{}
-			}
-			for _, grp := range call.Groups {
-				for _, lib := range grp.Libs {
-					if seen[lib] {
-						continue
-					}
-					seen[lib] = true
-					traceLinkLibs[call.Target] = append(traceLinkLibs[call.Target], lib)
-					// First-write-wins so an earlier
-					// target_link_libraries(t PUBLIC bar) call
-					// doesn't get overwritten by a later
-					// target_link_libraries(t PRIVATE bar) — the
-					// effective semantics in cmake itself are
-					// not well-defined when the same library is
-					// listed twice with different keywords, but
-					// the upstream-most call governs header
-					// propagation in the typical case.
-					if _, ok := traceLinkScope[call.Target][lib]; !ok {
-						traceLinkScope[call.Target][lib] = grp.Visibility
-					}
-				}
-			}
-		}
+		privateIncludeDirs = buildPrivateIncludeDirs(decoded.Includes)
+		traceLinkLibs, traceLinkScope = buildTraceLinkInfo(decoded.Links)
 		defineSymbols = decoded.DefineSymbols
 		decodedConfigureFiles = decoded.ConfigFiles
 		decodedFileGenerates = decoded.FileGenerates
@@ -951,22 +977,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		generatedSources = collectGeneratedSources(decoded.SourceFileProperties)
 		perSourceDefinesBySrc = collectPerSourceCompileDefinitions(decoded.SourceFileProperties)
 		if len(decoded.PlatformConditionalSources) > 0 {
-			platformConditionalSrcs = map[string]map[string]string{}
-			for _, pcs := range decoded.PlatformConditionalSources {
-				if _, ok := platformConditionalSrcs[pcs.Target]; !ok {
-					platformConditionalSrcs[pcs.Target] = map[string]string{}
-				}
-				// First-write-wins: if the same (target, src)
-				// shows up under two different conditionals
-				// (rare — would mean nested elseif arms both
-				// adding the same source on different
-				// platforms), the first one's SelectKey
-				// governs. Cheap to refine later if real
-				// projects need a list-valued mapping.
-				if _, ok := platformConditionalSrcs[pcs.Target][pcs.Source]; !ok {
-					platformConditionalSrcs[pcs.Target][pcs.Source] = pcs.SelectKey
-				}
-			}
+			platformConditionalSrcs = buildPlatformConditionalSrcs(decoded.PlatformConditionalSources)
 		}
 		// Tier 2 (#217 follow-on): recover sources from the
 		// SKIPPED arms of platform-conditional if-blocks. cmake
@@ -1737,41 +1748,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		// matches land on pkg.CodegenHeaderConsumers for the split transform
 		// to synthesize the wrapper library and wire the consumer's dep.
 		if len(codegenConsumerDeps) > 0 {
-			genOut := make(map[string]string, len(cc.OutToGenrule))
-			for o, n := range cc.OutToGenrule {
-				genOut[o] = n
-			}
-			for _, gt := range stand {
-				for _, o := range gt.GenruleOuts {
-					genOut[o] = gt.Name
-				}
-			}
-			// Index ninja outputs by final path component so the codegen
-			// walk can seed from a sub-directory custom target's prefixed
-			// phony (cmake names it `<dir>/<target>`).
-			phonyByName := map[string][]string{}
-			if g != nil {
-				if g.OutputIndex == nil {
-					g.Index()
-				}
-				for o := range g.OutputIndex {
-					base := o
-					if i := strings.LastIndex(o, "/"); i >= 0 {
-						base = o[i+1:]
-					}
-					phonyByName[base] = append(phonyByName[base], o)
-				}
-			}
-			for name, deps := range codegenConsumerDeps {
-				hdrs := collectCodegenHeaders(g, deps, utilityIDs, utilityIDToName, genOut, isTargetName, phonyByName)
-				if len(hdrs) == 0 {
-					continue
-				}
-				if pkg.CodegenHeaderConsumers == nil {
-					pkg.CodegenHeaderConsumers = map[string][]string{}
-				}
-				pkg.CodegenHeaderConsumers[name] = hdrs
-			}
+			resolveCodegenHeaderConsumers(pkg, g, stand, cc, codegenConsumerDeps, utilityIDs, utilityIDToName, isTargetName)
 		}
 	}
 	// Phase 5 multi-config delta fold. When the reply carries
@@ -7144,6 +7121,51 @@ func isGeneratedHeaderPath(p string) bool {
 // the same way as the genrule outs the split transform places, so the
 // caller can group them by producing package. Returns nil when the
 // consumer has no UTILITY deps or no ninja graph is available.
+// resolveCodegenHeaderConsumers resolves each cc_library consumer's UTILITY
+// (tablegen) dependencies to the generated `.inc` headers it #includes, now that
+// the standalone genrules producing them have been recovered. The combined
+// output set — per-target codegen outputs (cc.OutToGenrule) plus the standalone
+// recovery (stand) — is what the ninja walk filters on; matches land on
+// pkg.CodegenHeaderConsumers for the split transform to synthesize the wrapper
+// library and wire the consumer's dep.
+func resolveCodegenHeaderConsumers(pkg *ir.Package, g *ninja.Graph, stand []ir.Target, cc *codegenContext, codegenConsumerDeps map[string][]fileapi.TargetDependency, utilityIDs map[string]bool, utilityIDToName map[string]string, isTargetName map[string]bool) {
+	genOut := make(map[string]string, len(cc.OutToGenrule))
+	for o, n := range cc.OutToGenrule {
+		genOut[o] = n
+	}
+	for _, gt := range stand {
+		for _, o := range gt.GenruleOuts {
+			genOut[o] = gt.Name
+		}
+	}
+	// Index ninja outputs by final path component so the codegen walk can seed
+	// from a sub-directory custom target's prefixed phony (cmake names it
+	// `<dir>/<target>`).
+	phonyByName := map[string][]string{}
+	if g != nil {
+		if g.OutputIndex == nil {
+			g.Index()
+		}
+		for o := range g.OutputIndex {
+			base := o
+			if i := strings.LastIndex(o, "/"); i >= 0 {
+				base = o[i+1:]
+			}
+			phonyByName[base] = append(phonyByName[base], o)
+		}
+	}
+	for name, deps := range codegenConsumerDeps {
+		hdrs := collectCodegenHeaders(g, deps, utilityIDs, utilityIDToName, genOut, isTargetName, phonyByName)
+		if len(hdrs) == 0 {
+			continue
+		}
+		if pkg.CodegenHeaderConsumers == nil {
+			pkg.CodegenHeaderConsumers = map[string][]string{}
+		}
+		pkg.CodegenHeaderConsumers[name] = hdrs
+	}
+}
+
 func collectCodegenHeaders(g *ninja.Graph, deps []fileapi.TargetDependency, utilityIDs map[string]bool, utilityIDToName map[string]string, outToGenrule map[string]string, isTargetName map[string]bool, phonyByName map[string][]string) []string {
 	if g == nil || len(deps) == 0 {
 		return nil
