@@ -52,3 +52,15 @@ cc_import(
         "manual",
     ],
 )  # keep
+
+pkg_files(
+    name = "install_target__toplib",
+    srcs = [":toplib"],
+    prefix = "lib",
+)  # keep
+
+pkg_files(
+    name = "install_target__util",
+    srcs = [":util"],
+    prefix = "lib",
+)  # keep

@@ -30,3 +30,9 @@ cc_import(
         "manual",
     ],
 )  # keep
+
+pkg_files(
+    name = "install_target__hello",
+    srcs = [":hello"],
+    prefix = "lib",
+)  # keep

@@ -36,3 +36,9 @@ cc_import(
         "manual",
     ],
 )  # keep
+
+pkg_files(
+    name = "install_target__visi",
+    srcs = [":visi"],
+    prefix = "lib",
+)  # keep

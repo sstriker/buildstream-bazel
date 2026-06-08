@@ -34,3 +34,9 @@ pkg_files(
     prefix = "include",
     strip_prefix = strip_prefix.from_pkg("include"),
 )  # keep
+
+pkg_files(
+    name = "install_target__objlib_archive",
+    srcs = [":objlib_archive"],
+    prefix = "lib",
+)  # keep

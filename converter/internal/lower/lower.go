@@ -1583,6 +1583,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// rules (pkg_files for FILES/DIRECTORY, cmake_config_bundle
 	// filegroup for declarative install(EXPORT)).
 	pkg.Targets = append(pkg.Targets, lowerDirectoryInstallers(r, opts.EmitInstallExportConfig)...)
+	// install(TARGETS) → pkg_files: package each built library / binary under
+	// its install destination (the per-target Install slot otherwise only feeds
+	// the cc_import facade + round-2 tree, leaving the artifact in no install
+	// package). Faithful, same as install(FILES)/install(DIRECTORY) above; runs
+	// over the lowered codemodel targets (the appended pkg_files carry no
+	// InstallDest so they're skipped).
+	pkg.Targets = append(pkg.Targets, synthesizeTargetInstallPkgFiles(pkg.Targets)...)
 	// INTERFACE-only library lift. cmake's File API codemodel
 	// omits INTERFACE_LIBRARY targets from its targets[] array —
 	// they're header-only declarations with no link step to

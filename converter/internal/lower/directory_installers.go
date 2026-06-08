@@ -592,3 +592,49 @@ func sanitizeDestination(dest string) string {
 	out = strings.Trim(out, "_")
 	return out
 }
+
+// synthesizeTargetInstallPkgFiles emits a pkg_files for each install(TARGETS)
+// artifact — a built cc_library / cc_binary carrying an InstallDest — packaging
+// the target's output under the install destination. cmake's
+// `install(TARGETS foo DESTINATION lib)` otherwise has no producer-side Bazel
+// representation: the per-target Install slot feeds only the cc_import facade
+// (a downstream-consumer import) and the round-2 install tree, so the built
+// library / binary lands in no install package (the "library binary not in any
+// pkg_files install rule" survey gap across curl / fmt / libevent / libxml2 /
+// openblas / protobuf / sdl / zlib). Mirrors install(FILES)/install(DIRECTORY)
+// → pkg_files: the pkg_files src is the target label itself, so rules_pkg
+// packages its DefaultInfo artifact(s) under `prefix = <dest>`.
+//
+// Header-only / INTERFACE libraries (no ArtifactName) install no artifact and
+// are skipped — matching cmake, where install(TARGETS) of an INTERFACE library
+// packages nothing. Names are `install_target__<target>`, deduped against the
+// existing target set; output is sorted for byte-stable emission.
+func synthesizeTargetInstallPkgFiles(targets []ir.Target) []ir.Target {
+	used := make(map[string]bool, len(targets))
+	for _, t := range targets {
+		used[t.Name] = true
+	}
+	var out []ir.Target
+	for _, t := range targets {
+		if t.InstallDest == "" || t.ArtifactName == "" {
+			continue
+		}
+		if t.Kind != ir.KindCCLibrary && t.Kind != ir.KindCCBinary {
+			continue
+		}
+		name := "install_target__" + sanitizeDestination(t.Name)
+		for used[name] {
+			name += "_"
+		}
+		used[name] = true
+		out = append(out, ir.Target{
+			Name:       name,
+			Kind:       ir.KindPkgFiles,
+			Srcs:       []string{":" + t.Name},
+			PkgPrefix:  t.InstallDest,
+			Visibility: publicVisibility(),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}

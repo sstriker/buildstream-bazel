@@ -31,3 +31,9 @@ cc_import(
         "manual",
     ],
 )  # keep
+
+pkg_files(
+    name = "install_target__mfi",
+    srcs = [":mfi"],
+    prefix = "lib",
+)  # keep
