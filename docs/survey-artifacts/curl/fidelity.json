@@ -1,2234 +1,523 @@
 {
-  "matched": 213,
-  "only_cmake": [
-    "docs/examples/10-at-a-time.c",
-    "docs/examples/address-scope.c",
-    "docs/examples/altsvc.c",
-    "docs/examples/anyauthput.c",
-    "docs/examples/certinfo.c",
-    "docs/examples/chkspeed.c",
-    "docs/examples/connect-to.c",
-    "docs/examples/cookie_interface.c",
-    "docs/examples/debug.c",
-    "docs/examples/default-scheme.c",
-    "docs/examples/externalsocket.c",
-    "docs/examples/fileupload.c",
-    "docs/examples/ftp-wildcard.c",
-    "docs/examples/ftpget.c",
-    "docs/examples/ftpgetinfo.c",
-    "docs/examples/ftpgetresp.c",
-    "docs/examples/ftpsget.c",
-    "docs/examples/ftpupload.c",
-    "docs/examples/ftpuploadfrommem.c",
-    "docs/examples/ftpuploadresume.c",
-    "docs/examples/getinfo.c",
-    "docs/examples/getinmemory.c",
-    "docs/examples/getredirect.c",
-    "docs/examples/getreferrer.c",
-    "docs/examples/headerapi.c",
-    "docs/examples/hsts-preload.c",
-    "docs/examples/http-options.c",
-    "docs/examples/http-post.c",
-    "docs/examples/http2-download.c",
-    "docs/examples/http2-pushinmemory.c",
-    "docs/examples/http2-serverpush.c",
-    "docs/examples/http2-upload.c",
-    "docs/examples/http3-present.c",
-    "docs/examples/http3.c",
-    "docs/examples/httpcustomheader.c",
-    "docs/examples/httpput-postfields.c",
-    "docs/examples/httpput.c",
-    "docs/examples/https.c",
-    "docs/examples/imap-append.c",
-    "docs/examples/imap-authzid.c",
-    "docs/examples/imap-copy.c",
-    "docs/examples/imap-create.c",
-    "docs/examples/imap-delete.c",
-    "docs/examples/imap-examine.c",
-    "docs/examples/imap-fetch.c",
-    "docs/examples/imap-list.c",
-    "docs/examples/imap-lsub.c",
-    "docs/examples/imap-multi.c",
-    "docs/examples/imap-noop.c",
-    "docs/examples/imap-search.c",
-    "docs/examples/imap-ssl.c",
-    "docs/examples/imap-store.c",
-    "docs/examples/imap-tls.c",
-    "docs/examples/interface.c",
-    "docs/examples/ipv6.c",
-    "docs/examples/keepalive.c",
-    "docs/examples/localport.c",
-    "docs/examples/maxconnects.c",
-    "docs/examples/multi-app.c",
-    "docs/examples/multi-debugcallback.c",
-    "docs/examples/multi-double.c",
-    "docs/examples/multi-formadd.c",
-    "docs/examples/multi-legacy.c",
-    "docs/examples/multi-post.c",
-    "docs/examples/multi-single.c",
-    "docs/examples/netrc.c",
-    "docs/examples/parseurl.c",
-    "docs/examples/persistent.c",
-    "docs/examples/pop3-authzid.c",
-    "docs/examples/pop3-dele.c",
-    "docs/examples/pop3-list.c",
-    "docs/examples/pop3-multi.c",
-    "docs/examples/pop3-noop.c",
-    "docs/examples/pop3-retr.c",
-    "docs/examples/pop3-ssl.c",
-    "docs/examples/pop3-stat.c",
-    "docs/examples/pop3-tls.c",
-    "docs/examples/pop3-top.c",
-    "docs/examples/pop3-uidl.c",
-    "docs/examples/post-callback.c",
-    "docs/examples/postinmemory.c",
-    "docs/examples/postit2-formadd.c",
-    "docs/examples/postit2.c",
-    "docs/examples/progressfunc.c",
-    "docs/examples/protofeats.c",
-    "docs/examples/range.c",
-    "docs/examples/resolve.c",
-    "docs/examples/rtsp-options.c",
-    "docs/examples/sendrecv.c",
-    "docs/examples/sepheaders.c",
-    "docs/examples/sftpget.c",
-    "docs/examples/sftpuploadresume.c",
-    "docs/examples/shared-connection-cache.c",
-    "docs/examples/simple.c",
-    "docs/examples/simplepost.c",
-    "docs/examples/simplessl.c",
-    "docs/examples/smtp-authzid.c",
-    "docs/examples/smtp-expn.c",
-    "docs/examples/smtp-mail.c",
-    "docs/examples/smtp-mime.c",
-    "docs/examples/smtp-multi.c",
-    "docs/examples/smtp-ssl.c",
-    "docs/examples/smtp-tls.c",
-    "docs/examples/smtp-vrfy.c",
-    "docs/examples/sslbackend.c",
-    "docs/examples/unixsocket.c",
-    "docs/examples/url2file.c",
-    "docs/examples/urlapi.c",
-    "docs/examples/websocket-cb.c",
-    "docs/examples/websocket.c",
-    "lib1521.c",
-    "tests/http/clients/h2-pausing.c",
-    "tests/http/clients/h2-serverpush.c",
-    "tests/http/clients/h2-upgrade-extreme.c",
-    "tests/http/clients/hx-download.c",
-    "tests/http/clients/hx-upload.c",
-    "tests/http/clients/tls-session-reuse.c",
-    "tests/http/clients/upload-pausing.c",
-    "tests/http/clients/ws-data.c",
-    "tests/http/clients/ws-pingpong.c",
-    "tests/libtest/first.c",
-    "tests/libtest/lib1156.c",
-    "tests/libtest/lib1301.c",
-    "tests/libtest/lib1485.c",
-    "tests/libtest/lib1500.c",
-    "tests/libtest/lib1501.c",
-    "tests/libtest/lib1502.c",
-    "tests/libtest/lib1506.c",
-    "tests/libtest/lib1507.c",
-    "tests/libtest/lib1508.c",
-    "tests/libtest/lib1509.c",
-    "tests/libtest/lib1510.c",
-    "tests/libtest/lib1511.c",
-    "tests/libtest/lib1512.c",
-    "tests/libtest/lib1513.c",
-    "tests/libtest/lib1514.c",
-    "tests/libtest/lib1515.c",
-    "tests/libtest/lib1517.c",
-    "tests/libtest/lib1518.c",
-    "tests/libtest/lib1520.c",
-    "tests/libtest/lib1522.c",
-    "tests/libtest/lib1523.c",
-    "tests/libtest/lib1525.c",
-    "tests/libtest/lib1526.c",
-    "tests/libtest/lib1527.c",
-    "tests/libtest/lib1528.c",
-    "tests/libtest/lib1529.c",
-    "tests/libtest/lib1530.c",
-    "tests/libtest/lib1531.c",
-    "tests/libtest/lib1532.c",
-    "tests/libtest/lib1533.c",
-    "tests/libtest/lib1534.c",
-    "tests/libtest/lib1535.c",
-    "tests/libtest/lib1536.c",
-    "tests/libtest/lib1537.c",
-    "tests/libtest/lib1538.c",
-    "tests/libtest/lib1540.c",
-    "tests/libtest/lib1541.c",
-    "tests/libtest/lib1542.c",
-    "tests/libtest/lib1545.c",
-    "tests/libtest/lib1550.c",
-    "tests/libtest/lib1551.c",
-    "tests/libtest/lib1552.c",
-    "tests/libtest/lib1553.c",
-    "tests/libtest/lib1554.c",
-    "tests/libtest/lib1555.c",
-    "tests/libtest/lib1556.c",
-    "tests/libtest/lib1557.c",
-    "tests/libtest/lib1558.c",
-    "tests/libtest/lib1559.c",
-    "tests/libtest/lib1560.c",
-    "tests/libtest/lib1564.c",
-    "tests/libtest/lib1565.c",
-    "tests/libtest/lib1567.c",
-    "tests/libtest/lib1568.c",
-    "tests/libtest/lib1569.c",
-    "tests/libtest/lib1591.c",
-    "tests/libtest/lib1592.c",
-    "tests/libtest/lib1593.c",
-    "tests/libtest/lib1594.c",
-    "tests/libtest/lib1597.c",
-    "tests/libtest/lib1598.c",
-    "tests/libtest/lib1662.c",
-    "tests/libtest/lib1900.c",
-    "tests/libtest/lib1901.c",
-    "tests/libtest/lib1903.c",
-    "tests/libtest/lib1905.c",
-    "tests/libtest/lib1906.c",
-    "tests/libtest/lib1907.c",
-    "tests/libtest/lib1908.c",
-    "tests/libtest/lib1910.c",
-    "tests/libtest/lib1911.c",
-    "tests/libtest/lib1912.c",
-    "tests/libtest/lib1913.c",
-    "tests/libtest/lib1915.c",
-    "tests/libtest/lib1916.c",
-    "tests/libtest/lib1918.c",
-    "tests/libtest/lib1919.c",
-    "tests/libtest/lib1933.c",
-    "tests/libtest/lib1934.c",
-    "tests/libtest/lib1935.c",
-    "tests/libtest/lib1936.c",
-    "tests/libtest/lib1937.c",
-    "tests/libtest/lib1938.c",
-    "tests/libtest/lib1939.c",
-    "tests/libtest/lib1940.c",
-    "tests/libtest/lib1945.c",
-    "tests/libtest/lib1947.c",
-    "tests/libtest/lib1948.c",
-    "tests/libtest/lib1955.c",
-    "tests/libtest/lib1956.c",
-    "tests/libtest/lib1957.c",
-    "tests/libtest/lib1958.c",
-    "tests/libtest/lib1959.c",
-    "tests/libtest/lib1960.c",
-    "tests/libtest/lib1964.c",
-    "tests/libtest/lib1970.c",
-    "tests/libtest/lib1971.c",
-    "tests/libtest/lib1972.c",
-    "tests/libtest/lib1973.c",
-    "tests/libtest/lib1974.c",
-    "tests/libtest/lib1975.c",
-    "tests/libtest/lib2301.c",
-    "tests/libtest/lib2302.c",
-    "tests/libtest/lib2304.c",
-    "tests/libtest/lib2305.c",
-    "tests/libtest/lib2306.c",
-    "tests/libtest/lib2308.c",
-    "tests/libtest/lib2309.c",
-    "tests/libtest/lib2402.c",
-    "tests/libtest/lib2404.c",
-    "tests/libtest/lib2405.c",
-    "tests/libtest/lib2502.c",
-    "tests/libtest/lib3010.c",
-    "tests/libtest/lib3025.c",
-    "tests/libtest/lib3026.c",
-    "tests/libtest/lib3027.c",
-    "tests/libtest/lib3100.c",
-    "tests/libtest/lib3101.c",
-    "tests/libtest/lib3102.c",
-    "tests/libtest/lib3103.c",
-    "tests/libtest/lib3207.c",
-    "tests/libtest/lib500.c",
-    "tests/libtest/lib501.c",
-    "tests/libtest/lib502.c",
-    "tests/libtest/lib503.c",
-    "tests/libtest/lib504.c",
-    "tests/libtest/lib505.c",
-    "tests/libtest/lib506.c",
-    "tests/libtest/lib507.c",
-    "tests/libtest/lib508.c",
-    "tests/libtest/lib509.c",
-    "tests/libtest/lib510.c",
-    "tests/libtest/lib511.c",
-    "tests/libtest/lib512.c",
-    "tests/libtest/lib513.c",
-    "tests/libtest/lib514.c",
-    "tests/libtest/lib515.c",
-    "tests/libtest/lib516.c",
-    "tests/libtest/lib517.c",
-    "tests/libtest/lib518.c",
-    "tests/libtest/lib519.c",
-    "tests/libtest/lib520.c",
-    "tests/libtest/lib521.c",
-    "tests/libtest/lib523.c",
-    "tests/libtest/lib524.c",
-    "tests/libtest/lib525.c",
-    "tests/libtest/lib526.c",
-    "tests/libtest/lib530.c",
-    "tests/libtest/lib533.c",
-    "tests/libtest/lib536.c",
-    "tests/libtest/lib537.c",
-    "tests/libtest/lib539.c",
-    "tests/libtest/lib540.c",
-    "tests/libtest/lib541.c",
-    "tests/libtest/lib542.c",
-    "tests/libtest/lib543.c",
-    "tests/libtest/lib544.c",
-    "tests/libtest/lib547.c",
-    "tests/libtest/lib549.c",
-    "tests/libtest/lib552.c",
-    "tests/libtest/lib553.c",
-    "tests/libtest/lib554.c",
-    "tests/libtest/lib555.c",
-    "tests/libtest/lib556.c",
-    "tests/libtest/lib557.c",
-    "tests/libtest/lib558.c",
-    "tests/libtest/lib559.c",
-    "tests/libtest/lib560.c",
-    "tests/libtest/lib562.c",
-    "tests/libtest/lib564.c",
-    "tests/libtest/lib566.c",
-    "tests/libtest/lib567.c",
-    "tests/libtest/lib568.c",
-    "tests/libtest/lib569.c",
-    "tests/libtest/lib570.c",
-    "tests/libtest/lib571.c",
-    "tests/libtest/lib572.c",
-    "tests/libtest/lib573.c",
-    "tests/libtest/lib574.c",
-    "tests/libtest/lib575.c",
-    "tests/libtest/lib576.c",
-    "tests/libtest/lib578.c",
-    "tests/libtest/lib579.c",
-    "tests/libtest/lib582.c",
-    "tests/libtest/lib583.c",
-    "tests/libtest/lib586.c",
-    "tests/libtest/lib589.c",
-    "tests/libtest/lib590.c",
-    "tests/libtest/lib591.c",
-    "tests/libtest/lib597.c",
-    "tests/libtest/lib598.c",
-    "tests/libtest/lib599.c",
-    "tests/libtest/lib643.c",
-    "tests/libtest/lib650.c",
-    "tests/libtest/lib651.c",
-    "tests/libtest/lib652.c",
-    "tests/libtest/lib653.c",
-    "tests/libtest/lib654.c",
-    "tests/libtest/lib655.c",
-    "tests/libtest/lib658.c",
-    "tests/libtest/lib659.c",
-    "tests/libtest/lib661.c",
-    "tests/libtest/lib666.c",
-    "tests/libtest/lib667.c",
-    "tests/libtest/lib668.c",
-    "tests/libtest/lib670.c",
-    "tests/libtest/lib674.c",
-    "tests/libtest/lib676.c",
-    "tests/libtest/lib677.c",
-    "tests/libtest/lib678.c",
-    "tests/libtest/libauthretry.c",
-    "tests/libtest/libntlmconnect.c",
-    "tests/libtest/libprereq.c",
-    "tests/libtest/testtrace.c",
-    "tests/libtest/testutil.c",
-    "tests/server/disabled.c",
-    "tests/server/getpart.c",
-    "tests/server/mqttd.c",
-    "tests/server/resolve.c",
-    "tests/server/rtspd.c",
-    "tests/server/sockfilt.c",
-    "tests/server/socksd.c",
-    "tests/server/sws.c",
-    "tests/server/testpart.c",
-    "tests/server/tftpd.c",
-    "tests/server/util.c",
-    "tests/unit/unit1300.c",
-    "tests/unit/unit1302.c",
-    "tests/unit/unit1303.c",
-    "tests/unit/unit1304.c",
-    "tests/unit/unit1305.c",
-    "tests/unit/unit1307.c",
-    "tests/unit/unit1308.c",
-    "tests/unit/unit1309.c",
-    "tests/unit/unit1323.c",
-    "tests/unit/unit1330.c",
-    "tests/unit/unit1394.c",
-    "tests/unit/unit1395.c",
-    "tests/unit/unit1396.c",
-    "tests/unit/unit1397.c",
-    "tests/unit/unit1398.c",
-    "tests/unit/unit1399.c",
-    "tests/unit/unit1600.c",
-    "tests/unit/unit1601.c",
-    "tests/unit/unit1602.c",
-    "tests/unit/unit1603.c",
-    "tests/unit/unit1604.c",
-    "tests/unit/unit1605.c",
-    "tests/unit/unit1606.c",
-    "tests/unit/unit1607.c",
-    "tests/unit/unit1608.c",
-    "tests/unit/unit1609.c",
-    "tests/unit/unit1610.c",
-    "tests/unit/unit1611.c",
-    "tests/unit/unit1612.c",
-    "tests/unit/unit1614.c",
-    "tests/unit/unit1615.c",
-    "tests/unit/unit1616.c",
-    "tests/unit/unit1620.c",
-    "tests/unit/unit1621.c",
-    "tests/unit/unit1650.c",
-    "tests/unit/unit1651.c",
-    "tests/unit/unit1652.c",
-    "tests/unit/unit1653.c",
-    "tests/unit/unit1654.c",
-    "tests/unit/unit1655.c",
-    "tests/unit/unit1656.c",
-    "tests/unit/unit1660.c",
-    "tests/unit/unit1661.c",
-    "tests/unit/unit1663.c",
-    "tests/unit/unit2600.c",
-    "tests/unit/unit2601.c",
-    "tests/unit/unit2602.c",
-    "tests/unit/unit2603.c",
-    "tests/unit/unit2604.c",
-    "tests/unit/unit3200.c",
-    "tests/unit/unit3205.c"
-  ],
-  "only_bazel": null,
-  "define_mismatch": {
-    "lib/base64.c": {
-      "missing_in_bazel": [
-        "CURL_NO_GETADDRINFO_OVERRIDE"
-      ],
-      "extra_in_bazel": [
-        "BUILDING_CURL",
-        "CURL_HIDDEN_SYMBOLS",
-        "CURL_STATICLIB"
-      ]
-    },
-    "lib/curl_multibyte.c": {
-      "missing_in_bazel": [
-        "CURL_NO_GETADDRINFO_OVERRIDE"
-      ],
-      "extra_in_bazel": [
-        "BUILDING_LIBCURL",
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "lib/dynbuf.c": {
-      "missing_in_bazel": [
-        "CURL_NO_GETADDRINFO_OVERRIDE"
-      ],
-      "extra_in_bazel": [
-        "BUILDING_CURL",
-        "CURL_HIDDEN_SYMBOLS",
-        "CURL_STATICLIB"
-      ]
-    },
-    "lib/inet_pton.c": {
-      "missing_in_bazel": [
-        "CURL_NO_GETADDRINFO_OVERRIDE"
-      ],
-      "extra_in_bazel": [
-        "BUILDING_LIBCURL",
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "lib/memdebug.c": {
-      "missing_in_bazel": [
-        "CURL_NO_GETADDRINFO_OVERRIDE"
-      ],
-      "extra_in_bazel": [
-        "BUILDING_LIBCURL",
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "lib/mprintf.c": {
-      "missing_in_bazel": [
-        "CURL_NO_GETADDRINFO_OVERRIDE"
-      ],
-      "extra_in_bazel": [
-        "BUILDING_LIBCURL",
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "lib/nonblock.c": {
-      "missing_in_bazel": [
-        "CURL_NO_GETADDRINFO_OVERRIDE"
-      ],
-      "extra_in_bazel": [
-        "BUILDING_LIBCURL",
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "lib/strcase.c": {
-      "missing_in_bazel": [
-        "CURL_NO_GETADDRINFO_OVERRIDE"
-      ],
-      "extra_in_bazel": [
-        "BUILDING_LIBCURL",
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "lib/strdup.c": {
-      "missing_in_bazel": [
-        "CURL_NO_GETADDRINFO_OVERRIDE"
-      ],
-      "extra_in_bazel": [
-        "BUILDING_LIBCURL",
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "lib/strtoofft.c": {
-      "missing_in_bazel": [
-        "CURL_NO_GETADDRINFO_OVERRIDE"
-      ],
-      "extra_in_bazel": [
-        "BUILDING_LIBCURL",
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "lib/timediff.c": {
-      "missing_in_bazel": [
-        "CURL_NO_GETADDRINFO_OVERRIDE"
-      ],
-      "extra_in_bazel": [
-        "BUILDING_LIBCURL",
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "lib/warnless.c": {
-      "missing_in_bazel": [
-        "CURL_NO_GETADDRINFO_OVERRIDE"
-      ],
-      "extra_in_bazel": [
-        "BUILDING_LIBCURL",
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/slist_wc.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/terminal.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_binmode.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_bname.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_cb_dbg.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_cb_hdr.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_cb_prg.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_cb_rea.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_cb_see.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_cb_soc.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_cb_wrt.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_cfgable.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_dirhie.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_doswin.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_easysrc.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_filetime.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_findfile.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_formparse.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_getparam.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_getpass.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_help.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_helpers.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_ipfs.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_libinfo.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_listhelp.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_main.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_msgs.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_operate.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_operhlp.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_paramhlp.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_parsecfg.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_progress.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_setopt.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_sleep.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_stderr.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_strdup.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_urlglob.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_util.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_vms.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_writeout.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_writeout_json.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/tool_xattr.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "src/var.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    },
-    "tool_hugehelp.c": {
-      "missing_in_bazel": [
-        "UNITTESTS"
-      ],
-      "extra_in_bazel": [
-        "CURL_HIDDEN_SYMBOLS"
-      ]
-    }
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 213,
+ "only_cmake": [
+  "docs/examples/10-at-a-time.c",
+  "docs/examples/address-scope.c",
+  "docs/examples/altsvc.c",
+  "docs/examples/anyauthput.c",
+  "docs/examples/certinfo.c",
+  "docs/examples/chkspeed.c",
+  "docs/examples/connect-to.c",
+  "docs/examples/cookie_interface.c",
+  "docs/examples/debug.c",
+  "docs/examples/default-scheme.c",
+  "docs/examples/externalsocket.c",
+  "docs/examples/fileupload.c",
+  "docs/examples/ftp-wildcard.c",
+  "docs/examples/ftpget.c",
+  "docs/examples/ftpgetinfo.c",
+  "docs/examples/ftpgetresp.c",
+  "docs/examples/ftpsget.c",
+  "docs/examples/ftpupload.c",
+  "docs/examples/ftpuploadfrommem.c",
+  "docs/examples/ftpuploadresume.c",
+  "docs/examples/getinfo.c",
+  "docs/examples/getinmemory.c",
+  "docs/examples/getredirect.c",
+  "docs/examples/getreferrer.c",
+  "docs/examples/headerapi.c",
+  "docs/examples/hsts-preload.c",
+  "docs/examples/http-options.c",
+  "docs/examples/http-post.c",
+  "docs/examples/http2-download.c",
+  "docs/examples/http2-pushinmemory.c",
+  "docs/examples/http2-serverpush.c",
+  "docs/examples/http2-upload.c",
+  "docs/examples/http3-present.c",
+  "docs/examples/http3.c",
+  "docs/examples/httpcustomheader.c",
+  "docs/examples/httpput-postfields.c",
+  "docs/examples/httpput.c",
+  "docs/examples/https.c",
+  "docs/examples/imap-append.c",
+  "docs/examples/imap-authzid.c",
+  "docs/examples/imap-copy.c",
+  "docs/examples/imap-create.c",
+  "docs/examples/imap-delete.c",
+  "docs/examples/imap-examine.c",
+  "docs/examples/imap-fetch.c",
+  "docs/examples/imap-list.c",
+  "docs/examples/imap-lsub.c",
+  "docs/examples/imap-multi.c",
+  "docs/examples/imap-noop.c",
+  "docs/examples/imap-search.c",
+  "docs/examples/imap-ssl.c",
+  "docs/examples/imap-store.c",
+  "docs/examples/imap-tls.c",
+  "docs/examples/interface.c",
+  "docs/examples/ipv6.c",
+  "docs/examples/keepalive.c",
+  "docs/examples/localport.c",
+  "docs/examples/maxconnects.c",
+  "docs/examples/multi-app.c",
+  "docs/examples/multi-debugcallback.c",
+  "docs/examples/multi-double.c",
+  "docs/examples/multi-formadd.c",
+  "docs/examples/multi-legacy.c",
+  "docs/examples/multi-post.c",
+  "docs/examples/multi-single.c",
+  "docs/examples/netrc.c",
+  "docs/examples/parseurl.c",
+  "docs/examples/persistent.c",
+  "docs/examples/pop3-authzid.c",
+  "docs/examples/pop3-dele.c",
+  "docs/examples/pop3-list.c",
+  "docs/examples/pop3-multi.c",
+  "docs/examples/pop3-noop.c",
+  "docs/examples/pop3-retr.c",
+  "docs/examples/pop3-ssl.c",
+  "docs/examples/pop3-stat.c",
+  "docs/examples/pop3-tls.c",
+  "docs/examples/pop3-top.c",
+  "docs/examples/pop3-uidl.c",
+  "docs/examples/post-callback.c",
+  "docs/examples/postinmemory.c",
+  "docs/examples/postit2-formadd.c",
+  "docs/examples/postit2.c",
+  "docs/examples/progressfunc.c",
+  "docs/examples/protofeats.c",
+  "docs/examples/range.c",
+  "docs/examples/resolve.c",
+  "docs/examples/rtsp-options.c",
+  "docs/examples/sendrecv.c",
+  "docs/examples/sepheaders.c",
+  "docs/examples/sftpget.c",
+  "docs/examples/sftpuploadresume.c",
+  "docs/examples/shared-connection-cache.c",
+  "docs/examples/simple.c",
+  "docs/examples/simplepost.c",
+  "docs/examples/simplessl.c",
+  "docs/examples/smtp-authzid.c",
+  "docs/examples/smtp-expn.c",
+  "docs/examples/smtp-mail.c",
+  "docs/examples/smtp-mime.c",
+  "docs/examples/smtp-multi.c",
+  "docs/examples/smtp-ssl.c",
+  "docs/examples/smtp-tls.c",
+  "docs/examples/smtp-vrfy.c",
+  "docs/examples/sslbackend.c",
+  "docs/examples/unixsocket.c",
+  "docs/examples/url2file.c",
+  "docs/examples/urlapi.c",
+  "docs/examples/websocket-cb.c",
+  "docs/examples/websocket.c",
+  "lib1521.c",
+  "tests/http/clients/h2-pausing.c",
+  "tests/http/clients/h2-serverpush.c",
+  "tests/http/clients/h2-upgrade-extreme.c",
+  "tests/http/clients/hx-download.c",
+  "tests/http/clients/hx-upload.c",
+  "tests/http/clients/tls-session-reuse.c",
+  "tests/http/clients/upload-pausing.c",
+  "tests/http/clients/ws-data.c",
+  "tests/http/clients/ws-pingpong.c",
+  "tests/libtest/first.c",
+  "tests/libtest/lib1156.c",
+  "tests/libtest/lib1301.c",
+  "tests/libtest/lib1485.c",
+  "tests/libtest/lib1500.c",
+  "tests/libtest/lib1501.c",
+  "tests/libtest/lib1502.c",
+  "tests/libtest/lib1506.c",
+  "tests/libtest/lib1507.c",
+  "tests/libtest/lib1508.c",
+  "tests/libtest/lib1509.c",
+  "tests/libtest/lib1510.c",
+  "tests/libtest/lib1511.c",
+  "tests/libtest/lib1512.c",
+  "tests/libtest/lib1513.c",
+  "tests/libtest/lib1514.c",
+  "tests/libtest/lib1515.c",
+  "tests/libtest/lib1517.c",
+  "tests/libtest/lib1518.c",
+  "tests/libtest/lib1520.c",
+  "tests/libtest/lib1522.c",
+  "tests/libtest/lib1523.c",
+  "tests/libtest/lib1525.c",
+  "tests/libtest/lib1526.c",
+  "tests/libtest/lib1527.c",
+  "tests/libtest/lib1528.c",
+  "tests/libtest/lib1529.c",
+  "tests/libtest/lib1530.c",
+  "tests/libtest/lib1531.c",
+  "tests/libtest/lib1532.c",
+  "tests/libtest/lib1533.c",
+  "tests/libtest/lib1534.c",
+  "tests/libtest/lib1535.c",
+  "tests/libtest/lib1536.c",
+  "tests/libtest/lib1537.c",
+  "tests/libtest/lib1538.c",
+  "tests/libtest/lib1540.c",
+  "tests/libtest/lib1541.c",
+  "tests/libtest/lib1542.c",
+  "tests/libtest/lib1545.c",
+  "tests/libtest/lib1550.c",
+  "tests/libtest/lib1551.c",
+  "tests/libtest/lib1552.c",
+  "tests/libtest/lib1553.c",
+  "tests/libtest/lib1554.c",
+  "tests/libtest/lib1555.c",
+  "tests/libtest/lib1556.c",
+  "tests/libtest/lib1557.c",
+  "tests/libtest/lib1558.c",
+  "tests/libtest/lib1559.c",
+  "tests/libtest/lib1560.c",
+  "tests/libtest/lib1564.c",
+  "tests/libtest/lib1565.c",
+  "tests/libtest/lib1567.c",
+  "tests/libtest/lib1568.c",
+  "tests/libtest/lib1569.c",
+  "tests/libtest/lib1591.c",
+  "tests/libtest/lib1592.c",
+  "tests/libtest/lib1593.c",
+  "tests/libtest/lib1594.c",
+  "tests/libtest/lib1597.c",
+  "tests/libtest/lib1598.c",
+  "tests/libtest/lib1662.c",
+  "tests/libtest/lib1900.c",
+  "tests/libtest/lib1901.c",
+  "tests/libtest/lib1903.c",
+  "tests/libtest/lib1905.c",
+  "tests/libtest/lib1906.c",
+  "tests/libtest/lib1907.c",
+  "tests/libtest/lib1908.c",
+  "tests/libtest/lib1910.c",
+  "tests/libtest/lib1911.c",
+  "tests/libtest/lib1912.c",
+  "tests/libtest/lib1913.c",
+  "tests/libtest/lib1915.c",
+  "tests/libtest/lib1916.c",
+  "tests/libtest/lib1918.c",
+  "tests/libtest/lib1919.c",
+  "tests/libtest/lib1933.c",
+  "tests/libtest/lib1934.c",
+  "tests/libtest/lib1935.c",
+  "tests/libtest/lib1936.c",
+  "tests/libtest/lib1937.c",
+  "tests/libtest/lib1938.c",
+  "tests/libtest/lib1939.c",
+  "tests/libtest/lib1940.c",
+  "tests/libtest/lib1945.c",
+  "tests/libtest/lib1947.c",
+  "tests/libtest/lib1948.c",
+  "tests/libtest/lib1955.c",
+  "tests/libtest/lib1956.c",
+  "tests/libtest/lib1957.c",
+  "tests/libtest/lib1958.c",
+  "tests/libtest/lib1959.c",
+  "tests/libtest/lib1960.c",
+  "tests/libtest/lib1964.c",
+  "tests/libtest/lib1970.c",
+  "tests/libtest/lib1971.c",
+  "tests/libtest/lib1972.c",
+  "tests/libtest/lib1973.c",
+  "tests/libtest/lib1974.c",
+  "tests/libtest/lib1975.c",
+  "tests/libtest/lib2301.c",
+  "tests/libtest/lib2302.c",
+  "tests/libtest/lib2304.c",
+  "tests/libtest/lib2305.c",
+  "tests/libtest/lib2306.c",
+  "tests/libtest/lib2308.c",
+  "tests/libtest/lib2309.c",
+  "tests/libtest/lib2402.c",
+  "tests/libtest/lib2404.c",
+  "tests/libtest/lib2405.c",
+  "tests/libtest/lib2502.c",
+  "tests/libtest/lib3010.c",
+  "tests/libtest/lib3025.c",
+  "tests/libtest/lib3026.c",
+  "tests/libtest/lib3027.c",
+  "tests/libtest/lib3100.c",
+  "tests/libtest/lib3101.c",
+  "tests/libtest/lib3102.c",
+  "tests/libtest/lib3103.c",
+  "tests/libtest/lib3207.c",
+  "tests/libtest/lib500.c",
+  "tests/libtest/lib501.c",
+  "tests/libtest/lib502.c",
+  "tests/libtest/lib503.c",
+  "tests/libtest/lib504.c",
+  "tests/libtest/lib505.c",
+  "tests/libtest/lib506.c",
+  "tests/libtest/lib507.c",
+  "tests/libtest/lib508.c",
+  "tests/libtest/lib509.c",
+  "tests/libtest/lib510.c",
+  "tests/libtest/lib511.c",
+  "tests/libtest/lib512.c",
+  "tests/libtest/lib513.c",
+  "tests/libtest/lib514.c",
+  "tests/libtest/lib515.c",
+  "tests/libtest/lib516.c",
+  "tests/libtest/lib517.c",
+  "tests/libtest/lib518.c",
+  "tests/libtest/lib519.c",
+  "tests/libtest/lib520.c",
+  "tests/libtest/lib521.c",
+  "tests/libtest/lib523.c",
+  "tests/libtest/lib524.c",
+  "tests/libtest/lib525.c",
+  "tests/libtest/lib526.c",
+  "tests/libtest/lib530.c",
+  "tests/libtest/lib533.c",
+  "tests/libtest/lib536.c",
+  "tests/libtest/lib537.c",
+  "tests/libtest/lib539.c",
+  "tests/libtest/lib540.c",
+  "tests/libtest/lib541.c",
+  "tests/libtest/lib542.c",
+  "tests/libtest/lib543.c",
+  "tests/libtest/lib544.c",
+  "tests/libtest/lib547.c",
+  "tests/libtest/lib549.c",
+  "tests/libtest/lib552.c",
+  "tests/libtest/lib553.c",
+  "tests/libtest/lib554.c",
+  "tests/libtest/lib555.c",
+  "tests/libtest/lib556.c",
+  "tests/libtest/lib557.c",
+  "tests/libtest/lib558.c",
+  "tests/libtest/lib559.c",
+  "tests/libtest/lib560.c",
+  "tests/libtest/lib562.c",
+  "tests/libtest/lib564.c",
+  "tests/libtest/lib566.c",
+  "tests/libtest/lib567.c",
+  "tests/libtest/lib568.c",
+  "tests/libtest/lib569.c",
+  "tests/libtest/lib570.c",
+  "tests/libtest/lib571.c",
+  "tests/libtest/lib572.c",
+  "tests/libtest/lib573.c",
+  "tests/libtest/lib574.c",
+  "tests/libtest/lib575.c",
+  "tests/libtest/lib576.c",
+  "tests/libtest/lib578.c",
+  "tests/libtest/lib579.c",
+  "tests/libtest/lib582.c",
+  "tests/libtest/lib583.c",
+  "tests/libtest/lib586.c",
+  "tests/libtest/lib589.c",
+  "tests/libtest/lib590.c",
+  "tests/libtest/lib591.c",
+  "tests/libtest/lib597.c",
+  "tests/libtest/lib598.c",
+  "tests/libtest/lib599.c",
+  "tests/libtest/lib643.c",
+  "tests/libtest/lib650.c",
+  "tests/libtest/lib651.c",
+  "tests/libtest/lib652.c",
+  "tests/libtest/lib653.c",
+  "tests/libtest/lib654.c",
+  "tests/libtest/lib655.c",
+  "tests/libtest/lib658.c",
+  "tests/libtest/lib659.c",
+  "tests/libtest/lib661.c",
+  "tests/libtest/lib666.c",
+  "tests/libtest/lib667.c",
+  "tests/libtest/lib668.c",
+  "tests/libtest/lib670.c",
+  "tests/libtest/lib674.c",
+  "tests/libtest/lib676.c",
+  "tests/libtest/lib677.c",
+  "tests/libtest/lib678.c",
+  "tests/libtest/libauthretry.c",
+  "tests/libtest/libntlmconnect.c",
+  "tests/libtest/libprereq.c",
+  "tests/libtest/testtrace.c",
+  "tests/libtest/testutil.c",
+  "tests/server/disabled.c",
+  "tests/server/getpart.c",
+  "tests/server/mqttd.c",
+  "tests/server/resolve.c",
+  "tests/server/rtspd.c",
+  "tests/server/sockfilt.c",
+  "tests/server/socksd.c",
+  "tests/server/sws.c",
+  "tests/server/testpart.c",
+  "tests/server/tftpd.c",
+  "tests/server/util.c",
+  "tests/unit/unit1300.c",
+  "tests/unit/unit1302.c",
+  "tests/unit/unit1303.c",
+  "tests/unit/unit1304.c",
+  "tests/unit/unit1305.c",
+  "tests/unit/unit1307.c",
+  "tests/unit/unit1308.c",
+  "tests/unit/unit1309.c",
+  "tests/unit/unit1323.c",
+  "tests/unit/unit1330.c",
+  "tests/unit/unit1394.c",
+  "tests/unit/unit1395.c",
+  "tests/unit/unit1396.c",
+  "tests/unit/unit1397.c",
+  "tests/unit/unit1398.c",
+  "tests/unit/unit1399.c",
+  "tests/unit/unit1600.c",
+  "tests/unit/unit1601.c",
+  "tests/unit/unit1602.c",
+  "tests/unit/unit1603.c",
+  "tests/unit/unit1604.c",
+  "tests/unit/unit1605.c",
+  "tests/unit/unit1606.c",
+  "tests/unit/unit1607.c",
+  "tests/unit/unit1608.c",
+  "tests/unit/unit1609.c",
+  "tests/unit/unit1610.c",
+  "tests/unit/unit1611.c",
+  "tests/unit/unit1612.c",
+  "tests/unit/unit1614.c",
+  "tests/unit/unit1615.c",
+  "tests/unit/unit1616.c",
+  "tests/unit/unit1620.c",
+  "tests/unit/unit1621.c",
+  "tests/unit/unit1650.c",
+  "tests/unit/unit1651.c",
+  "tests/unit/unit1652.c",
+  "tests/unit/unit1653.c",
+  "tests/unit/unit1654.c",
+  "tests/unit/unit1655.c",
+  "tests/unit/unit1656.c",
+  "tests/unit/unit1660.c",
+  "tests/unit/unit1661.c",
+  "tests/unit/unit1663.c",
+  "tests/unit/unit2600.c",
+  "tests/unit/unit2601.c",
+  "tests/unit/unit2602.c",
+  "tests/unit/unit2603.c",
+  "tests/unit/unit2604.c",
+  "tests/unit/unit3200.c",
+  "tests/unit/unit3205.c"
+ ],
+ "only_bazel": null,
+ "define_mismatch_total_tus": 56,
+ "define_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "CURL_HIDDEN_SYMBOLS"
+    ],
+    "missing_in_bazel": [
+     "UNITTESTS"
+    ]
+   },
+   "tu_count": 44,
+   "examples": [
+    "src/slist_wc.c",
+    "src/terminal.c",
+    "src/tool_binmode.c",
+    "src/tool_bname.c",
+    "src/tool_cb_dbg.c"
+   ]
   },
-  "std_mismatch": {},
-  "include_mismatch": {
-    "lib/altsvc.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/amigaos.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/asyn-ares.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/asyn-thread.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/base64.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/bufq.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/bufref.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/c-hyper.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/cf-h1-proxy.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/cf-h2-proxy.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/cf-haproxy.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/cf-https-connect.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/cf-socket.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/cfilters.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/conncache.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/connect.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/content_encoding.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/cookie.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_addrinfo.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_des.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_endian.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_fnmatch.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_get_line.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_gethostname.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_gssapi.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_memrchr.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_multibyte.c": {
-      "missing_in_bazel": [
-        "src"
-      ],
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_ntlm_core.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_range.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_rtmp.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_sasl.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_sha512_256.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_sspi.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_threads.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/curl_trc.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/cw-out.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/dict.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/doh.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/dynbuf.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/dynhds.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/easy.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/easygetopt.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/easyoptions.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/escape.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/file.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/fileinfo.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/fopen.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/formdata.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/ftp.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/ftplistparser.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/getenv.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/getinfo.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/gopher.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/hash.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/headers.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/hmac.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/hostasyn.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/hostip.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/hostip4.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/hostip6.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/hostsyn.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/hsts.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/http.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/http1.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/http2.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/http_aws_sigv4.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/http_chunks.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/http_digest.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/http_negotiate.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/http_ntlm.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/http_proxy.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/idn.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/if2ip.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/imap.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/inet_ntop.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/inet_pton.c": {
-      "missing_in_bazel": [
-        "src"
-      ],
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/krb5.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/ldap.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/llist.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/macos.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/md4.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/md5.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/memdebug.c": {
-      "missing_in_bazel": [
-        "src"
-      ],
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/mime.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/mprintf.c": {
-      "missing_in_bazel": [
-        "src"
-      ],
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/mqtt.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/multi.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/netrc.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/nonblock.c": {
-      "missing_in_bazel": [
-        "src"
-      ],
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/noproxy.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/openldap.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/parsedate.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/pingpong.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/pop3.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/progress.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/psl.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/rand.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/rename.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/request.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/rtsp.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/select.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/sendf.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/setopt.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/sha256.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/share.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/slist.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/smb.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/smtp.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/socketpair.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/socks.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/socks_gssapi.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/socks_sspi.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/speedcheck.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/splay.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/strcase.c": {
-      "missing_in_bazel": [
-        "src"
-      ],
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/strdup.c": {
-      "missing_in_bazel": [
-        "src"
-      ],
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/strerror.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/strtok.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/strtoofft.c": {
-      "missing_in_bazel": [
-        "src"
-      ],
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/system_win32.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/telnet.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/tftp.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/timediff.c": {
-      "missing_in_bazel": [
-        "src"
-      ],
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/timeval.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/transfer.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/url.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/urlapi.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vauth/cleartext.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vauth/cram.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vauth/digest.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vauth/digest_sspi.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vauth/gsasl.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vauth/krb5_gssapi.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vauth/krb5_sspi.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vauth/ntlm.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vauth/ntlm_sspi.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vauth/oauth2.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vauth/spnego_gssapi.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vauth/spnego_sspi.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vauth/vauth.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/version.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/version_win32.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vquic/curl_msh3.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vquic/curl_ngtcp2.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vquic/curl_osslq.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vquic/curl_quiche.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vquic/vquic-tls.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vquic/vquic.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vssh/curl_path.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vssh/libssh.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vssh/libssh2.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vssh/wolfssh.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/bearssl.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/cipher_suite.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/gtls.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/hostcheck.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/keylog.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/mbedtls.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/mbedtls_threadlock.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/openssl.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/rustls.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/schannel.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/schannel_verify.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/sectransp.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/vtls.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/wolfssl.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/vtls/x509asn1.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/warnless.c": {
-      "missing_in_bazel": [
-        "src"
-      ],
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "lib/ws.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/slist_wc.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/terminal.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_binmode.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_bname.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_cb_dbg.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_cb_hdr.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_cb_prg.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_cb_rea.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_cb_see.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_cb_soc.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_cb_wrt.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_cfgable.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_dirhie.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_doswin.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_easysrc.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_filetime.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_findfile.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_formparse.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_getparam.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_getpass.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_help.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_helpers.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_ipfs.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_libinfo.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_listhelp.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_main.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_msgs.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_operate.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_operhlp.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_paramhlp.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_parsecfg.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_progress.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_setopt.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_sleep.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_stderr.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_strdup.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_urlglob.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_util.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_vms.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_writeout.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_writeout_json.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/tool_xattr.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/var.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "tool_hugehelp.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    }
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "BUILDING_LIBCURL",
+     "CURL_HIDDEN_SYMBOLS"
+    ],
+    "missing_in_bazel": [
+     "CURL_NO_GETADDRINFO_OVERRIDE"
+    ]
+   },
+   "tu_count": 10,
+   "examples": [
+    "lib/curl_multibyte.c",
+    "lib/inet_pton.c",
+    "lib/memdebug.c",
+    "lib/mprintf.c",
+    "lib/nonblock.c"
+   ]
   },
-  "copt_mismatch": {
-    "lib/curl_multibyte.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "-fvisibility=hidden"
-      ]
-    },
-    "lib/inet_pton.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "-fvisibility=hidden"
-      ]
-    },
-    "lib/memdebug.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "-fvisibility=hidden"
-      ]
-    },
-    "lib/mprintf.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "-fvisibility=hidden"
-      ]
-    },
-    "lib/nonblock.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "-fvisibility=hidden"
-      ]
-    },
-    "lib/strcase.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "-fvisibility=hidden"
-      ]
-    },
-    "lib/strdup.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "-fvisibility=hidden"
-      ]
-    },
-    "lib/strtoofft.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "-fvisibility=hidden"
-      ]
-    },
-    "lib/timediff.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "-fvisibility=hidden"
-      ]
-    },
-    "lib/warnless.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "-fvisibility=hidden"
-      ]
-    }
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "BUILDING_CURL",
+     "CURL_HIDDEN_SYMBOLS",
+     "CURL_STATICLIB"
+    ],
+    "missing_in_bazel": [
+     "CURL_NO_GETADDRINFO_OVERRIDE"
+    ]
+   },
+   "tu_count": 2,
+   "examples": [
+    "lib/base64.c",
+    "lib/dynbuf.c"
+   ]
+  }
+ ],
+ "std_mismatch": {},
+ "include_mismatch_total_tus": 213,
+ "include_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "."
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 203,
+   "examples": [
+    "lib/altsvc.c",
+    "lib/amigaos.c",
+    "lib/asyn-ares.c",
+    "lib/asyn-thread.c",
+    "lib/base64.c"
+   ]
   },
-  "gen_root_missing": {},
-  "tu_key_collisions": 770,
-  "param_file_skipped": 0
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "."
+    ],
+    "missing_in_bazel": [
+     "src"
+    ]
+   },
+   "tu_count": 10,
+   "examples": [
+    "lib/curl_multibyte.c",
+    "lib/inet_pton.c",
+    "lib/memdebug.c",
+    "lib/mprintf.c",
+    "lib/nonblock.c"
+   ]
+  }
+ ],
+ "copt_mismatch_total_tus": 10,
+ "copt_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "-fvisibility=hidden"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 10,
+   "examples": [
+    "lib/curl_multibyte.c",
+    "lib/inet_pton.c",
+    "lib/memdebug.c",
+    "lib/mprintf.c",
+    "lib/nonblock.c"
+   ]
+  }
+ ],
+ "gen_root_missing": {},
+ "tu_key_collisions": 770,
+ "param_file_skipped": 0
 }

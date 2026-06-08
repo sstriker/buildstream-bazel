@@ -1,12 +1,14 @@
 {
-  "matched": 17,
-  "only_cmake": null,
-  "only_bazel": null,
-  "define_mismatch": {},
-  "std_mismatch": {},
-  "include_mismatch": {},
-  "copt_mismatch": {},
-  "gen_root_missing": {},
-  "tu_key_collisions": 34,
-  "param_file_skipped": 0
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 17,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch": {},
+ "std_mismatch": {},
+ "include_mismatch": {},
+ "copt_mismatch": {},
+ "gen_root_missing": {},
+ "tu_key_collisions": 34,
+ "param_file_skipped": 0
 }

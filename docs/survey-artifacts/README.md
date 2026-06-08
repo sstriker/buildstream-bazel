@@ -36,7 +36,7 @@ SURVEY_BAZEL_BUILD=<member> SURVEY_SKIP_BUILD=1 SURVEY_COMPILE_DB=1 SURVEY_INTEN
 | `intent-capture.json` | **Triaged** judge output — every finding with full `evidence` / `cmake_ref` / `severity`, plus a triage `status` (`net-new` vs `dup-todo` / `dup-rejection`) and a `summary` (`net_new` = the `missed` count in `survey-corpus.md`). Triage annotates; it drops nothing. |
 | `intent-findings.json` | **Raw** pre-triage judge output (the findings exactly as emitted, before dedup against this element's `conversion-todos.json` / `rejections.json`). |
 | `intent-prompt.txt` | The exact prompt the judge read (project-derived context + the converted BUILD/MODULE + cmake-source file list). |
-| `fidelity.json` | compile-db fidelity diff (per-TU defines / `-std` / includes / copts drift; `gen_root_missing`; link order). **Absent** for members with no `CppCompile` TUs. |
+| `fidelity.json` | compile-db fidelity diff (per-TU defines / `-std` / includes / copts drift; `gen_root_missing`; link order), stored as a **signature-grouped summary** — each per-TU `*_mismatch` map is collapsed into a `{signature, tu_count, examples}` histogram (`_compacted: true`), so the distinct drift classes + their TU counts + example TUs are kept without the per-TU repetition. The deterministic fidelity output is the lower-value half here; the full per-TU file is reproducible via the recipe above. Compactor: `compact-fidelity.py`. **Absent** for members with no `CppCompile` TUs. |
 
 ## Fidelity coverage caveats (members with no `fidelity.json`)
 

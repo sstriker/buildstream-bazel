@@ -1,314 +1,74 @@
 {
-  "matched": 40,
-  "only_cmake": null,
-  "only_bazel": null,
-  "define_mismatch": {
-    "buffer.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "bufferevent.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "bufferevent_filter.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "bufferevent_openssl.c": {
-      "missing_in_bazel": [
-        "event_openssl_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "bufferevent_pair.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "bufferevent_ratelim.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "bufferevent_sock.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "epoll.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "evdns.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "event.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "event_tagging.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "evmap.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "evrpc.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "evthread.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "evthread_pthread.c": {
-      "missing_in_bazel": [
-        "event_pthreads_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "evutil.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "evutil_rand.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "evutil_time.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "http.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "listener.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "log.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "poll.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "select.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "signal.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    },
-    "strlcpy.c": {
-      "missing_in_bazel": [
-        "event_shared_EXPORTS"
-      ],
-      "extra_in_bazel": null
-    }
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 40,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch_total_tus": 25,
+ "define_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [],
+    "missing_in_bazel": [
+     "event_shared_EXPORTS"
+    ]
+   },
+   "tu_count": 23,
+   "examples": [
+    "buffer.c",
+    "bufferevent.c",
+    "bufferevent_filter.c",
+    "bufferevent_pair.c",
+    "bufferevent_ratelim.c"
+   ]
   },
-  "std_mismatch": {},
-  "include_mismatch": {},
-  "copt_mismatch": {
-    "buffer.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "bufferevent.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "bufferevent_filter.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "bufferevent_openssl.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "bufferevent_pair.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "bufferevent_ratelim.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "bufferevent_sock.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "epoll.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "evdns.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "event.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "event_tagging.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "evmap.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "evrpc.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "evthread.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "evthread_pthread.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "evutil.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "evutil_rand.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "evutil_time.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "http.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "listener.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "log.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "poll.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "select.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "signal.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    },
-    "strlcpy.c": {
-      "missing_in_bazel": [
-        "-fvisibility=hidden"
-      ],
-      "extra_in_bazel": null
-    }
+  {
+   "signature": {
+    "extra_in_bazel": [],
+    "missing_in_bazel": [
+     "event_openssl_shared_EXPORTS"
+    ]
+   },
+   "tu_count": 1,
+   "examples": [
+    "bufferevent_openssl.c"
+   ]
   },
-  "gen_root_missing": {},
-  "tu_key_collisions": 142,
-  "param_file_skipped": 0
+  {
+   "signature": {
+    "extra_in_bazel": [],
+    "missing_in_bazel": [
+     "event_pthreads_shared_EXPORTS"
+    ]
+   },
+   "tu_count": 1,
+   "examples": [
+    "evthread_pthread.c"
+   ]
+  }
+ ],
+ "std_mismatch": {},
+ "include_mismatch": {},
+ "copt_mismatch_total_tus": 25,
+ "copt_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [],
+    "missing_in_bazel": [
+     "-fvisibility=hidden"
+    ]
+   },
+   "tu_count": 25,
+   "examples": [
+    "buffer.c",
+    "bufferevent.c",
+    "bufferevent_filter.c",
+    "bufferevent_openssl.c",
+    "bufferevent_pair.c"
+   ]
+  }
+ ],
+ "gen_root_missing": {},
+ "tu_key_collisions": 142,
+ "param_file_skipped": 0
 }

@@ -1,19 +1,28 @@
 {
-  "matched": 24,
-  "only_cmake": null,
-  "only_bazel": null,
-  "define_mismatch": {},
-  "std_mismatch": {},
-  "include_mismatch": {
-    "contrib/tools/png-fix-itxt.c": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    }
-  },
-  "copt_mismatch": {},
-  "gen_root_missing": {},
-  "tu_key_collisions": 34,
-  "param_file_skipped": 0
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 24,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch": {},
+ "std_mismatch": {},
+ "include_mismatch_total_tus": 1,
+ "include_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "."
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1,
+   "examples": [
+    "contrib/tools/png-fix-itxt.c"
+   ]
+  }
+ ],
+ "copt_mismatch": {},
+ "gen_root_missing": {},
+ "tu_key_collisions": 34,
+ "param_file_skipped": 0
 }

@@ -1,110 +1,50 @@
 {
-  "matched": 8,
-  "only_cmake": null,
-  "only_bazel": null,
-  "define_mismatch": {
-    "example/example.cpp": {
-      "missing_in_bazel": [
-        "NDEBUG"
-      ],
-      "extra_in_bazel": null
-    },
-    "src/async.cpp": {
-      "missing_in_bazel": [
-        "NDEBUG"
-      ],
-      "extra_in_bazel": null
-    },
-    "src/bundled_fmtlib_format.cpp": {
-      "missing_in_bazel": [
-        "NDEBUG"
-      ],
-      "extra_in_bazel": null
-    },
-    "src/cfg.cpp": {
-      "missing_in_bazel": [
-        "NDEBUG"
-      ],
-      "extra_in_bazel": null
-    },
-    "src/color_sinks.cpp": {
-      "missing_in_bazel": [
-        "NDEBUG"
-      ],
-      "extra_in_bazel": null
-    },
-    "src/file_sinks.cpp": {
-      "missing_in_bazel": [
-        "NDEBUG"
-      ],
-      "extra_in_bazel": null
-    },
-    "src/spdlog.cpp": {
-      "missing_in_bazel": [
-        "NDEBUG"
-      ],
-      "extra_in_bazel": null
-    },
-    "src/stdout_sinks.cpp": {
-      "missing_in_bazel": [
-        "NDEBUG"
-      ],
-      "extra_in_bazel": null
-    }
-  },
-  "std_mismatch": {},
-  "include_mismatch": {
-    "example/example.cpp": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/async.cpp": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/bundled_fmtlib_format.cpp": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/cfg.cpp": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/color_sinks.cpp": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/file_sinks.cpp": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/spdlog.cpp": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    },
-    "src/stdout_sinks.cpp": {
-      "missing_in_bazel": null,
-      "extra_in_bazel": [
-        "."
-      ]
-    }
-  },
-  "copt_mismatch": {},
-  "gen_root_missing": {},
-  "tu_key_collisions": 0,
-  "param_file_skipped": 0
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 8,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch_total_tus": 8,
+ "define_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [],
+    "missing_in_bazel": [
+     "NDEBUG"
+    ]
+   },
+   "tu_count": 8,
+   "examples": [
+    "example/example.cpp",
+    "src/async.cpp",
+    "src/bundled_fmtlib_format.cpp",
+    "src/cfg.cpp",
+    "src/color_sinks.cpp"
+   ]
+  }
+ ],
+ "std_mismatch": {},
+ "include_mismatch_total_tus": 8,
+ "include_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "."
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 8,
+   "examples": [
+    "example/example.cpp",
+    "src/async.cpp",
+    "src/bundled_fmtlib_format.cpp",
+    "src/cfg.cpp",
+    "src/color_sinks.cpp"
+   ]
+  }
+ ],
+ "copt_mismatch": {},
+ "gen_root_missing": {},
+ "tu_key_collisions": 0,
+ "param_file_skipped": 0
 }
