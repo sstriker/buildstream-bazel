@@ -35,9 +35,11 @@ The fast feedback loop in one paragraph: `go build ./...` then
 `go vet ./...` then `gofmt -l .` (must print nothing) then
 `make staticcheck` (catches what `vet` doesn't — unused code / U1000,
 simplifications) then `make lint-complexity` (the complexity lens — now a
-blocking gate) then `go test ./...`. All of these gate in CI, so a green
-`go test` alone isn't enough: a stray U1000 or a new complexity regression
-still fails the build. After that, run the render gate(s) under `scripts/`
+blocking gate) then `go test ./...`. `make staticcheck` and
+`make lint-complexity` are blocking CI gates; CI's build job runs
+`make converter` (the converter binary only), not the full `go build ./...`,
+so run the whole sequence locally. A green `go test` alone isn't enough: a
+stray U1000 or a new complexity regression still fails the build. After that, run the render gate(s) under `scripts/`
 matching what you touched (see `CONTRIBUTING.md`'s handler→gate table).
 Render gates skip their bazel-build half cleanly when bazel/bazelisk isn't on
 `$PATH` at all, or is below the gate's version floor (most `meta-*` gates need

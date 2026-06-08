@@ -11,7 +11,7 @@ Decide based on what you touched:
 
 | You changed | Run |
 |---|---|
-| Anything `*.go` | `go build ./...` then `go vet ./...` then `gofmt -l .` (must be empty) then `make staticcheck` then `make lint-complexity` then `go test ./...` (all blocking in CI, which runs the equivalent `make` targets) |
+| Anything `*.go` | `go build ./...` then `go vet ./...` then `gofmt -l .` (must be empty) then `make staticcheck` then `make lint-complexity` then `go test ./...`. CI gates blocking on `make staticcheck` and `make lint-complexity`; its build job runs `make converter` (the converter binary only), not the full `go build ./...`, so run the whole sequence locally. |
 | `cmd/write-a/handler_*.go` (any handler) | the relevant `scripts/meta-*.sh` render gate (see [render gates](#render-gates)) |
 | `cmd/build-tracer/` | `go test ./cmd/build-tracer/...` plus a render gate that exercises the autotools native path (`scripts/meta-autotools-native.sh`) |
 | `cmd/convert-element-trace/` | `go test ./cmd/convert-element-trace/...` plus the autotools render gates |
