@@ -12,7 +12,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1684,20 +1683,8 @@ func recoverAliases(traceRaw []byte, sourceRoot string, importable map[string]bo
 }
 
 func handleError(a cli.Args, err error) int {
-	var tier1 *failure.Error
-	if errors.As(err, &tier1) {
-		fmt.Fprintf(os.Stderr, "convert-element-cmake: %s\n", tier1.Error())
-		if a.OutFailure != "" {
-			payload, _ := json.MarshalIndent(map[string]any{
-				"tier":    1,
-				"code":    string(tier1.Code),
-				"message": tier1.Message,
-			}, "", "  ")
-			_ = os.MkdirAll(filepath.Dir(a.OutFailure), 0o755)
-			_ = os.WriteFile(a.OutFailure, append(payload, '\n'), 0o644)
-		}
+	if failure.ReportTier1(err, "convert-element-cmake", a.OutFailure, true) {
 		return cli.ExitTier1
 	}
-	fmt.Fprintf(os.Stderr, "convert-element-cmake: %v\n", err)
 	return cli.ExitTier2
 }

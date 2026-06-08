@@ -24,8 +24,6 @@
 package main
 
 import (
-	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -204,25 +202,12 @@ func walkSourceFiles(root string) ([]string, error) {
 }
 
 func handleError(a args, err error) int {
-	var tier1 *failure.Error
-	if errors.As(err, &tier1) {
-		fmt.Fprintf(os.Stderr, "convert-element-pyproject: %s\n", tier1.Error())
-		// Probe mode is contract-side-effect-free: callers (write-a's
-		// --pyproject-fallback dispatch) rely only on the exit code
-		// + stderr text. Skip writing --out-failure so a probe run
-		// can't unintentionally clobber a previous non-probe run's
-		// failure JSON.
-		if a.outFailure != "" && !a.probe {
-			payload, _ := json.MarshalIndent(map[string]any{
-				"tier":    1,
-				"code":    string(tier1.Code),
-				"message": tier1.Message,
-			}, "", "  ")
-			_ = os.MkdirAll(filepath.Dir(a.outFailure), 0o755)
-			_ = os.WriteFile(a.outFailure, append(payload, '\n'), 0o644)
-		}
+	// Probe mode is contract-side-effect-free: callers (write-a's
+	// --pyproject-fallback dispatch) rely only on the exit code + stderr text.
+	// Pass writeFailure=!a.probe so a probe run can't clobber a previous
+	// non-probe run's failure JSON.
+	if failure.ReportTier1(err, "convert-element-pyproject", a.outFailure, !a.probe) {
 		return exitTier1
 	}
-	fmt.Fprintf(os.Stderr, "convert-element-pyproject: %v\n", err)
 	return exitTier2
 }
