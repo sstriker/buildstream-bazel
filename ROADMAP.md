@@ -53,16 +53,20 @@ transition cleanly.
   reproducible without a manual prep step. (Carried from protobuf; grpc itself
   is green.)
 
-- **Converter hang in `--diagnostics` mode on libevent's regress targets.** The
-  `--diagnostics` convert of libevent spins indefinitely (observed 38+ min, no
-  output) UNLESS `EVENT__DISABLE_TESTS=ON` — so the libevent lens scopes the
-  regress tests off (libevent.conf), which also dodges a `test/regress.gen.c
-  outside-build-dir` rejection. With tests off both converts complete in
-  seconds with 0 rejections, so the loop is in the regress target graph (likely
-  the custom-command / generated-source recovery over the regress test tree).
-  Find + fix the loop so libevent's tests don't have to be scoped purely to
-  avoid a hang. Lower priority than greening members, but a hang (vs a clean
-  refusal) is a sharp edge worth removing.
+- **libevent regress tests — hang FIXED; `regress.gen.c` outside-build-dir
+  rejection remains.** The `--diagnostics` convert hang (spun 38+ min with
+  `EVENT__DISABLE_TESTS` off) is fixed: `anchorGenruleOutputsToRuledir`
+  (standalone_genrules.go) walked each custom-command output's parent dirs via
+  `path.Dir` in a loop gated on `strings.Contains(d, "/")`, but `path.Dir("/")
+  == "/"` still contains a slash — so an ABSOLUTE output path (some libevent
+  regress `add_custom_command` OUTPUTs are absolute) walked down to `/` and
+  spun there forever. Now the walk stops at the `path.Dir` fixed point; libevent
+  `--diagnostics` (tests on) completes in seconds (guard:
+  `TestAnchorGenruleOutputsToRuledir_AbsoluteOutputTerminates`). **Remaining:**
+  `EVENT__DISABLE_TESTS=ON` still in libevent.conf because the regress tree's
+  generated `test/regress.gen.c` trips an outside-build-dir rejection — a
+  separate, narrower issue (a clean refusal, not a hang) to chase if the lens
+  wants libevent's tests in scope.
 
 - **Green the remaining heavyweight corpus members: vtk (tail), cuda-samples.**
   25/26 are green (protobuf + sdl + vtk + grpc landed). Remaining:

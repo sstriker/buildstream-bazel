@@ -603,8 +603,17 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 			continue
 		}
 		tokenSet[o] = true
-		for d := path.Dir(o); strings.Contains(d, "/"); d = path.Dir(d) {
+		for d := path.Dir(o); strings.Contains(d, "/"); {
 			tokenSet[d] = true
+			parent := path.Dir(d)
+			// path.Dir has fixed points that still contain "/": path.Dir("/")
+			// == "/". An ABSOLUTE output (o starts with "/", as some libevent
+			// regress add_custom_command OUTPUTs are) walks down to "/" and then
+			// loops forever there. Stop when the parent stops shrinking.
+			if parent == d {
+				break
+			}
+			d = parent
 		}
 	}
 	// Fallback for cd-stripped WORKING_DIRECTORY-relative outputs: cmake

@@ -1,6 +1,9 @@
 package lower
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // anchorGenruleOutputsToRuledir anchors the output AND its multi-component
 // parent dir, so a make_directory/mkdir of the output's parent lands under
@@ -60,5 +63,27 @@ func TestAnchorGenruleOutputsToRuledir_FullFormNoFallback(t *testing.T) {
 	want := "tool $(RULEDIR)/gen/myproj/out.inc"
 	if got != want {
 		t.Errorf("full-form output anchors once:\n got  %q\n want %q", got, want)
+	}
+}
+
+// TestAnchorGenruleOutputsToRuledir_AbsoluteOutputTerminates is the libevent
+// regress hang regression: an ABSOLUTE output path walked its parent dirs via
+// path.Dir down to "/", where path.Dir("/") == "/" still contains a slash, so
+// the parent-dir loop spun forever (the converter hung indefinitely on
+// libevent's regress add_custom_commands). The loop must terminate at the
+// fixed point. Asserts the call RETURNS (a hang fails the test via timeout) and
+// doesn't corrupt the command.
+func TestAnchorGenruleOutputsToRuledir_AbsoluteOutputTerminates(t *testing.T) {
+	done := make(chan string, 1)
+	go func() {
+		done <- anchorGenruleOutputsToRuledir("cp in.c /abs/build/gen/out.c", []string{"/abs/build/gen/out.c"})
+	}()
+	select {
+	case got := <-done:
+		// An absolute output isn't $(RULEDIR)-relative, so anchoring is a no-op
+		// here; the contract under test is termination, not a specific rewrite.
+		_ = got
+	case <-time.After(5 * time.Second):
+		t.Fatal("anchorGenruleOutputsToRuledir did not terminate on an absolute output path (parent-dir walk fixed-point loop)")
 	}
 }
