@@ -328,9 +328,9 @@ transition cleanly.
   0-byte stubs for everything else (see `docs/design/sources.md`,
   `docs/design/narrowing-audit.md`). The converter's translation is meant
   to be a pure function of the codemodel + trace + the build-system files
-  (CMakeLists / `.cmake` / `configure_file` inputs), **not** of `.c`/`.cpp`/
-  `.h` content — so a BUILD that differs when source/header *bytes* are
-  zeroed is a hidden byte-dependency that would make the orchestrated
+  (CMakeLists / `.cmake` / `configure_file` inputs), **not** of the `.c` /
+  `.cpp` / `.h` source content — so a BUILD that differs when those *bytes*
+  are zeroed is a hidden byte-dependency that would make the orchestrated
   convert diverge from (or be wrong vs.) the survey-time one. Today the
   `narrowing-audit` (`cmd/audit-narrowing`) guards this **statically** — it
   compares the per-element narrowing patterns against cmake's
@@ -339,9 +339,11 @@ transition cleanly.
   sufficient for soundness. This lens is the **empirical proof** that
   closes the gap: for each surveyed project, make a copy with every source/
   header file truncated to 0 bytes **except** the element's declared
-  narrowing read-set + the build-system inputs cmake legitimately reads
-  (CMakeLists.txt, `*.cmake`, `configure_file` `*.in` templates — the
-  read-set already names these), re-run the *same* convert (same flags,
+  narrowing read-set (CMakeLists.txt is always real / special-cased;
+  `*.cmake` modules and `configure_file` `*.in` templates only insofar as
+  the element's read-set names them — where it doesn't and the convert
+  depends on one, that omission is exactly the narrowing gap this lens
+  catches), re-run the *same* convert (same flags,
   including the now-default `--emit-source-comments`, which reads CMakeLists
   comments, not source bytes — so it must stay byte-identical too), and
   assert the emitted `BUILD.bazel.out` is **byte-for-byte identical** to the
