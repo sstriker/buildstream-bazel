@@ -411,11 +411,11 @@ trees, optional-feature deps, codegen instances). Each member's
   interface libs are declared via the `absl_cc_library` **function** in
   `CMake/AbseilHelpers.cmake` (`add_library(${_NAME} INTERFACE)` at line 321),
   so the trace's `file` for that call is the helper module, not the declaring
-  `absl/<m>/CMakeLists.txt`. `dir(CallFile)` would put every interface lib in
-  `CMake/`, not its real subpackage. `AddLibraryCall` carries only
+  `absl/<m>/CMakeLists.txt`. `dir(AddLibraryCall.File)` would put every interface
+  lib in `CMake/`, not its real subpackage. `AddLibraryCall` carries only
   `{File, Line, Name, Type, Aliases, RawArgs}` — no call-stack/frame — so
   recovering the true declaring scope needs NEW trace infrastructure (capture the
-  `--trace` frame stack and resolve the parent frame = the `absl/<m>/CMakeLists`
+  `--trace` frame stack and resolve the parent frame = the `absl/<m>/CMakeLists.txt`
   call site; the `subPackageDir`/`dirScopeRel` helpers can then relativize it).
   **Plus the original caveat:** abseil's interface libs carry the repo-ROOT
   include root (so `#include "absl/<m>/<h>.h"` resolves), ABOVE their declaring
