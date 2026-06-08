@@ -39,9 +39,10 @@ blocking gate) then `go test ./...`. All of these gate in CI, so a green
 `go test` alone isn't enough: a stray U1000 or a new complexity regression
 still fails the build. After that, run the render gate(s) under `scripts/`
 matching what you touched (see `CONTRIBUTING.md`'s handler→gate table).
-Render gates skip their bazel-build half cleanly when bazel ≥9 isn't on
-`$PATH` (most `meta-*` gates check `bazel_major < 9`), but the render half
-they always exercise is still the contract `cmd/write-a` owes its consumers.
+Render gates skip their bazel-build half cleanly when the bazel on `$PATH`
+is below the gate's version floor (most `meta-*` gates need bazel ≥9; a few,
+e.g. `meta-cmake-export-header.sh`, run on ≥7), but the render half they
+always exercise is still the contract `cmd/write-a` owes its consumers.
 
 When something asks for the "correctness story" of a change — in a PR
 description, a commit message, or your own design notes — show that you
