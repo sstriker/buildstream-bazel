@@ -2,7 +2,6 @@ package ninja
 
 import (
 	"path/filepath"
-	"strings"
 
 	"github.com/sstriker/buildstream-bazel/internal/pathutil"
 	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
@@ -85,19 +84,4 @@ func ProjectToSourceTree(inputs []string, sourceRoot, buildDir string) []string 
 	}
 	out := sliceutil.SortedKeys(seen)
 	return out
-}
-
-// insideRoot reports whether rel (a filepath.Rel result) names
-// a path inside its base — i.e., it isn't `""`, `"."`, `".."`,
-// and doesn't start with `"../"`. Plain
-// `strings.HasPrefix(rel, "..")` is too broad: it would also
-// reject legitimate in-tree paths whose first component literally
-// starts with the bytes `..` (e.g. `..foo/bar`). filepath.Rel
-// never produces an internal `..` component, so this check only
-// needs to consider the leading position.
-func insideRoot(rel string) bool {
-	if rel == "" || rel == "." || rel == ".." {
-		return false
-	}
-	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
