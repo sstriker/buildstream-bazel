@@ -11,7 +11,8 @@
 #   4. buildifier -mode=diff is a no-op over the emitted BUILD (the comments sit
 #      in canonical positions — the gazelle-roundtrip contract holds).
 #
-# Off-by-default check: WITHOUT --emit-source-comments, no author comments leak.
+# Suppression check: comment-carrying is default-ON, so --emit-source-comments=false
+# is the opt-out — with it, no author comments appear.
 #
 # Gating: skips cleanly when cmake / ninja / go / make are absent; the buildifier
 # half self-skips when buildifier isn't on PATH.
@@ -61,20 +62,24 @@ assert_present "Generate the lookup table from the spec" "the codegen genrule le
 assert_present "the widget core lib" "the cc_library trailing comment"
 echo "ok  meta-cmake-comment-carrying: file header + target (leading+trailing) + codegen comments carried"
 
-# (off-by-default) Convert WITHOUT the flag — no author comments must appear.
+# (suppression) Comment-carrying is default-ON (since the "Default-on
+# comment-carrying" flip); --emit-source-comments=false is the opt-out. Convert
+# with the opt-out and assert NO author comments appear — the suppression path
+# (RecoverSourceComments off + the emitter's EmitSourceComments gate) holds.
 "$bin_dir/convert-element-cmake" \
   --source-root "$ws" \
+  --emit-source-comments=false \
   --out-build "$ws/BUILD.nocomments" \
   >/dev/null 2>"$work_dir/convert2.stderr" || {
-  echo "FAIL: convert (no flag) exited non-zero"
+  echo "FAIL: convert (--emit-source-comments=false) exited non-zero"
   sed 's/^/   stderr: /' "$work_dir/convert2.stderr"
   exit 1
 }
 if grep -qF "wraps the vendored widget code" "$ws/BUILD.nocomments"; then
-  echo "FAIL: author comment leaked without --emit-source-comments"
+  echo "FAIL: author comment present with --emit-source-comments=false"
   exit 1
 fi
-echo "ok  meta-cmake-comment-carrying: off by default (no author comments without the flag)"
+echo "ok  meta-cmake-comment-carrying: --emit-source-comments=false suppresses author comments"
 
 # (4) buildifier -mode=diff must be a no-op (canonical comment placement).
 if ! command -v buildifier >/dev/null 2>&1; then
