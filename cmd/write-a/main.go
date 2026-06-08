@@ -384,6 +384,13 @@ type stringList []string
 func (s *stringList) String() string     { return strings.Join(*s, ",") }
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
+// main is a tracked complexity giant (cognitive 105 / cyclomatic 87): write-a's
+// flag-parse + dispatch entrypoint. Breaking it down into focused sub-pass
+// extractions is its own ROADMAP "complexity lens" burndown pass — grandfathered
+// so the lens gates as blocking on all other code. Remove the directive below as
+// it comes back under threshold. See ROADMAP.md.
+//
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
 func main() {
 	log.SetFlags(0)
 	var bstPaths stringList
@@ -678,27 +685,9 @@ func main() {
 		// hold the resolved values when --convert-element-trace
 		// is also set. When ONLY --cmake-round2-fallback is set
 		// (not autotools round-2), resolve here.
-		if traceConfig.tracerBin == "" {
-			abs, err := filepath.Abs(*tracerBin)
-			if err != nil {
-				log.Fatalf("resolve build-tracer path: %v", err)
-			}
-			traceConfig.tracerBin = abs
-		}
-		if traceConfig.publishBin == "" {
-			abs, err := filepath.Abs(*publishBin)
-			if err != nil {
-				log.Fatalf("resolve trace-publish path: %v", err)
-			}
-			traceConfig.publishBin = abs
-		}
-		if traceConfig.lookupBin == "" {
-			abs, err := filepath.Abs(*lookupBin)
-			if err != nil {
-				log.Fatalf("resolve trace-lookup path: %v", err)
-			}
-			traceConfig.lookupBin = abs
-		}
+		resolveTraceBinOnce(&traceConfig.tracerBin, tracerBin, "build-tracer")
+		resolveTraceBinOnce(&traceConfig.publishBin, publishBin, "trace-publish")
+		resolveTraceBinOnce(&traceConfig.lookupBin, lookupBin, "trace-lookup")
 		cmakeConfig.round2FallbackEnabled = true
 	}
 	// kind:meson round-2 fallback. Same shape as kind:cmake's
@@ -722,27 +711,9 @@ func main() {
 		// already be resolved when --cmake-round2-fallback or the
 		// trace-driven autotools path is also set. Resolve here
 		// only when this is the sole consumer.
-		if traceConfig.tracerBin == "" {
-			abs, err := filepath.Abs(*tracerBin)
-			if err != nil {
-				log.Fatalf("resolve build-tracer path: %v", err)
-			}
-			traceConfig.tracerBin = abs
-		}
-		if traceConfig.publishBin == "" {
-			abs, err := filepath.Abs(*publishBin)
-			if err != nil {
-				log.Fatalf("resolve trace-publish path: %v", err)
-			}
-			traceConfig.publishBin = abs
-		}
-		if traceConfig.lookupBin == "" {
-			abs, err := filepath.Abs(*lookupBin)
-			if err != nil {
-				log.Fatalf("resolve trace-lookup path: %v", err)
-			}
-			traceConfig.lookupBin = abs
-		}
+		resolveTraceBinOnce(&traceConfig.tracerBin, tracerBin, "build-tracer")
+		resolveTraceBinOnce(&traceConfig.publishBin, publishBin, "trace-publish")
+		resolveTraceBinOnce(&traceConfig.lookupBin, lookupBin, "trace-lookup")
 		mesonConfig.round2FallbackEnabled = true
 	}
 	// Round-2 is the default trace-driven path. It activates
@@ -1442,6 +1413,21 @@ func loadElement(bstPath, includeBase, sourceCache string, options map[string]bs
 // (MODULE.bazel, BUILD.bazel, rules/, tools/) shared across every
 // element, then a per-element package under elements/<name>/ rendered
 // by the element's kind handler.
+// resolveTraceBinOnce sets *dst to the absolute form of *flagVal when *dst is
+// still empty — so a binary already resolved by another round-2 path (the
+// trace-driven autotools path, or a sibling fallback flag) isn't re-resolved —
+// fataling with a path-resolution message keyed on name when filepath.Abs fails.
+func resolveTraceBinOnce(dst *string, flagVal *string, name string) {
+	if *dst != "" {
+		return
+	}
+	abs, err := filepath.Abs(*flagVal)
+	if err != nil {
+		log.Fatalf("resolve %s path: %v", name, err)
+	}
+	*dst = abs
+}
+
 func writeProjectA(g *graph, outDir, convertBin string) error {
 	// Reset the per-invocation pyproject caches at the entrypoint.
 	// The CLI's flag-parse-time reset (see main()) only catches
@@ -1527,11 +1513,43 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 	// BUILDs now carry inline trace_load targets with the srckey
 	// baked in as a string attr — no extension, no JSON manifest.
 
-	// Stage the convert-element-cmake binary into project A's tools/ so the
-	// per-element genrule sees it as a hermetic input via tools = [...].
-	// `exports_files` keeps Bazel's load() footprint minimal — no
-	// sh_binary, no rules_cc dependency. Production wiring would
-	// build convert-element-cmake via a go_binary rule.
+	// Stage every tool binary the per-element genrules reference into
+	// project A's tools/, then write tools/BUILD.bazel's exports_files.
+	if err := stageProjectATools(outDir, convertBin); err != nil {
+		return err
+	}
+
+	// Render //options/BUILD.bazel from project.conf options:
+	// declarations. Skipped when no options exist (the package
+	// stays absent rather than empty so downstream selects()
+	// don't reference dangling labels).
+	if err := writeOptionsPackage(outDir, g.Options); err != nil {
+		return fmt.Errorf("render //options package: %w", err)
+	}
+
+	for _, elem := range g.Elements {
+		h := handlers[elem.Bst.Kind]
+		elemPkg := filepath.Join(outDir, "elements", elem.Name)
+		if err := os.MkdirAll(elemPkg, 0o755); err != nil {
+			return err
+		}
+		if err := h.RenderA(elem, elemPkg); err != nil {
+			return fmt.Errorf("render project-A package for %q (kind %q): %w", elem.Name, elem.Bst.Kind, err)
+		}
+	}
+
+	return nil
+}
+
+// stageProjectATools stages every tool binary project A's per-element genrules
+// reference into outDir/tools/ — convert-element-cmake (always; the per-element
+// genrule sees it as a hermetic input via tools = [...]), plus the optionally
+// configured trace/build-tracer (autotools), fold-element, cmake-configure-file,
+// cc-embed, cc-hash, meson, and pyproject tools — and writes tools/BUILD.bazel
+// with the matching exports_files list. `exports_files` keeps Bazel's load()
+// footprint minimal (no sh_binary, no rules_cc dependency). fold-element goes
+// only into project A's tools/ (project B's install genrules don't fold).
+func stageProjectATools(outDir, convertBin string) error {
 	if err := os.MkdirAll(filepath.Join(outDir, "tools"), 0o755); err != nil {
 		return err
 	}
@@ -1543,19 +1561,13 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 		return err
 	}
 	exports := []string{"convert-element-cmake", "sources.json"}
-	// Also stage convert-element-trace + build-tracer when
-	// the trace-driven kind:autotools path is configured. The
-	// install genrule references both via tools = [...]; without
-	// staging, the labels would resolve to nothing.
+	// Stage convert-element-trace + build-tracer when the trace-driven
+	// kind:autotools path is configured; the install genrule references both.
 	autotoolsExports, err := stageAutotoolsTools(outDir)
 	if err != nil {
 		return err
 	}
 	exports = append(exports, autotoolsExports...)
-	// fold-element only goes into project A's tools/: project A's
-	// per-element fold genrule consumes it. Project B's install
-	// genrules don't fold — they just run the build pipeline and
-	// publish per-platform traces — so writeProjectB skips this.
 	foldExports, err := stageFoldElement(outDir)
 	if err != nil {
 		return err
@@ -1596,6 +1608,63 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 	if pyprojectExport != "" {
 		exports = append(exports, pyprojectExport)
 	}
+	exportsList := formatExportsList(exports)
+	return writeFile(filepath.Join(outDir, "tools", "BUILD.bazel"), fmt.Sprintf("exports_files([%s])\n", exportsList))
+}
+
+// stageSharedOptionalTools stages the optionally-configured tool binaries
+// shared by both projects — autotools trace/build-tracer, cmake-configure-file,
+// cc-embed, cc-hash, meson, and pyproject — into outDir/tools/, appending each
+// staged tool's exports_files entry to exports in a stable order. Returns the
+// extended list. (Project A additionally stages convert-element-cmake +
+// fold-element; those are wired in stageProjectATools, not here.)
+func stageSharedOptionalTools(outDir string, exports []string) ([]string, error) {
+	autotoolsExports, err := stageAutotoolsTools(outDir)
+	if err != nil {
+		return nil, err
+	}
+	exports = append(exports, autotoolsExports...)
+	cmakeFileExport, err := stageCmakeConfigureFileTool(outDir)
+	if err != nil {
+		return nil, err
+	}
+	if cmakeFileExport != "" {
+		exports = append(exports, cmakeFileExport)
+	}
+	ccEmbedExport, err := stageCCEmbedTool(outDir)
+	if err != nil {
+		return nil, err
+	}
+	if ccEmbedExport != "" {
+		exports = append(exports, ccEmbedExport)
+	}
+	ccHashExport, err := stageCCHashTool(outDir)
+	if err != nil {
+		return nil, err
+	}
+	if ccHashExport != "" {
+		exports = append(exports, ccHashExport)
+	}
+	mesonExport, err := stageMesonConverter(outDir)
+	if err != nil {
+		return nil, err
+	}
+	if mesonExport != "" {
+		exports = append(exports, mesonExport)
+	}
+	pyprojectExport, err := stagePyprojectConverter(outDir)
+	if err != nil {
+		return nil, err
+	}
+	if pyprojectExport != "" {
+		exports = append(exports, pyprojectExport)
+	}
+	return exports, nil
+}
+
+// formatExportsList renders an exports_files entry list as a comma-separated
+// run of quoted strings (e.g. `"a", "b", "c"`).
+func formatExportsList(exports []string) string {
 	exportsList := ""
 	for i, e := range exports {
 		if i > 0 {
@@ -1603,30 +1672,7 @@ func writeProjectA(g *graph, outDir, convertBin string) error {
 		}
 		exportsList += fmt.Sprintf("%q", e)
 	}
-	if err := writeFile(filepath.Join(outDir, "tools", "BUILD.bazel"), fmt.Sprintf("exports_files([%s])\n", exportsList)); err != nil {
-		return err
-	}
-
-	// Render //options/BUILD.bazel from project.conf options:
-	// declarations. Skipped when no options exist (the package
-	// stays absent rather than empty so downstream selects()
-	// don't reference dangling labels).
-	if err := writeOptionsPackage(outDir, g.Options); err != nil {
-		return fmt.Errorf("render //options package: %w", err)
-	}
-
-	for _, elem := range g.Elements {
-		h := handlers[elem.Bst.Kind]
-		elemPkg := filepath.Join(outDir, "elements", elem.Name)
-		if err := os.MkdirAll(elemPkg, 0o755); err != nil {
-			return err
-		}
-		if err := h.RenderA(elem, elemPkg); err != nil {
-			return fmt.Errorf("render project-A package for %q (kind %q): %w", elem.Name, elem.Bst.Kind, err)
-		}
-	}
-
-	return nil
+	return exportsList
 }
 
 // stageCmakeConfigureFileTool copies cmake-configure-file into
@@ -1986,53 +2032,11 @@ func writeProjectB(g *graph, outDir string) error {
 	// //tools:convert-element-trace labels resolve to
 	// nothing in the B-side BUILD.
 	exports := []string{"sources.json", "cc_index.json", "python_modules.json"}
-	autotoolsExports, err := stageAutotoolsTools(outDir)
-	if err != nil {
-		return err
+	exports, sErr := stageSharedOptionalTools(outDir, exports)
+	if sErr != nil {
+		return sErr
 	}
-	exports = append(exports, autotoolsExports...)
-	cmakeFileExport, err := stageCmakeConfigureFileTool(outDir)
-	if err != nil {
-		return err
-	}
-	if cmakeFileExport != "" {
-		exports = append(exports, cmakeFileExport)
-	}
-	ccEmbedExport, err := stageCCEmbedTool(outDir)
-	if err != nil {
-		return err
-	}
-	if ccEmbedExport != "" {
-		exports = append(exports, ccEmbedExport)
-	}
-	ccHashExport, err := stageCCHashTool(outDir)
-	if err != nil {
-		return err
-	}
-	if ccHashExport != "" {
-		exports = append(exports, ccHashExport)
-	}
-	mesonExport, err := stageMesonConverter(outDir)
-	if err != nil {
-		return err
-	}
-	if mesonExport != "" {
-		exports = append(exports, mesonExport)
-	}
-	pyprojectExport, err := stagePyprojectConverter(outDir)
-	if err != nil {
-		return err
-	}
-	if pyprojectExport != "" {
-		exports = append(exports, pyprojectExport)
-	}
-	exportsList := ""
-	for i, e := range exports {
-		if i > 0 {
-			exportsList += ", "
-		}
-		exportsList += fmt.Sprintf("%q", e)
-	}
+	exportsList := formatExportsList(exports)
 	if err := writeFile(filepath.Join(outDir, "tools", "BUILD.bazel"), fmt.Sprintf("# tools/ holds the JSON inputs the sources extension reads + the\n# trace-driven binaries (build-tracer / convert-element-trace) the\n# install genrule references.\nexports_files([%s])\n", exportsList)); err != nil {
 		return err
 	}

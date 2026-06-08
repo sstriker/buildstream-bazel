@@ -429,6 +429,134 @@ func gitRepoLocationQuery(argv []string) bool {
 //     historical catch-all "no recognized lift pattern" string
 //     into per-shape diagnoses so operators see the structural
 //     feature blocking the lift, not a black-box refusal.
+//
+// classifyMultiCommandPipeline classifies an execute_process with more than one
+// COMMAND clause. A pipeline whose FIRST stage is a non-hermetic stamp or a
+// host/toolchain probe driver is still a stamp/probe — the downstream stages
+// only post-process stage 0's output (`c++ --version | head`, `git describe |
+// sed`, `uname -m | tr A-Z a-z`); they don't make the call reproducible as a
+// genrule, but they don't change that stage 0 is non-hermetic and emits no
+// build artifact. Classify by stage 0 so the probe no-OUTPUT_FILE skip / stamp
+// handling applies (clears the multi-COMMAND-probe refusal that, e.g., eigen
+// hits). Any other pipeline still refuses — we can't reproduce arbitrary stdout
+// chaining as a Bazel rule, and a non-probe/stamp pipeline may produce a real
+// artifact we'd otherwise silently drop.
+func classifyMultiCommandPipeline(call shadow.ExecuteProcessCall, driver string, argv []string) ClassifyResult {
+	switch {
+	case stampDrivers[driver]:
+		return ClassifyResult{
+			Bucket: BucketStamp,
+			Reason: driver + " is a stamp / non-hermetic driver (pipeline stage 0)" + outputContext(call),
+		}
+	case strongProbeDrivers[driver]:
+		return ClassifyResult{
+			Bucket: BucketProbe,
+			Reason: driver + " is a host probe driver (pipeline stage 0)" + outputContext(call),
+		}
+	case executeProcessRunsHostDetectionScript(argv):
+		return ClassifyResult{
+			Bucket: BucketProbe,
+			Reason: "host-triple detection script (config.guess/config.sub) (pipeline stage 0)" + outputContext(call),
+		}
+	case dualUseProbeDrivers[driver] && call.OutputFile == "" &&
+		(call.OutputVariable != "" || call.ResultVariable != ""):
+		return ClassifyResult{
+			Bucket: BucketProbe,
+			Reason: driver + " (pipeline stage 0) writing a capture looks like a host/toolchain probe",
+		}
+	}
+	return ClassifyResult{
+		Bucket: BucketRefuse,
+		Reason: "multi-COMMAND pipeline (concurrent stages with stdout chaining)",
+	}
+}
+
+// classifyCMakeEBuiltin recognizes `cmake -E <op>` builtins. Returns (result,
+// true) when argv[0] is a cmake driver invoked with `-E` (this overrides
+// stamp / probe / file-producing patterns even when the call also sets
+// OutputFile); (zero, false) otherwise so Classify continues.
+func classifyCMakeEBuiltin(argv []string) (ClassifyResult, bool) {
+	if !(isCMakeDriver(argv[0]) && len(argv) >= 2 && argv[1] == "-E") {
+		return ClassifyResult{}, false
+	}
+	if len(argv) < 3 {
+		return ClassifyResult{
+			Bucket: BucketRefuse,
+			Reason: "cmake -E without an operation",
+		}, true
+	}
+	op := strings.ToLower(argv[2])
+	if _, ok := supportedCMakeEOps[op]; ok {
+		return ClassifyResult{
+			Bucket:   BucketCMakeE,
+			Reason:   "cmake -E " + op,
+			CMakeEOp: op,
+		}, true
+	}
+	return ClassifyResult{
+		Bucket: BucketRefuse,
+		Reason: "cmake -E " + op + " is not in the v1 supported-op set (supported: " + supportedCMakeEOpsList() + ")",
+	}, true
+}
+
+// classifyRawPosixDriver recognizes raw POSIX filesystem drivers that lift to
+// the same shapes as their `cmake -E` analogs (cp/install/touch/ln/mv) or that
+// are inert filesystem side-effects with no Bazel output (mkdir/rm/rmdir, and
+// chmod/chown/chgrp when nothing is captured). The classifier can't prove a cp
+// is build-irrelevant from argv alone (`cp generated.h ${BINARY}/include/` is
+// load-bearing), so reproducing the copy as a genrule is SOUND whereas skipping
+// it would risk dropping a real compile input. All arms are argv-only here:
+// file-vs-directory, symlink-deref, and flag/operand parsing belong in the
+// respective lifters (liftCp / liftInstall / liftTouch / liftLn /
+// liftRenameLike), which have filesystem access. OUTPUT_VARIABLE /
+// RESULT_VARIABLE-bearing copy calls still classify as copy — the copy happens
+// regardless; any captured exit/var flows through the dump-vars rescue.
+//
+// Returns (result, true) when driver matches; (zero, false) otherwise.
+func classifyRawPosixDriver(driver string, call shadow.ExecuteProcessCall) (ClassifyResult, bool) {
+	switch {
+	case copyDrivers[driver]:
+		return ClassifyResult{Bucket: BucketCMakeE, Reason: "cp (POSIX copy)", CMakeEOp: "cp"}, true
+	case driver == "install":
+		// Issue #376: a copy-with-attributes (and, with -d, a directory
+		// create). liftInstall reproduces the copy when the destination is
+		// under the build tree, skips benignly for install-prefix staging
+		// paths, and treats -d as a no-op.
+		return ClassifyResult{Bucket: BucketCMakeE, Reason: "install (POSIX install — copy-with-attributes / -d dir-create)", CMakeEOp: "install"}, true
+	case touchDrivers[driver]:
+		// POSIX analog of `cmake -E touch`: a configure-time marker-file write
+		// recovers to the same empty-file genrule rather than refusing.
+		return ClassifyResult{Bucket: BucketCMakeE, Reason: "touch (POSIX file touch)", CMakeEOp: "touch_raw"}, true
+	case symlinkDrivers[driver]:
+		// POSIX analog of `cmake -E create_symlink` (lifted as a copy):
+		// reproducing the link as a copy of the target's bytes at the link
+		// path is sound under Bazel's hermetic action model.
+		return ClassifyResult{Bucket: BucketCMakeE, Reason: "ln (POSIX link)", CMakeEOp: "ln"}, true
+	case renameDrivers[driver]:
+		// POSIX analog of `cmake -E rename` (lifted as a copy).
+		return ClassifyResult{Bucket: BucketCMakeE, Reason: "mv (POSIX rename)", CMakeEOp: "mv"}, true
+	case noopDrivers[driver]:
+		// mkdir / rm / rmdir: filesystem side-effects with no consumable Bazel
+		// output — the raw analogs of the no-op cmake -E ops. Classify as
+		// cmake-e so the lifter skips them benignly rather than dropping the
+		// element into the round-2 fallback over a side-effect that can't lose
+		// a real compile input.
+		return ClassifyResult{Bucket: BucketCMakeE, Reason: driver + " (POSIX filesystem side-effect with no Bazel output)", CMakeEOp: driver}, true
+	case benignNoOutputDrivers[driver] && !executeProcessCapturesOutput(call):
+		// chmod / chown / chgrp with NO captured output: a pure configure-time
+		// filesystem metadata side-effect that produces no Bazel artifact and
+		// feeds no value into the graph. Skip benignly rather than refusing
+		// (which would drop every other target in the package into the round-2
+		// fallback over an inert call — issue #376). STRICT: only when EVERY
+		// output channel is absent (executeProcessCapturesOutput covers all
+		// writeback variables + stdio redirects). A call that captures a
+		// writeback variable or sets OUTPUT_FILE falls through to the normal
+		// classifier below, never silently dropped by this benign skip.
+		return ClassifyResult{Bucket: BucketCMakeE, Reason: driver + " (configure-time filesystem side-effect, no captured output)", CMakeEOp: driver}, true
+	}
+	return ClassifyResult{}, false
+}
+
 func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	if len(call.Commands) == 0 {
 		return ClassifyResult{
@@ -460,165 +588,22 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	// chaining as a Bazel rule, and a non-probe/stamp pipeline may
 	// produce a real artifact we'd otherwise silently drop.
 	if len(call.Commands) > 1 {
-		switch {
-		case stampDrivers[driver]:
-			return ClassifyResult{
-				Bucket: BucketStamp,
-				Reason: driver + " is a stamp / non-hermetic driver (pipeline stage 0)" + outputContext(call),
-			}
-		case strongProbeDrivers[driver]:
-			return ClassifyResult{
-				Bucket: BucketProbe,
-				Reason: driver + " is a host probe driver (pipeline stage 0)" + outputContext(call),
-			}
-		case executeProcessRunsHostDetectionScript(argv):
-			return ClassifyResult{
-				Bucket: BucketProbe,
-				Reason: "host-triple detection script (config.guess/config.sub) (pipeline stage 0)" + outputContext(call),
-			}
-		case dualUseProbeDrivers[driver] && call.OutputFile == "" &&
-			(call.OutputVariable != "" || call.ResultVariable != ""):
-			return ClassifyResult{
-				Bucket: BucketProbe,
-				Reason: driver + " (pipeline stage 0) writing a capture looks like a host/toolchain probe",
-			}
-		}
-		return ClassifyResult{
-			Bucket: BucketRefuse,
-			Reason: "multi-COMMAND pipeline (concurrent stages with stdout chaining)",
-		}
+		return classifyMultiCommandPipeline(call, driver, argv)
 	}
 
 	// cmake -E builtin recognition first — overrides stamp /
 	// probe / file-producing patterns even if the call also
 	// happens to set OutputFile.
-	if isCMakeDriver(argv[0]) && len(argv) >= 2 && argv[1] == "-E" {
-		if len(argv) < 3 {
-			return ClassifyResult{
-				Bucket: BucketRefuse,
-				Reason: "cmake -E without an operation",
-			}
-		}
-		op := strings.ToLower(argv[2])
-		if _, ok := supportedCMakeEOps[op]; ok {
-			return ClassifyResult{
-				Bucket:   BucketCMakeE,
-				Reason:   "cmake -E " + op,
-				CMakeEOp: op,
-			}
-		}
-		return ClassifyResult{
-			Bucket: BucketRefuse,
-			Reason: "cmake -E " + op + " is not in the v1 supported-op set (supported: " + supportedCMakeEOpsList() + ")",
-		}
+	if res, ok := classifyCMakeEBuiltin(argv); ok {
+		return res
 	}
 
-	// Raw `cp` (POSIX copy) is lifted as a copy, mirroring how
-	// `cmake -E copy` is already lifted. The classifier can't
-	// prove a cp is build-irrelevant from argv alone — `cp
-	// generated.h ${BINARY}/include/` is load-bearing — so
-	// reproducing the copy as a genrule is SOUND, whereas
-	// skipping it would risk dropping a real compile input.
-	//
-	// argv-only here: file-vs-directory and symlink-deref
-	// decisions need the on-disk source and belong in the lifter
-	// (liftCp), which HAS filesystem access. OUTPUT_VARIABLE /
-	// RESULT_VARIABLE-bearing cp calls still classify as copy —
-	// the copy happens regardless; any captured exit/var flows
-	// through the existing dump-vars rescue.
-	if copyDrivers[driver] {
-		return ClassifyResult{
-			Bucket:   BucketCMakeE,
-			Reason:   "cp (POSIX copy)",
-			CMakeEOp: "cp",
-		}
-	}
-
-	// Raw `install` (issue #376): a copy-with-attributes (and, with -d, a
-	// directory create). Classify as cmake-e; liftInstall reproduces the
-	// copy when the destination is under the build tree, skips benignly
-	// when it's an install-prefix staging path, and treats -d as a no-op.
-	// argv-only here — flag/operand parsing is the lifter's job.
-	if driver == "install" {
-		return ClassifyResult{
-			Bucket:   BucketCMakeE,
-			Reason:   "install (POSIX install — copy-with-attributes / -d dir-create)",
-			CMakeEOp: "install",
-		}
-	}
-
-	// Raw `touch` is the POSIX analog of `cmake -E touch` (already
-	// lifted). A configure-time marker-file write recovers to the
-	// same empty-file genrule rather than refusing. argv-only here;
-	// refusing semantics-changing touch flags (`-c`, `-r`, ...) is
-	// the lifter's job (liftTouch).
-	if touchDrivers[driver] {
-		return ClassifyResult{
-			Bucket:   BucketCMakeE,
-			Reason:   "touch (POSIX file touch)",
-			CMakeEOp: "touch_raw",
-		}
-	}
-
-	// Raw `ln` is the POSIX analog of `cmake -E create_symlink`
-	// (already lifted as a copy). Reproducing the link as a copy of
-	// the target's bytes at the link path is sound under Bazel's
-	// hermetic action model. argv-only here; flag/operand parsing is
-	// the lifter's job (liftLn).
-	if symlinkDrivers[driver] {
-		return ClassifyResult{
-			Bucket:   BucketCMakeE,
-			Reason:   "ln (POSIX link)",
-			CMakeEOp: "ln",
-		}
-	}
-
-	// Raw `mv` is the POSIX analog of `cmake -E rename` (lifted as a
-	// copy). argv-only here; operand parsing + file-vs-directory is
-	// the lifter's job (liftRenameLike).
-	if renameDrivers[driver] {
-		return ClassifyResult{
-			Bucket:   BucketCMakeE,
-			Reason:   "mv (POSIX rename)",
-			CMakeEOp: "mv",
-		}
-	}
-
-	// Raw `mkdir` / `rm` / `rmdir` are filesystem side-effects with no
-	// consumable Bazel output — the raw analogs of the no-op cmake -E
-	// ops. Classify as cmake-e so the lifter skips them benignly
-	// (no genrule, no refusal) rather than dropping the element into
-	// the round-2 fallback over a side-effect that can't lose a real
-	// compile input.
-	if noopDrivers[driver] {
-		return ClassifyResult{
-			Bucket:   BucketCMakeE,
-			Reason:   driver + " (POSIX filesystem side-effect with no Bazel output)",
-			CMakeEOp: driver,
-		}
-	}
-
-	// Raw chmod / chown / chgrp with NO captured output: a pure
-	// configure-time filesystem metadata side effect (permissions /
-	// ownership) that produces no Bazel artifact and feeds no value into
-	// the graph. Skip it benignly (BucketCMakeE no-op) rather than refusing
-	// — refusing would drop every other target in the package into the
-	// round-2 fallback over an inert call (issue #376). STRICT: only when
-	// EVERY output channel is absent (executeProcessCapturesOutput covers
-	// all writeback variables + stdio redirects). A call that captures a
-	// writeback variable falls through to the normal classifier below
-	// (→ refuse); one with OUTPUT_FILE falls through to the file-producing
-	// arm (hoistable). An ERROR_FILE-only call has no OUTPUT_FILE to anchor,
-	// so it falls through to refusal. Either way the captured channel is
-	// handled by the normal path, never silently dropped by this benign
-	// skip. (`install` copies files and is handled by liftInstall, not
-	// here; see benignNoOutputDrivers' doc.)
-	if benignNoOutputDrivers[driver] && !executeProcessCapturesOutput(call) {
-		return ClassifyResult{
-			Bucket:   BucketCMakeE,
-			Reason:   driver + " (configure-time filesystem side-effect, no captured output)",
-			CMakeEOp: driver,
-		}
+	// Raw POSIX filesystem drivers (cp / install / touch / ln / mv, the
+	// no-op mkdir/rm/rmdir set, and chmod/chown/chgrp with nothing
+	// captured) lift to the same shapes as their `cmake -E` analogs or
+	// skip benignly.
+	if res, ok := classifyRawPosixDriver(driver, call); ok {
+		return res
 	}
 
 	// Stamp / strong-probe drivers: classification is

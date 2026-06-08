@@ -299,62 +299,59 @@ func pyprojectShouldUseNative(elem *element) bool {
 	}
 	out, err := pyprojectProbe(pyprojectConfig.convertBin, srcRoot, importsManifestPath)
 	useNative := err == nil
-	reason := strings.TrimSpace(out)
-	cause := pyprojectFallbackCauseProbe
 	if !useNative {
-		if errors.Is(err, context.DeadlineExceeded) {
-			// The probe hung past pyprojectProbeTimeout; the
-			// pipeline shape is a safer landing than letting
-			// write-a hang.
-			cause = pyprojectFallbackCauseProbeTimeout
-			deadlineMsg := fmt.Sprintf("probe exceeded %s timeout", pyprojectProbeTimeout)
-			if reason == "" {
-				reason = deadlineMsg
-			} else {
-				reason = deadlineMsg + " — partial output: " + reason
-			}
-		} else if exitErr, ok := err.(*exec.ExitError); ok {
-			// The probe ran but exited non-zero. Cause depends
-			// on the exit code:
-			//   1 → typed Tier-1 refusal (the converter's stderr
-			//     carries the failure message verbatim).
-			//   64 → CLI usage error (unknown flag, missing
-			//     --source-root, malformed flag value).
-			//   65 → any other untyped/Tier-2 error (filesystem
-			//     issues, --imports-manifest pointing at a
-			//     missing/unreadable file, unhandled converter
-			//     path — not necessarily a bug).
-			//   anything else → probe / infrastructure problem.
-			// Distinguish so operators reading stderr can tell
-			// "the element refuses by the pyproject taxonomy" from
-			// "the probe binary returned an untyped error".
-			code := exitErr.ExitCode()
-			if code != 1 {
-				cause = pyprojectFallbackCauseProbeUntyped
-			}
-			if reason == "" {
-				reason = fmt.Sprintf("probe exited %d with no output", code)
-			} else {
-				reason = fmt.Sprintf("[exit %d] %s", code, reason)
-			}
-		} else {
-			// Genuine spawn failure (binary not executable, wrong
-			// arch, ENOENT, signal …). Distinct cause so the
-			// diagnostic verb points at the executor, not at the
-			// converter's behavior.
-			cause = pyprojectFallbackCauseProbeSpawn
-			if reason == "" {
-				reason = err.Error()
-			} else {
-				reason = reason + " (" + err.Error() + ")"
-			}
-		}
-	}
-	if !useNative {
+		cause, reason := classifyPyprojectProbeFallback(err, strings.TrimSpace(out))
 		return cacheAndLogPyprojectFallback(elem.Name, cause, reason)
 	}
 	pyprojectProbeCache[elem.Name] = pyprojectProbeResult{useNative: true, reason: ""}
 	return true
+}
+
+// classifyPyprojectProbeFallback maps a non-nil pyproject-probe error (and the
+// probe's trimmed stdout, passed as reason) to the fallback cause + an
+// operator-facing reason string. The three arms:
+//
+//   - context.DeadlineExceeded: the probe hung past pyprojectProbeTimeout; the
+//     pipeline shape is a safer landing than letting write-a hang.
+//   - *exec.ExitError: the probe ran but exited non-zero. Exit 1 is a typed
+//     Tier-1 refusal (stderr carries the message verbatim); 64 is a CLI usage
+//     error; 65 is any other untyped/Tier-2 error; anything else is a
+//     probe/infrastructure problem. Only exit 1 keeps the plain Probe cause —
+//     everything else is ProbeUntyped — so operators can tell "the element
+//     refuses by the pyproject taxonomy" from "the probe returned an untyped
+//     error".
+//   - anything else: a genuine spawn failure (binary not executable, wrong
+//     arch, ENOENT, signal …); the cause points at the executor, not the
+//     converter's behavior.
+func classifyPyprojectProbeFallback(err error, reason string) (pyprojectFallbackCause, string) {
+	cause := pyprojectFallbackCauseProbe
+	if errors.Is(err, context.DeadlineExceeded) {
+		cause = pyprojectFallbackCauseProbeTimeout
+		deadlineMsg := fmt.Sprintf("probe exceeded %s timeout", pyprojectProbeTimeout)
+		if reason == "" {
+			reason = deadlineMsg
+		} else {
+			reason = deadlineMsg + " — partial output: " + reason
+		}
+	} else if exitErr, ok := err.(*exec.ExitError); ok {
+		code := exitErr.ExitCode()
+		if code != 1 {
+			cause = pyprojectFallbackCauseProbeUntyped
+		}
+		if reason == "" {
+			reason = fmt.Sprintf("probe exited %d with no output", code)
+		} else {
+			reason = fmt.Sprintf("[exit %d] %s", code, reason)
+		}
+	} else {
+		cause = pyprojectFallbackCauseProbeSpawn
+		if reason == "" {
+			reason = err.Error()
+		} else {
+			reason = reason + " (" + err.Error() + ")"
+		}
+	}
+	return cause, reason
 }
 
 // cacheAndLogPyprojectFallback memoizes a forced-fallback /

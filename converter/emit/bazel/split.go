@@ -719,7 +719,14 @@ func dropGlobSrcFiles(t ir.Target) ir.Target {
 	return t
 }
 
-// planSplit computes the split layout from a lowered package.
+// planSplit computes the split layout (per-directory BUILD plan) from a lowered
+// package. It's a tracked complexity giant (cognitive 167 / cyclomatic 85);
+// breaking it down into focused sub-pass extractions is its own ROADMAP
+// "complexity lens" burndown pass — grandfathered so the lens gates as blocking
+// on all other code. Remove the directive below as it comes back under
+// threshold. See ROADMAP.md.
+//
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
 func planSplit(pkg *ir.Package, local bool) *splitPlan {
 	p := &splitPlan{
 		sub:              map[string]string{},
@@ -1080,6 +1087,129 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 // re-relativize srcs/hdrs to its declaring dir, strip include-roots +
 // their headers (now owned by the synthesized header libs), and rewrite
 // intra-element deps to cross-package labels.
+// rewriteIncludeCopts rewrites a target's bare `-I<dir>` copts that point at a
+// synthesized header-lib root: it wires the header lib (so its hdrs become
+// sandbox inputs) into the PRIVATE slot for library kinds (implementation_deps
+// preserves PRIVATE) or deps for binary/test kinds, then drops the now-redundant
+// -I copt. Copts owned by a codegen tool's output root, or already covered by a
+// public include, are dropped too; everything else is kept. incRoots is updated
+// in place; the (possibly-extended) private/public header-dep lists are returned
+// alongside the filtered copts.
+func rewriteIncludeCopts(copts []string, t ir.Target, plan *splitPlan, toolRoots map[string]bool, incRoots map[string]struct{}, privHeaderDeps, headerDeps []string) (keptCopts, outPriv, outHeader []string) {
+	kept := make([]string, 0, len(copts))
+	for _, c := range copts {
+		dir, isInc := includeDirFromCopt(c)
+		n := normDir(dir)
+		if !isInc || n == "" {
+			kept = append(kept, c)
+			continue
+		}
+		if toolRoots != nil && toolRoots[n] {
+			continue // codegen tool's own output root — drop (see above)
+		}
+		if _, already := incRoots[n]; already {
+			continue // header dep already wired via a public include
+		}
+		name, isRoot := plan.headerLibs[n]
+		if !isRoot {
+			kept = append(kept, c)
+			continue
+		}
+		incRoots[n] = struct{}{}
+		label := crossPkgLabel(plan, n, name)
+		if t.Kind == ir.KindCCLibrary || t.Kind == ir.KindCCInterface {
+			privHeaderDeps = append(privHeaderDeps, label)
+		} else {
+			headerDeps = append(headerDeps, label)
+		}
+		// drop the now-redundant -I copt
+	}
+	return kept, privHeaderDeps, headerDeps
+}
+
+// relocateGenruleOuts re-relativizes a moved genrule's outputs to its new
+// package dir and shrinks the matching $(RULEDIR)/<out> cmd tokens in lockstep.
+// The standalone-custom-command cmd references each out as $(RULEDIR)/<out> (the
+// lower-side anchorGenruleOutputsToRuledir); moving the genrule into its output's
+// package shrinks the out, so the cmd must shrink too ($@ / $(location <out>)
+// forms need no rewrite). Parent-dir tokens shrink longest-first (lower anchors
+// multi-component parents for a make_directory of the output's dir). An out that
+// sits outside this genrule's package (a rare multi-package multi-output genrule,
+// not expressible in Bazel) is left element-root-relative so the breakage is
+// visible. Finally, a genrule moved INTO a single-component output root has
+// $(RULEDIR) pointing AT dir, so `$(RULEDIR)/<dir>` directory args
+// (`--cpp_out=$(RULEDIR)/gens`) are shrunk to `$(RULEDIR)` to avoid doubling.
+func relocateGenruleOuts(rt *ir.Target, t ir.Target, dir string) {
+	cmd := rt.GenruleCmd
+	outs := make([]string, 0, len(t.GenruleOuts))
+	for _, o := range t.GenruleOuts {
+		rel, ok := relUnder(dir, o)
+		if !ok {
+			outs = append(outs, o)
+			continue
+		}
+		if rel != o {
+			cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+o, "$(RULEDIR)/"+rel)
+			for d := pathDir(o); strings.Contains(d, "/"); d = pathDir(d) {
+				if dRel, ok := relUnder(dir, d); ok && dRel != d {
+					cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+d, "$(RULEDIR)/"+dRel)
+				}
+			}
+		}
+		outs = append(outs, rel)
+	}
+	if dir != "" && !strings.Contains(dir, "/") {
+		cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+dir+"/", "$(RULEDIR)/")
+		cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+dir+" ", "$(RULEDIR) ")
+		if strings.HasSuffix(cmd, "$(RULEDIR)/"+dir) {
+			cmd = strings.TrimSuffix(cmd, "$(RULEDIR)/"+dir) + "$(RULEDIR)"
+		}
+	}
+	rt.GenruleOuts = outs
+	rt.GenruleCmd = cmd
+}
+
+// relocateGenruleTools rewrites a moved genrule's intra-element tool labels to
+// cross-package form, updating the matching $(location)/$(execpath) cmd
+// references — e.g. a tablegen genrule placed in //include whose generator
+// (llvm-min-tblgen) lives in //llvm/utils/TableGen. Runs in both regimes (a tool
+// label is package-location-dependent either way). A ":x" prefix relabels
+// directly; a BARE in-element name (no `:`, not an absolute `@repo//` / `//pkg`
+// label) relabels only when the cmd references it as a Bazel label
+// ($(execpath)/$(location)) — proving it's a target, not a PATH tool (grpc's
+// protoc-gens genrules reference the element-root grpc_cpp_plugin this way).
+func relocateGenruleTools(rt *ir.Target, t ir.Target, plan *splitPlan) {
+	tools := make([]string, 0, len(t.GenruleTools))
+	cmd := rt.GenruleCmd
+	for _, tool := range t.GenruleTools {
+		if strings.HasPrefix(tool, ":") {
+			label := targetLabel(plan, strings.TrimPrefix(tool, ":"))
+			tools = append(tools, label)
+			cmd = strings.ReplaceAll(cmd, "$(location "+tool+")", "$(location "+label+")")
+			continue
+		}
+		if !strings.HasPrefix(tool, "@") && !strings.HasPrefix(tool, "//") &&
+			!strings.Contains(tool, ":") &&
+			(strings.Contains(cmd, "$(execpath "+tool+")") || strings.Contains(cmd, "$(location "+tool+")")) {
+			label := targetLabel(plan, tool)
+			tools = append(tools, label)
+			cmd = strings.ReplaceAll(cmd, "$(execpath "+tool+")", "$(execpath "+label+")")
+			cmd = strings.ReplaceAll(cmd, "$(location "+tool+")", "$(location "+label+")")
+			continue
+		}
+		tools = append(tools, tool)
+	}
+	rt.GenruleTools = tools
+	rt.GenruleCmd = cmd
+}
+
+// rewriteTarget is a tracked complexity giant (cognitive 107 / cyclomatic 69):
+// it rewrites one target for its split package. Breaking it down into focused
+// sub-pass extractions is its own ROADMAP "complexity lens" burndown pass —
+// grandfathered so the lens gates as blocking on all other code. Remove the
+// directive below as it comes back under threshold. See ROADMAP.md.
+//
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
 func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exportsByDir map[string]map[string]struct{}) ir.Target {
 	rt := t
 
@@ -1169,31 +1299,7 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// leak to). The "-I<dir>" copt is then redundant with the header lib's
 	// includes=["."] — drop it, mirroring the public-include path above.
 	if len(rt.Copts) > 0 {
-		kept := make([]string, 0, len(rt.Copts))
-		for _, c := range rt.Copts {
-			dir, isInc := includeDirFromCopt(c)
-			n := normDir(dir)
-			if isInc && n != "" {
-				if toolRoots != nil && toolRoots[n] {
-					continue // codegen tool's own output root — drop (see above)
-				}
-				if _, already := incRoots[n]; already {
-					continue // header dep already wired via a public include
-				}
-				if name, isRoot := plan.headerLibs[n]; isRoot {
-					incRoots[n] = struct{}{}
-					label := crossPkgLabel(plan, n, name)
-					if t.Kind == ir.KindCCLibrary || t.Kind == ir.KindCCInterface {
-						privHeaderDeps = append(privHeaderDeps, label)
-					} else {
-						headerDeps = append(headerDeps, label)
-					}
-					continue // drop the now-redundant -I copt
-				}
-			}
-			kept = append(kept, c)
-		}
-		rt.Copts = kept
+		rt.Copts, privHeaderDeps, headerDeps = rewriteIncludeCopts(rt.Copts, t, plan, toolRoots, incRoots, privHeaderDeps, headerDeps)
 	}
 
 	// Drop headers now owned by a synthesized header lib; keep the rest
@@ -1375,94 +1481,10 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// regime; the SourceKey regime keeps element-root-relative paths.
 	if t.Kind == ir.KindGenrule {
 		if local && len(t.GenruleOuts) > 0 {
-			cmd := rt.GenruleCmd
-			outs := make([]string, 0, len(t.GenruleOuts))
-			for _, o := range t.GenruleOuts {
-				if rel, ok := relUnder(dir, o); ok {
-					// The standalone-custom-command cmd references
-					// each out as $(RULEDIR)/<out> (the lower-side
-					// anchorGenruleOutputsToRuledir); moving the
-					// genrule into its output's package shrinks the
-					// out, so the cmd's $(RULEDIR)/<old> must shrink
-					// in lockstep. $@ / $(location <out>) forms need
-					// no rewrite.
-					if rel != o {
-						cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+o, "$(RULEDIR)/"+rel)
-						// Shrink the output's parent-dir tokens in lockstep
-						// (lower anchors multi-component parents for a
-						// make_directory/mkdir of the output's dir). Immediate
-						// parent first → longest-first, so a child dir is
-						// rewritten before its prefix.
-						for d := pathDir(o); strings.Contains(d, "/"); d = pathDir(d) {
-							if dRel, ok := relUnder(dir, d); ok && dRel != d {
-								cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+d, "$(RULEDIR)/"+dRel)
-							}
-						}
-					}
-					outs = append(outs, rel)
-				} else {
-					// Out sits outside this genrule's package (a
-					// multi-output genrule spanning packages — rare and
-					// not expressible as-is in Bazel). Leave it
-					// element-root-relative so the breakage is visible
-					// rather than silently mis-rooted.
-					outs = append(outs, o)
-				}
-			}
-			// The parent-dir shrink above stops at a SINGLE-component output
-			// root: a genrule moved INTO that root (its package IS `dir`, e.g.
-			// grpc's protoc gens moved into `gens`) has $(RULEDIR) pointing AT
-			// dir, so a cmd that passes the output ROOT as a directory arg
-			// (`--cpp_out=$(RULEDIR)/gens`) would double to $(RULEDIR)/gens/gens.
-			// Shrink `$(RULEDIR)/<dir>` → `$(RULEDIR)`. (Multi-component dirs are
-			// already handled by the parent-dir loop's relUnder shrink.)
-			if dir != "" && !strings.Contains(dir, "/") {
-				cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+dir+"/", "$(RULEDIR)/")
-				cmd = strings.ReplaceAll(cmd, "$(RULEDIR)/"+dir+" ", "$(RULEDIR) ")
-				if strings.HasSuffix(cmd, "$(RULEDIR)/"+dir) {
-					cmd = strings.TrimSuffix(cmd, "$(RULEDIR)/"+dir) + "$(RULEDIR)"
-				}
-			}
-			rt.GenruleOuts = outs
-			rt.GenruleCmd = cmd
+			relocateGenruleOuts(&rt, t, dir)
 		}
-		// Rewrite intra-element genrule tool labels (":x") and their
-		// matching $(location :x) cmd references to cross-package form —
-		// e.g. a tablegen genrule placed in //include whose generator
-		// binary (llvm-min-tblgen) lives in //llvm/utils/TableGen.
-		// Mirrors the deps rewrite below; runs in both regimes since a
-		// tool label is package-location-dependent either way.
 		if len(t.GenruleTools) > 0 {
-			tools := make([]string, 0, len(t.GenruleTools))
-			cmd := rt.GenruleCmd
-			for _, tool := range t.GenruleTools {
-				if strings.HasPrefix(tool, ":") {
-					label := targetLabel(plan, strings.TrimPrefix(tool, ":"))
-					tools = append(tools, label)
-					cmd = strings.ReplaceAll(cmd, "$(location "+tool+")", "$(location "+label+")")
-					continue
-				}
-				// A BARE in-element tool name (no `:`, not an absolute `@repo//`
-				// or `//pkg` label): when the genrule has moved out of the tool's
-				// package, the bare name would resolve in the genrule's new package
-				// and miss. Relabel to the tool's actual package — but only when the
-				// cmd references it as a Bazel label ($(execpath)/$(location)), which
-				// proves it's a target (not a PATH tool); a non-target bare name is
-				// left untouched. grpc's protoc gens genrules (moved into `gens`)
-				// reference the element-root `grpc_cpp_plugin` cc_binary this way.
-				if !strings.HasPrefix(tool, "@") && !strings.HasPrefix(tool, "//") &&
-					!strings.Contains(tool, ":") &&
-					(strings.Contains(cmd, "$(execpath "+tool+")") || strings.Contains(cmd, "$(location "+tool+")")) {
-					label := targetLabel(plan, tool)
-					tools = append(tools, label)
-					cmd = strings.ReplaceAll(cmd, "$(execpath "+tool+")", "$(execpath "+label+")")
-					cmd = strings.ReplaceAll(cmd, "$(location "+tool+")", "$(location "+label+")")
-					continue
-				}
-				tools = append(tools, tool)
-			}
-			rt.GenruleTools = tools
-			rt.GenruleCmd = cmd
+			relocateGenruleTools(&rt, t, plan)
 		}
 	}
 
