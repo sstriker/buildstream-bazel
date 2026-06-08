@@ -1195,84 +1195,38 @@ func classifyExecuteProcess(ev TraceEvent, sourceRoot string) (ExecuteProcessCal
 		currentCmd = nil
 	}
 
+	// Single-value keywords consume exactly one following token into a
+	// string field. Collapsing them into one table keeps the keyword
+	// switch below to the structurally distinct clauses (variadic lists,
+	// flag-only options, value-consuming diagnostics).
+	singleValueFields := map[string]*string{
+		"WORKING_DIRECTORY": &call.WorkingDirectory,
+		"TIMEOUT":           &call.Timeout,
+		"RESULT_VARIABLE":   &call.ResultVariable,
+		"RESULTS_VARIABLE":  &call.ResultsVariable,
+		"OUTPUT_VARIABLE":   &call.OutputVariable,
+		"ERROR_VARIABLE":    &call.ErrorVariable,
+		"INPUT_FILE":        &call.InputFile,
+		"OUTPUT_FILE":       &call.OutputFile,
+		"ERROR_FILE":        &call.ErrorFile,
+	}
+
 	for i := 0; i < len(ev.Args); i++ {
 		a := ev.Args[i]
-		switch strings.ToUpper(a) {
+		key := strings.ToUpper(a)
+		if dst, ok := singleValueFields[key]; ok {
+			flushCommand()
+			open = listNone
+			if i+1 < len(ev.Args) {
+				i++
+				*dst = ev.Args[i]
+			}
+			continue
+		}
+		switch key {
 		case "COMMAND":
 			flushCommand()
 			open = listCommand
-			continue
-		case "WORKING_DIRECTORY":
-			flushCommand()
-			open = listNone
-			if i+1 < len(ev.Args) {
-				i++
-				call.WorkingDirectory = ev.Args[i]
-			}
-			continue
-		case "TIMEOUT":
-			flushCommand()
-			open = listNone
-			if i+1 < len(ev.Args) {
-				i++
-				call.Timeout = ev.Args[i]
-			}
-			continue
-		case "RESULT_VARIABLE":
-			flushCommand()
-			open = listNone
-			if i+1 < len(ev.Args) {
-				i++
-				call.ResultVariable = ev.Args[i]
-			}
-			continue
-		case "RESULTS_VARIABLE":
-			flushCommand()
-			open = listNone
-			if i+1 < len(ev.Args) {
-				i++
-				call.ResultsVariable = ev.Args[i]
-			}
-			continue
-		case "OUTPUT_VARIABLE":
-			flushCommand()
-			open = listNone
-			if i+1 < len(ev.Args) {
-				i++
-				call.OutputVariable = ev.Args[i]
-			}
-			continue
-		case "ERROR_VARIABLE":
-			flushCommand()
-			open = listNone
-			if i+1 < len(ev.Args) {
-				i++
-				call.ErrorVariable = ev.Args[i]
-			}
-			continue
-		case "INPUT_FILE":
-			flushCommand()
-			open = listNone
-			if i+1 < len(ev.Args) {
-				i++
-				call.InputFile = ev.Args[i]
-			}
-			continue
-		case "OUTPUT_FILE":
-			flushCommand()
-			open = listNone
-			if i+1 < len(ev.Args) {
-				i++
-				call.OutputFile = ev.Args[i]
-			}
-			continue
-		case "ERROR_FILE":
-			flushCommand()
-			open = listNone
-			if i+1 < len(ev.Args) {
-				i++
-				call.ErrorFile = ev.Args[i]
-			}
 			continue
 		case "ENVIRONMENT":
 			flushCommand()
