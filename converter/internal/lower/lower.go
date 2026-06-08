@@ -40,6 +40,19 @@ type Options struct {
 	// Defaults to the source path recorded in the File API codemodel.
 	HostSourceRoot string
 
+	// ElementSourceRoot, when set, FORCES the label-relativization root (the
+	// "workspace root" labels anchor against) to this directory — an explicit
+	// override of the auto-detected/escape-gated workspace root. Use it when the
+	// element is OVERLAID at a directory ABOVE the cmake source root and cmake is
+	// configured at a subdir, so the per-sample sources/includes still need the
+	// subdir-relative-to-overlay prefix even though no source "escapes" cmakeSrc.
+	// cuda-samples is the case: each sample is its own `project()` (cmake
+	// configures there, dodging the whole-tree `9_CUDA_Tile`/tileiras blocker),
+	// but the build-lens overlays the whole repo (so the repo-root `Common/`
+	// headers stage), so labels must anchor at the repo root. Must be an ancestor
+	// of (or equal to) cmakeSrc. Empty = auto-detect (the default behavior).
+	ElementSourceRoot string
+
 	// EmitInstallExportConfig opts in to generating the install(EXPORT)
 	// config-mode bundle — the real <Pkg>Targets.cmake + the cmake_config_bundle
 	// filegroup (exportshape.EmitInputs.EmitConfig). OFF by default: the
@@ -1037,6 +1050,19 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// satisfy. Gate on real escape so zstd still promotes and LLVM doesn't.
 	if workspaceRoot != "" && workspaceRoot != cmakeSrc && !sourcesEscapeCmakeSrc(r, cmakeSrc, workspaceRoot) {
 		workspaceRoot = ""
+	}
+	// Explicit override: --element-source-root forces the label root to the
+	// overlay root regardless of the escape heuristic. The element is overlaid
+	// there (the build-lens ELEMENT_SOURCE_ROOT) while cmake configured at a
+	// subdir, so labels MUST anchor at the overlay root even though this sample's
+	// own sources don't escape cmakeSrc (cuda-samples: per-sample configure +
+	// whole-repo overlay so the repo-root Common/ headers resolve).
+	if opts.ElementSourceRoot != "" {
+		root, err := resolveElementSourceRoot(opts.ElementSourceRoot, cmakeSrc)
+		if err != nil {
+			return nil, err
+		}
+		workspaceRoot = root
 	}
 	hostSrc := opts.HostSourceRoot
 	if hostSrc == "" {
@@ -2746,6 +2772,26 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				continue
 			}
 			rel, ok := relativeIfInside(cmakeSrc, inc.Path)
+			if !ok && workspaceRoot != "" {
+				// In-element include that sits OUTSIDE the cmake source root but
+				// INSIDE the (promoted) label root — a sample under a wider
+				// overlay reaching a sibling subtree: cuda-samples'
+				// `include_directories(../../../Common)` from
+				// cpp/<group>/<sample>/ resolves to the repo-root `Common/`,
+				// which the overlay staged under the element. Anchor it
+				// labelRoot-relative (`Common`) and surface it as an include
+				// root so split synthesizes its header lib and this target deps
+				// on it. (find_package include trees live under hostPrefix, not
+				// the label root, so they fall through to the umbrella handling
+				// below.)
+				if wrel, inside := relativeIfInside(workspaceRoot, inc.Path); inside && wrel != "" && wrel != "." {
+					if !seenInc[wrel] {
+						seenInc[wrel] = true
+						irt.Includes = append(irt.Includes, wrel)
+					}
+					continue
+				}
+			}
 			if !ok {
 				// #219: include dir resolved outside both
 				// cmakeSrc and cmakeBuild. The path is one of

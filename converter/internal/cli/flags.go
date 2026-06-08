@@ -37,6 +37,14 @@ type Args struct {
 	// cmake-variable dump in a fresh build dir).
 	SourceRoot string
 
+	// ElementSourceRoot forces the label-relativization root (the
+	// "workspace root" labels anchor against) when the element is
+	// OVERLAID at a directory above the cmake source root and cmake
+	// configured at a subdir — cuda-samples' per-sample configure +
+	// whole-repo overlay. Must be an ancestor of (or equal to)
+	// --source-root. Empty = auto-detect.
+	ElementSourceRoot string
+
 	// ReplyDir, when non-empty, points at an existing cmake
 	// File API reply directory (typically `<build>/.cmake/api/
 	// v1/reply`) and skips the cmake invocation. The converter
@@ -659,6 +667,7 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.SetOutput(stderr)
 	a := Args{}
 	fs.StringVar(&a.SourceRoot, "source-root", "", "absolute path to the CMake project root; the converter runs cmake itself in a fresh build dir")
+	fs.StringVar(&a.ElementSourceRoot, "element-source-root", "", "force the label-relativization root to this dir (an ancestor of --source-root) when the element is overlaid above the cmake source root and cmake configured at a subdir (e.g. cuda-samples' per-sample configure + whole-repo overlay); empty = auto-detect")
 	fs.StringVar(&a.ReplyDir, "reply-dir", "", "skip cmake invocation; read File API reply from this dir (typically <build>/.cmake/api/v1/reply). --cmake-build-dir is the friendlier alias")
 	fs.StringVar(&a.CMakeBuildDir, "cmake-build-dir", "", "skip cmake invocation; point at an existing cmake build dir (the value passed to cmake -B). Derives the reply dir as <cmake-build-dir>/.cmake/api/v1/reply and auto-picks up build.ninja / trace.jsonl / cmake-variable dump from the same dir")
 	fs.BoolVar(&a.StrictTrace, "strict-trace", false, "refuse with a Tier-1 error when no cmake trace data is available (instead of warning and continuing with degraded recovery). Implicitly enabled by --fidelity=strict (the dial default); pass --strict-trace=false to opt out — needed for offline replay flows where trace data isn't available alongside the fileapi reply.")

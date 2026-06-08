@@ -483,6 +483,7 @@ func run(a cli.Args) error {
 		todosCollector.Reset()
 		return lower.ToIR(r, g, lower.Options{
 			HostSourceRoot:                    a.SourceRoot,
+			ElementSourceRoot:                 a.ElementSourceRoot,
 			RecoverSourceComments:             a.EmitSourceComments,
 			EmitInstallExportConfig:           a.EmitInstallExportConfig,
 			EmitSharedLibraries:               a.EmitSharedLibraries,
