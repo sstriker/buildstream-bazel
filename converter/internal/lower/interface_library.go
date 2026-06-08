@@ -63,238 +63,12 @@ func lowerInterfaceLibraries(
 		return nil
 	}
 
-	// Build per-target Includes (INTERFACE + PUBLIC) and Defines.
-	// PUBLIC arms apply to the target itself AND propagate; for
-	// an INTERFACE-only target, both arms describe what consumers
-	// see, which is the entire interface surface.
-	includesByTarget := map[string][]string{}
-	// Targets whose INTERFACE/PUBLIC include path is the package root
-	// (e.g. `target_include_directories(lib INTERFACE
-	// $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}>)`). Bazel rejects
-	// `includes = [""]`, so the root never becomes an include attr — but
-	// the headers under it must still be discovered, so we record the
-	// target here and prepend "" to its discoverHeaders walk below
-	// (mirrors the codemodel path's walkPkgRootForHdrs). Without this an
-	// INTERFACE lib that declares only the source root emits empty
-	// (glm's glm-header-only shape).
-	rootWalkByTarget := map[string]bool{}
-	for _, ic := range decoded.Includes {
-		for _, grp := range ic.Groups {
-			if grp.Visibility != "INTERFACE" && grp.Visibility != "PUBLIC" {
-				continue
-			}
-			for _, dir := range grp.Dirs {
-				rel := dir
-				if filepath.IsAbs(dir) {
-					if r, ok := relativeIfInside(workspaceRoot, dir); ok {
-						rel = r
-					} else if r, ok := relativeIfInside(cmakeSrc, dir); ok {
-						rel = r
-					}
-				}
-				rel = strings.TrimSpace(rel)
-				// The package root presents three ways: "" (an absolute
-				// ${CMAKE_SOURCE_DIR} that relativized to the element root) and
-				// the literal current-dir forms "." / "./" (a project writing
-				// `target_include_directories(lib INTERFACE .)`, recorded
-				// verbatim by --trace-expand). All denote the root: Bazel rejects
-				// includes=[""], and a stray "." would pollute split header-lib
-				// planning (normDir(".") → "" → a bogus root header lib), so route
-				// them to the root-walk signal instead of the includes slice —
-				// matching the codemodel path's rel=="" || rel=="." handling.
-				if rel == "" || rel == "." || rel == "./" {
-					rootWalkByTarget[ic.Target] = true
-					continue
-				}
-				if strings.HasPrefix(rel, "../") || filepath.IsAbs(rel) {
-					continue
-				}
-				includesByTarget[ic.Target] = append(includesByTarget[ic.Target], rel)
-			}
-		}
-	}
-
-	definesByTarget := map[string][]string{}
-	// Targets where at least one INTERFACE/PUBLIC define carried a
-	// generator expression the Go-side evaluator couldn't crack.
-	// For these we prefer cmake's own resolved
-	// INTERFACE_COMPILE_DEFINITIONS (captured by the structural
-	// genex probe) over the partial trace-evaluated list — see the
-	// reconciliation pass below.
-	unresolvedGenexTargets := map[string]bool{}
-	for _, tc := range decoded.CompileDefinitions {
-		for _, grp := range tc.Groups {
-			if grp.Visibility != "INTERFACE" && grp.Visibility != "PUBLIC" {
-				continue
-			}
-			for _, def := range grp.Items {
-				def = strings.TrimSpace(def)
-				if def == "" {
-					continue
-				}
-				// Evaluate cmake generator expressions like
-				// `$<$<BOOL:OFF>:FOO=1>`. nlohmann-json emits ~5
-				// of these as the INTERFACE define list; cmake
-				// evaluates them at generate time based on the
-				// option values.
-				//
-				// Try the (a) genexeval parser first for shapes
-				// it supports; fall back to a small BOOL/NOT-
-				// specific evaluator for the nested
-				// `$<$<BOOL:...>:RESULT>` shape the parser
-				// rejects (its op-name lexer doesn't accept
-				// nested `$<`).
-				if strings.Contains(def, "$<") {
-					if nodes, err := genexeval.Parse([]byte(def)); err == nil {
-						if eval, err := genexeval.Eval(nodes, genexeval.Context{}); err == nil {
-							def = strings.TrimSpace(string(eval))
-						}
-					} else if evalled, ok := evalNestedBoolGenex(def); ok {
-						def = strings.TrimSpace(evalled)
-					}
-				}
-				if def == "" {
-					continue
-				}
-				// Still unresolved: note the target so the
-				// structural-probe reconciliation below can
-				// substitute cmake's own resolved define list.
-				// Without that, dropping silently loses a define
-				// that genuinely applies under the configured
-				// build (e.g. `$<$<CONFIG:Release>:NDEBUG_EXTRA>`)
-				// — intent loss the probe lets us avoid.
-				if strings.Contains(def, "$<") {
-					unresolvedGenexTargets[tc.Target] = true
-					continue
-				}
-				definesByTarget[tc.Target] = append(definesByTarget[tc.Target], def)
-			}
-		}
-	}
-
-	// Structural-probe reconciliation: for every target whose
-	// INTERFACE defines had an unresolved genex, replace the
-	// partial trace-evaluated list with cmake's own resolved
-	// INTERFACE_COMPILE_DEFINITIONS (the structural genex probe
-	// captured it at generation time, where cmake's evaluator
-	// already answered every `$<…>`). This turns "drop the define
-	// we couldn't evaluate" into "emit the define cmake resolved"
-	// — capturing intent instead of losing it. Empty probe data
-	// (no --probe-genex, cmake < 3.24) leaves behavior unchanged:
-	// the partial list stands and unresolved entries stay dropped.
-	for tgt := range unresolvedGenexTargets {
-		ti, ok := genexTargets[tgt]
-		if !ok || ti.InterfaceCompileDefinitions == "" {
-			continue
-		}
-		resolved := splitResolvedDefines(ti.InterfaceCompileDefinitions)
-		if len(resolved) == 0 {
-			continue
-		}
-		definesByTarget[tgt] = resolved
-	}
-
-	// Build per-target Deps from INTERFACE/PUBLIC arms of
-	// target_link_libraries. cmake projects with deep modular
-	// structure (abseil, modular Boost) declare INTERFACE
-	// libraries as deps-only wrappers — `absl_check`
-	// `target_link_libraries(absl_check INTERFACE
-	// absl::log_internal_check_impl)`. Without routing the deps,
-	// the trace-synthesized cc_library is empty and the
-	// `empty-cc-library` audit fires (abseil: 100 findings, all
-	// these wrapper interfaces).
-	//
-	// Lib name → Bazel label resolution:
-	//
-	//   1. If the lib is in the imports manifest (a find_package
-	//      IMPORTED target the orchestrator routes to a Bazel
-	//      label), emit that label. This is the trace-synth
-	//      counterpart of the codemodel dep path's
-	//      imports.LookupCMakeTarget step (lower.go): an INTERFACE
-	//      library that links a find_package target —
-	//      `target_link_libraries(absl_heterogeneous_lookup_testing
-	//      INTERFACE GTest::gmock)` — must route GTest::gmock to its
-	//      external label (`@googletest//:gmock`), not a dangling
-	//      in-package `:GTest_gmock`. Checked FIRST so an external
-	//      `Pkg::Comp` resolves to its real label before the
-	//      sanitize-to-local fallback fabricates a non-existent
-	//      sibling target.
-	//   2. If the lib appears in `decoded.AddLibraries` as an
-	//      ALIAS, resolve to the underlying target's sanitized
-	//      name (`absl::log_internal_check_impl` →
-	//      `:absl_log_internal_check_impl`).
-	//   3. If the lib is a plain in-tree name (no `::`), emit as
-	//      `:<name>` — the consumer side resolves it whether the
-	//      target is codemodel-emitted or trace-synthesized.
-	//   4. If the lib has `::` but no recorded ALIAS, sanitize
-	//      `::` → `_` and emit (alias-target rule will resolve).
-	//   5. Empty / build-genex / link-flag tokens drop silently.
-	//
-	// A `:`-local label produced by (2)/(3)/(4) that resolves to no
-	// emitted target (e.g. abseil's GTest-less default build, where
-	// `absl::test_instance_tracker` is a TESTONLY lib the codemodel
-	// filtered out) is pruned later by pruneDanglingTraceInterfaceDeps,
-	// once the full emitted-target/alias set is known.
-	aliasMap := map[string]string{}
-	for _, call := range decoded.AddLibraries {
-		if call.Type == "ALIAS" && len(call.Aliases) > 0 {
-			aliasMap[call.Name] = call.Aliases[0]
-		}
-	}
-	resolveLibToLabel := func(lib string) string {
-		lib = strings.TrimSpace(lib)
-		if lib == "" {
-			return ""
-		}
-		// Drop link-flag tokens; cmake's File API records flags
-		// (`-Wl,...`, `-pthread`) here too — those route through
-		// the link path, not deps.
-		if strings.HasPrefix(lib, "-") {
-			return ""
-		}
-		// Drop genex placeholders cmake didn't expand.
-		if strings.Contains(lib, "$<") {
-			return ""
-		}
-		// Imports-manifest routing FIRST: a find_package IMPORTED
-		// target (GTest::gmock, Foo::Bar) the orchestrator maps to a
-		// Bazel label resolves to that label, never a fabricated
-		// in-package sibling. Mirrors the codemodel dep path's
-		// imports.LookupCMakeTarget step so the trace-synth INTERFACE
-		// library route honours the same manifest.
-		if export := imports.LookupCMakeTarget(lib); export != nil {
-			return export.BazelLabel
-		}
-		if actual, ok := aliasMap[lib]; ok {
-			return ":" + strings.ReplaceAll(actual, "::", "_")
-		}
-		return ":" + strings.ReplaceAll(lib, "::", "_")
-	}
-	depsByTarget := map[string][]string{}
-	for _, link := range decoded.Links {
-		for _, grp := range link.Groups {
-			if grp.Visibility != "INTERFACE" && grp.Visibility != "PUBLIC" {
-				continue
-			}
-			seen := map[string]bool{}
-			for _, raw := range grp.Libs {
-				// A single Libs entry can itself be a `;`-joined cmake list
-				// when the project passes a quoted deps *variable* to
-				// target_link_libraries (abseil's absl_cc_library expands
-				// `"${..._DEPS}"` to `absl::config;absl::int128;…` as one arg).
-				// Split on cmake's list separator so each lib resolves to its
-				// own label instead of one bogus `:absl_config;absl_int128;…`.
-				for _, lib := range strings.Split(raw, ";") {
-					label := resolveLibToLabel(lib)
-					if label == "" || seen[label] {
-						continue
-					}
-					seen[label] = true
-					depsByTarget[link.Target] = append(depsByTarget[link.Target], label)
-				}
-			}
-		}
-	}
+	// Three cohesive build passes over the decoded trace, each extracted to a
+	// helper (the include/root-walk set, the define list + genex reconciliation,
+	// and the dep-label list); the emit loop below consumes their maps.
+	includesByTarget, rootWalkByTarget := interfaceIncludesByTarget(decoded, cmakeSrc, workspaceRoot)
+	definesByTarget := interfaceDefinesByTarget(decoded, genexTargets)
+	depsByTarget := interfaceDepsByTarget(decoded, imports)
 
 	var out []ir.Target
 	emitted := map[string]bool{}
@@ -391,6 +165,220 @@ func lowerInterfaceLibraries(
 	// Deterministic order by name.
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// interfaceIncludesByTarget builds the per-INTERFACE-library include list from
+// the INTERFACE/PUBLIC arms of target_include_directories. It also returns the
+// set of targets whose include path is the package root: Bazel rejects
+// includes=[""], so the root never becomes an include attr, but its headers
+// must still be discovered, so the caller prepends "" to those targets'
+// discoverHeaders walk.
+func interfaceIncludesByTarget(decoded *shadow.Decoded, cmakeSrc, workspaceRoot string) (map[string][]string, map[string]bool) {
+	includesByTarget := map[string][]string{}
+	rootWalkByTarget := map[string]bool{}
+	for _, ic := range decoded.Includes {
+		for _, grp := range ic.Groups {
+			if grp.Visibility != "INTERFACE" && grp.Visibility != "PUBLIC" {
+				continue
+			}
+			for _, dir := range grp.Dirs {
+				rel := dir
+				if filepath.IsAbs(dir) {
+					if r, ok := relativeIfInside(workspaceRoot, dir); ok {
+						rel = r
+					} else if r, ok := relativeIfInside(cmakeSrc, dir); ok {
+						rel = r
+					}
+				}
+				rel = strings.TrimSpace(rel)
+				// The package root presents three ways: "" (an absolute
+				// ${CMAKE_SOURCE_DIR} that relativized to the element root) and
+				// the literal current-dir forms "." / "./" (a project writing
+				// `target_include_directories(lib INTERFACE .)`, recorded
+				// verbatim by --trace-expand). All denote the root: Bazel rejects
+				// includes=[""], and a stray "." would pollute split header-lib
+				// planning (normDir(".") → "" → a bogus root header lib), so route
+				// them to the root-walk signal instead of the includes slice —
+				// matching the codemodel path's rel=="" || rel=="." handling.
+				if rel == "" || rel == "." || rel == "./" {
+					rootWalkByTarget[ic.Target] = true
+					continue
+				}
+				if strings.HasPrefix(rel, "../") || filepath.IsAbs(rel) {
+					continue
+				}
+				includesByTarget[ic.Target] = append(includesByTarget[ic.Target], rel)
+			}
+		}
+	}
+	return includesByTarget, rootWalkByTarget
+}
+
+// interfaceDefinesByTarget builds the per-INTERFACE-library define list from the
+// INTERFACE/PUBLIC arms of target_compile_definitions, evaluating cmake genexes
+// where it can. For any define whose genex stays unresolved, it reconciles
+// against cmake's own resolved INTERFACE_COMPILE_DEFINITIONS (captured by the
+// structural genex probe) — emitting the define cmake resolved rather than
+// dropping it. Empty probe data leaves the partial list (unresolved dropped).
+func interfaceDefinesByTarget(decoded *shadow.Decoded, genexTargets map[string]genexeval.TargetInfo) map[string][]string {
+	definesByTarget := map[string][]string{}
+	// Targets where at least one INTERFACE/PUBLIC define carried a
+	// generator expression the Go-side evaluator couldn't crack.
+	unresolvedGenexTargets := map[string]bool{}
+	for _, tc := range decoded.CompileDefinitions {
+		for _, grp := range tc.Groups {
+			if grp.Visibility != "INTERFACE" && grp.Visibility != "PUBLIC" {
+				continue
+			}
+			for _, def := range grp.Items {
+				def = strings.TrimSpace(def)
+				if def == "" {
+					continue
+				}
+				// Evaluate cmake generator expressions like
+				// `$<$<BOOL:OFF>:FOO=1>`. nlohmann-json emits ~5
+				// of these as the INTERFACE define list; cmake
+				// evaluates them at generate time based on the
+				// option values.
+				//
+				// Try the (a) genexeval parser first for shapes
+				// it supports; fall back to a small BOOL/NOT-
+				// specific evaluator for the nested
+				// `$<$<BOOL:...>:RESULT>` shape the parser
+				// rejects (its op-name lexer doesn't accept
+				// nested `$<`).
+				if strings.Contains(def, "$<") {
+					if nodes, err := genexeval.Parse([]byte(def)); err == nil {
+						if eval, err := genexeval.Eval(nodes, genexeval.Context{}); err == nil {
+							def = strings.TrimSpace(string(eval))
+						}
+					} else if evalled, ok := evalNestedBoolGenex(def); ok {
+						def = strings.TrimSpace(evalled)
+					}
+				}
+				if def == "" {
+					continue
+				}
+				// Still unresolved: note the target so the
+				// structural-probe reconciliation below can
+				// substitute cmake's own resolved define list.
+				// Without that, dropping silently loses a define
+				// that genuinely applies under the configured
+				// build (e.g. `$<$<CONFIG:Release>:NDEBUG_EXTRA>`)
+				// — intent loss the probe lets us avoid.
+				if strings.Contains(def, "$<") {
+					unresolvedGenexTargets[tc.Target] = true
+					continue
+				}
+				definesByTarget[tc.Target] = append(definesByTarget[tc.Target], def)
+			}
+		}
+	}
+
+	// Structural-probe reconciliation: for every target whose
+	// INTERFACE defines had an unresolved genex, replace the
+	// partial trace-evaluated list with cmake's own resolved
+	// INTERFACE_COMPILE_DEFINITIONS (the structural genex probe
+	// captured it at generation time, where cmake's evaluator
+	// already answered every `$<…>`). This turns "drop the define
+	// we couldn't evaluate" into "emit the define cmake resolved"
+	// — capturing intent instead of losing it. Empty probe data
+	// (no --probe-genex, cmake < 3.24) leaves behavior unchanged:
+	// the partial list stands and unresolved entries stay dropped.
+	for tgt := range unresolvedGenexTargets {
+		ti, ok := genexTargets[tgt]
+		if !ok || ti.InterfaceCompileDefinitions == "" {
+			continue
+		}
+		resolved := splitResolvedDefines(ti.InterfaceCompileDefinitions)
+		if len(resolved) == 0 {
+			continue
+		}
+		definesByTarget[tgt] = resolved
+	}
+	return definesByTarget
+}
+
+// interfaceDepsByTarget builds the per-INTERFACE-library dep label list from the
+// INTERFACE/PUBLIC arms of target_link_libraries, resolving each lib name to a
+// Bazel label: imports-manifest routing first (a find_package IMPORTED target →
+// its external label), then ALIAS → underlying sanitized name, then plain
+// in-tree `:<name>`, then `::`→`_` sanitization. Empty / build-genex / link-flag
+// tokens drop. A produced `:`-local label that resolves to no emitted target is
+// pruned later by pruneDanglingTraceInterfaceDeps.
+func interfaceDepsByTarget(decoded *shadow.Decoded, imports *manifest.Resolver) map[string][]string {
+	aliasMap := map[string]string{}
+	for _, call := range decoded.AddLibraries {
+		if call.Type == "ALIAS" && len(call.Aliases) > 0 {
+			aliasMap[call.Name] = call.Aliases[0]
+		}
+	}
+	resolveLibToLabel := func(lib string) string {
+		lib = strings.TrimSpace(lib)
+		if lib == "" {
+			return ""
+		}
+		// Drop link-flag tokens; cmake's File API records flags
+		// (`-Wl,...`, `-pthread`) here too — those route through
+		// the link path, not deps.
+		if strings.HasPrefix(lib, "-") {
+			return ""
+		}
+		// Drop genex placeholders cmake didn't expand.
+		if strings.Contains(lib, "$<") {
+			return ""
+		}
+		// Imports-manifest routing FIRST: a find_package IMPORTED
+		// target (GTest::gmock, Foo::Bar) the orchestrator maps to a
+		// Bazel label resolves to that label, never a fabricated
+		// in-package sibling. Mirrors the codemodel dep path's
+		// imports.LookupCMakeTarget step so the trace-synth INTERFACE
+		// library route honours the same manifest.
+		if export := imports.LookupCMakeTarget(lib); export != nil {
+			return export.BazelLabel
+		}
+		if actual, ok := aliasMap[lib]; ok {
+			return ":" + strings.ReplaceAll(actual, "::", "_")
+		}
+		return ":" + strings.ReplaceAll(lib, "::", "_")
+	}
+	depsByTarget := map[string][]string{}
+	// Dedup per TARGET (not per group): a target can carry several
+	// INTERFACE/PUBLIC link groups — across multiple target_link_libraries
+	// calls (separate decoded.Links entries) or arms of one call — and Bazel
+	// rejects a duplicate label in deps. A per-group seen set would let the
+	// same dep through twice; the emit loop doesn't dedupSlice deps the way it
+	// does includes/defines, so the dedup has to happen here.
+	seenByTarget := map[string]map[string]bool{}
+	for _, link := range decoded.Links {
+		for _, grp := range link.Groups {
+			if grp.Visibility != "INTERFACE" && grp.Visibility != "PUBLIC" {
+				continue
+			}
+			seen := seenByTarget[link.Target]
+			if seen == nil {
+				seen = map[string]bool{}
+				seenByTarget[link.Target] = seen
+			}
+			for _, raw := range grp.Libs {
+				// A single Libs entry can itself be a `;`-joined cmake list
+				// when the project passes a quoted deps *variable* to
+				// target_link_libraries (abseil's absl_cc_library expands
+				// `"${..._DEPS}"` to `absl::config;absl::int128;…` as one arg).
+				// Split on cmake's list separator so each lib resolves to its
+				// own label instead of one bogus `:absl_config;absl_int128;…`.
+				for _, lib := range strings.Split(raw, ";") {
+					label := resolveLibToLabel(lib)
+					if label == "" || seen[label] {
+						continue
+					}
+					seen[label] = true
+					depsByTarget[link.Target] = append(depsByTarget[link.Target], label)
+				}
+			}
+		}
+	}
+	return depsByTarget
 }
 
 // evalNestedBoolGenex evaluates the cmake genex shape
