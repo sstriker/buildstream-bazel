@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -6095,12 +6096,7 @@ func relForSource(p string, t *fileapi.Target) string {
 // source slices are short enough (typically <50 entries) that
 // a map+rebuild is overkill.
 func stringSliceContains(s []string, v string) bool {
-	for _, e := range s {
-		if e == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s, v)
 }
 
 // scopeForLabelLib looks up a cmake lib name in the
