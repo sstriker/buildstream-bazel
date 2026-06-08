@@ -13,11 +13,14 @@ transition cleanly.
   the code-complexity axis `go vet` / `gofmt` / `staticcheck` don't cover. The CI
   step runs in the `Build + unit tests` job as **non-blocking
   (`continue-on-error`)** so its output is the gap-to-green worklist, not a wall.
-  At launch it flags **55** issues against the gate thresholds (gocyclo>30:6,
-  gocognit>50:25, nestif>10:21, funlen:3) — the worst offenders are
-  `lower.lowerTarget` (cyclomatic 304 / cognitive 699), `convert-element-cmake`'s
-  `run` (167/291), `lower.ToIR` (130/275), and `emit/bazel` `rewriteTarget` /
-  `planSplit`. **What's left:** break these down (extract per-concern helpers the
+  At launch it flagged **55** issues against the gate thresholds (gocyclo>30,
+  gocognit>50, nestif>10, funlen); the burndown is underway (**53** now —
+  `lowerInterfaceLibraries` decomposed into three pure build-pass helpers, 60→15,
+  establishing the extract-cohesive-passes pattern). The remaining worst
+  offenders are `lower.lowerTarget` (cyclomatic 304 / cognitive 699),
+  `convert-element-cmake`'s `run` (167/291), `lower.ToIR` (130/275), and
+  `emit/bazel` `rewriteTarget` / `planSplit` — each its own focused pass.
+  **What's left:** keep breaking these down (extract per-concern helpers the
   way the duplicate-logic audit consolidations did — see git history for the
   source-classification chokepoints + the cross-package label / exports_files
   chokepoints), then **drop `continue-on-error`** so the lens gates like the
