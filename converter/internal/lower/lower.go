@@ -3593,17 +3593,51 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				continue
 			}
 			path := strings.TrimSpace(frag.Fragment)
-			if path == "" || !filepath.IsAbs(path) {
-				// Non-abs `libraries`-role fragments are
-				// typically in-codebase target output names
-				// (e.g. `libfoo.a` for a sibling cc_library)
-				// that the t.Dependencies walk above has
-				// already routed to irt.Deps; tagging them
-				// here would create false-positive audit
-				// noise. Pure link flags
-				// (`-lpthread` / `-pthread`) usually surface
-				// as `flags`-role fragments routed to
-				// LinkOpts above, not here.
+			if path == "" {
+				continue
+			}
+			if !filepath.IsAbs(path) {
+				// Non-abs `libraries`-role fragments split two ways.
+				// In-codebase target output names (e.g. `libfoo.a` for
+				// a sibling cc_library) are already routed to irt.Deps
+				// by the t.Dependencies walk above — re-emitting them
+				// here would create false-positive audit noise, so they
+				// stay dropped. But cmake also lands bare SYSTEM-library
+				// links here as link FLAGS (anything cmake emits with a
+				// leading `-`; an in-codebase target ref never starts
+				// with `-`): target_link_libraries(foo m) → `-lm`,
+				// Threads::Threads → `-lpthread`/`-pthread`,
+				// ${CMAKE_DL_LIBS} → `-ldl`. Those have no dep to carry
+				// them, so dropping them silently loses the link (the
+				// brotli -lm, googletest -lpthread, libxml2/llvm -ldl
+				// survey gaps). Route the flag shapes to linkopts; a
+				// `-l<name>` first goes through the same producer-element
+				// precedence as the absolute system-lib lift below (a
+				// producer claiming the name wins over the host
+				// -l<name>).
+				if !strings.HasPrefix(path, "-") {
+					continue
+				}
+				if name, ok := linkLibFlagName(path); ok {
+					if export := imports.LookupLinkLibrary(name); export != nil {
+						if !seen[export.BazelLabel] {
+							seen[export.BazelLabel] = true
+							if allowsImplementationDeps && traceLinkScope != nil && scopeForLabelLib(traceLinkScope, export.CMakeTarget) == "PRIVATE" {
+								irt.ImplementationDeps = append(irt.ImplementationDeps, export.BazelLabel)
+							} else {
+								irt.Deps = append(irt.Deps, export.BazelLabel)
+							}
+						}
+						continue
+					}
+				}
+				// `-l<name>` (no producer claim) or another link flag
+				// (`-pthread`). Defensive isCompileOnlyLinkFlag guard
+				// keeps a compile-only flag cmake mis-attached to the
+				// link line off it; dedup mirrors the flags-role path.
+				if !isCompileOnlyLinkFlag(path) && !stringSliceContains(irt.LinkOpts, path) {
+					irt.LinkOpts = append(irt.LinkOpts, path)
+				}
 				continue
 			}
 			if hostPrefix != "" && strings.HasPrefix(path, hostPrefix+string(filepath.Separator)) {
