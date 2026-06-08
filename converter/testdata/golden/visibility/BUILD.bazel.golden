@@ -31,5 +31,8 @@ pkg_files(
 cc_import(
     name = "visi_import",
     static_library = "lib/libvisi.a",
-    tags = ["cmake-codegen-install-export-import"],
+    tags = [
+        "cmake-codegen-install-export-import",
+        "manual",
+    ],
 )  # keep

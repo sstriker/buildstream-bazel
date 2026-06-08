@@ -7,17 +7,6 @@ transition cleanly.
 
 ## Now
 
-- **Regression: zstd split-emit emits an invalid subpackage label.** The
-  full-corpus fidelity run (2026-06-08) caught zstd — otherwise docs-green —
-  failing analysis with `Label '//elements/zstd:lib/libzstd.so' is invalid
-  because 'elements/zstd/lib' is a subpackage`. Split-emit's cross-package
-  relabel produces a same-package `:lib/libzstd.so` string for an artifact that
-  actually lives in the `elements/zstd/lib` subpackage; it must be relabeled to
-  the cross-package form `//elements/zstd/lib:libzstd.so` (the same relabel the
-  header-lib / `exports_files` paths already do). Blocks zstd's compile-db
-  fidelity row. Likely main-drift since zstd last went green — guard with the
-  zstd survey once fixed.
-
 - **Complexity lens — soft-launched, drive to green then flip to blocking.**
   `make lint-complexity` (golangci-lint, complexity-only config in
   `.golangci.yml`: gocyclo / gocognit / cyclop / nestif / funlen / maintidx) is
@@ -1041,6 +1030,16 @@ transition cleanly.
   Caveats still open: TU keying is by basename (collides across dirs in big
   trees; disambiguate by relative-suffix), config alignment (cmake db is
   single-config; defines/-std/includes are largely config-stable).
+  **zstd surfaces a sharper TU-keying gap (2026-06-08):** once the subpackage-
+  label regression is fixed and zstd's fidelity row produces, it reports
+  `matched: 0` (41 only_cmake basenames like `cover.c` vs 41 only_bazel
+  package-relative paths like `lib/common/debug.c`, 70 key-collisions). zstd's
+  buildable cmake root is `build/cmake` but its sources are overlaid siblings
+  under `lib/`, so cmake's compile_commands keys them one way and the Bazel
+  aquery another — they never align under basename keying. Disambiguating by a
+  normalized relative-suffix (matching the on-disk source identity, not the
+  cmake-vs-Bazel path framing) would let split / overlaid-source members
+  produce a meaningful fidelity row instead of an all-divergent one.
 
 - **Derive `target_libc` / target triple from the probed sysroot.**
   `builtin_sysroot` now ships: the probe lifts `CMAKE_SYSROOT` into

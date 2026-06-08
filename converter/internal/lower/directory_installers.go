@@ -401,6 +401,19 @@ func lowerExportInstallers(r *fileapi.Reply, emitConfig bool) []ir.Target {
 					// surfacing this sibling would
 					// duplicate it.
 					declarative[i].Tags = appendTag(declarative[i].Tags, "cmake-codegen-install-export-import")
+					// The facade's static_library/shared_library points at the
+					// INSTALLED artifact (e.g. "lib/libzstd.so"), which has no
+					// producer in the standalone in-element graph — it only
+					// exists after `cmake --install`, and is consumed by a
+					// downstream find_package(<Pkg> CONFIG) element that
+					// references this facade explicitly. So exclude it from the
+					// standalone wildcard build/aquery (`bazel build //...`):
+					// without "manual" the build lens (and the compile-db
+					// fidelity aquery) fail "no such target …:lib<x>.so" once a
+					// split homes the artifact in a sub-package. Explicit
+					// downstream refs still resolve — "manual" only drops it from
+					// `...` expansion.
+					declarative[i].Tags = appendTag(declarative[i].Tags, "manual")
 				}
 				merge(declarative[i])
 			}

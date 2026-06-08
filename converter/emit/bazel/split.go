@@ -235,6 +235,7 @@ func primaryGeneratedOutput(t ir.Target) string {
 // headers physically under each include-root.
 type splitPlan struct {
 	sub        map[string]string   // target name → declaring dir ("" = root)
+	placed     map[string]string   // target name → landingDir (incl. synthesized producers homed by output path); see populate in planSplit
 	headerLibs map[string]string   // include-root dir → header-lib name
 	headersIn  map[string][]string // include-root dir → element-root-relative header paths under it
 	base       string              // repo-root-relative element package path (label base)
@@ -722,6 +723,7 @@ func dropGlobSrcFiles(t ir.Target) ir.Target {
 func planSplit(pkg *ir.Package, local bool) *splitPlan {
 	p := &splitPlan{
 		sub:              map[string]string{},
+		placed:           map[string]string{},
 		headerLibs:       map[string]string{},
 		headersIn:        map[string][]string{},
 		genOuts:          map[string]bool{},
@@ -942,6 +944,15 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 		return p.pkgs[i] < p.pkgs[j]
 	})
 
+	// Index every target's landing dir (where the partition actually places it
+	// — incl. synthesized producers homed by their output path, which carry no
+	// SubPackages entry). Needs p.pkgs ready (landingDir → deepestPkg). Lets a
+	// cross-package consumer (e.g. cmake_config_bundle's filegroup srcs) relabel
+	// a ":<name>" ref whose producer was re-homed into a sub-package.
+	for _, t := range pkg.Targets {
+		p.placed[t.Name] = p.landingDir(t, local)
+	}
+
 	// Publicize any producer whose generated output is referenced directly (in
 	// srcs) by a consumer landing in a DIFFERENT package — the producer's
 	// private default would make that output unreachable cross-package (Bazel
@@ -959,10 +970,25 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 			p.publicize[prod] = true
 		}
 	}
+	// A direct intra-element target ref (":<name>", e.g. cmake_config_bundle's
+	// filegroup srcs pointing at the per-file write_file generators) likewise
+	// needs the producer public when it lands in a different package than the
+	// consumer — rewriteTarget relabels the ref cross-package, so a private
+	// producer would be unreachable.
+	publicizeIfCrossPkgTarget := func(ref, consumerDir, selfName string) {
+		name, ok := strings.CutPrefix(ref, ":")
+		if !ok || name == selfName {
+			return
+		}
+		if d, known := p.placed[name]; known && d != consumerDir {
+			p.publicize[name] = true
+		}
+	}
 	for _, t := range pkg.Targets {
 		consumerDir := p.landingDir(t, local)
 		for _, s := range t.Srcs {
 			publicizeIfCrossPkgGen(s, consumerDir, t.Name)
+			publicizeIfCrossPkgTarget(s, consumerDir, t.Name)
 		}
 		// hdrs/textual_hdrs that are a GENERATED output owned by another package
 		// are referenced by a direct cross-package file label too (rewriteTarget),
@@ -1069,6 +1095,19 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// targets (dir=="") keep the relative form, so non-split members don't churn.
 	if local && dir != "" && dir != "." && rt.StripIncludePrefix != "" && plan.base != "" {
 		rt.StripIncludePrefix = "/" + plan.base + "/" + rt.StripIncludePrefix
+	}
+
+	// cc_import's static_library/shared_library are single element-root-relative
+	// artifact paths (e.g. install-export's "lib/libzstd.so"). When the
+	// artifact's dir is a sub-package, the bare path is an invalid same-package
+	// label ("lib is a subpackage"); relabel it cross-package. NOT gated on
+	// `local`: this is about emitted-BUILD package boundaries (which a split
+	// creates in both regimes), not src/hdr path framing — the same reason deps
+	// rewrite to cross-package labels under SourceKey too. A non-sub-package
+	// path returns unchanged, so the SourceKey/non-split cases don't churn.
+	if rt.Kind == ir.KindCCImport {
+		rt.StaticLibrary = relabelImportArtifact(plan, dir, rt.StaticLibrary)
+		rt.SharedLibrary = relabelImportArtifact(plan, dir, rt.SharedLibrary)
 	}
 
 	// Multi-package RootInclude fast-path (abseil's element-root grant spanning
@@ -1299,6 +1338,27 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 			pp["srcs"] = newArms
 			rt.PerPlatform = pp
 		}
+	}
+	// A filegroup's srcs may be intra-element target refs (":<name>") whose
+	// producers the split re-homed into a sub-package (install-export's
+	// cmake_config_bundle references the per-file write_file generators, which
+	// land in the install dir's package by their output path while the filegroup
+	// stays at root). rewriteSrcList above leaves a ":<name>" ref untouched
+	// (deepestPkg sees no package), so relabel them cross-package here, after the
+	// srcs rewrite, via the target's landing dir. Same-package and non-target
+	// srcs pass through.
+	if local && rt.Kind == ir.KindFilegroup && len(rt.Srcs) > 0 {
+		srcs := make([]string, len(rt.Srcs))
+		for i, s := range rt.Srcs {
+			if name, ok := strings.CutPrefix(s, ":"); ok {
+				if d, known := plan.placed[name]; known && d != dir {
+					srcs[i] = crossPkgLabel(plan, d, name)
+					continue
+				}
+			}
+			srcs[i] = s
+		}
+		rt.Srcs = srcs
 	}
 	// (SourceKey regime: srcs/hdrs are left element-root-relative;
 	// EmitWithOptions prefixes them with @src_<key>//: unchanged.)
@@ -1617,6 +1677,29 @@ func crossPkgLabel(plan *splitPlan, dir, name string) string {
 // synthesized) resolves to the root package.
 func targetLabel(plan *splitPlan, name string) string {
 	return crossPkgLabel(plan, plan.targetDir(name), name)
+}
+
+// relabelImportArtifact rewrites a cc_import's single library file path (its
+// element-root-relative install artifact, e.g. "lib/libzstd.so") to a
+// cross-package label when the artifact lives in a SUB-package of the target's
+// own package. Bazel reads a bare "lib/libzstd.so" in package P as the file
+// label P:lib/libzstd.so, which is invalid when "lib" is itself a package
+// ("lib is a subpackage") — exactly the relabel srcs/hdrs already get. A path
+// in the target's own package, or one not under any known package, is returned
+// unchanged.
+func relabelImportArtifact(plan *splitPlan, dir, p string) string {
+	if p == "" {
+		return p
+	}
+	d := plan.deepestPkg(p)
+	if d == dir {
+		return p
+	}
+	file, ok := relUnder(d, p)
+	if !ok || file == "" {
+		return p
+	}
+	return crossPkgLabel(plan, d, file)
 }
 
 // bazelRoot is the repo-root-relative base package path. The split plan

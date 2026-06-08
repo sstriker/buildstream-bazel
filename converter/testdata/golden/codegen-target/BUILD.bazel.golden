@@ -30,5 +30,8 @@ genrule(
 cc_import(
     name = "codegen_import",
     static_library = "lib/libcodegen.a",
-    tags = ["cmake-codegen-install-export-import"],
+    tags = [
+        "cmake-codegen-install-export-import",
+        "manual",
+    ],
 )  # keep
