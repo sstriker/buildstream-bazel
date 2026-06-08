@@ -21,6 +21,7 @@ package shadow
 // and aren't part of the user's project intent.
 
 import (
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -95,7 +96,13 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 	traceHasEndif := hasEndifEvent(events)
 	tier1Stack := newPlatformIfStack()
 	tier1Idx := newCmakeFileIfIndex()
+	// Most-recent event file at each frame depth, maintained in trace order so
+	// add_library can recover its declaring CMakeLists scope (see DeclFile).
+	lastFileAtFrame := map[int]string{}
 	for _, ev := range events {
+		if ev.Frame > 0 {
+			lastFileAtFrame[ev.Frame] = ev.File
+		}
 		collectReadPath(ev, traceSourceRoot, reads)
 		if call, ok := classifyTargetIncludes(ev, traceSourceRoot, knownTargets); ok {
 			d.Includes = append(d.Includes, call)
@@ -137,6 +144,7 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 			d.AddDependencies = append(d.AddDependencies, call)
 		}
 		if call, ok := classifyAddLibrary(ev, traceSourceRoot); ok {
+			call.DeclFile = declaringScopeFile(ev, lastFileAtFrame)
 			d.AddLibraries = append(d.AddLibraries, call)
 		}
 		if call, ok := classifyInstallExport(ev); ok {
@@ -1915,6 +1923,37 @@ type AddLibraryCall struct {
 	// RawArgs preserves the verbatim argv for callers that need
 	// extra tokens (e.g. EXCLUDE_FROM_ALL / GLOBAL keywords).
 	RawArgs []string
+
+	// DeclFile is the DECLARING directory-scope CMakeLists.txt that
+	// (transitively) invoked this add_library — recovered via the trace frame
+	// stack. For a call written directly in a CMakeLists that's File itself;
+	// for one inside a function/macro (abseil's `absl_cc_library` wraps
+	// `add_library(... INTERFACE)` in a function in CMake/AbseilHelpers.cmake,
+	// so File is the helper module) it's the enclosing CMakeLists scope, which
+	// is the package the target belongs in under --split-packages. Falls back
+	// to File when no enclosing CMakeLists frame is recoverable (cmake without
+	// the trace `frame` field).
+	DeclFile string
+}
+
+// declaringScopeFile recovers the directory-scope CMakeLists.txt that
+// (transitively) invoked the command in ev, using the running frame→file map
+// (lastFileAtFrame must hold the most recent event file at each frame depth seen
+// so far, including ev's own frame). When ev itself is in a CMakeLists.txt that
+// IS the scope; otherwise it's the nearest shallower frame whose file is a
+// CMakeLists.txt (the call site that entered the function/macro chain). Returns
+// ev.File when none is found (older cmake omits `frame`, or a module called
+// outside any CMakeLists).
+func declaringScopeFile(ev TraceEvent, lastFileAtFrame map[int]string) string {
+	if filepath.Base(ev.File) == "CMakeLists.txt" {
+		return ev.File
+	}
+	for d := ev.Frame - 1; d >= 1; d-- {
+		if f, ok := lastFileAtFrame[d]; ok && filepath.Base(f) == "CMakeLists.txt" {
+			return f
+		}
+	}
+	return ev.File
 }
 
 // ExtractAddLibrary walks the cmake trace for user-written
@@ -1922,8 +1961,13 @@ type AddLibraryCall struct {
 // cmake's own internal libraries don't pollute the result.
 func ExtractAddLibrary(traceRaw []byte, sourceRoot string) []AddLibraryCall {
 	var out []AddLibraryCall
+	lastFileAtFrame := map[int]string{}
 	for _, ev := range ParseTrace(traceRaw) {
+		if ev.Frame > 0 {
+			lastFileAtFrame[ev.Frame] = ev.File
+		}
 		if call, ok := classifyAddLibrary(ev, sourceRoot); ok {
+			call.DeclFile = declaringScopeFile(ev, lastFileAtFrame)
 			out = append(out, call)
 		}
 	}

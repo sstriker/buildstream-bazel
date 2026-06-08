@@ -987,3 +987,31 @@ func TestExecuteProcess_ListValuedCommandSplits(t *testing.T) {
 		t.Errorf("argv = %v, want %v", argv, want)
 	}
 }
+
+// TestExtractAddLibrary_DeclFileFromFrameStack pins the frame-stack recovery of
+// a function-wrapped add_library's declaring scope — the abseil shape, where
+// absl_cc_library (a function in CMake/AbseilHelpers.cmake) wraps
+// add_library(<name> INTERFACE). The add_library event's own File is the helper
+// module; DeclFile must resolve to the enclosing frame-1 CMakeLists.txt that
+// called the function.
+func TestExtractAddLibrary_DeclFileFromFrameStack(t *testing.T) {
+	trace := []byte(
+		// frame-1 call site in the declaring CMakeLists, then the function body's
+		// add_library at frame 2 in the helper module.
+		`{"args":["mylib","INTERFACE"],"cmd":"my_cc_library","file":"/src/absl/base/CMakeLists.txt","frame":1,"line":20}` + "\n" +
+			`{"args":["mylib","INTERFACE"],"cmd":"add_library","file":"/src/CMake/AbseilHelpers.cmake","frame":2,"line":321}` + "\n" +
+			// A second, top-level add_library written directly in a CMakeLists: DeclFile == File.
+			`{"args":["toplib","INTERFACE"],"cmd":"add_library","file":"/src/other/CMakeLists.txt","frame":1,"line":5}` + "\n",
+	)
+	calls := ExtractAddLibrary(trace, "/src")
+	got := map[string]string{}
+	for _, c := range calls {
+		got[c.Name] = c.DeclFile
+	}
+	if got["mylib"] != "/src/absl/base/CMakeLists.txt" {
+		t.Errorf("mylib DeclFile = %q, want /src/absl/base/CMakeLists.txt (enclosing frame-1 scope, not the helper module)", got["mylib"])
+	}
+	if got["toplib"] != "/src/other/CMakeLists.txt" {
+		t.Errorf("toplib DeclFile = %q, want its own CMakeLists.txt (top-level call)", got["toplib"])
+	}
+}

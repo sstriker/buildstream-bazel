@@ -1670,8 +1670,35 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// carrying the trace-recorded INTERFACE_INCLUDE_DIRECTORIES
 	// + INTERFACE_COMPILE_DEFINITIONS as hdrs / defines / includes.
 	if decodedTrace != nil {
-		pkg.Targets = append(pkg.Targets,
-			lowerInterfaceLibraries(decodedTrace, knownTargets, hostSrc, cmakeSrc, workspaceRoot, genexTargets, opts.Imports, cc)...)
+		ifaceLibs := lowerInterfaceLibraries(decodedTrace, knownTargets, hostSrc, cmakeSrc, workspaceRoot, genexTargets, opts.Imports, cc)
+		// Place each trace-synth interface lib in its DECLARING sub-package so
+		// --split-packages materializes a BUILD.bazel there (else they fall to
+		// the root package). The declaring scope is recovered via the trace
+		// frame stack (AddLibraryCall.DeclFile) — abseil wraps add_library in
+		// the absl_cc_library FUNCTION, so the call's own File is the helper
+		// module, not absl/<m>/CMakeLists.txt. Mirrors the codemodel path's
+		// per-target pkg.SubPackages assignment (subPackageDir above).
+		declByName := make(map[string]string, len(decodedTrace.AddLibraries))
+		for _, c := range decodedTrace.AddLibraries {
+			if c.DeclFile != "" {
+				declByName[c.Name] = c.DeclFile
+			}
+		}
+		// A project with ONLY trace-synth interface libs (no codemodel targets)
+		// never had pkg.SubPackages initialized by the codemodel loop above.
+		if len(ifaceLibs) > 0 && pkg.SubPackages == nil {
+			pkg.SubPackages = map[string]string{}
+		}
+		for i := range ifaceLibs {
+			name := ifaceLibs[i].Name
+			if _, set := pkg.SubPackages[name]; set {
+				continue
+			}
+			if dir, ok := subPackageDirFromFile(declByName[name], cmakeSrc, workspaceRoot); ok {
+				pkg.SubPackages[name] = dir
+			}
+		}
+		pkg.Targets = append(pkg.Targets, ifaceLibs...)
 	}
 	// Alias-target lift from trace: `add_library(<alias> ALIAS
 	// <target>)` shapes don't appear in codemodel.targets[]
@@ -7239,6 +7266,38 @@ func collectCodegenHeaders(g *ninja.Graph, deps []fileapi.TargetDependency, util
 	}
 	sort.Strings(headers)
 	return headers
+}
+
+// subPackageDirFromFile is the file-path sibling of subPackageDir: it computes
+// the workspace-root-relative sub-package directory for a target declared in
+// declFile (a CMakeLists.txt path). Used for trace-synth interface libs, whose
+// declaring scope is recovered from the trace frame stack rather than a
+// codemodel directory index. Returns ("", false) when declFile is empty or
+// outside cmakeSrc (the caller then leaves the lib in the root package).
+func subPackageDirFromFile(declFile, cmakeSrc, workspaceRoot string) (string, bool) {
+	if declFile == "" || cmakeSrc == "" {
+		return "", false
+	}
+	rel, inside := relativeIfInside(cmakeSrc, filepath.Dir(declFile))
+	if !inside {
+		return "", false
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == "." {
+		rel = ""
+	}
+	rel = strings.TrimSuffix(rel, "/")
+	// Re-anchor to workspaceRoot when it sits strictly above cmakeSrc, matching
+	// subPackageDir / lowerTarget's labelRoot pick.
+	if workspaceRoot != "" && workspaceRoot != cmakeSrc {
+		if prefix, ok := relativeIfInside(workspaceRoot, cmakeSrc); ok && prefix != "" {
+			if rel == "" {
+				return prefix, true
+			}
+			return prefix + "/" + rel, true
+		}
+	}
+	return rel, true
 }
 
 func subPackageDir(cfg fileapi.Configuration, dirIndex int, cmakeSrc, workspaceRoot string) string {

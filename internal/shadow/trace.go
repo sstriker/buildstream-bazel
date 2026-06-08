@@ -16,6 +16,12 @@ type TraceEvent struct {
 	Line int      `json:"line"`
 	Cmd  string   `json:"cmd"`
 	Args []string `json:"args"`
+	// Frame is cmake's call-stack depth for this event (1 = a command
+	// written at a CMakeLists.txt's top level; deeper inside function/macro
+	// bodies). Used to recover the declaring directory scope of a command
+	// that physically executes in an include()d/function-wrapper module
+	// (e.g. abseil's add_library inside the absl_cc_library function).
+	Frame int `json:"frame"`
 }
 
 // ParseTrace walks the cmake --trace-format=json-v1 stream once and
