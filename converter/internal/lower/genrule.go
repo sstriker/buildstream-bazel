@@ -674,39 +674,11 @@ func extractDriver(cmd string) string {
 	}
 	cmd = strings.TrimSpace(cmd)
 
-	tokens := splitShellTokens(cmd)
-	wrappers := map[string]bool{
-		"env":     true,
-		"sh":      true,
-		"bash":    true,
-		"taskset": true,
-		"nice":    true,
-		"ionice":  true,
+	tokens := stripWrapperPrefix(splitShellTokens(cmd))
+	if len(tokens) == 0 {
+		return "unknown"
 	}
-	for len(tokens) > 0 {
-		first := tokens[0]
-		base := filepath.Base(first)
-		if wrappers[base] {
-			// env may carry KEY=VAL pairs and -i/-u flags before the real
-			// command; we strip lazily by skipping tokens starting with
-			// '-' or containing '=' until a clean argv0 appears.
-			tokens = tokens[1:]
-			for len(tokens) > 0 {
-				t := tokens[0]
-				if strings.HasPrefix(t, "-") || strings.Contains(t, "=") {
-					tokens = tokens[1:]
-					continue
-				}
-				break
-			}
-			continue
-		}
-		// `sh -c "<cmd>"` is a special wrapper: we'd need to reparse the
-		// quoted string. Keep "sh" as the driver to surface that we
-		// didn't drill in; M2 audit can flag these.
-		if base == "" {
-			return "unknown"
-		}
+	if base := filepath.Base(tokens[0]); base != "" {
 		return base
 	}
 	return "unknown"
@@ -757,6 +729,35 @@ func splitShellTokens(s string) []string {
 	return out
 }
 
+// stripWrapperPrefix drops leading shell-wrapper invocations (env, sh, bash,
+// taskset, nice, ionice) and the KEY=VAL / -flag tokens an env-style wrapper
+// carries, returning the tokens beginning at the real argv0. Shared by
+// extractDriver and usesCmakeScriptMode so they agree on the driver.
+func stripWrapperPrefix(tokens []string) []string {
+	wrappers := map[string]bool{
+		"env": true, "sh": true, "bash": true,
+		"taskset": true, "nice": true, "ionice": true,
+	}
+	for len(tokens) > 0 {
+		if !wrappers[filepath.Base(tokens[0])] {
+			break
+		}
+		// env may carry KEY=VAL pairs and -i/-u flags before the real
+		// command; skip tokens starting with '-' or containing '=' until a
+		// clean argv0 appears.
+		tokens = tokens[1:]
+		for len(tokens) > 0 {
+			t := tokens[0]
+			if strings.HasPrefix(t, "-") || strings.Contains(t, "=") {
+				tokens = tokens[1:]
+				continue
+			}
+			break
+		}
+	}
+	return tokens
+}
+
 // usesCmakeScriptMode reports whether the recovered custom-command runs
 // cmake in script mode (`cmake [args ...] -P <script>`). cmake's script
 // mode is the converter's hard refusal case: the script lives in the
@@ -788,34 +789,9 @@ func usesCmakeScriptMode(cmd string) bool {
 			break
 		}
 	}
-	// Skip env-style wrappers (KEY=VAL ... cmake -P) the same way
-	// extractDriver does. Mirrors that helper's logic so the two
-	// detectors agree on what counts as the real driver.
-	wrappers := map[string]bool{
-		"env":     true,
-		"sh":      true,
-		"bash":    true,
-		"taskset": true,
-		"nice":    true,
-		"ionice":  true,
-	}
-	for len(tokens) > 0 {
-		first := tokens[0]
-		base := filepath.Base(first)
-		if wrappers[base] {
-			tokens = tokens[1:]
-			for len(tokens) > 0 {
-				t := tokens[0]
-				if strings.HasPrefix(t, "-") || strings.Contains(t, "=") {
-					tokens = tokens[1:]
-					continue
-				}
-				break
-			}
-			continue
-		}
-		break
-	}
+	// Skip env-style wrappers (KEY=VAL ... cmake -P) so the two detectors
+	// agree on what counts as the real driver.
+	tokens = stripWrapperPrefix(tokens)
 	if len(tokens) == 0 {
 		return false
 	}

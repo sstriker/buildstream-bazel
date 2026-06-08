@@ -273,14 +273,14 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 							Kind:            ir.KindBoolFlag,
 							BoolFlagDefault: featureProbeDefault(cmakeVars[varName], fromResult),
 							Tags:            []string{"cmake-codegen-probe-option"},
-							Visibility:      []string{"//visibility:public"},
+							Visibility:      publicVisibility(),
 						},
 						ir.Target{
 							Name:               flag + "_enabled",
 							Kind:               ir.KindConfigSetting,
 							ConfigSettingFlag:  ":" + flag,
 							ConfigSettingValue: "True",
-							Visibility:         []string{"//visibility:public"},
+							Visibility:         publicVisibility(),
 						},
 					)
 					continue
