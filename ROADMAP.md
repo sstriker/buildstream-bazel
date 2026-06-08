@@ -332,7 +332,8 @@ transition cleanly.
   the rejection-mirror does).
 
 The intent-lens producer-gap themes follow as their own entries (2026-06-08
-full-corpus run, biggest cluster first). Each member's
+full-corpus run; listed in intended work order — absent targets, dropped test
+trees, optional-feature deps, codegen instances). Each member's
 `docs/survey-artifacts/<member>/intent-capture.json` carries the per-finding
 `evidence` + `cmake_ref` to drive a fix + a regression guard.
 
@@ -365,12 +366,6 @@ full-corpus run, biggest cluster first). Each member's
     `cc_library` can't express transitively (no `exported_copts`). Needs a design
     call, not a quick fix.
 
-- **Optional-feature conditional deps (find_package under a feature flag, 3×
-  high).** LLVM's `LLVM_ENABLE_ZLIB` / `_ZSTD` / `_OPENCSD` deps aren't linked,
-  so `Compression.cpp` would fail to link. Same find_package→linkopt mechanism
-  as the bare-link fix, tracked distinctly because the dep is gated on a CMake
-  feature option the converter must honor (or default).
-
 - **Emit absent targets / subpackages (9× high).** Whole targets the converter
   produces no `BUILD.bazel` for: abseil's 7 interface subpackages (algorithm,
   cleanup, functional, memory, meta, types, utility), llvm's 19/20 backends
@@ -388,6 +383,12 @@ full-corpus run, biggest cluster first). Each member's
   catch2, boost-core, mbedtls, vtk, openblas. **Caveat:** confirm each is a
   real `add_test`/`enable_testing` lowering gap vs. an intentional build-lens
   scope-out before fixing — some members deliberately disable their test tree.
+
+- **Optional-feature conditional deps (find_package under a feature flag, 3×
+  high).** LLVM's `LLVM_ENABLE_ZLIB` / `_ZSTD` / `_OPENCSD` deps aren't linked,
+  so `Compression.cpp` would fail to link. Same find_package→linkopt mechanism
+  as the bare-link fix, tracked distinctly because the dep is gated on a CMake
+  feature option the converter must honor (or default).
 
 - **`configure_file` / script-codegen genrule coverage — specific instances
   (5× high).** Generated headers with no genrule: vtk's libproj `proj_config.h`,
