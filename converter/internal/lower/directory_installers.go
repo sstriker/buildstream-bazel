@@ -14,10 +14,11 @@ import (
 )
 
 // producedOutputs collects the set of element-root-relative output paths the
-// convert actually produces (genrule outs, write_file out, configure_file out).
-// It gates the generated-file install(FILES) fallback (projectToBuildRoot): a
-// build-dir install entry packages only when a rule produces it, so the emitted
-// pkg_files never references a missing input.
+// convert actually produces (genrule outs, write_file out, configure_file out,
+// cc_embed OutHeader/OutSource, cc_hash OutHeader). It gates the generated-file
+// install(FILES) fallback (projectToBuildRoot): a build-dir install entry
+// packages only when a rule produces it, so the emitted pkg_files never
+// references a missing input.
 func producedOutputs(targets []ir.Target) map[string]bool {
 	out := map[string]bool{}
 	for _, t := range targets {
@@ -29,6 +30,19 @@ func producedOutputs(targets []ir.Target) map[string]bool {
 		}
 		if t.CMakeConfigureFile != nil && t.CMakeConfigureFile.Out != "" {
 			out[t.CMakeConfigureFile.Out] = true
+		}
+		// cc_embed / cc_hash predeclared outputs are produced files too — an
+		// installed one must package, not be dropped by the gate.
+		if t.CCEmbed != nil {
+			if t.CCEmbed.OutHeader != "" {
+				out[t.CCEmbed.OutHeader] = true
+			}
+			if t.CCEmbed.OutSource != "" {
+				out[t.CCEmbed.OutSource] = true
+			}
+		}
+		if t.CCHash != nil && t.CCHash.OutHeader != "" {
+			out[t.CCHash.OutHeader] = true
 		}
 	}
 	return out

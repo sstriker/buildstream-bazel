@@ -684,3 +684,27 @@ func TestDecodeInstallerPath_GeneratedFileGate(t *testing.T) {
 		t.Errorf("build-dir install(DIRECTORY): expected drop, got ok=true")
 	}
 }
+
+// TestProducedOutputs covers the full set of producing rule kinds the gate must
+// recognize: genrule, write_file, cmake_configure_file, cc_embed (header +
+// source), and cc_hash (header). A missing kind would wrongly drop an installed
+// generated file.
+func TestProducedOutputs(t *testing.T) {
+	targets := []ir.Target{
+		{Name: "g", Kind: ir.KindGenrule, GenruleOuts: []string{"gen/a.h", "gen/b.c"}},
+		{Name: "w", Kind: ir.KindWriteFile, WriteFileOut: "zconf.h"},
+		{Name: "cf", Kind: ir.KindCMakeConfigureFile, CMakeConfigureFile: &ir.CMakeConfigureFileSpec{Out: "config.h"}},
+		{Name: "e", Kind: ir.KindCCEmbed, CCEmbed: &ir.CCEmbedSpec{OutHeader: "embed.h", OutSource: "embed.c"}},
+		{Name: "h", Kind: ir.KindCCHash, CCHash: &ir.CCHashSpec{OutHeader: "hash.h"}},
+		{Name: "lib", Kind: ir.KindCCLibrary, Srcs: []string{"x.c"}}, // no output → contributes nothing
+	}
+	got := producedOutputs(targets)
+	for _, want := range []string{"gen/a.h", "gen/b.c", "zconf.h", "config.h", "embed.h", "embed.c", "hash.h"} {
+		if !got[want] {
+			t.Errorf("producedOutputs missing %q; got %v", want, got)
+		}
+	}
+	if got["x.c"] {
+		t.Errorf("producedOutputs should not record a cc_library source as a produced output")
+	}
+}
