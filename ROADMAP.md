@@ -1233,16 +1233,23 @@ The six intent-lens producer-gap themes follow as their own entries
     `<Pkg>ConfigVersion.cmake` alongside the targets script (same dest), so the
     config-package is consumable (zstd generates zstdConfig.cmake +
     zstdConfigVersion.cmake; build green). **Install/export theme COMPLETE
-    (A/B/C/D).** The generated Config.cmake glob-include()s every sibling export
-    script (so MULTI-export packages — zstd's shared + static — resolve fully).
-    Known simplifications (follow-up): the ConfigVersion is a permissive
-    always-compatible stub (the project VERSION isn't in the codemodel), and the
-    generated Config.cmake doesn't reproduce a hand-authored Config.cmake.in's
-    richer semantics — transitive `find_dependency(<Dep>)`, `@PACKAGE_INIT@`
-    `set_and_check` path setup, `check_required_components`. It's a faithful
-    best-effort for the imported-target surface (the orchestrated graph resolves
-    via exports.json + the imports-manifest; this bundle is for EXTERNAL
-    config-mode consumers).
+    (A/B/C/D).** The generated Config.cmake glob-include()s the sibling export
+    scripts (so MULTI-export packages — zstd's shared + static — resolve fully),
+    restricted to export-script naming conventions (`*Targets.cmake` /
+    `*Exports*.cmake` / `*-targets.cmake`) so non-export helper modules a project
+    installs into the same config dir (Helpers.cmake, protobuf-generate.cmake, …)
+    aren't run at find_package() time. Known simplifications (follow-up): the
+    ConfigVersion is a permissive always-compatible stub (the project VERSION
+    isn't in the codemodel); a multi-export package whose export is named outside
+    those conventions (e.g. `install(EXPORT MyLib)`) isn't picked up by the glob —
+    the robust fix is to plumb the sibling export names to `renderConfigFile` and
+    emit explicit `include()`s instead of globbing (BuildInputs runs per-installer
+    so it can't see siblings today); and the generated Config.cmake doesn't
+    reproduce a hand-authored Config.cmake.in's richer semantics — transitive
+    `find_dependency(<Dep>)`, `@PACKAGE_INIT@` `set_and_check` path setup,
+    `check_required_components`. It's a faithful best-effort for the imported-
+    target surface (the orchestrated graph resolves via exports.json + the
+    imports-manifest; this bundle is for EXTERNAL config-mode consumers).
 
 - **System/threading linkopt propagation — extend the host-system-library
   fallback (25× high).** Extends "Make the host-system-library fallback
