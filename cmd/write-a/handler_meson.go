@@ -84,7 +84,7 @@ func (mesonHandler) RenderA(elem *element, elemPkg string) error {
 	if err := stageAllSources(elem, srcStage); err != nil {
 		return err
 	}
-	hasImports, err := writeMesonImportsManifest(elem, elemPkg)
+	hasImports, err := writeDepsImportsManifest(elem, elemPkg)
 	if err != nil {
 		return err
 	}
@@ -180,7 +180,7 @@ func mesonPipelineHandler() pipelineHandler {
 //     genrule contract is forward-compatible with the bundle
 //     synthesis follow-up).
 //
-// hasImports tells us whether writeMesonImportsManifest wrote a
+// hasImports tells us whether writeDepsImportsManifest wrote a
 // non-empty imports.json next to this BUILD.bazel; when true, the
 // genrule pulls it into srcs and threads --imports-manifest into
 // the converter invocation. The hint is computed by the caller
@@ -311,67 +311,4 @@ filegroup(
 `, elem.Name, srcsList, importsFlag, fallbackFlag, fidelityFlag, diagnosticsFlag)
 
 	return b.String()
-}
-
-// writeMesonImportsManifest renders an imports.json next to the
-// element's BUILD.bazel when the element has any cross-element
-// deps. One Element entry per dep, with a single Export per dep
-// following the convention `<dep>::<dep>` → //elements/<dep>:<dep>.
-//
-// The manifest schema is shared with the cmake side
-// (internal/manifest); convert-element-meson's
-// `LookupCMakeTarget(name)` resolves both `<dep>` and
-// `<dep>::<dep>` so the convention bind matches.
-//
-// Dep walk is intentionally kind-agnostic: meson elements can
-// `dependency('foo')` against providers of any kind (kind:cmake,
-// kind:autotools, kind:meson, …), and convert-element-meson
-// resolves through the shared manifest schema regardless of who
-// emitted the dep. Restricting the walk to kind:meson would
-// silently drop valid bindings (PR #106 review feedback).
-//
-// Returns (true, nil) when imports.json was written;
-// (false, nil) when the element has no resolvable cross-element
-// deps.
-func writeMesonImportsManifest(elem *element, elemPkg string) (bool, error) {
-	type entry struct{ name string }
-	var entries []entry
-	for _, dep := range elem.Deps {
-		if dep == nil || dep.Bst == nil {
-			continue
-		}
-		entries = append(entries, entry{name: dep.Name})
-	}
-	if len(entries) == 0 {
-		return false, nil
-	}
-	var b strings.Builder
-	b.WriteString(`{
-  "version": 1,
-  "elements": [
-`)
-	for i, e := range entries {
-		if i > 0 {
-			b.WriteString(",\n")
-		}
-		fmt.Fprintf(&b, `    {
-      "name": %q,
-      "exports": [
-        {
-          "cmake_target": %q,
-          "bazel_label": "//elements/%s:%s"
-        }
-      ]
-    }`, e.name,
-			e.name+"::"+e.name,
-			e.name, e.name)
-	}
-	b.WriteString(`
-  ]
-}
-`)
-	if err := writeFile(filepath.Join(elemPkg, "imports.json"), b.String()); err != nil {
-		return false, err
-	}
-	return true, nil
 }
