@@ -837,6 +837,8 @@ net-new findings cluster into six recurring themes (full detail, with
 
 These are the concrete converter-improvement leads; pick a theme and the
 artifacts give the per-member evidence to drive a fix + a regression guard.
+Each theme is tracked as its own entry in `ROADMAP.md` (the six intent-lens
+producer-gap bullets, biggest cluster first).
 
 ## Running a faithful survey
 
