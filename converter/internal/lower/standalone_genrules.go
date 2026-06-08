@@ -599,21 +599,21 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 	// match safely (it would corrupt a sibling like "gen.inc.in").
 	tokenSet := map[string]bool{}
 	for _, o := range outs {
-		if o == "" {
+		// Skip empty and ABSOLUTE outputs. A genrule output is $(RULEDIR)-
+		// relative, so an absolute path (some of libevent's regress
+		// add_custom_command OUTPUTs are absolute) is not anchorable here.
+		// Processing it both hangs the parent walk (path.Dir("/") == "/" never
+		// loses its slash, so it loops forever) AND would seed "/" + the absolute
+		// path into tokenSet, corrupting the command (injecting "$(RULEDIR)/" at
+		// every separator / producing "$(RULEDIR)//abs/..."). Excluding absolute
+		// outputs makes the relative-only walk terminate naturally (a relative
+		// path's parent reduces to "." / a slash-less component).
+		if o == "" || path.IsAbs(o) {
 			continue
 		}
 		tokenSet[o] = true
-		for d := path.Dir(o); strings.Contains(d, "/"); {
+		for d := path.Dir(o); strings.Contains(d, "/"); d = path.Dir(d) {
 			tokenSet[d] = true
-			parent := path.Dir(d)
-			// path.Dir has fixed points that still contain "/": path.Dir("/")
-			// == "/". An ABSOLUTE output (o starts with "/", as some libevent
-			// regress add_custom_command OUTPUTs are) walks down to "/" and then
-			// loops forever there. Stop when the parent stops shrinking.
-			if parent == d {
-				break
-			}
-			d = parent
 		}
 	}
 	// Fallback for cd-stripped WORKING_DIRECTORY-relative outputs: cmake
@@ -627,7 +627,7 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 	// $(RULEDIR)-relative result on the genrule's package move. No-op (no churn)
 	// when the full form is present, which is the standalone path's usual shape.
 	for _, o := range outs {
-		if o == "" || containsBoundaryToken(cmd, o) {
+		if o == "" || path.IsAbs(o) || containsBoundaryToken(cmd, o) {
 			continue
 		}
 		for s := o; strings.Contains(s, "/"); {

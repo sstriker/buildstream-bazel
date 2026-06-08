@@ -70,19 +70,23 @@ func TestAnchorGenruleOutputsToRuledir_FullFormNoFallback(t *testing.T) {
 // regress hang regression: an ABSOLUTE output path walked its parent dirs via
 // path.Dir down to "/", where path.Dir("/") == "/" still contains a slash, so
 // the parent-dir loop spun forever (the converter hung indefinitely on
-// libevent's regress add_custom_commands). The loop must terminate at the
-// fixed point. Asserts the call RETURNS (a hang fails the test via timeout) and
-// doesn't corrupt the command.
+// libevent's regress add_custom_commands). Absolute outputs aren't
+// $(RULEDIR)-relative, so they're now skipped entirely — which both terminates
+// AND avoids corrupting the command (no stray "/" token anchoring every
+// separator, no "$(RULEDIR)//abs/..."). Asserts the call returns (a hang fails
+// via the watchdog) and leaves the command UNCHANGED.
 func TestAnchorGenruleOutputsToRuledir_AbsoluteOutputTerminates(t *testing.T) {
+	const cmd = "cp in.c /abs/build/gen/out.c"
 	done := make(chan string, 1)
 	go func() {
-		done <- anchorGenruleOutputsToRuledir("cp in.c /abs/build/gen/out.c", []string{"/abs/build/gen/out.c"})
+		done <- anchorGenruleOutputsToRuledir(cmd, []string{"/abs/build/gen/out.c"})
 	}()
 	select {
 	case got := <-done:
-		// An absolute output isn't $(RULEDIR)-relative, so anchoring is a no-op
-		// here; the contract under test is termination, not a specific rewrite.
-		_ = got
+		// Absolute output → skipped → command comes back UNCHANGED.
+		if got != cmd {
+			t.Errorf("absolute output must be a no-op (no anchoring/corruption):\n got  %q\n want %q", got, cmd)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("anchorGenruleOutputsToRuledir did not terminate on an absolute output path (parent-dir walk fixed-point loop)")
 	}
