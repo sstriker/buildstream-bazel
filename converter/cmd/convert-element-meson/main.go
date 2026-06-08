@@ -22,7 +22,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -310,20 +309,8 @@ func run(a args) error {
 }
 
 func handleError(a args, err error) int {
-	var tier1 *failure.Error
-	if errors.As(err, &tier1) {
-		fmt.Fprintf(os.Stderr, "convert-element-meson: %s\n", tier1.Error())
-		if a.outFailure != "" {
-			payload, _ := json.MarshalIndent(map[string]any{
-				"tier":    1,
-				"code":    string(tier1.Code),
-				"message": tier1.Message,
-			}, "", "  ")
-			_ = os.MkdirAll(filepath.Dir(a.outFailure), 0o755)
-			_ = os.WriteFile(a.outFailure, append(payload, '\n'), 0o644)
-		}
+	if failure.ReportTier1(err, "convert-element-meson", a.outFailure, true) {
 		return exitTier1
 	}
-	fmt.Fprintf(os.Stderr, "convert-element-meson: %v\n", err)
 	return exitTier2
 }

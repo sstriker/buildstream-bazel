@@ -307,6 +307,79 @@ func newCodegenContext() *codegenContext {
 // buildDir is the cmake-side build directory (r.Codemodel.Paths.Build);
 // generated source paths in the File API are absolute under it, and ninja's
 // build statements are relative to it.
+// recoverCmakeScriptGenrule handles the `cmake -P <script>` custom-command case
+// of recoverGenrule (selected by usesCmakeScriptMode). The operator can opt into
+// the cmake-P lift by staging the runner tool and passing
+// --cmake-script-runner=<label>. Soundness caveats apply: scripts that hardcode
+// absolute paths (configure_file-derived scripts with `set(SRCDIR "/abs/path")`)
+// won't resolve under Bazel's sandbox; parameter-driven scripts (VTK's
+// vtkHashSource shape) work cleanly. See docs/design/generator-parity-gaps.md's
+// "cmake -P lift" entry for the limitation details.
+//
+// It tries, in order: the native cc_embed / cc_hash recognizers (opt-in), the
+// convert-time bake lift, and the runner lift — returning the consumed source's
+// build-rel output (relOut) + the emitted target name on success. When none
+// apply it returns a typed Tier-1 UnsupportedCustomCommandScript failure naming
+// the script + every opt-in path.
+func (cc *codegenContext) recoverCmakeScriptGenrule(b *ninja.Build, cmd, cmakeSrc, buildDir, relOut string, g *ninja.Graph) (string, string, error) {
+	script := extractCmakeScriptPath(cmd)
+	// Native cc_embed recognizer (opt-in via --lift-cc-embed): a known
+	// file-embedding encoder (vtkEncodeString) lowers to the cc_embed
+	// rule, so the converted project needs no cmake at build time. Runs
+	// before the runner/bake/refuse path; falls through when it declines.
+	// Returns relOut (the build-rel form of THIS consumed source —
+	// header or source) so the consumer maps to the output it actually
+	// referenced; the sibling output reuses via the SeenBuilds check above.
+	if name, ok := recognizeCcEmbed(cc, b, cmd, script, cmakeSrc, buildDir); ok {
+		return relOut, name, nil
+	}
+	// Native cc_hash recognizer (opt-in via --lift-cc-hash): a known
+	// file-hashing script (vtkHashSource) lowers to the cc_hash rule, so
+	// the converted project needs no cmake at build time and the digest
+	// recomputes on input change. Same fall-through contract as cc_embed.
+	if name, ok := recognizeCcHash(cc, b, cmd, script, cmakeSrc, buildDir); ok {
+		return relOut, name, nil
+	}
+	var liftReason string
+	// Bake mode (convert-time execution + bytes capture)
+	// runs first when opted in: it solves the
+	// hardcoded-paths case the runner-only lift can't.
+	// Falls through to the standard runner lift if the
+	// bake declines (e.g. cmake not on PATH, script
+	// produced no output).
+	if cc.CMakeScriptBake {
+		rel, name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, script, buildDir, g)
+		if ok {
+			return rel, name, nil
+		}
+		liftReason = reason
+	}
+	if cc.CMakeScriptRunner != "" {
+		rel, name, reason, ok := liftCmakeScriptGenrule(cc, b, cmd, script, cmakeSrc, buildDir)
+		if ok {
+			return rel, name, nil
+		}
+		// Lift declined; preserve its structured reason
+		// for the refusal message below.
+		if liftReason == "" {
+			liftReason = reason
+		} else if reason != "" {
+			liftReason = liftReason + "; runner lift also declined: " + reason
+		}
+	}
+	// Pull the actual `-P <script>` argument out of the
+	// recovered command so the failure points operators at
+	// the specific script to rewrite — not just at the
+	// consuming target's output. #207.
+	base := fmt.Sprintf("custom command for %q runs `cmake -P %s`",
+		relOut, script)
+	if liftReason != "" {
+		base += "; lift declined: " + liftReason
+	}
+	msg := base + "; opt into the cmake-P lift via --cmake-script-runner=<label> (requires a staged runner tool), --cmake-script-trace=true to auto-augment srcs from the script's read paths (convert-time execution), --cmake-script-bake=true to bake the script's output bytes at convert time (closes hardcoded-paths but outputs don't auto-refresh on input change), rewrite the script in a real language (shell / python), override the element via write-a --build-files-dir, route the element through the per-element round-2 cmake fallback (--unsupported-execute-process-fallback equivalent for kind:cmake; see docs/design/rendezvous.md), OR pass --ignore-rejections-for-diagnostics to skip and survey the rest"
+	return "", "", failure.New(failure.UnsupportedCustomCommandScript, "%s", msg)
+}
+
 func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *ninja.Graph) (relOut, name string, err error) {
 	relOut, ok := relativeIfInside(buildDir, srcPath)
 	if !ok {
@@ -384,71 +457,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	// transparently via scope chain. The literal "cd <dir> &&" prefix
 	// gets handled at command translation time.
 	if usesCmakeScriptMode(cmd) {
-		// Operator can opt into the cmake-P lift by staging the
-		// runner tool and passing --cmake-script-runner=<label>.
-		// Soundness caveats apply: scripts that hardcode
-		// absolute paths (configure_file-derived scripts with
-		// `set(SRCDIR "/abs/path")`) won't resolve under
-		// Bazel's sandbox; parameter-driven scripts (VTK's
-		// vtkHashSource shape) work cleanly. See
-		// docs/design/generator-parity-gaps.md's "cmake -P
-		// lift" entry for the limitation details.
-		script := extractCmakeScriptPath(cmd)
-		// Native cc_embed recognizer (opt-in via --lift-cc-embed): a known
-		// file-embedding encoder (vtkEncodeString) lowers to the cc_embed
-		// rule, so the converted project needs no cmake at build time. Runs
-		// before the runner/bake/refuse path; falls through when it declines.
-		// Returns relOut (the build-rel form of THIS consumed source —
-		// header or source) so the consumer maps to the output it actually
-		// referenced; the sibling output reuses via the SeenBuilds check above.
-		if name, ok := recognizeCcEmbed(cc, b, cmd, script, cmakeSrc, buildDir); ok {
-			return relOut, name, nil
-		}
-		// Native cc_hash recognizer (opt-in via --lift-cc-hash): a known
-		// file-hashing script (vtkHashSource) lowers to the cc_hash rule, so
-		// the converted project needs no cmake at build time and the digest
-		// recomputes on input change. Same fall-through contract as cc_embed.
-		if name, ok := recognizeCcHash(cc, b, cmd, script, cmakeSrc, buildDir); ok {
-			return relOut, name, nil
-		}
-		var liftReason string
-		// Bake mode (convert-time execution + bytes capture)
-		// runs first when opted in: it solves the
-		// hardcoded-paths case the runner-only lift can't.
-		// Falls through to the standard runner lift if the
-		// bake declines (e.g. cmake not on PATH, script
-		// produced no output).
-		if cc.CMakeScriptBake {
-			rel, name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, script, buildDir, g)
-			if ok {
-				return rel, name, nil
-			}
-			liftReason = reason
-		}
-		if cc.CMakeScriptRunner != "" {
-			rel, name, reason, ok := liftCmakeScriptGenrule(cc, b, cmd, script, cmakeSrc, buildDir)
-			if ok {
-				return rel, name, nil
-			}
-			// Lift declined; preserve its structured reason
-			// for the refusal message below.
-			if liftReason == "" {
-				liftReason = reason
-			} else if reason != "" {
-				liftReason = liftReason + "; runner lift also declined: " + reason
-			}
-		}
-		// Pull the actual `-P <script>` argument out of the
-		// recovered command so the failure points operators at
-		// the specific script to rewrite — not just at the
-		// consuming target's output. #207.
-		base := fmt.Sprintf("custom command for %q runs `cmake -P %s`",
-			relOut, script)
-		if liftReason != "" {
-			base += "; lift declined: " + liftReason
-		}
-		msg := base + "; opt into the cmake-P lift via --cmake-script-runner=<label> (requires a staged runner tool), --cmake-script-trace=true to auto-augment srcs from the script's read paths (convert-time execution), --cmake-script-bake=true to bake the script's output bytes at convert time (closes hardcoded-paths but outputs don't auto-refresh on input change), rewrite the script in a real language (shell / python), override the element via write-a --build-files-dir, route the element through the per-element round-2 cmake fallback (--unsupported-execute-process-fallback equivalent for kind:cmake; see docs/design/rendezvous.md), OR pass --ignore-rejections-for-diagnostics to skip and survey the rest"
-		return "", "", failure.New(failure.UnsupportedCustomCommandScript, "%s", msg)
+		return cc.recoverCmakeScriptGenrule(b, cmd, cmakeSrc, buildDir, relOut, g)
 	}
 
 	// Sanitize a name from the build statement's first output.
@@ -533,12 +542,19 @@ func genruleNameFor(b *ninja.Build, buildDir string) string {
 			first = rel
 		}
 	}
-	first = filepath.ToSlash(first)
-	first = strings.TrimPrefix(first, "./")
+	return "gen_" + sanitizePathToNameStem(first)
+}
+
+// sanitizePathToNameStem normalizes a path into a Bazel-target-name-safe stem:
+// ToSlash, drop a leading "./", then map every byte outside [A-Za-z0-9_] to '_'.
+// Callers prepend their own collision-avoidance prefix (gen_ / exec_ / …); the
+// distinct prefixes are deliberate, keeping the per-pass name spaces disjoint.
+func sanitizePathToNameStem(rel string) string {
+	rel = filepath.ToSlash(rel)
+	rel = strings.TrimPrefix(rel, "./")
 	var sb strings.Builder
-	sb.WriteString("gen_")
-	for i := 0; i < len(first); i++ {
-		c := first[i]
+	for i := 0; i < len(rel); i++ {
+		c := rel[i]
 		switch {
 		case (c >= 'a' && c <= 'z'),
 			(c >= 'A' && c <= 'Z'),

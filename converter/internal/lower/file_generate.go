@@ -17,6 +17,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/genexeval"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // fileGenerateOut is one recovered file(GENERATE) emission.
@@ -208,6 +209,171 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 // Falls back to the bake shape otherwise. The genex short-circuit
 // happens before pickValues so the audit tag tells the operator
 // which exit fired.
+// liftFileGenerateGenex handles the generator-expression branch of
+// buildFileGenerateGenrule: the template body contains `$<...>`, so it tries the
+// lifts in order from most-faithful to least-flexible — (a) Go-side evaluator,
+// (b) structured-base64 capture, (b′) two-pass per-literal probe (flat then
+// per-config) — and falls back to the legacy bytes-embedded `bake` shape when
+// none resolve. Returns the lowered cmake_configure_file (or refusal genrule)
+// target.
+func liftFileGenerateGenex(name, outRel, inRel string, templateBody, rendered []byte, isContentForm bool, opts configurefile.Options, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext, bake ir.Target) ir.Target {
+	// Payload pruning: only ship Targets in the marshaled
+	// Context when the template actually references a per-
+	// target op (TARGET_PROPERTY / TARGET_FILE family /
+	// TARGET_OBJECTS). Avoids dumping every per-target dict
+	// into the lifted cmd for templates that only reference
+	// CONFIG / PLATFORM_ID / etc. — the (a) lift's payload
+	// would otherwise grow linearly with target count for
+	// no benefit.
+	ctxTargets := genexTargets
+	needsTargets := bytes.Contains(templateBody, []byte("$<TARGET_PROPERTY:"))
+	if !needsTargets {
+		for _, prefix := range targetFileOpPrefixes {
+			if bytes.Contains(templateBody, []byte(prefix)) {
+				needsTargets = true
+				break
+			}
+		}
+	}
+	if !needsTargets && bytes.Contains(templateBody, []byte(targetObjectsOpPrefix)) {
+		needsTargets = true
+	}
+	if !needsTargets {
+		ctxTargets = nil
+	}
+	// Extract TARGET_FILE references for cmd emission. The
+	// byte-equal check uses ctx's FileLocation values (set
+	// by buildGenexTargets to the recording-machine artifact
+	// paths so the eval matches cmake's rendered output);
+	// the MARSHALED Context's wire struct omits FileLocation
+	// per the wire-struct definition in marshalGenexContext,
+	// so the lifted cmd stays byte-stable across recording
+	// machines; --target-file flags carry the Bazel-time
+	// values.
+	//
+	// TARGET_OBJECTS references are sibling-extracted via
+	// extractTargetObjectsRefs — same convert-time machinery
+	// (the byte-equal check consults ctx.Targets[t].Objects
+	// populated from the probe-genex hook) but with a separate
+	// Bazel-time wire (`--target-objects=` flags using
+	// `$(locations :t)` plural-substitution).
+	targetFileRefs := extractTargetFileRefs(templateBody)
+	targetObjectsRefs := extractTargetObjectsRefs(templateBody)
+	// $<TARGET_OBJECTS:t> soundness gate: t must be a same-element
+	// OBJECT_LIBRARY for the converter to expose its objects as an
+	// addressable label (a compilation_outputs filegroup over the
+	// cc_library). Cross-element / imported / non-object-library refs
+	// have no such label — refuse rather than ship a wrong wire (the
+	// pre-fix shape pointed target_objects at the cc_library, whose
+	// DefaultInfo is the archive, not the .o files).
+	if unresolved := unresolvableObjectLibs(targetObjectsRefs, genexTargets); len(unresolved) > 0 {
+		return targetObjectsRefusalStub(name, outRel, unresolved)
+	}
+	// PR 2: resolve each TARGET_FILE reference to a Bazel
+	// label, branching per-target on resolution:
+	//
+	//   - same-package (genexTargets[t] exists) → `:t`
+	//     (existing PR 1 behaviour).
+	//   - manifest-resolved (imports.LookupCMakeTarget(t)
+	//     returns an export) → that export's full Bazel
+	//     label (`//elements/foo:bar`).
+	//   - else → drop from the cmd flag set; the (a) eval
+	//     refuses on missing FileLocation; the upstream
+	//     unresolvedCrossPackageTargetFiles gate has already
+	//     intercepted the truly-unresolvable case via the
+	//     refusal stub. (Belt-and-suspenders: even if a
+	//     downstream extension added a name we don't
+	//     resolve, dropping it surfaces as an (a) refusal
+	//     and falls to (b)/legacy rather than emitting a
+	//     bogus label.)
+	//
+	// Cross-package labels also need to ride in the
+	// genrule's srcs so Bazel resolves `$(location //pkg:t)`
+	// at action time. Same-package `:t` labels resolve
+	// without an explicit srcs entry (Bazel's per-package
+	// lookup picks them up); cross-package labels do not.
+	// target_files is a label-keyed attribute on the
+	// cmake_configure_file rule, so Bazel tracks each referenced
+	// target as a dependency and resolves its path at action time —
+	// no explicit srcs entry needed for cross-package labels (the
+	// genrule shape required threading those through srcs for
+	// `$(location //pkg:t)`).
+	targetFileLabels, _ := resolveTargetFileLabels(targetFileRefs, ctxTargets, imports)
+	ctx := buildGenexContext(cmakeVars, ctxTargets)
+	if nodes, err := genexeval.Parse(templateBody); err == nil {
+		if evaled, evalErr := genexeval.Eval(nodes, ctx); evalErr == nil && bytes.Equal(evaled, rendered) {
+			if ctxJSON, mErr := marshalGenexContext(ctx); mErr == nil {
+				spec := newConfigureFileSpec(outRel, opts)
+				spec.Values = map[string]string{}
+				spec.GenexContext = string(ctxJSON)
+				spec.TargetFiles = invertTargetFileLabels(targetFileLabels)
+				// Emit a compilation_outputs filegroup per OBJECT library
+				// and wire target_objects at it (gate above guaranteed each
+				// ref is a same-element OBJECT_LIBRARY). Only on the (a)-eval
+				// success path so no orphan filegroups are emitted when the
+				// lift falls through.
+				spec.TargetObjects = emitObjectFilegroups(targetObjectsRefs, cc)
+				setTemplateOrContent(spec, inRel, templateBody, isContentForm)
+				return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexEvaluated: true}))
+			}
+		}
+		// evalErr being UnsupportedError or a Context-
+		// missing-field error is the expected refusal for
+		// templates outside the v1 subset; fall through to
+		// (b). Other errors (parse internals, byte-mismatch)
+		// also fall through — soundness preserved by the
+		// downstream lift choice.
+	}
+
+	// The (a)-eval did not resolve. If the template embeds
+	// $<TARGET_OBJECTS:t>, the downstream (b)/(b′)/legacy shapes would
+	// bake cmake's rendered output — the recording-machine object paths,
+	// which don't exist on the executor. Refuse instead of baking. (The
+	// gate above already rejected unresolvable t; reaching here means the
+	// template as a whole was too complex for the evaluator.)
+	if len(targetObjectsRefs) > 0 {
+		return targetObjectsRefusalStub(name, outRel, targetObjectsRefs)
+	}
+
+	genexValues, err := extractGenexValues(templateBody, rendered)
+	if err == nil {
+		spec := newConfigureFileSpec(outRel, opts)
+		spec.Values = map[string]string{}
+		spec.GenexValues = genexValues
+		setTemplateOrContent(spec, inRel, templateBody, isContentForm)
+		return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexCaptured: true}))
+	}
+
+	// (b′) Two-pass per-literal probe. (b)'s positional anchoring
+	// failed (adjacent genexes / ambiguous static chunks); resolve
+	// each top-level genex literal individually via cmake's own
+	// evaluator (the warm second configure pass) and replay as a
+	// literal-replace map. On pass 1 this records the probe
+	// requests and returns false, so we fall to legacy this round;
+	// the orchestrator runs the second pass and re-lifts.
+	if probed, ok := probeGenexValuesForBody(cc, templateBody); ok {
+		spec := newConfigureFileSpec(outRel, opts)
+		spec.Values = map[string]string{}
+		spec.GenexValues = probed
+		setTemplateOrContent(spec, inRel, templateBody, isContentForm)
+		return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexProbed: true}))
+	}
+	// Per-config divergence: the flat probe declined because a top-level
+	// literal resolves to different bytes per build config (Multi-Config).
+	// Lower it to a select() over //config:<name> via GenexValuesPerConfig
+	// rather than dropping to legacy.
+	if perConfig, ok := probeGenexValuesPerConfigForBody(cc, templateBody); ok {
+		spec := newConfigureFileSpec(outRel, opts)
+		spec.Values = map[string]string{}
+		spec.GenexValuesPerConfig = perConfig
+		setTemplateOrContent(spec, inRel, templateBody, isContentForm)
+		return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexProbed: true}))
+	}
+	genexLegacy := bake
+	genexLegacy.Tags = fileGenerateTags(fileGenerateTagSet{GenexFallback: true})
+	return genexLegacy
+}
+
 func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ir.Target {
 	opts, optErr := fileGenerateOptions(call)
 	bake := bakeFileTarget(name, outRel, rendered, fileGenerateTags(fileGenerateTagSet{}))
@@ -352,161 +518,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 	// resolve. The body-side decision below is purely about
 	// the template's content.
 	if hasGenex(templateBody) {
-		// Payload pruning: only ship Targets in the marshaled
-		// Context when the template actually references a per-
-		// target op (TARGET_PROPERTY / TARGET_FILE family /
-		// TARGET_OBJECTS). Avoids dumping every per-target dict
-		// into the lifted cmd for templates that only reference
-		// CONFIG / PLATFORM_ID / etc. — the (a) lift's payload
-		// would otherwise grow linearly with target count for
-		// no benefit.
-		ctxTargets := genexTargets
-		needsTargets := bytes.Contains(templateBody, []byte("$<TARGET_PROPERTY:"))
-		if !needsTargets {
-			for _, prefix := range targetFileOpPrefixes {
-				if bytes.Contains(templateBody, []byte(prefix)) {
-					needsTargets = true
-					break
-				}
-			}
-		}
-		if !needsTargets && bytes.Contains(templateBody, []byte(targetObjectsOpPrefix)) {
-			needsTargets = true
-		}
-		if !needsTargets {
-			ctxTargets = nil
-		}
-		// Extract TARGET_FILE references for cmd emission. The
-		// byte-equal check uses ctx's FileLocation values (set
-		// by buildGenexTargets to the recording-machine artifact
-		// paths so the eval matches cmake's rendered output);
-		// the MARSHALED Context's wire struct omits FileLocation
-		// per the wire-struct definition in marshalGenexContext,
-		// so the lifted cmd stays byte-stable across recording
-		// machines; --target-file flags carry the Bazel-time
-		// values.
-		//
-		// TARGET_OBJECTS references are sibling-extracted via
-		// extractTargetObjectsRefs — same convert-time machinery
-		// (the byte-equal check consults ctx.Targets[t].Objects
-		// populated from the probe-genex hook) but with a separate
-		// Bazel-time wire (`--target-objects=` flags using
-		// `$(locations :t)` plural-substitution).
-		targetFileRefs := extractTargetFileRefs(templateBody)
-		targetObjectsRefs := extractTargetObjectsRefs(templateBody)
-		// $<TARGET_OBJECTS:t> soundness gate: t must be a same-element
-		// OBJECT_LIBRARY for the converter to expose its objects as an
-		// addressable label (a compilation_outputs filegroup over the
-		// cc_library). Cross-element / imported / non-object-library refs
-		// have no such label — refuse rather than ship a wrong wire (the
-		// pre-fix shape pointed target_objects at the cc_library, whose
-		// DefaultInfo is the archive, not the .o files).
-		if unresolved := unresolvableObjectLibs(targetObjectsRefs, genexTargets); len(unresolved) > 0 {
-			return targetObjectsRefusalStub(name, outRel, unresolved)
-		}
-		// PR 2: resolve each TARGET_FILE reference to a Bazel
-		// label, branching per-target on resolution:
-		//
-		//   - same-package (genexTargets[t] exists) → `:t`
-		//     (existing PR 1 behaviour).
-		//   - manifest-resolved (imports.LookupCMakeTarget(t)
-		//     returns an export) → that export's full Bazel
-		//     label (`//elements/foo:bar`).
-		//   - else → drop from the cmd flag set; the (a) eval
-		//     refuses on missing FileLocation; the upstream
-		//     unresolvedCrossPackageTargetFiles gate has already
-		//     intercepted the truly-unresolvable case via the
-		//     refusal stub. (Belt-and-suspenders: even if a
-		//     downstream extension added a name we don't
-		//     resolve, dropping it surfaces as an (a) refusal
-		//     and falls to (b)/legacy rather than emitting a
-		//     bogus label.)
-		//
-		// Cross-package labels also need to ride in the
-		// genrule's srcs so Bazel resolves `$(location //pkg:t)`
-		// at action time. Same-package `:t` labels resolve
-		// without an explicit srcs entry (Bazel's per-package
-		// lookup picks them up); cross-package labels do not.
-		// target_files is a label-keyed attribute on the
-		// cmake_configure_file rule, so Bazel tracks each referenced
-		// target as a dependency and resolves its path at action time —
-		// no explicit srcs entry needed for cross-package labels (the
-		// genrule shape required threading those through srcs for
-		// `$(location //pkg:t)`).
-		targetFileLabels, _ := resolveTargetFileLabels(targetFileRefs, ctxTargets, imports)
-		ctx := buildGenexContext(cmakeVars, ctxTargets)
-		if nodes, err := genexeval.Parse(templateBody); err == nil {
-			if evaled, evalErr := genexeval.Eval(nodes, ctx); evalErr == nil && bytes.Equal(evaled, rendered) {
-				if ctxJSON, mErr := marshalGenexContext(ctx); mErr == nil {
-					spec := newConfigureFileSpec(outRel, opts)
-					spec.Values = map[string]string{}
-					spec.GenexContext = string(ctxJSON)
-					spec.TargetFiles = invertTargetFileLabels(targetFileLabels)
-					// Emit a compilation_outputs filegroup per OBJECT library
-					// and wire target_objects at it (gate above guaranteed each
-					// ref is a same-element OBJECT_LIBRARY). Only on the (a)-eval
-					// success path so no orphan filegroups are emitted when the
-					// lift falls through.
-					spec.TargetObjects = emitObjectFilegroups(targetObjectsRefs, cc)
-					setTemplateOrContent(spec, inRel, templateBody, isContentForm)
-					return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexEvaluated: true}))
-				}
-			}
-			// evalErr being UnsupportedError or a Context-
-			// missing-field error is the expected refusal for
-			// templates outside the v1 subset; fall through to
-			// (b). Other errors (parse internals, byte-mismatch)
-			// also fall through — soundness preserved by the
-			// downstream lift choice.
-		}
-
-		// The (a)-eval did not resolve. If the template embeds
-		// $<TARGET_OBJECTS:t>, the downstream (b)/(b′)/legacy shapes would
-		// bake cmake's rendered output — the recording-machine object paths,
-		// which don't exist on the executor. Refuse instead of baking. (The
-		// gate above already rejected unresolvable t; reaching here means the
-		// template as a whole was too complex for the evaluator.)
-		if len(targetObjectsRefs) > 0 {
-			return targetObjectsRefusalStub(name, outRel, targetObjectsRefs)
-		}
-
-		genexValues, err := extractGenexValues(templateBody, rendered)
-		if err == nil {
-			spec := newConfigureFileSpec(outRel, opts)
-			spec.Values = map[string]string{}
-			spec.GenexValues = genexValues
-			setTemplateOrContent(spec, inRel, templateBody, isContentForm)
-			return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexCaptured: true}))
-		}
-
-		// (b′) Two-pass per-literal probe. (b)'s positional anchoring
-		// failed (adjacent genexes / ambiguous static chunks); resolve
-		// each top-level genex literal individually via cmake's own
-		// evaluator (the warm second configure pass) and replay as a
-		// literal-replace map. On pass 1 this records the probe
-		// requests and returns false, so we fall to legacy this round;
-		// the orchestrator runs the second pass and re-lifts.
-		if probed, ok := probeGenexValuesForBody(cc, templateBody); ok {
-			spec := newConfigureFileSpec(outRel, opts)
-			spec.Values = map[string]string{}
-			spec.GenexValues = probed
-			setTemplateOrContent(spec, inRel, templateBody, isContentForm)
-			return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexProbed: true}))
-		}
-		// Per-config divergence: the flat probe declined because a top-level
-		// literal resolves to different bytes per build config (Multi-Config).
-		// Lower it to a select() over //config:<name> via GenexValuesPerConfig
-		// rather than dropping to legacy.
-		if perConfig, ok := probeGenexValuesPerConfigForBody(cc, templateBody); ok {
-			spec := newConfigureFileSpec(outRel, opts)
-			spec.Values = map[string]string{}
-			spec.GenexValuesPerConfig = perConfig
-			setTemplateOrContent(spec, inRel, templateBody, isContentForm)
-			return cmakeConfigureFileTarget(name, spec, fileGenerateTags(fileGenerateTagSet{Lifted: true, GenexProbed: true}))
-		}
-		genexLegacy := bake
-		genexLegacy.Tags = fileGenerateTags(fileGenerateTagSet{GenexFallback: true})
-		return genexLegacy
+		return liftFileGenerateGenex(name, outRel, inRel, templateBody, rendered, isContentForm, opts, cmakeVars, genexTargets, imports, cc, bake)
 	}
 
 	// Verify-pass for file(GENERATE): the lift's contract is
@@ -1302,10 +1314,10 @@ func walkAggregate(
 	defer delete(visiting, name)
 
 	// Start with this target's DIRECT contribution.
-	includes := dedupCopy(directIncludes[name])
-	defines := dedupCopy(directDefines[name])
-	options := dedupCopy(directOptions[name])
-	links := dedupCopy(directLinks[name])
+	includes := uniqueStrings(directIncludes[name], true)
+	defines := uniqueStrings(directDefines[name], true)
+	options := uniqueStrings(directOptions[name], true)
+	links := uniqueStrings(directLinks[name], true)
 
 	// Walk the dep chain (trace-derived, falling back to
 	// codemodel Dependencies[] order — see buildDepChain).
@@ -1409,21 +1421,6 @@ func appendDedup(dst, items []string) []string {
 
 // dedupCopy returns a deduped copy of src, preserving order
 // (first occurrence wins). Empty strings are dropped.
-func dedupCopy(src []string) []string {
-	if len(src) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(src))
-	seen := map[string]bool{}
-	for _, s := range src {
-		if s == "" || seen[s] {
-			continue
-		}
-		seen[s] = true
-		out = append(out, s)
-	}
-	return out
-}
 
 // splitNonEmpty splits a semicolon-joined cmake list into its
 // component entries, dropping empty pieces (cmake's list
@@ -1563,11 +1560,7 @@ func unresolvedCrossPackageTargetFiles(call shadow.FileGenerateCall, hostSrcDir,
 	if len(unresolved) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(unresolved))
-	for n := range unresolved {
-		out = append(out, n)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(unresolved)
 	return out
 }
 
@@ -1603,11 +1596,7 @@ func extractTargetFileRefs(body []byte) []string {
 	if len(seen) == 0 {
 		return nil
 	}
-	names := make([]string, 0, len(seen))
-	for n := range seen {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	names := sliceutil.SortedKeys(seen)
 	return names
 }
 
@@ -1710,11 +1699,7 @@ func extractTargetObjectsRefs(body []byte) []string {
 	if len(seen) == 0 {
 		return nil
 	}
-	names := make([]string, 0, len(seen))
-	for n := range seen {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	names := sliceutil.SortedKeys(seen)
 	return names
 }
 

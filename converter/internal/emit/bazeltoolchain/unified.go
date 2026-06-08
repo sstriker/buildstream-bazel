@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/toolchain"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // PlatformToolchain pairs one platform with its observed
@@ -532,11 +533,7 @@ func emitListAttr(b *bytes.Buffer, name string, items []string) {
 }
 
 func emitDictAttr(b *bytes.Buffer, name string, m map[string]string) {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(m)
 	if len(keys) == 0 {
 		fmt.Fprintf(b, "    %s = {},\n", name)
 		return

@@ -355,14 +355,7 @@ func (cmakeHandler) RenderB(elem *element, elemPkg string) error {
 	// load() rules_cc against an empty package and fail with a
 	// confusing error before the stage step ran; the placeholder
 	// makes the staging-not-yet-run state explicit.
-	placeholder := fmt.Sprintf(`# Placeholder for cmd/write-a-rendered project B.
-# The driver script overwrites this file with project A's
-# bazel-bin/elements/%s/BUILD.bazel.out (the converter's output)
-# after the project-A bazel build succeeds. If this file is still
-# the placeholder when project B's bazel build runs, the staging
-# step was skipped.
-filegroup(name = "BUILD_NOT_YET_STAGED", srcs = [])
-`, elem.Name)
+	placeholder := projectBPlaceholder(elem.Name, "")
 	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), placeholder)
 }
 
@@ -450,17 +443,7 @@ package(default_visibility = ["//visibility:public"])
 	// side). expect_make_db=False because cmake's converter derives
 	// IR from the trace + cmake File API — no make-db needed.
 	if cmakeConfig.round2FallbackEnabled && srckeyHash != "" {
-		fmt.Fprintf(&b, `
-load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")
-
-trace_load(
-    name = "%[1]s_trace_load",
-    srckey = "%[2]s",
-    expect_make_db = False,
-    expect_config_bundle = True,
-    trace_lookup = "//tools:trace-lookup",
-)
-`, elem.Name, srckeyHash)
+		b.WriteString(traceLoadBlock(elem.Name, srckeyHash))
 	}
 
 	// Render the zero_files load + target only when feedback narrowed
@@ -507,52 +490,11 @@ filegroup(
 	// here.
 	cmakeDepLabels := cmakeDepBundleLabels(elem)
 
-	// Compose the genrule's srcs: real-files filegroup + (when
-	// narrowed) the zero_stubs target. The shadow-merge cmd handles
-	// both sets uniformly: each entry contains "sources/" in its
-	// path; ${path##*sources/} strips down to the source-relative
-	// suffix used inside cmake's source root.
-	srcsList := fmt.Sprintf(`":%s_real"`, elem.Name)
-	if len(elem.ZeroPaths) > 0 {
-		srcsList += fmt.Sprintf(`, ":%s_zero_stubs"`, elem.Name)
-	}
-	for _, depLabel := range cmakeDepLabels {
-		srcsList += fmt.Sprintf(`, %q`, depLabel.Label)
-	}
-	if len(cmakeDepLabels) > 0 {
-		// imports.json was rendered at write-a time
-		// alongside this BUILD; stage it into the action so
-		// convert-element-cmake's manifest lookup resolves
-		// IMPORTED-target names from the consumer's deps to
-		// the right Bazel labels.
-		srcsList += `, "imports.json"`
-	}
-	// Each kind:cmake dep's exports.json (the producer's own
-	// trace-recovered export surface) is staged + threaded via
-	// --exports-in below. Depending on the narrow exports.json
-	// output (not the dep's whole converted BUILD) means a dep edit
-	// that leaves its export surface unchanged doesn't re-invalidate
-	// this consumer's conversion.
+	// Compose the genrule's srcs (real-files filegroup, optional
+	// zero_stubs, dep bundles + imports.json, dep exports.json, round-2
+	// trace_load) and the matching --exports-in flag string.
 	depExportsLabels := cmakeDepExportsLabels(elem)
-	exportsInFlag := ""
-	for _, lbl := range depExportsLabels {
-		srcsList += fmt.Sprintf(`, %q`, lbl)
-		exportsInFlag += fmt.Sprintf(` \
-            --exports-in="$(location %s)"`, lbl)
-	}
-	if cmakeConfig.round2FallbackEnabled {
-		// :<elem>_trace_load is an action-time trace_load target
-		// (see rules/traces.bzl) that shells to trace-lookup at
-		// action time. AC hit ⇒ trace.log materializes into the
-		// rule's declared outputs + the marker reports "hit"; AC
-		// miss ⇒ zero-byte trace.log + "miss" marker. convert-
-		// element-cmake doesn't consume the trace yet (the
-		// trace-driven convergence research follow-on teaches it
-		// to refine refusals into fine cc rules from the trace);
-		// wiring the lookup now means that follow-on is converter-
-		// side only — no further write-a changes.
-		srcsList += fmt.Sprintf(`, ":%s_trace_load"`, elem.Name)
-	}
+	srcsList, exportsInFlag := composeCmakeGenruleSrcs(elem, cmakeDepLabels, depExportsLabels)
 
 	// Cross-element bundle extraction: every kind:cmake dep's
 	// cmake-config-bundle.tar already carries its full synth-
@@ -564,110 +506,7 @@ filegroup(
 	// find_package(<DepPkg> CONFIG) resolves against the
 	// stitched tree and the IMPORTED-target EXISTS checks
 	// pass against the stubs.
-	var depExtract strings.Builder
-	prefixFlag := ""
-	importsFlag := ""
-	liftFlag := ""
-	fallbackFlag := ""
-	// Operator-facing dial pass-through: thread --fidelity, --bake-
-	// in, --diagnostics into the converter cmd. Each is elided when
-	// the value is empty or matches the converter's own default, so
-	// the cache key / golden-byte shape stays stable for legacy
-	// callsites that never set the dial.
-	fidelityFlag := ""
-	if cmakeConfig.fidelity != "" && cmakeConfig.fidelity != fidelityStrict {
-		fidelityFlag = fmt.Sprintf(` \
-            --fidelity=%s`, cmakeConfig.fidelity)
-	}
-	bakeInFlag := ""
-	if cmakeConfig.bakeIn != "" && cmakeConfig.bakeIn != bakeInWarn {
-		bakeInFlag = fmt.Sprintf(` \
-            --bake-in=%s`, cmakeConfig.bakeIn)
-	}
-	// Multi-config: thread --build-types so cmake runs under Ninja
-	// Multi-Config and BUILD.bazel.out carries the //config:<name>
-	// select() arms. write-a renders the matching //config package into
-	// project B (writeConfigSettingsPackage). Empty (default) elides the
-	// flag, keeping the single-config render byte-stable.
-	buildTypesFlag := ""
-	if cmakeConfig.autoBuildTypes {
-		buildTypesFlag = ` \
-            --build-types=auto`
-	} else if len(cmakeConfig.buildTypes) > 0 {
-		buildTypesFlag = fmt.Sprintf(` \
-            --build-types=%s`, strings.Join(cmakeConfig.buildTypes, ","))
-	}
-	// Diagnostics dial: thread --diagnostics + a per-element
-	// rejections.json output. The converter writes the file (empty
-	// when no rejections fired) so the declared output always
-	// exists for Bazel; the operator can read elements/<name>/
-	// rejections.json post-build to see the structured rejection
-	// list. Without the --rejections-report path, --diagnostics
-	// would silently collect rejections but write nothing — the
-	// dial's whole point is producing readable output for
-	// surveys.
-	diagnosticsFlag := ""
-	diagnosticOuts := ""
-	if cmakeConfig.diagnostics {
-		diagnosticsFlag = ` \
-            --diagnostics=true \
-            --rejections-report="$(location rejections.json)"`
-		diagnosticOuts = `
-        "rejections.json",`
-	}
-	if cmakeConfig.configureFileBin != "" {
-		liftFlag = ` \
-            --lift-configure-file=true`
-	}
-	// cc_embed lift rides the same liftFlag string so it threads into
-	// both the split (cmakeSplitConvertBlock) and single-BUILD genrule
-	// paths without a separate parameter.
-	if cmakeConfig.ccEmbedBin != "" {
-		liftFlag += ` \
-            --lift-cc-embed=true`
-	}
-	if cmakeConfig.ccHashBin != "" {
-		liftFlag += ` \
-            --lift-cc-hash=true`
-	}
-	// Phase B round-2 fallback: when enabled, convert-element-cmake
-	// is told to turn classifier refusals into the placeholder
-	// shape (cc_import / sh_binary stubs fed by pick_file over
-	// the install-root TreeArtifact) instead of exiting Tier-1.
-	// Those pick_file targets resolve against Project B's
-	// pipeline_install rule (emitted by RenderB when the same
-	// flag is enabled) once the BUILD.bazel.out gets symlinked
-	// into B's package.
-	if cmakeConfig.round2FallbackEnabled {
-		fallbackFlag = ` \
-            --unsupported-execute-process-fallback=true`
-	}
-	if len(cmakeDepLabels) > 0 {
-		depExtract.WriteString(`        PREFIX="$$(mktemp -d)"
-`)
-		for _, dep := range cmakeDepLabels {
-			// Filter by basename + non-empty: the
-			// :<dep>_trace_load label expands to multiple
-			// outputs (trace.log, marker, make-db.txt,
-			// cmake-config-bundle.tar) and only the tar is a
-			// valid archive. The non-empty check also handles
-			// AC-miss zero-byte bundles cleanly (consumers
-			// "detect empty bundles and skip dep-stage" per the
-			// design doc). The kind:cmake :cmake_config_bundle
-			// filegroup is single-file so the basename filter
-			// is a no-op there.
-			fmt.Fprintf(&depExtract, `        for tar in $(locations %s); do
-            if [ "$$(basename "$$tar")" = "cmake-config-bundle.tar" ] && [ -s "$$tar" ]; then
-                tar -xf "$$tar" -C "$$PREFIX"
-            fi
-        done
-`, dep.Label)
-		}
-		prefixFlag = ` \
-            --prefix-dir="$$PREFIX"`
-		importsFlag = ` \
-            --imports-manifest="$(location imports.json)"`
-	}
+	flags := buildCmakeConverterFlags(cmakeDepLabels)
 
 	// Split-packages reshapes the converter's BUILD output: instead of
 	// a single BUILD.bazel.out genrule, the element is converted by the
@@ -679,7 +518,7 @@ filegroup(
 	// B's elements/<name>/ tree by per-file content compare. Default
 	// (off) keeps the single-file genrule shape byte-for-byte.
 	if cmakeConfig.splitPackages {
-		b.WriteString(cmakeSplitConvertBlock(elem, cmakeDepLabels, depExportsLabels, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag, buildTypesFlag))
+		b.WriteString(cmakeSplitConvertBlock(elem, cmakeDepLabels, depExportsLabels, flags.lift, flags.fallback, flags.fidelity, flags.bakeIn, flags.buildTypes))
 		return b.String()
 	}
 
@@ -755,8 +594,156 @@ filegroup(
     name = "cmake_config_bundle",
     srcs = ["cmake-config-bundle.tar"],
 )
-`, elem.Name, srcsList, depExtract.String(), prefixFlag, importsFlag, liftFlag, fallbackFlag, fidelityFlag, bakeInFlag, diagnosticsFlag, diagnosticOuts, exportsInFlag, primaryOut, outBuildSetup, outBuildFlag, splitFlag, buildPackagingStep, buildBazelSrcs, buildTypesFlag)
+`, elem.Name, srcsList, flags.depExtract, flags.prefix, flags.imports, flags.lift, flags.fallback, flags.fidelity, flags.bakeIn, flags.diagnostics, flags.diagnosticOuts, exportsInFlag, primaryOut, outBuildSetup, outBuildFlag, splitFlag, buildPackagingStep, buildBazelSrcs, flags.buildTypes)
 	return b.String()
+}
+
+// composeCmakeGenruleSrcs builds the converter genrule's srcs list and the
+// matching --exports-in flag string for one kind:cmake element: the real-files
+// filegroup, the optional zero_stubs target (when feedback narrowed the source
+// set), each kind:cmake dep's config bundle plus imports.json (so
+// convert-element-cmake's manifest lookup resolves IMPORTED-target names to
+// Bazel labels), each dep's narrow exports.json (a dep edit that leaves its
+// export surface unchanged doesn't re-invalidate this consumer), and — under
+// round-2 fallback — the action-time :<elem>_trace_load target.
+func composeCmakeGenruleSrcs(elem *element, cmakeDepLabels []cmakeDepBundleLabel, depExportsLabels []string) (srcsList, exportsInFlag string) {
+	srcsList = fmt.Sprintf(`":%s_real"`, elem.Name)
+	if len(elem.ZeroPaths) > 0 {
+		srcsList += fmt.Sprintf(`, ":%s_zero_stubs"`, elem.Name)
+	}
+	for _, depLabel := range cmakeDepLabels {
+		srcsList += fmt.Sprintf(`, %q`, depLabel.Label)
+	}
+	if len(cmakeDepLabels) > 0 {
+		srcsList += `, "imports.json"`
+	}
+	for _, lbl := range depExportsLabels {
+		srcsList += fmt.Sprintf(`, %q`, lbl)
+		exportsInFlag += fmt.Sprintf(` \
+            --exports-in="$(location %s)"`, lbl)
+	}
+	if cmakeConfig.round2FallbackEnabled {
+		srcsList += fmt.Sprintf(`, ":%s_trace_load"`, elem.Name)
+	}
+	return srcsList, exportsInFlag
+}
+
+// cmakeConverterFlags holds the per-element convert-element-cmake command
+// fragments derived from the operator dials (cmakeConfig) + the element's
+// kind:cmake dep set. Each field is empty when its dial is at the default /
+// inactive, keeping the rendered genrule byte-stable for legacy callsites that
+// never set the dial.
+type cmakeConverterFlags struct {
+	fidelity       string
+	bakeIn         string
+	buildTypes     string
+	diagnostics    string
+	diagnosticOuts string
+	lift           string
+	fallback       string
+	prefix         string
+	imports        string
+	depExtract     string
+}
+
+// buildCmakeConverterFlags computes the converter command fragments for one
+// kind:cmake element from the operator dials and its kind:cmake deps.
+func buildCmakeConverterFlags(cmakeDepLabels []cmakeDepBundleLabel) cmakeConverterFlags {
+	var f cmakeConverterFlags
+	// Operator-facing dial pass-through: thread --fidelity, --bake-
+	// in, --diagnostics into the converter cmd. Each is elided when
+	// the value is empty or matches the converter's own default, so
+	// the cache key / golden-byte shape stays stable for legacy
+	// callsites that never set the dial.
+	f.fidelity = fidelityFlagFragment(cmakeConfig.fidelity)
+	if cmakeConfig.bakeIn != "" && cmakeConfig.bakeIn != bakeInWarn {
+		f.bakeIn = fmt.Sprintf(` \
+            --bake-in=%s`, cmakeConfig.bakeIn)
+	}
+	// Multi-config: thread --build-types so cmake runs under Ninja
+	// Multi-Config and BUILD.bazel.out carries the //config:<name>
+	// select() arms. write-a renders the matching //config package into
+	// project B (writeConfigSettingsPackage). Empty (default) elides the
+	// flag, keeping the single-config render byte-stable.
+	if cmakeConfig.autoBuildTypes {
+		f.buildTypes = ` \
+            --build-types=auto`
+	} else if len(cmakeConfig.buildTypes) > 0 {
+		f.buildTypes = fmt.Sprintf(` \
+            --build-types=%s`, strings.Join(cmakeConfig.buildTypes, ","))
+	}
+	// Diagnostics dial: thread --diagnostics + a per-element
+	// rejections.json output. The converter writes the file (empty
+	// when no rejections fired) so the declared output always
+	// exists for Bazel; the operator can read elements/<name>/
+	// rejections.json post-build to see the structured rejection
+	// list. Without the --rejections-report path, --diagnostics
+	// would silently collect rejections but write nothing — the
+	// dial's whole point is producing readable output for
+	// surveys.
+	if cmakeConfig.diagnostics {
+		f.diagnostics = ` \
+            --diagnostics=true \
+            --rejections-report="$(location rejections.json)"`
+		f.diagnosticOuts = `
+        "rejections.json",`
+	}
+	if cmakeConfig.configureFileBin != "" {
+		f.lift = ` \
+            --lift-configure-file=true`
+	}
+	// cc_embed lift rides the same liftFlag string so it threads into
+	// both the split (cmakeSplitConvertBlock) and single-BUILD genrule
+	// paths without a separate parameter.
+	if cmakeConfig.ccEmbedBin != "" {
+		f.lift += ` \
+            --lift-cc-embed=true`
+	}
+	if cmakeConfig.ccHashBin != "" {
+		f.lift += ` \
+            --lift-cc-hash=true`
+	}
+	// Phase B round-2 fallback: when enabled, convert-element-cmake
+	// is told to turn classifier refusals into the placeholder
+	// shape (cc_import / sh_binary stubs fed by pick_file over
+	// the install-root TreeArtifact) instead of exiting Tier-1.
+	// Those pick_file targets resolve against Project B's
+	// pipeline_install rule (emitted by RenderB when the same
+	// flag is enabled) once the BUILD.bazel.out gets symlinked
+	// into B's package.
+	if cmakeConfig.round2FallbackEnabled {
+		f.fallback = ` \
+            --unsupported-execute-process-fallback=true`
+	}
+	if len(cmakeDepLabels) > 0 {
+		var depExtract strings.Builder
+		depExtract.WriteString(`        PREFIX="$$(mktemp -d)"
+`)
+		for _, dep := range cmakeDepLabels {
+			// Filter by basename + non-empty: the
+			// :<dep>_trace_load label expands to multiple
+			// outputs (trace.log, marker, make-db.txt,
+			// cmake-config-bundle.tar) and only the tar is a
+			// valid archive. The non-empty check also handles
+			// AC-miss zero-byte bundles cleanly (consumers
+			// "detect empty bundles and skip dep-stage" per the
+			// design doc). The kind:cmake :cmake_config_bundle
+			// filegroup is single-file so the basename filter
+			// is a no-op there.
+			fmt.Fprintf(&depExtract, `        for tar in $(locations %s); do
+            if [ "$$(basename "$$tar")" = "cmake-config-bundle.tar" ] && [ -s "$$tar" ]; then
+                tar -xf "$$tar" -C "$$PREFIX"
+            fi
+        done
+`, dep.Label)
+		}
+		f.depExtract = depExtract.String()
+		f.prefix = ` \
+            --prefix-dir="$$PREFIX"`
+		f.imports = ` \
+            --imports-manifest="$(location imports.json)"`
+	}
+	return f
 }
 
 // cmakeSplitConvertBlock renders the --split-packages delivery shape
@@ -1120,17 +1107,9 @@ filegroup(
 // argue for keeping new dial integration minimal until the FUSE
 // template grows feature parity with the staging template.
 func fuseFidelityFlag() string {
-	if cmakeConfig.fidelity == "" || cmakeConfig.fidelity == fidelityStrict {
-		return ""
-	}
-	return fmt.Sprintf(` \
-            --fidelity=%s`, cmakeConfig.fidelity)
+	return fidelityFlagFragment(cmakeConfig.fidelity)
 }
 
 func fuseDiagnosticsFlag() string {
-	if !cmakeConfig.diagnostics {
-		return ""
-	}
-	return ` \
-            --diagnostics=true`
+	return diagnosticsFlagFragment(cmakeConfig.diagnostics)
 }

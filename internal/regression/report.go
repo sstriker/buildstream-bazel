@@ -135,27 +135,38 @@ func (r *Report) WriteText(w io.Writer) error {
 		return err
 	}
 
-	if r.FailureAnalytics != nil {
-		fa := r.FailureAnalytics
-		if len(fa.CodesAppeared)+len(fa.CodesDisappeared)+len(fa.CodesChurned) > 0 {
-			if err := pf("\nfailure-code churn\n"); err != nil {
-				return err
-			}
-			if len(fa.CodesAppeared) > 0 {
-				if err := pf("  appeared:    %s\n", strings.Join(fa.CodesAppeared, ", ")); err != nil {
-					return err
-				}
-			}
-			if len(fa.CodesDisappeared) > 0 {
-				if err := pf("  disappeared: %s\n", strings.Join(fa.CodesDisappeared, ", ")); err != nil {
-					return err
-				}
-			}
-			if len(fa.CodesChurned) > 0 {
-				if err := pf("  churned:     %s\n", strings.Join(fa.CodesChurned, ", ")); err != nil {
-					return err
-				}
-			}
+	if err := writeFailureCodeChurn(pf, r.FailureAnalytics); err != nil {
+		return err
+	}
+	return nil
+}
+
+// writeFailureCodeChurn renders the failure-code churn section (appeared /
+// disappeared / churned codes). No-op when there's no analytics attached or
+// no codes churned.
+func writeFailureCodeChurn(pf func(string, ...any) error, fa *FailureAnalytics) error {
+	if fa == nil {
+		return nil
+	}
+	if len(fa.CodesAppeared)+len(fa.CodesDisappeared)+len(fa.CodesChurned) == 0 {
+		return nil
+	}
+	if err := pf("\nfailure-code churn\n"); err != nil {
+		return err
+	}
+	if len(fa.CodesAppeared) > 0 {
+		if err := pf("  appeared:    %s\n", strings.Join(fa.CodesAppeared, ", ")); err != nil {
+			return err
+		}
+	}
+	if len(fa.CodesDisappeared) > 0 {
+		if err := pf("  disappeared: %s\n", strings.Join(fa.CodesDisappeared, ", ")); err != nil {
+			return err
+		}
+	}
+	if len(fa.CodesChurned) > 0 {
+		if err := pf("  churned:     %s\n", strings.Join(fa.CodesChurned, ", ")); err != nil {
+			return err
 		}
 	}
 	return nil

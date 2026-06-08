@@ -47,6 +47,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // targetStub is one accumulated install-plan stub before it
@@ -559,24 +560,10 @@ func resolvePlaceholders(s string, dirs map[string]string) string {
 }
 
 func sortedKeys(m map[string]InstallPlanEntry) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(m)
 	return out
 }
 
 func dedupeSorted(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	sort.Strings(in)
-	out := in[:0]
-	for i, s := range in {
-		if i == 0 || in[i-1] != s {
-			out = append(out, s)
-		}
-	}
-	return out
+	return sliceutil.SortedUnique(in)
 }

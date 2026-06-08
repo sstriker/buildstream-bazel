@@ -8,8 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
+
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // Snapshot is one orchestrator run's per-element state captured for the
@@ -184,11 +185,7 @@ func (h *History) ChurnyElements(window int) []string {
 			}
 		}
 	}
-	out := make([]string, 0, len(churned))
-	for n := range churned {
-		out = append(out, n)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(churned)
 	return out
 }
 

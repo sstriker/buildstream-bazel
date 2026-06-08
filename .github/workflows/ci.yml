@@ -60,11 +60,13 @@ jobs:
 
       # Code-complexity lens (cyclomatic / cognitive / nesting / length /
       # maintainability) — the axis vet/gofmt/staticcheck don't cover.
-      # SOFT-LAUNCH: non-blocking (continue-on-error) until the tree is green
-      # against .golangci.yml's thresholds; the step's output is the gap-to-green
-      # worklist. Flip to blocking (drop continue-on-error) once it's clean.
-      - name: complexity lens (soft-launch, non-blocking)
-        continue-on-error: true
+      # BLOCKING: the soft-launch burndown reached green against .golangci.yml's
+      # thresholds, so this gates like the other checks. The handful of tracked
+      # complexity giants (lowerTarget / ToIR / run / planSplit / rewriteTarget /
+      # write-a main) carry documented //nolint directives keyed to the ROADMAP
+      # burndown; the gate is live for every other function, so new complexity
+      # regressions fail the build.
+      - name: complexity lens
         run: make lint-complexity 2>&1 | tee -a /tmp/cijob.log
 
       - name: Unit tests

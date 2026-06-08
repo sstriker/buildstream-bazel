@@ -666,6 +666,17 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs := flag.NewFlagSet("convert-element-cmake", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	a := Args{}
+	registerFlags(fs, &a)
+
+	if err := fs.Parse(argv); err != nil {
+		return a, ExitUsage
+	}
+	return parseValidate(a, fs, stderr)
+}
+
+// registerFlags wires every convert-element-cmake flag onto fs, binding each
+// into the corresponding field of a.
+func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.StringVar(&a.SourceRoot, "source-root", "", "absolute path to the CMake project root; the converter runs cmake itself in a fresh build dir")
 	fs.StringVar(&a.ElementSourceRoot, "element-source-root", "", "force the label-relativization root to this dir (an ancestor of --source-root) when the element is overlaid above the cmake source root and cmake configured at a subdir (e.g. cuda-samples' per-sample configure + whole-repo overlay); empty = auto-detect")
 	fs.StringVar(&a.ReplyDir, "reply-dir", "", "skip cmake invocation; read File API reply from this dir (typically <build>/.cmake/api/v1/reply). --cmake-build-dir is the friendlier alias")
@@ -723,10 +734,14 @@ func Parse(argv []string, stderr io.Writer) (Args, int) {
 	fs.BoolVar(&a.ConversionTodos, "conversion-todos", true, "emit conversion-todos.json — the agent-actionable prompts for no-mechanical-form cmake constructs (add_test COMMAND cmake -P harnesses, filtered command edges with no Bazel analogue, install(SCRIPT)/install(CODE)). Default ON; written to --conversion-todos-report if set, else <out-build dir>/conversion-todos.json. Pass --conversion-todos=false to suppress.")
 	fs.StringVar(&a.ConversionTodosReport, "conversion-todos-report", "", "explicit destination for conversion-todos.json, overriding the <out-build dir>/conversion-todos.json default. The deterministic producer; the AI post-pass that consumes it is out of scope. See the no-mechanical-form-constructs item in ROADMAP.md.")
 	fs.StringVar(&a.ConversionTodosPreamble, "conversion-todos-preamble", "", "path to an operator-supplied preamble (prose, read verbatim) that replaces the built-in default in conversion-todos.json. Empty uses the built-in default (transition-to-plain-Bazel intent + brotli worked example). Only meaningful with --conversion-todos-report.")
+}
 
-	if err := fs.Parse(argv); err != nil {
-		return a, ExitUsage
-	}
+// parseValidate runs the post-Parse validation and derivation logic — the
+// --verify-report→--verify interlock, --cmake-define hygiene, entry-point
+// selection (--source-root / --reply-dir / --cmake-build-dir), and the
+// operator-facing fidelity / bake-in / diagnostics dials — returning the
+// populated Args + an exit code.
+func parseValidate(a Args, fs *flag.FlagSet, stderr io.Writer) (Args, int) {
 	if a.VerifyReport != "" {
 		a.Verify = true
 	}

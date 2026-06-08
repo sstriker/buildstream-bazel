@@ -71,21 +71,7 @@ func qualifyRedirectBasenames(cmd, subdir string) string {
 		// `&>`, `>&`, `2>` etc — those are fd-numbered or
 		// fd-merge shapes we don't try to handle (cmake's
 		// CUSTOM_COMMAND emitter doesn't use them).
-		op := ""
-		opLen := 0
-		switch c {
-		case '>':
-			if i+1 < len(cmd) && cmd[i+1] == '>' {
-				op = ">>"
-				opLen = 2
-			} else {
-				op = ">"
-				opLen = 1
-			}
-		case '<':
-			op = "<"
-			opLen = 1
-		}
+		op, opLen := redirectOpAt(cmd, i)
 		if op == "" {
 			b.WriteByte(c)
 			i++
@@ -94,13 +80,10 @@ func qualifyRedirectBasenames(cmd, subdir string) string {
 		// Guard against `>&` / `>=` / `<=` / `<<` heredoc etc.
 		// `>=` and `<=` are arithmetic — shouldn't appear in
 		// genrule cmds but cheap to avoid.
-		if i+opLen < len(cmd) {
-			n := cmd[i+opLen]
-			if n == '&' || n == '=' || (op == "<" && n == '<') {
-				b.WriteString(op)
-				i += opLen
-				continue
-			}
+		if redirectFollowGuarded(cmd, i, opLen, op) {
+			b.WriteString(op)
+			i += opLen
+			continue
 		}
 		// Guard against preceded-by-digit shape (`2>`, `1>`) and
 		// the `&>` shell-shape (redirect all streams). For those,
@@ -123,19 +106,47 @@ func qualifyRedirectBasenames(cmd, subdir string) string {
 		// Extract the target token: up to whitespace, `&`, `|`,
 		// `;`, `>`, `<`, or end-of-string.
 		tokStart := i
-		for i < len(cmd) {
-			c := cmd[i]
-			if c == ' ' || c == '\t' || c == '\n' ||
-				c == '&' || c == '|' || c == ';' ||
-				c == '>' || c == '<' {
-				break
-			}
+		for i < len(cmd) && !isRedirectTokenBreak(cmd[i]) {
 			i++
 		}
 		tok := cmd[tokStart:i]
 		b.WriteString(qualifyRedirectTarget(tok, subdir))
 	}
 	return b.String()
+}
+
+// redirectOpAt returns the shell redirect operator (`<`, `>`, `>>`) beginning
+// at cmd[i] and its byte length, or ("", 0) when cmd[i] is not a redirect.
+func redirectOpAt(cmd string, i int) (op string, opLen int) {
+	switch cmd[i] {
+	case '>':
+		if i+1 < len(cmd) && cmd[i+1] == '>' {
+			return ">>", 2
+		}
+		return ">", 1
+	case '<':
+		return "<", 1
+	}
+	return "", 0
+}
+
+// redirectFollowGuarded reports whether the byte after the operator marks a
+// shape we don't rewrite: `>&` / fd-merge, `>=` / `<=` arithmetic, or `<<`
+// heredoc. Those keep their bytes verbatim and the following token is left alone.
+func redirectFollowGuarded(cmd string, i, opLen int, op string) bool {
+	if i+opLen >= len(cmd) {
+		return false
+	}
+	n := cmd[i+opLen]
+	return n == '&' || n == '=' || (op == "<" && n == '<')
+}
+
+// isRedirectTokenBreak reports whether c terminates a redirect target token
+// (whitespace, another operator, or a command separator).
+func isRedirectTokenBreak(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' ||
+		c == '&' || c == '|' || c == ';' ||
+		c == '>' || c == '<'
 }
 
 // qualifyRedirectTarget prepends `subdir/` to tok when tok looks

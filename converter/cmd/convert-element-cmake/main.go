@@ -12,7 +12,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,6 +42,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 	"github.com/sstriker/buildstream-bazel/internal/synthprefix"
 )
 
@@ -80,6 +80,159 @@ func main() {
 	}
 }
 
+// runVerifyPass cross-checks the lowered IR against compile_commands.json (when
+// --verify is set and a compile DB is available), printing -D/-I mismatches to
+// stderr and writing the structured Report to --verify-report when set. A
+// missing compile DB is a silent no-op — verify is best-effort diagnostics.
+func runVerifyPass(a cli.Args, hostBuildDir string, pkg *ir.Package) error {
+	ccPath := compileCommandsPath(hostBuildDir, a.ReplyDir)
+	if ccPath == "" {
+		return nil
+	}
+	rep, verr := verify.Verify(ccPath, pkg, a.SourceRoot)
+	if verr != nil {
+		return failure.New(failure.FileAPIMalformed, "verify: %v", verr)
+	}
+	if msg := verify.FormatMismatches(rep); msg != "" {
+		fmt.Fprint(os.Stderr, msg)
+	}
+	if a.VerifyReport != "" {
+		body, _ := json.MarshalIndent(rep, "", "  ")
+		if err := os.MkdirAll(filepath.Dir(a.VerifyReport), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(a.VerifyReport, append(body, '\n'), 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// recoverPass1StampAbort attempts to rescue a pass-1 ToIR abort caused by a
+// forwarded VCS stamp (git_describe() helper return, SDL): a warm
+// non-expanded-trace reconfigure against the live build dir recovers the
+// set()-copies + function-parameter-forwards, and re-lowering with those
+// threaded in (via runToIR) lifts the call instead of aborting. Returns ok=false
+// (nil pkg) when the reconfigure fails, the trace yields no set-copies/forwards,
+// or the re-lower still errors — leaving the caller to surface the original
+// error.
+func recoverPass1StampAbort(ctx context.Context, a cli.Args, hostBuildDir string, runToIR func(*lower.LiteralProbeSink, map[string]cmakerun.LiteralResolution, []shadow.SetAssignment, []shadow.ParentScopeForward) (*ir.Package, error)) (pkg *ir.Package, sets []shadow.SetAssignment, forwards []shadow.ParentScopeForward, sink *lower.LiteralProbeSink, ok bool) {
+	plainTrace := filepath.Join(hostBuildDir, "trace-plain.jsonl")
+	if _, cfgErr := cmakerun.Configure(ctx, cmakerun.Options{
+		SourceRoot:         a.SourceRoot,
+		BuildDir:           hostBuildDir,
+		PrefixDir:          a.PrefixDir,
+		ToolchainCMakeFile: a.ToolchainCMakeFile,
+		BuildType:          a.BuildType,
+		BuildTypes:         a.BuildTypes,
+		TracePath:          plainTrace,
+		TraceNonExpanded:   true,
+		Stdout:             os.Stderr,
+		Stderr:             os.Stderr,
+	}); cfgErr != nil {
+		return nil, nil, nil, nil, false
+	}
+	raw, rerr := os.ReadFile(plainTrace)
+	if rerr != nil {
+		return nil, nil, nil, nil, false
+	}
+	sets = shadow.ExtractSetAssignments(raw, a.SourceRoot)
+	forwards = shadow.ExtractParentScopeForwards(raw, a.SourceRoot)
+	if len(sets) == 0 && len(forwards) == 0 {
+		return nil, nil, nil, nil, false
+	}
+	sink = &lower.LiteralProbeSink{}
+	pkg, err := runToIR(sink, nil, sets, forwards)
+	if err != nil {
+		return nil, nil, nil, nil, false
+	}
+	return pkg, sets, forwards, sink, true
+}
+
+// configureCmakeFresh runs the real-cmake path: assert the cmake version floor
+// (cmake >= 3.20, the codemodel-v2 minimum; the orchestrator always runs a
+// pinned cmake, so the --allow-cmake-version-mismatch escape hatch is local-dev
+// only), spin a temp build dir, configure cmake against it under source-root
+// mode, then load the reply. Trace is always captured (it feeds the lower's
+// keyword-recovery + execute_process rescue passes, independent of
+// --out-read-paths). The temp build dir is returned for the CALLER to clean up
+// — returned even on Configure error so the deferred RemoveAll still fires.
+func configureCmakeFresh(ctx context.Context, a cli.Args) (buildDir, replyDir string, cmakeVars map[string]string, ninjaPath string, elapsed time.Duration, err error) {
+	if !a.AllowCMakeVersionMismatch {
+		if _, _, _, verr := cmakerun.AssertVersion(ctx); verr != nil {
+			return "", "", nil, "", 0, failure.New(failure.ConfigureFailed, "%v", verr)
+		}
+	}
+	buildDir, err = os.MkdirTemp("", "convert-element-build-*")
+	if err != nil {
+		return "", "", nil, "", 0, err
+	}
+	opts := cmakerun.Options{
+		SourceRoot:         a.SourceRoot,
+		BuildDir:           buildDir,
+		PrefixDir:          a.PrefixDir,
+		ToolchainCMakeFile: a.ToolchainCMakeFile,
+		BuildType:          a.BuildType,
+		BuildTypes:         a.BuildTypes,
+		ExtraCacheVars:     cmakeDefinesToMap(a.CmakeDefines),
+		// DumpVars defaults true (see flags.go) so the variable-form
+		// find_package attribution path fires on cmakes below the 3.32
+		// find_package-v1 floor without the operator also opting into
+		// configure_file lift or probe-genex. cmake 3.24+ is the
+		// dump-vars-hook floor; on older cmakes the staged file is never
+		// sourced and downstream paths fall back cleanly.
+		DumpVars:    a.DumpVars,
+		CMP0026Shim: a.CMP0026Shim,
+		ProbeGenex:  a.ProbeGenex,
+		Stdout:      os.Stderr, // route cmake noise to our stderr
+		Stderr:      os.Stderr,
+	}
+	opts.TracePath = filepath.Join(buildDir, "trace.jsonl")
+	configureStart := time.Now()
+	reply, cerr := cmakerun.Configure(ctx, opts)
+	elapsed = time.Since(configureStart)
+	if cerr != nil {
+		return buildDir, "", nil, "", elapsed, failure.New(failure.ConfigureFailed, "%v", cerr)
+	}
+	return buildDir, reply.Path, reply.Vars, filepath.Join(buildDir, "build.ninja"), elapsed, nil
+}
+
+// loadOfflineReplyArtifacts handles the offline --reply-dir path: opportunistically
+// locate a checked-in build.ninja (recording scripts capture it alongside the
+// reply — four parents up at <build>/build.ninja per the fileapi layout, or
+// stashed directly in the reply dir by test fixtures) and pick up the cmake
+// variable namespace from cmake-to-bazel.vars.dump. A missing vars dump leaves
+// cmakeVars nil — silently disabling the (a) genex evaluator (an empty Context
+// → every genex.UnsupportedError → fall back to (b)/legacy) — and warns so the
+// degradation isn't invisible; a read error is fatal.
+func loadOfflineReplyArtifacts(replyDir string) (ninjaPath string, cmakeVars map[string]string, err error) {
+	candidate := filepath.Join(filepath.Dir(replyDir), "..", "..", "..", "build.ninja")
+	candidate, _ = filepath.Abs(candidate)
+	if _, serr := os.Stat(candidate); serr == nil {
+		ninjaPath = candidate
+	}
+	if direct := filepath.Join(replyDir, "build.ninja"); ninjaPath == "" {
+		if _, serr := os.Stat(direct); serr == nil {
+			ninjaPath = direct
+		}
+	}
+	if vars, verr := cmakerun.ReadVarsDumpFromReplyDir(replyDir); verr != nil {
+		return "", nil, failure.New(failure.FileAPIMissing, "read vars dump: %v", verr)
+	} else if len(vars) > 0 {
+		cmakeVars = vars
+	} else {
+		fmt.Fprintln(os.Stderr, "convert-element-cmake: warning: no cmake-to-bazel.vars.dump found in the reply dir; the (a) genex evaluator will fall back to legacy mode (file(GENERATE) shapes that depend on cmake variables may be less precisely lifted).")
+	}
+	return ninjaPath, cmakeVars, nil
+}
+
+// run is a tracked complexity giant (cognitive 247 / cyclomatic 152): the
+// convert-element-cmake pipeline driver. Breaking it down into focused sub-pass
+// extractions is its own ROADMAP "complexity lens" burndown pass — grandfathered
+// so the lens gates as blocking on all other code. Remove the directive below as
+// it comes back under threshold. See ROADMAP.md.
+//
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
 func run(a cli.Args) error {
 	t0 := time.Now()
 	var configureElapsed time.Duration
@@ -132,105 +285,27 @@ func run(a cli.Args) error {
 		hostBuildDir = a.CMakeBuildDir
 	}
 	if replyDir == "" {
-
-		// Architectural floor: cmake >= 3.20 (codemodel-v2 minimum). The
-		// orchestrator (M3) must always run with a pinned cmake; the
-		// escape hatch is for local dev only.
-		if !a.AllowCMakeVersionMismatch {
-			if _, _, _, err := cmakerun.AssertVersion(ctx); err != nil {
-				return failure.New(failure.ConfigureFailed, "%v", err)
-			}
+		bd, rd, vars, np, elapsed, cerr := configureCmakeFresh(ctx, a)
+		// buildDir is returned (and cleaned up) even on Configure error,
+		// matching the original defer-right-after-MkdirTemp placement.
+		if bd != "" {
+			defer os.RemoveAll(bd)
 		}
-
-		// Real-cmake path: spin a tmp build dir, configure cmake against
-		// it, then load the reply.
-		buildDir, err := os.MkdirTemp("", "convert-element-build-*")
-		if err != nil {
-			return err
+		if cerr != nil {
+			return cerr
 		}
-		hostBuildDir = buildDir
-		defer os.RemoveAll(buildDir)
-
-		opts := cmakerun.Options{
-			SourceRoot:         a.SourceRoot,
-			BuildDir:           buildDir,
-			PrefixDir:          a.PrefixDir,
-			ToolchainCMakeFile: a.ToolchainCMakeFile,
-			BuildType:          a.BuildType,
-			BuildTypes:         a.BuildTypes,
-			ExtraCacheVars:     cmakeDefinesToMap(a.CmakeDefines),
-			// DumpVars: independent of --lift-configure-file and
-			// --probe-genex. The flag defaults true (see flags.go)
-			// so the variable-form find_package attribution path
-			// fires on cmakes below the 3.32 find_package-v1 floor
-			// without requiring the operator to also opt into
-			// configure_file lift or probe-genex. cmake 3.24+ is
-			// the dump-vars-hook floor (CMAKE_PROJECT_TOP_LEVEL_INCLUDES
-			// landed there); on older cmakes the staged file is
-			// never sourced and downstream paths fall back cleanly.
-			DumpVars:    a.DumpVars,
-			CMP0026Shim: a.CMP0026Shim,
-			ProbeGenex:  a.ProbeGenex,
-			Stdout:      os.Stderr, // route cmake noise to our stderr
-			Stderr:      os.Stderr,
-		}
-		// Always capture trace under source-root mode — it feeds
-		// the lower's keyword-recovery (link-scope walks for
-		// target_link_libraries keywords) and execute_process
-		// rescue passes, independent of whether the operator
-		// also asked for an --out-read-paths file. Earlier this
-		// path was gated on OutReadPaths and silently produced
-		// the "no cmake trace data available" warning whenever
-		// an operator ran source-root mode without the flag.
-		opts.TracePath = filepath.Join(buildDir, "trace.jsonl")
-		configureStart := time.Now()
-		reply, err := cmakerun.Configure(ctx, opts)
-		configureElapsed = time.Since(configureStart)
-		if err != nil {
-			return failure.New(failure.ConfigureFailed, "%v", err)
-		}
-		replyDir = reply.Path
-		cmakeVars = reply.Vars
-		ninjaPath = filepath.Join(buildDir, "build.ninja")
+		hostBuildDir = bd
+		replyDir = rd
+		cmakeVars = vars
+		ninjaPath = np
+		configureElapsed = elapsed
 	} else {
-		// Offline path: a build.ninja is sometimes checked in alongside the
-		// reply (recording script captures both); use it if present.
-		candidate := filepath.Join(filepath.Dir(replyDir), "..", "..", "..", "build.ninja")
-		// fileapi reply directory layout is <build>/.cmake/api/v1/reply, so
-		// build.ninja lives four parents up. Resolve and check.
-		candidate, _ = filepath.Abs(candidate)
-		if _, err := os.Stat(candidate); err == nil {
-			ninjaPath = candidate
+		np, vars, oerr := loadOfflineReplyArtifacts(replyDir)
+		if oerr != nil {
+			return oerr
 		}
-		// Test fixtures stash build.ninja directly inside the reply dir for
-		// convenience; check there too.
-		if direct := filepath.Join(replyDir, "build.ninja"); ninjaPath == "" {
-			if _, err := os.Stat(direct); err == nil {
-				ninjaPath = direct
-			}
-		}
-		// Offline path: opportunistically pick up the captured
-		// cmake variable namespace from cmake-to-bazel.vars.dump
-		// in the reply dir. The live path gets this via
-		// cmakerun.Configure's Reply.Vars; the offline path
-		// previously left cmakeVars nil, which silently disabled
-		// the (a) genex evaluator (Context derived from cmakeVars
-		// is empty → every genex.UnsupportedError → fall back to
-		// (b) / legacy). Missing dump file → nil map, same
-		// behaviour as before; recorded fixtures opt in by
-		// stashing the dump alongside the fileapi reply.
-		if vars, err := cmakerun.ReadVarsDumpFromReplyDir(replyDir); err != nil {
-			return failure.New(failure.FileAPIMissing, "read vars dump: %v", err)
-		} else if len(vars) > 0 {
-			cmakeVars = vars
-		} else {
-			// Missing vars dump in offline mode silently
-			// disables the (a) genex evaluator (Context is
-			// empty → every genex.UnsupportedError → fall back
-			// to (b) / legacy). Surface this to operators so
-			// the degradation isn't invisible.
-			fmt.Fprintln(os.Stderr, "convert-element-cmake: warning: no cmake-to-bazel.vars.dump found in the reply dir; the (a) genex evaluator will fall back to legacy mode (file(GENERATE) shapes that depend on cmake variables may be less precisely lifted).")
-		}
+		ninjaPath = np
+		cmakeVars = vars
 	}
 
 	r, err := fileapi.Load(replyDir)
@@ -541,32 +616,12 @@ func run(a cli.Args) error {
 		// forwarded-stamp rescue then lifts the call. If recovery doesn't
 		// apply or still fails, surface the original error.
 		if a.TwoPassGenex && hostBuildDir != "" && len(stampSink) > 0 {
-			plainTrace := filepath.Join(hostBuildDir, "trace-plain.jsonl")
-			if _, cfgErr := cmakerun.Configure(ctx, cmakerun.Options{
-				SourceRoot:         a.SourceRoot,
-				BuildDir:           hostBuildDir,
-				PrefixDir:          a.PrefixDir,
-				ToolchainCMakeFile: a.ToolchainCMakeFile,
-				BuildType:          a.BuildType,
-				BuildTypes:         a.BuildTypes,
-				TracePath:          plainTrace,
-				TraceNonExpanded:   true,
-				Stdout:             os.Stderr,
-				Stderr:             os.Stderr,
-			}); cfgErr == nil {
-				if raw, rerr := os.ReadFile(plainTrace); rerr == nil {
-					sets := shadow.ExtractSetAssignments(raw, a.SourceRoot)
-					forwards := shadow.ExtractParentScopeForwards(raw, a.SourceRoot)
-					if len(sets) > 0 || len(forwards) > 0 {
-						literalSink = &lower.LiteralProbeSink{}
-						if pkg2, err2 := runToIR(literalSink, nil, sets, forwards); err2 == nil {
-							recoveredStampSets = sets
-							recoveredStampForwards = forwards
-							pkg, err = pkg2, nil
-							fmt.Fprintf(os.Stderr, "convert-element-cmake: recovered pass-1 stamp abort via %d non-expanded-trace set()-copy/-ies + %d function-forward(s).\n", len(sets), len(forwards))
-						}
-					}
-				}
+			if pkg2, sets, forwards, sink, ok := recoverPass1StampAbort(ctx, a, hostBuildDir, runToIR); ok {
+				pkg, err = pkg2, nil
+				recoveredStampSets = sets
+				recoveredStampForwards = forwards
+				literalSink = sink
+				fmt.Fprintf(os.Stderr, "convert-element-cmake: recovered pass-1 stamp abort via %d non-expanded-trace set()-copy/-ies + %d function-forward(s).\n", len(sets), len(forwards))
 			}
 		}
 		if err != nil {
@@ -697,24 +752,8 @@ func run(a cli.Args) error {
 	}
 
 	if a.Verify {
-		ccPath := compileCommandsPath(hostBuildDir, a.ReplyDir)
-		if ccPath != "" {
-			rep, verr := verify.Verify(ccPath, pkg, a.SourceRoot)
-			if verr != nil {
-				return failure.New(failure.FileAPIMalformed, "verify: %v", verr)
-			}
-			if msg := verify.FormatMismatches(rep); msg != "" {
-				fmt.Fprint(os.Stderr, msg)
-			}
-			if a.VerifyReport != "" {
-				body, _ := json.MarshalIndent(rep, "", "  ")
-				if err := os.MkdirAll(filepath.Dir(a.VerifyReport), 0o755); err != nil {
-					return err
-				}
-				if err := os.WriteFile(a.VerifyReport, append(body, '\n'), 0o644); err != nil {
-					return err
-				}
-			}
+		if err := runVerifyPass(a, hostBuildDir, pkg); err != nil {
+			return err
 		}
 	}
 
@@ -739,11 +778,7 @@ func run(a cli.Args) error {
 		}
 		rootDir := filepath.Dir(a.OutBuild)
 		// Deterministic write order (sorted dirs) for stable logs.
-		dirs := make([]string, 0, len(tree))
-		for d := range tree {
-			dirs = append(dirs, d)
-		}
-		sort.Strings(dirs)
+		dirs := sliceutil.SortedKeys(tree)
 		for _, d := range dirs {
 			var dst string
 			if d == "" {
@@ -1646,20 +1681,8 @@ func recoverAliases(traceRaw []byte, sourceRoot string, importable map[string]bo
 }
 
 func handleError(a cli.Args, err error) int {
-	var tier1 *failure.Error
-	if errors.As(err, &tier1) {
-		fmt.Fprintf(os.Stderr, "convert-element-cmake: %s\n", tier1.Error())
-		if a.OutFailure != "" {
-			payload, _ := json.MarshalIndent(map[string]any{
-				"tier":    1,
-				"code":    string(tier1.Code),
-				"message": tier1.Message,
-			}, "", "  ")
-			_ = os.MkdirAll(filepath.Dir(a.OutFailure), 0o755)
-			_ = os.WriteFile(a.OutFailure, append(payload, '\n'), 0o644)
-		}
+	if failure.ReportTier1(err, "convert-element-cmake", a.OutFailure, true) {
 		return cli.ExitTier1
 	}
-	fmt.Fprintf(os.Stderr, "convert-element-cmake: %v\n", err)
 	return cli.ExitTier2
 }

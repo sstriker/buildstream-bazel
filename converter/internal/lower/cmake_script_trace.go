@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // execLookPath wraps exec.LookPath. Lives at package scope so
@@ -355,10 +356,6 @@ func sortedKeys(m map[string]struct{}) []string {
 	if len(m) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(m)
 	return out
 }

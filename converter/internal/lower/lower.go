@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -30,6 +31,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // Options controls behavior that the orchestrator (M3) overrides per-package.
@@ -667,11 +669,7 @@ func wireDefineDrivenGeneratedHeaders(pkg *ir.Package) {
 		incs[d] = true
 	}
 	sort.Strings(hdrs)
-	includes := make([]string, 0, len(incs))
-	for d := range incs {
-		includes = append(includes, d)
-	}
-	sort.Strings(includes)
+	includes := sliceutil.SortedKeys(incs)
 	const wrapperName = "define_driven_generated_headers"
 	pkg.Targets = append(pkg.Targets, ir.Target{
 		Name:       wrapperName,
@@ -692,6 +690,84 @@ func wireDefineDrivenGeneratedHeaders(pkg *ir.Package) {
 // enables genrule recovery for targets with isGenerated sources; pass nil to
 // disable (M1-style behavior — generated sources then trigger
 // unsupported-custom-command).
+// buildPrivateIncludeDirs collects the PRIVATE include directories per target
+// from the decoded target_include_directories trace calls.
+func buildPrivateIncludeDirs(includes []shadow.TargetIncludeCall) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for _, call := range includes {
+		for _, grp := range call.Groups {
+			if grp.Visibility != "PRIVATE" {
+				continue
+			}
+			if _, ok := out[call.Target]; !ok {
+				out[call.Target] = map[string]bool{}
+			}
+			for _, dir := range grp.Dirs {
+				out[call.Target][dir] = true
+			}
+		}
+	}
+	return out
+}
+
+// buildTraceLinkInfo collects, per target, the ordered link libraries and each
+// library's link-scope keyword from the decoded target_link_libraries trace
+// calls. Libraries are deduped WITHIN each call (the `seen` set is per
+// TargetLinkCall); a library named in two separate target_link_libraries() calls
+// for the same target is kept in both, preserving the recorded call order.
+// Scope, by contrast, is first-write-wins ACROSS all of a target's calls (the
+// per-target scope map persists), so an earlier PUBLIC arm isn't overwritten by
+// a later PRIVATE one for the same library — cmake's own semantics for a
+// doubly-listed library with differing keywords are undefined, but the
+// upstream-most call governs header propagation in the typical case.
+func buildTraceLinkInfo(links []shadow.TargetLinkCall) (map[string][]string, map[string]map[string]string) {
+	traceLinkLibs := map[string][]string{}
+	traceLinkScope := map[string]map[string]string{}
+	for _, call := range links {
+		seen := map[string]bool{}
+		if _, ok := traceLinkScope[call.Target]; !ok {
+			traceLinkScope[call.Target] = map[string]string{}
+		}
+		for _, grp := range call.Groups {
+			for _, lib := range grp.Libs {
+				if seen[lib] {
+					continue
+				}
+				seen[lib] = true
+				traceLinkLibs[call.Target] = append(traceLinkLibs[call.Target], lib)
+				if _, ok := traceLinkScope[call.Target][lib]; !ok {
+					traceLinkScope[call.Target][lib] = grp.Visibility
+				}
+			}
+		}
+	}
+	return traceLinkLibs, traceLinkScope
+}
+
+// buildPlatformConditionalSrcs maps each (target, source) recovered from
+// platform-conditional if-blocks to its select key. First-write-wins: if the
+// same (target, src) shows up under two conditionals (rare — nested elseif arms
+// adding the same source on different platforms), the first SelectKey governs.
+func buildPlatformConditionalSrcs(pcsList []shadow.PlatformConditionalSource) map[string]map[string]string {
+	out := map[string]map[string]string{}
+	for _, pcs := range pcsList {
+		if _, ok := out[pcs.Target]; !ok {
+			out[pcs.Target] = map[string]string{}
+		}
+		if _, ok := out[pcs.Target][pcs.Source]; !ok {
+			out[pcs.Target][pcs.Source] = pcs.SelectKey
+		}
+	}
+	return out
+}
+
+// ToIR is a tracked complexity giant (cognitive 194 / cyclomatic 110): the
+// reply→IR entrypoint. Breaking it down into focused sub-pass extractions is its
+// own ROADMAP "complexity lens" burndown pass — grandfathered so the lens gates
+// as blocking on all other code. Remove the directive below as the function
+// comes back under threshold. See ROADMAP.md.
+//
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
 func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	if got := len(r.Codemodel.Configurations); got != 1 {
 		// The multi-config fold (lowerMultiConfigDeltas, at the
@@ -891,49 +967,8 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		decoded := &decodedVal
 		decodedTrace = decoded
 		traceDecoded = true
-		privateIncludeDirs = map[string]map[string]bool{}
-		for _, call := range decoded.Includes {
-			for _, grp := range call.Groups {
-				if grp.Visibility != "PRIVATE" {
-					continue
-				}
-				if _, ok := privateIncludeDirs[call.Target]; !ok {
-					privateIncludeDirs[call.Target] = map[string]bool{}
-				}
-				for _, dir := range grp.Dirs {
-					privateIncludeDirs[call.Target][dir] = true
-				}
-			}
-		}
-		traceLinkLibs = map[string][]string{}
-		traceLinkScope = map[string]map[string]string{}
-		for _, call := range decoded.Links {
-			seen := map[string]bool{}
-			if _, ok := traceLinkScope[call.Target]; !ok {
-				traceLinkScope[call.Target] = map[string]string{}
-			}
-			for _, grp := range call.Groups {
-				for _, lib := range grp.Libs {
-					if seen[lib] {
-						continue
-					}
-					seen[lib] = true
-					traceLinkLibs[call.Target] = append(traceLinkLibs[call.Target], lib)
-					// First-write-wins so an earlier
-					// target_link_libraries(t PUBLIC bar) call
-					// doesn't get overwritten by a later
-					// target_link_libraries(t PRIVATE bar) — the
-					// effective semantics in cmake itself are
-					// not well-defined when the same library is
-					// listed twice with different keywords, but
-					// the upstream-most call governs header
-					// propagation in the typical case.
-					if _, ok := traceLinkScope[call.Target][lib]; !ok {
-						traceLinkScope[call.Target][lib] = grp.Visibility
-					}
-				}
-			}
-		}
+		privateIncludeDirs = buildPrivateIncludeDirs(decoded.Includes)
+		traceLinkLibs, traceLinkScope = buildTraceLinkInfo(decoded.Links)
 		defineSymbols = decoded.DefineSymbols
 		decodedConfigureFiles = decoded.ConfigFiles
 		decodedFileGenerates = decoded.FileGenerates
@@ -951,22 +986,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		generatedSources = collectGeneratedSources(decoded.SourceFileProperties)
 		perSourceDefinesBySrc = collectPerSourceCompileDefinitions(decoded.SourceFileProperties)
 		if len(decoded.PlatformConditionalSources) > 0 {
-			platformConditionalSrcs = map[string]map[string]string{}
-			for _, pcs := range decoded.PlatformConditionalSources {
-				if _, ok := platformConditionalSrcs[pcs.Target]; !ok {
-					platformConditionalSrcs[pcs.Target] = map[string]string{}
-				}
-				// First-write-wins: if the same (target, src)
-				// shows up under two different conditionals
-				// (rare — would mean nested elseif arms both
-				// adding the same source on different
-				// platforms), the first one's SelectKey
-				// governs. Cheap to refine later if real
-				// projects need a list-valued mapping.
-				if _, ok := platformConditionalSrcs[pcs.Target][pcs.Source]; !ok {
-					platformConditionalSrcs[pcs.Target][pcs.Source] = pcs.SelectKey
-				}
-			}
+			platformConditionalSrcs = buildPlatformConditionalSrcs(decoded.PlatformConditionalSources)
 		}
 		// Tier 2 (#217 follow-on): recover sources from the
 		// SKIPPED arms of platform-conditional if-blocks. cmake
@@ -1737,41 +1757,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		// matches land on pkg.CodegenHeaderConsumers for the split transform
 		// to synthesize the wrapper library and wire the consumer's dep.
 		if len(codegenConsumerDeps) > 0 {
-			genOut := make(map[string]string, len(cc.OutToGenrule))
-			for o, n := range cc.OutToGenrule {
-				genOut[o] = n
-			}
-			for _, gt := range stand {
-				for _, o := range gt.GenruleOuts {
-					genOut[o] = gt.Name
-				}
-			}
-			// Index ninja outputs by final path component so the codegen
-			// walk can seed from a sub-directory custom target's prefixed
-			// phony (cmake names it `<dir>/<target>`).
-			phonyByName := map[string][]string{}
-			if g != nil {
-				if g.OutputIndex == nil {
-					g.Index()
-				}
-				for o := range g.OutputIndex {
-					base := o
-					if i := strings.LastIndex(o, "/"); i >= 0 {
-						base = o[i+1:]
-					}
-					phonyByName[base] = append(phonyByName[base], o)
-				}
-			}
-			for name, deps := range codegenConsumerDeps {
-				hdrs := collectCodegenHeaders(g, deps, utilityIDs, utilityIDToName, genOut, isTargetName, phonyByName)
-				if len(hdrs) == 0 {
-					continue
-				}
-				if pkg.CodegenHeaderConsumers == nil {
-					pkg.CodegenHeaderConsumers = map[string][]string{}
-				}
-				pkg.CodegenHeaderConsumers[name] = hdrs
-			}
+			resolveCodegenHeaderConsumers(pkg, g, stand, cc, codegenConsumerDeps, utilityIDs, utilityIDToName, isTargetName)
 		}
 	}
 	// Phase 5 multi-config delta fold. When the reply carries
@@ -1831,11 +1817,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		for out, kind := range cc.FilteredInternalCmds {
 			byKind[kind] = append(byKind[kind], out)
 		}
-		kinds := make([]string, 0, len(byKind))
-		for k := range byKind {
-			kinds = append(kinds, k)
-		}
-		sort.Strings(kinds)
+		kinds := sliceutil.SortedKeys(byKind)
 		fmt.Fprintf(opts.Warnings,
 			"lower: filtered %d cmake command edge(s) with no Bazel analogue (dropped, not converted):\n",
 			len(cc.FilteredInternalCmds))
@@ -2069,6 +2051,15 @@ type targetTrace struct {
 	defineSymbol string
 }
 
+// lowerTarget is a tracked complexity giant (cognitive 754 / cyclomatic 322 —
+// the highest in the tree). Breaking it down into focused, behavior-preserving
+// sub-pass extractions (link-fragment attribution, compile-group lowering,
+// generated-source handling) is its own ROADMAP "complexity lens" burndown
+// pass; grandfathered here so the lens can gate as blocking on every other
+// function. Remove the directive below as the function comes back under
+// threshold. See ROADMAP.md.
+//
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
 func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Target, error) {
 	// Unpack the bundled inputs into the locals the body uses: lc is
 	// invariant across the per-target loop, tt is this target's trace.
@@ -2217,6 +2208,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			continue
 		}
 
+		//nolint:nestif // inside the grandfathered lowerTarget giant; folds into its ROADMAP burndown pass.
 		if src.IsGenerated {
 			// $<TARGET_OBJECTS:other_target> shows up in
 			// codemodel as "<build>/CMakeFiles/<other>.dir/<src>.o"
@@ -2648,6 +2640,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// include dir with no public header lib".
 	var privateIncDirs []string
 
+	//nolint:nestif // inside the grandfathered lowerTarget giant; folds into its ROADMAP burndown pass.
 	if len(t.CompileGroups) > 0 {
 		// M1 assumption: at most one language per target. Aggregate the
 		// first compile group's flags/includes/defines.
@@ -3021,6 +3014,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// the genrule that produces it is already on cc.Genrules
 	// from recoverConfigureFiles. cmake-codegen tag mirrors the
 	// existing CUSTOM_COMMAND-recovered consumer's shape.
+	//nolint:nestif // inside the grandfathered lowerTarget giant; folds into its ROADMAP burndown pass.
 	if len(configureFiles) > 0 && len(targetBuildIncs) > 0 {
 		var addedHdrs []string
 		hostingIncs := map[string]bool{}
@@ -3432,6 +3426,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		// Resolve label; routing decision (Deps vs
 		// ImplementationDeps) folds in after.
 		var label string
+		//nolint:nestif // inside the grandfathered lowerTarget giant; folds into its ROADMAP burndown pass.
 		if name, ok := idToName[dep.Id]; ok {
 			label = ":" + name
 		} else if utilityIDs[dep.Id] {
@@ -3510,6 +3505,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			irt.Features = append(irt.Features, "lto")
 		}
 	}
+	//nolint:nestif // inside the grandfathered lowerTarget giant; folds into its ROADMAP burndown pass.
 	if t.Link != nil {
 		seen := map[string]bool{}
 		for _, d := range irt.Deps {
@@ -5873,18 +5869,7 @@ func applyPerSourceCompileDefinitions(pkg *ir.Package, byPath map[string][]strin
 // sortedDedupStrings returns a sorted, deduped copy of in. Small
 // helper for the COMPILE_DEFINITIONS uniformity comparison.
 func sortedDedupStrings(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	cp := append([]string(nil), in...)
-	sort.Strings(cp)
-	out := cp[:1]
-	for _, x := range cp[1:] {
-		if x != out[len(out)-1] {
-			out = append(out, x)
-		}
-	}
-	return out
+	return sliceutil.SortedUnique(in)
 }
 
 // sameDefineSet reports whether the two already-sorted-and-deduped
@@ -6099,12 +6084,7 @@ func relForSource(p string, t *fileapi.Target) string {
 // source slices are short enough (typically <50 entries) that
 // a map+rebuild is overkill.
 func stringSliceContains(s []string, v string) bool {
-	for _, e := range s {
-		if e == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s, v)
 }
 
 // scopeForLabelLib looks up a cmake lib name in the
@@ -6447,6 +6427,36 @@ func buildCompileGroupSet(t *fileapi.Target) map[int]bool {
 // never these source paths). Empty bazelPackagePath (the fidelity harness
 // converting AT the workspace root) preserves the prior labelRoot-relative
 // behavior exactly.
+// stripLeadingCd removes a leading `cd <abs-dir> && ` prefix from cmd when the
+// directory is inside buildDir or cmakeSrc, returning the trimmed cmd and the
+// build/source-relative subdir that was stripped (empty when nothing matched).
+// The subdir lets a later pass (qualifyRedirectBasenames) re-qualify
+// bare-basename redirect targets the cd would otherwise have rooted.
+func stripLeadingCd(cmd, buildDir, cmakeSrc string) (string, string) {
+	if !strings.HasPrefix(cmd, "cd ") {
+		return cmd, ""
+	}
+	end := strings.Index(cmd, " && ")
+	if end <= 0 {
+		return cmd, ""
+	}
+	target := strings.TrimSpace(strings.TrimPrefix(cmd[:end], "cd "))
+	if !filepath.IsAbs(target) {
+		return cmd, ""
+	}
+	if buildDir != "" {
+		if rel, ok := relativeIfInside(buildDir, target); ok {
+			return cmd[end+4:], rel
+		}
+	}
+	if cmakeSrc != "" {
+		if rel, ok := relativeIfInside(cmakeSrc, target); ok {
+			return cmd[end+4:], rel
+		}
+	}
+	return cmd, ""
+}
+
 func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath string) string {
 	if cmd == "" {
 		return cmd
@@ -6459,30 +6469,7 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath
 	// targets (cmake records `> LLVMHello.exports` as relative
 	// to the cd dir; after the cd-strip the basename is in the
 	// wrong cwd unless qualified).
-	var strippedCdSubdir string
-	if strings.HasPrefix(cmd, "cd ") {
-		if end := strings.Index(cmd, " && "); end > 0 {
-			target := strings.TrimSpace(strings.TrimPrefix(cmd[:end], "cd "))
-			if filepath.IsAbs(target) {
-				drop := false
-				if buildDir != "" {
-					if rel, ok := relativeIfInside(buildDir, target); ok {
-						drop = true
-						strippedCdSubdir = rel
-					}
-				}
-				if !drop && cmakeSrc != "" {
-					if rel, ok := relativeIfInside(cmakeSrc, target); ok {
-						drop = true
-						strippedCdSubdir = rel
-					}
-				}
-				if drop {
-					cmd = cmd[end+4:]
-				}
-			}
-		}
-	}
+	cmd, strippedCdSubdir := stripLeadingCd(cmd, buildDir, cmakeSrc)
 	// Strip cmakeSrc and buildDir prefixes from the cmd body.
 	// Two variants per anchor:
 	//
@@ -7144,6 +7131,51 @@ func isGeneratedHeaderPath(p string) bool {
 // the same way as the genrule outs the split transform places, so the
 // caller can group them by producing package. Returns nil when the
 // consumer has no UTILITY deps or no ninja graph is available.
+// resolveCodegenHeaderConsumers resolves each cc_library consumer's UTILITY
+// (tablegen) dependencies to the generated `.inc` headers it #includes, now that
+// the standalone genrules producing them have been recovered. The combined
+// output set — per-target codegen outputs (cc.OutToGenrule) plus the standalone
+// recovery (stand) — is what the ninja walk filters on; matches land on
+// pkg.CodegenHeaderConsumers for the split transform to synthesize the wrapper
+// library and wire the consumer's dep.
+func resolveCodegenHeaderConsumers(pkg *ir.Package, g *ninja.Graph, stand []ir.Target, cc *codegenContext, codegenConsumerDeps map[string][]fileapi.TargetDependency, utilityIDs map[string]bool, utilityIDToName map[string]string, isTargetName map[string]bool) {
+	genOut := make(map[string]string, len(cc.OutToGenrule))
+	for o, n := range cc.OutToGenrule {
+		genOut[o] = n
+	}
+	for _, gt := range stand {
+		for _, o := range gt.GenruleOuts {
+			genOut[o] = gt.Name
+		}
+	}
+	// Index ninja outputs by final path component so the codegen walk can seed
+	// from a sub-directory custom target's prefixed phony (cmake names it
+	// `<dir>/<target>`).
+	phonyByName := map[string][]string{}
+	if g != nil {
+		if g.OutputIndex == nil {
+			g.Index()
+		}
+		for o := range g.OutputIndex {
+			base := o
+			if i := strings.LastIndex(o, "/"); i >= 0 {
+				base = o[i+1:]
+			}
+			phonyByName[base] = append(phonyByName[base], o)
+		}
+	}
+	for name, deps := range codegenConsumerDeps {
+		hdrs := collectCodegenHeaders(g, deps, utilityIDs, utilityIDToName, genOut, isTargetName, phonyByName)
+		if len(hdrs) == 0 {
+			continue
+		}
+		if pkg.CodegenHeaderConsumers == nil {
+			pkg.CodegenHeaderConsumers = map[string][]string{}
+		}
+		pkg.CodegenHeaderConsumers[name] = hdrs
+	}
+}
+
 func collectCodegenHeaders(g *ninja.Graph, deps []fileapi.TargetDependency, utilityIDs map[string]bool, utilityIDToName map[string]string, outToGenrule map[string]string, isTargetName map[string]bool, phonyByName map[string][]string) []string {
 	if g == nil || len(deps) == 0 {
 		return nil
@@ -7366,11 +7398,7 @@ func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][
 			cache[absDir] = perDir
 		}
 	}
-	out := make([]string, 0, len(seen))
-	for h := range seen {
-		out = append(out, h)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(seen)
 	return out, nil
 }
 

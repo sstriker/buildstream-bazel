@@ -24,11 +24,11 @@
 package configfold
 
 import (
-	"sort"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/internal/empfold"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // TargetFold is one cmake target's cross-config partition.
@@ -205,11 +205,7 @@ func Project(byConfig map[string]map[string]fileapi.Target, configs []string) []
 	}
 
 	// Partition each fact family per target.
-	ids := make([]string, 0, len(perTarget))
-	for id := range perTarget {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
+	ids := sliceutil.SortedKeys(perTarget)
 
 	out := make([]TargetFold, 0, len(ids))
 	for _, id := range ids {

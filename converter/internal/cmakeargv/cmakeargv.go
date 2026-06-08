@@ -95,10 +95,10 @@ func ReadCall(path string, line int, command string) (*Call, error) {
 	return call, nil
 }
 
-func tokenizeCall(body, command string) (*Call, error) {
-	i := 0
-	// Skip leading whitespace and `#` comment lines until we find
-	// the command identifier.
+// skipWsAndComments advances past whitespace and `#`-to-end-of-line comments in
+// body starting at i, returning the index of the next significant byte (or
+// len(body) at end of input).
+func skipWsAndComments(body string, i int) int {
 	for i < len(body) {
 		c := body[i]
 		if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
@@ -114,6 +114,14 @@ func tokenizeCall(body, command string) (*Call, error) {
 		}
 		break
 	}
+	return i
+}
+
+func tokenizeCall(body, command string) (*Call, error) {
+	i := 0
+	// Skip leading whitespace and `#` comment lines until we find
+	// the command identifier.
+	i = skipWsAndComments(body, i)
 	if i >= len(body) {
 		return nil, fmt.Errorf("no command found")
 	}
@@ -128,20 +136,7 @@ func tokenizeCall(body, command string) (*Call, error) {
 	}
 	i = cmdEnd
 	// Skip whitespace + comments before the `(`.
-	for i < len(body) {
-		c := body[i]
-		if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
-			i++
-			continue
-		}
-		if c == '#' {
-			for i < len(body) && body[i] != '\n' {
-				i++
-			}
-			continue
-		}
-		break
-	}
+	i = skipWsAndComments(body, i)
 	if i >= len(body) || body[i] != '(' {
 		return nil, fmt.Errorf("expected `(` after command name")
 	}
@@ -150,20 +145,7 @@ func tokenizeCall(body, command string) (*Call, error) {
 	var args []string
 	for {
 		// Skip whitespace + comments.
-		for i < len(body) {
-			c := body[i]
-			if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
-				i++
-				continue
-			}
-			if c == '#' {
-				for i < len(body) && body[i] != '\n' {
-					i++
-				}
-				continue
-			}
-			break
-		}
+		i = skipWsAndComments(body, i)
 		if i >= len(body) {
 			return nil, fmt.Errorf("unterminated call (no matching `)`)")
 		}

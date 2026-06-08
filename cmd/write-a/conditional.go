@@ -62,9 +62,9 @@ import (
 	"fmt"
 	"regexp"
 	"runtime"
-	"sort"
 	"strings"
 
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -829,11 +829,7 @@ func dispatchSpaceForElement(elem *element, options map[string]bstOption) ([]dis
 	if len(seen) == 0 {
 		return nil, nil
 	}
-	names := make([]string, 0, len(seen))
-	for v := range seen {
-		names = append(names, v)
-	}
-	sort.Strings(names)
+	names := sliceutil.SortedKeys(seen)
 	out := make([]dispatchVar, 0, len(names))
 	for _, name := range names {
 		if name == "target_arch" {

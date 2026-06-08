@@ -1594,6 +1594,17 @@ func cmdRunsUninstallScript(cmd string) bool {
 // directory-installer sanitizer but tuned for path-with-extension
 // shapes (preserves the `.h` / `.cc` suffix as `_h` / `_cc`).
 func sanitizeOutputName(p string) string {
+	return sanitizeCollapsingRuns(p)
+}
+
+// sanitizeCollapsingRuns turns a path into a Bazel-name-safe token by Clean+
+// ToSlash-ing it, then mapping each maximal run of non-alphanumeric runes to a
+// single '_' and trimming leading/trailing '_'. Distinct from
+// sanitizePathToNameStem (which maps each non-[A-Za-z0-9_] byte 1:1 to '_' and
+// keeps '_'): the run-collapse here yields shorter, cleaner names and the two
+// are NOT interchangeable (they produce different tokens, so the rule/filegroup
+// name spaces they feed must each keep their own).
+func sanitizeCollapsingRuns(p string) string {
 	clean := filepath.ToSlash(filepath.Clean(p))
 	var sb strings.Builder
 	sb.Grow(len(clean))
