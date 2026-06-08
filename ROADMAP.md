@@ -179,8 +179,15 @@ transition cleanly.
 - **Test-target coverage — enable the scoped-out members' tests.** The build
   lens builds `//...`, which already INCLUDES test targets where the project's
   tests need no extra infra (fmt, libxml2, glog, glm, googletest, abseil
-  surface, curl test PROGRAMS). The remaining members scope tests out via a
-  `.conf` flag, each for a concrete reason — to enable, resolve that reason:
+  surface, curl test PROGRAMS). The `add_test`→`cc_test` lowering itself is
+  sound and shape-agnostic — it's driven by cmake's generated
+  `CTestTestfile.cmake` (`internal/ctest`), so it captures every registration
+  (`add_test(name exe)` AND `add_test(NAME … COMMAND …)`) once the executable +
+  its registration are CONFIGURED. So a member's "no `cc_test`" is never a
+  lowering bug; it's that tests weren't configured (a missing test dep, or a
+  `.conf` `BUILD_TESTING`/`*_TESTS=OFF`). The remaining members scope tests out
+  via a `.conf` flag, each for a concrete reason — to enable, resolve that
+  reason:
   - **spdlog** (`SPDLOG_BUILD_TESTS=OFF`): tests need `find_package(Catch2 3)`.
     Catch2 IS a corpus member (3.5.3) — wire it cross-element via the imports
     manifest + a host-install prefix (the protobuf↔absl pattern).
@@ -400,12 +407,19 @@ trees, optional-feature deps, codegen instances). Each member's
   `--split-packages` convert + build AND the other green members must be
   re-validated before landing (the fmt / cp-dir regression lesson).
 
-- **Lower dropped test trees to `cc_test` — extend test-target coverage (10×
-  high).** Extends "Test-target coverage" (above): the faithful survey convert
-  emits no `cc_test` for abseil (232 `absl_cc_test`), glm (~130), sdl (~50),
-  catch2, boost-core, mbedtls, vtk, openblas. **Caveat:** confirm each is a
-  real `add_test`/`enable_testing` lowering gap vs. an intentional build-lens
-  scope-out before fixing — some members deliberately disable their test tree.
+- **Lower dropped test trees to `cc_test` — investigated; not a lowering bug,
+  folded into "Test-target coverage."** The intent lens flagged no `cc_test` for
+  abseil (232 `absl_cc_test`), glm (~130), sdl (~50), catch2, boost-core,
+  mbedtls, vtk, openblas. Investigation (2026-06): this is the same
+  configure-scope/enablement story as theme 4, NOT a converter gap — the
+  `add_test`→`cc_test` lowering is sound and shape-agnostic (driven by cmake's
+  `CTestTestfile.cmake`; proven by fmt/libxml2/glog), so the absences are tests
+  that weren't CONFIGURED: mbedtls (`ENABLE_TESTING=OFF`) + openblas
+  (`BUILD_TESTING=OFF`) explicitly scope tests off in their `.conf`; abseil's
+  need GTest (not wired); the rest are dep-availability / faithful-survey-config
+  gaps. The actionable enablement work (wire each member's test dep) is tracked
+  per-member under "Test-target coverage" above; there's no separate lowering
+  fix to make here.
 
 - **Optional-feature conditional deps (find_package under a feature flag, 3×
   high).** LLVM's `LLVM_ENABLE_ZLIB` / `_ZSTD` / `_OPENCSD` deps aren't linked,
