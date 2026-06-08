@@ -428,14 +428,25 @@ trees, optional-feature deps, codegen instances). Each member's
   feature option the converter must honor (or default).
 
 - **`configure_file` / script-codegen genrule coverage — specific instances
-  (5× high).** Generated headers with no genrule: vtk's libproj `proj_config.h`,
-  mbedtls's `test_certs.h` / `test_keys.h` Python codegen, cutlass's
-  `version_extended.h`. (The curl `configurehelp.pm` correctness case — a
-  convert-time temp path `/tmp/convert-element-build-*/` baked into the emitted
-  output — is fixed: `recoverConfigureFiles` now scrubs the ephemeral
-  build/source-dir prefixes to package-relative paths via
-  `reanchorConvertTimePaths`. A sibling check worth doing: whether
-  `file(GENERATE)` bakes the same prefixes and needs the same scrub.)
+  (5× high).** Remaining generated headers with no genrule: mbedtls's
+  `test_certs.h` / `test_keys.h` (Python-script `add_custom_command` codegen —
+  needs the python-script genrule recovery, shared with the mbedtls test-tree
+  work) and cutlass's `version_extended.h`. Fixed so far:
+  - **vtk's libproj `proj_config.h`** — its `configure_file(cmake/proj_config.cmake.in
+    src/proj_config.h)` lives in an `include()`d module (`cmake/ProjConfig.cmake`)
+    with a RELATIVE output. `recoverConfigureFiles` anchored relative outputs to
+    `dir(CallFile)` (the module's `cmake/` dir), but `include()` doesn't change
+    `CMAKE_CURRENT_BINARY_DIR` — cmake writes to the INCLUDER's scope
+    (`vtklibproj/src/`), so the computed path was wrong and the output silently
+    dropped. Now anchored to the deepest codemodel directory SCOPE containing the
+    call file (`dirScopeRel`), which is the includer for an included module and
+    `dir(CallFile)` for a normal CMakeLists call (unchanged). Guarded by
+    `TestRecoverConfigureFilesFromCalls_IncludedModuleRelativeOutput` +
+    `TestDirScopeRel`.
+  - **curl's `configurehelp.pm`** (correctness) — convert-time temp path
+    `/tmp/convert-element-build-*/` baked into output; `reanchorConvertTimePaths`
+    scrubs the ephemeral build/source-dir prefixes. (Sibling check still worth
+    doing: whether `file(GENERATE)` bakes the same prefixes and needs the scrub.)
 
 - **A-B-C fidelity harness — remaining: VTK/LLVM gates.** The harness shipped
   CI-wired and **blocking** for the six fixtures (zlib, spdlog, fmt,

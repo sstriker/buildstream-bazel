@@ -493,7 +493,7 @@ func TestRecoverConfigureFilesFromCalls_HappyPath(t *testing.T) {
 		Output: filepath.Join(hostBuild, "cfg.h"),
 	}}
 	cc := newCodegenContext()
-	out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, false, nil, cc)
+	out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, nil, false, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -508,6 +508,89 @@ func TestRecoverConfigureFilesFromCalls_HappyPath(t *testing.T) {
 	}
 	if name, ok := cc.OutToGenrule["cfg.h"]; !ok || name != cc.Genrules[0].Name {
 		t.Errorf("OutToGenrule[cfg.h] = %q, want %q", name, cc.Genrules[0].Name)
+	}
+}
+
+// TestRecoverConfigureFilesFromCalls_IncludedModuleRelativeOutput pins the
+// theme-6 vtk proj_config.h fix: a relative configure_file output whose call
+// lives in an include()d .cmake module (CallFile under a `cmake/` subdir with
+// no directory scope of its own) must anchor to the INCLUDER's directory scope
+// — its CMAKE_CURRENT_BINARY_DIR — not to dir(CallFile). The module sits at
+// sub/cmake/Mod.cmake but the scope is `sub`, so `configure_file(... src/out.h)`
+// writes to sub/src/out.h. Pre-fix the recovery looked under sub/cmake/src and
+// silently dropped the output.
+func TestRecoverConfigureFilesFromCalls_IncludedModuleRelativeOutput(t *testing.T) {
+	hostSrc := t.TempDir()
+	hostBuild := t.TempDir()
+	// The configured output lands in the INCLUDER's binary dir (sub/src), not
+	// the module's (sub/cmake/src).
+	outDir := filepath.Join(hostBuild, "sub", "src")
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "proj_config.h"), []byte("#define HAVE_X 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ConfigureFileCall{{
+		// Call made inside an include()d module under sub/cmake/.
+		CallFile: filepath.Join(hostSrc, "sub", "cmake", "Mod.cmake"),
+		Input:    "cmake/proj_config.cmake.in",
+		Output:   "src/proj_config.h", // relative → anchored to the includer scope
+	}}
+	// Directory scopes: root + "sub" (the includer). "sub/cmake" is NOT a scope.
+	dirScopes := []string{"", "sub"}
+	cc := newCodegenContext()
+	out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, dirScopes, false, nil, cc)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("out = %v; want 1 entry (the included-module output recovered)", out)
+	}
+	if out[0].RelOutput != "sub/src/proj_config.h" {
+		t.Errorf("RelOutput = %q, want sub/src/proj_config.h (includer scope, not sub/cmake)", out[0].RelOutput)
+	}
+	if _, ok := cc.OutToGenrule["sub/src/proj_config.h"]; !ok {
+		t.Errorf("no genrule recovered for sub/src/proj_config.h; OutToGenrule=%v", cc.OutToGenrule)
+	}
+
+	// Control: with no dirScopes (offline fallback), it anchors to dir(CallFile)
+	// = sub/cmake and looks under sub/cmake/src — which doesn't exist — so the
+	// output is dropped (the pre-fix behavior, exercised by the fallback path).
+	cc2 := newCodegenContext()
+	out2, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, nil, false, nil, cc2)
+	if err != nil {
+		t.Fatalf("recover (no scopes): %v", err)
+	}
+	if len(out2) != 0 {
+		t.Errorf("without dirScopes the includer-scoped output should NOT resolve (fallback to dir(CallFile)); got %v", out2)
+	}
+}
+
+func TestDirScopeRel(t *testing.T) {
+	src := "/src/proj"
+	scopes := []string{"", "sub", "sub/deep", "other"}
+	cases := []struct {
+		callFile string
+		want     string
+		ok       bool
+	}{
+		// Call from a CMakeLists.txt in a scope → that scope.
+		{"/src/proj/sub/CMakeLists.txt", "sub", true},
+		// Call from an include()d module under sub/cmake (no own scope) → sub.
+		{"/src/proj/sub/cmake/Mod.cmake", "sub", true},
+		// Deepest wins: a module under sub/deep/x → sub/deep, not sub.
+		{"/src/proj/sub/deep/x/Mod.cmake", "sub/deep", true},
+		// Root-level call → "".
+		{"/src/proj/CMakeLists.txt", "", true},
+		// Outside the source tree → no scope.
+		{"/elsewhere/Mod.cmake", "", false},
+	}
+	for _, c := range cases {
+		got, ok := dirScopeRel(c.callFile, src, scopes)
+		if got != c.want || ok != c.ok {
+			t.Errorf("dirScopeRel(%q) = (%q, %v), want (%q, %v)", c.callFile, got, ok, c.want, c.ok)
+		}
 	}
 }
 
@@ -573,7 +656,7 @@ func TestRecoverConfigureFilesFromCalls_ScrubsConvertTimePaths(t *testing.T) {
 	cc := newCodegenContext()
 	// recorded == host here (online-convert shape), so the baked prefixes
 	// match what the scrub strips.
-	if _, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, false, nil, cc); err != nil {
+	if _, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, nil, false, nil, cc); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	if len(cc.Genrules) != 1 {
@@ -609,7 +692,7 @@ func TestRecoverConfigureFilesFromCalls_SkipsAndDedupes(t *testing.T) {
 
 	t.Run("nil calls returns nil, nil", func(t *testing.T) {
 		cc := newCodegenContext()
-		out, err := recoverConfigureFilesFromCalls(nil, hostSrc, hostSrc, hostBuild, hostBuild, false, nil, cc)
+		out, err := recoverConfigureFilesFromCalls(nil, hostSrc, hostSrc, hostBuild, hostBuild, nil, false, nil, cc)
 		if err != nil || out != nil {
 			t.Errorf("got (%v, %v); want (nil, nil)", out, err)
 		}
@@ -618,7 +701,7 @@ func TestRecoverConfigureFilesFromCalls_SkipsAndDedupes(t *testing.T) {
 	t.Run("empty hostBuildDir returns nil, nil", func(t *testing.T) {
 		cc := newCodegenContext()
 		calls := []shadow.ConfigureFileCall{{Output: "/tmp/build/cfg.h"}}
-		out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, "", "", false, nil, cc)
+		out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, "", "", nil, false, nil, cc)
 		if err != nil || out != nil {
 			t.Errorf("got (%v, %v); want (nil, nil)", out, err)
 		}
@@ -633,7 +716,7 @@ func TestRecoverConfigureFilesFromCalls_SkipsAndDedupes(t *testing.T) {
 			{Output: filepath.Join(hostBuild, "missing.h")}, // not on disk — skip silently
 		}
 		cc := newCodegenContext()
-		out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, false, nil, cc)
+		out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, nil, false, nil, cc)
 		if err != nil {
 			t.Fatalf("recover: %v", err)
 		}
@@ -669,7 +752,7 @@ func TestRecoverConfigureFilesFromCalls_RelativeOutputAnchored(t *testing.T) {
 		CallFile: filepath.Join(hostSrc, "sub", "CMakeLists.txt"),
 	}}
 	cc := newCodegenContext()
-	out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, false, nil, cc)
+	out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, nil, false, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
