@@ -378,7 +378,12 @@ EOF
     # + the .conf's --cmake-define pairs). Report-only (writes fidelity.json); it
     # does not gate the build. See cmd/compile-commands-diff + docs.
     if [ "${SURVEY_COMPILE_DB:-0}" != "0" ]; then
-        _cc_defs="-DBUILD_SHARED_LIBS=OFF"
+        # CMAKE_POLICY_VERSION_MINIMUM=3.5: cmake 4.x removed compat with
+        # cmake_minimum_required(<3.5); the converter auto-retries with this on
+        # the policy-floor error (cmakerun/run.go), so the fidelity configure
+        # must pass it too or it fails for old-floor projects (libevent) and the
+        # fidelity row is silently absent. Harmless for projects that don't need it.
+        _cc_defs="-DBUILD_SHARED_LIBS=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5"
         # shellcheck disable=SC2086
         set -- $CONVERT_FLAGS
         while [ $# -gt 0 ]; do
