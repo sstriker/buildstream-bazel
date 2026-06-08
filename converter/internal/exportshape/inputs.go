@@ -35,15 +35,20 @@ import (
 //   - DirectoryInstaller.Destination + "/" + ExportName + ".cmake"
 //     → the per-export "<Pkg>Targets.cmake" file the install(EXPORT)
 //     would generate. Surfaced in CMakeConfigBundleFiles so the
-//     bundle filegroup carries the export script alongside any
-//     companion files. The companion <Pkg>Config.cmake /
-//     <Pkg>ConfigVersion.cmake files (from
-//     CMakePackageConfigHelpers::write_basic_package_version_file
-//     and configure_package_config_file) are NOT synthesized here
-//     — they're operator-authored install(FILES …) calls that show
-//     up as separate "file"-type installers; the round-1 install-
-//     files lowering picks them up via the standard install_files__
-//     filegroup path.
+//     bundle filegroup carries the export script alongside its
+//     companion config files. The companion <Pkg>Config.cmake /
+//     <Pkg>ConfigVersion.cmake files (which cmake projects produce
+//     via configure_package_config_file +
+//     write_basic_package_version_file) are install(FILES …) of
+//     build-dir outputs the converter does NOT lift — it never runs
+//     configure_package_config_file at convert time, so those
+//     installers are dropped. To keep the bundle findable by
+//     find_package(<Pkg> CONFIG), BuildInputs SYNTHESIZES the config
+//     pair here (same dest as the targets script) and EmitDeclarative
+//     GENERATES their content declaratively via write_file producers
+//     wired into the cmake_config_bundle filegroup. This is NOT the
+//     install(FILES) lowering path: the dropped operator install(FILES)
+//     and the generated bundle never both produce the same file.
 //
 //   - Target.FileSets[].Type == "HEADERS" with Visibility ∈
 //     {"PUBLIC", "INTERFACE"} → public headers exposed via
