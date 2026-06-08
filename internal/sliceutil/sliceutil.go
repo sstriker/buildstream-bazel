@@ -18,25 +18,6 @@ func SortedKeys[M ~map[K]V, K cmp.Ordered, V any](m M) []K {
 	return slices.Sorted(maps.Keys(m))
 }
 
-// Unique returns the elements of in with duplicates removed, preserving
-// first-occurrence order. Returns nil for empty/nil input. The input is not
-// mutated.
-func Unique[E comparable](in []E) []E {
-	if len(in) == 0 {
-		return nil
-	}
-	seen := make(map[E]struct{}, len(in))
-	out := make([]E, 0, len(in))
-	for _, e := range in {
-		if _, ok := seen[e]; ok {
-			continue
-		}
-		seen[e] = struct{}{}
-		out = append(out, e)
-	}
-	return out
-}
-
 // SortedUnique returns the elements of in sorted ascending with duplicates
 // removed. Returns nil for empty/nil input. The input is not mutated.
 func SortedUnique[E cmp.Ordered](in []E) []E {
