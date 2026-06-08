@@ -1463,8 +1463,9 @@ staticcheck:
 # / length / maintainability) — the axis go vet / gofmt / staticcheck don't
 # cover. Driven by golangci-lint with a complexity-only config (.golangci.yml);
 # pinned + run via `go run` to match the staticcheck idiom (no install step).
-# SOFT-LAUNCH: the CI step is non-blocking (continue-on-error) until the tree is
-# green against .golangci.yml's thresholds, then it flips to blocking.
+# BLOCKING: the soft-launch burndown reached green, so the CI step gates like
+# the other checks; the tracked complexity giants carry documented //nolint
+# directives keyed to the ROADMAP burndown.
 GOLANGCI_LINT_VERSION ?= v2.12.2
 lint-complexity:
 	$(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run

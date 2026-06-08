@@ -384,6 +384,12 @@ type stringList []string
 func (s *stringList) String() string     { return strings.Join(*s, ",") }
 func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
 
+// (cognitive 105 / cyclomatic 87). write-a's flag-parse + dispatch entrypoint;
+// breaking it down into focused sub-pass extractions is its own ROADMAP
+// "complexity lens" burndown pass — grandfathered so the lens gates as blocking
+// on all other code. Remove this directive as it comes back under threshold.
+//
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // Tracked complexity giant
 func main() {
 	log.SetFlags(0)
 	var bstPaths stringList

@@ -226,6 +226,12 @@ func loadOfflineReplyArtifacts(replyDir string) (ninjaPath string, cmakeVars map
 	return ninjaPath, cmakeVars, nil
 }
 
+// (cognitive 247 / cyclomatic 152). The convert-element-cmake pipeline driver;
+// breaking it down into focused sub-pass extractions is its own ROADMAP
+// "complexity lens" burndown pass — grandfathered so the lens gates as blocking
+// on all other code. Remove this directive as it comes back under threshold.
+//
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // Tracked complexity giant
 func run(a cli.Args) error {
 	t0 := time.Now()
 	var configureElapsed time.Duration

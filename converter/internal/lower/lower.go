@@ -759,6 +759,12 @@ func buildPlatformConditionalSrcs(pcsList []shadow.PlatformConditionalSource) ma
 	return out
 }
 
+// (cognitive 194 / cyclomatic 110). The reply→IR entrypoint; breaking it down
+// into focused sub-pass extractions is its own ROADMAP "complexity lens"
+// burndown pass — grandfathered so the lens gates as blocking on all other code.
+// Remove this directive as the function comes back under threshold. See ROADMAP.md.
+//
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // Tracked complexity giant
 func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	if got := len(r.Codemodel.Configurations); got != 1 {
 		// The multi-config fold (lowerMultiConfigDeltas, at the
@@ -2046,6 +2052,14 @@ type targetTrace struct {
 	defineSymbol string
 }
 
+// 754 / cyclomatic 322 — the highest in the tree). Breaking it down into focused,
+// behavior-preserving sub-pass extractions (link-fragment attribution,
+// compile-group lowering, generated-source handling) is its own ROADMAP
+// "complexity lens" burndown pass; grandfathered here so the lens can gate as
+// blocking on every other function. Remove this directive as the function comes
+// back under threshold. See ROADMAP.md.
+//
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // Tracked complexity giant (cognitive
 func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Target, error) {
 	// Unpack the bundled inputs into the locals the body uses: lc is
 	// invariant across the per-target loop, tt is this target's trace.
@@ -2194,6 +2208,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			continue
 		}
 
+		//nolint:nestif // inside the grandfathered lowerTarget giant; folds into its ROADMAP burndown pass.
 		if src.IsGenerated {
 			// $<TARGET_OBJECTS:other_target> shows up in
 			// codemodel as "<build>/CMakeFiles/<other>.dir/<src>.o"
@@ -2625,6 +2640,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// include dir with no public header lib".
 	var privateIncDirs []string
 
+	//nolint:nestif // inside the grandfathered lowerTarget giant; folds into its ROADMAP burndown pass.
 	if len(t.CompileGroups) > 0 {
 		// M1 assumption: at most one language per target. Aggregate the
 		// first compile group's flags/includes/defines.
@@ -2998,6 +3014,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// the genrule that produces it is already on cc.Genrules
 	// from recoverConfigureFiles. cmake-codegen tag mirrors the
 	// existing CUSTOM_COMMAND-recovered consumer's shape.
+	//nolint:nestif // inside the grandfathered lowerTarget giant; folds into its ROADMAP burndown pass.
 	if len(configureFiles) > 0 && len(targetBuildIncs) > 0 {
 		var addedHdrs []string
 		hostingIncs := map[string]bool{}
@@ -3409,6 +3426,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		// Resolve label; routing decision (Deps vs
 		// ImplementationDeps) folds in after.
 		var label string
+		//nolint:nestif // inside the grandfathered lowerTarget giant; folds into its ROADMAP burndown pass.
 		if name, ok := idToName[dep.Id]; ok {
 			label = ":" + name
 		} else if utilityIDs[dep.Id] {
@@ -3487,6 +3505,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			irt.Features = append(irt.Features, "lto")
 		}
 	}
+	//nolint:nestif // inside the grandfathered lowerTarget giant; folds into its ROADMAP burndown pass.
 	if t.Link != nil {
 		seen := map[string]bool{}
 		for _, d := range irt.Deps {

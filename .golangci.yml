@@ -6,10 +6,11 @@
 # which none of the above cover. `default: none` keeps it from second-guessing
 # staticcheck — only the complexity linters run.
 #
-# SOFT-LAUNCH: the CI step is NON-BLOCKING (continue-on-error) until the tree is
-# green against these thresholds, then it flips to blocking. The thresholds are
-# the bar we intend to GATE on, so the step's output is the gap-to-green
-# worklist, not noise. Run locally with `make lint-complexity`.
+# BLOCKING: the soft-launch burndown reached green against these thresholds, so
+# the CI step now gates like vet / gofmt / staticcheck. A handful of tracked
+# complexity giants carry documented //nolint directives keyed to the ROADMAP
+# burndown; every other function is held to the thresholds below, so new
+# complexity regressions fail the build. Run locally with `make lint-complexity`.
 version: "2"
 
 linters:
