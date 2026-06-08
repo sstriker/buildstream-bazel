@@ -355,14 +355,7 @@ func (cmakeHandler) RenderB(elem *element, elemPkg string) error {
 	// load() rules_cc against an empty package and fail with a
 	// confusing error before the stage step ran; the placeholder
 	// makes the staging-not-yet-run state explicit.
-	placeholder := fmt.Sprintf(`# Placeholder for cmd/write-a-rendered project B.
-# The driver script overwrites this file with project A's
-# bazel-bin/elements/%s/BUILD.bazel.out (the converter's output)
-# after the project-A bazel build succeeds. If this file is still
-# the placeholder when project B's bazel build runs, the staging
-# step was skipped.
-filegroup(name = "BUILD_NOT_YET_STAGED", srcs = [])
-`, elem.Name)
+	placeholder := projectBPlaceholder(elem.Name, "")
 	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), placeholder)
 }
 
@@ -450,17 +443,7 @@ package(default_visibility = ["//visibility:public"])
 	// side). expect_make_db=False because cmake's converter derives
 	// IR from the trace + cmake File API — no make-db needed.
 	if cmakeConfig.round2FallbackEnabled && srckeyHash != "" {
-		fmt.Fprintf(&b, `
-load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")
-
-trace_load(
-    name = "%[1]s_trace_load",
-    srckey = "%[2]s",
-    expect_make_db = False,
-    expect_config_bundle = True,
-    trace_lookup = "//tools:trace-lookup",
-)
-`, elem.Name, srckeyHash)
+		b.WriteString(traceLoadBlock(elem.Name, srckeyHash))
 	}
 
 	// Render the zero_files load + target only when feedback narrowed
@@ -672,10 +655,7 @@ func buildCmakeConverterFlags(cmakeDepLabels []cmakeDepBundleLabel) cmakeConvert
 	// the value is empty or matches the converter's own default, so
 	// the cache key / golden-byte shape stays stable for legacy
 	// callsites that never set the dial.
-	if cmakeConfig.fidelity != "" && cmakeConfig.fidelity != fidelityStrict {
-		f.fidelity = fmt.Sprintf(` \
-            --fidelity=%s`, cmakeConfig.fidelity)
-	}
+	f.fidelity = fidelityFlagFragment(cmakeConfig.fidelity)
 	if cmakeConfig.bakeIn != "" && cmakeConfig.bakeIn != bakeInWarn {
 		f.bakeIn = fmt.Sprintf(` \
             --bake-in=%s`, cmakeConfig.bakeIn)
@@ -1127,17 +1107,9 @@ filegroup(
 // argue for keeping new dial integration minimal until the FUSE
 // template grows feature parity with the staging template.
 func fuseFidelityFlag() string {
-	if cmakeConfig.fidelity == "" || cmakeConfig.fidelity == fidelityStrict {
-		return ""
-	}
-	return fmt.Sprintf(` \
-            --fidelity=%s`, cmakeConfig.fidelity)
+	return fidelityFlagFragment(cmakeConfig.fidelity)
 }
 
 func fuseDiagnosticsFlag() string {
-	if !cmakeConfig.diagnostics {
-		return ""
-	}
-	return ` \
-            --diagnostics=true`
+	return diagnosticsFlagFragment(cmakeConfig.diagnostics)
 }

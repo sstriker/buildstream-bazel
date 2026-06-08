@@ -136,14 +136,7 @@ func (mesonHandler) RenderB(elem *element, elemPkg string) error {
 	// converter genrule lives in project A. The driver script
 	// overwrites this with project A's BUILD.bazel.out after
 	// `bazel build` completes.
-	placeholder := fmt.Sprintf(`# Placeholder for cmd/write-a-rendered project B (kind:meson native).
-# The driver script overwrites this file with project A's
-# bazel-bin/elements/%s/BUILD.bazel.out (the converter's output)
-# after the project-A bazel build succeeds. If this file is still
-# the placeholder when project B's bazel build runs, the staging
-# step was skipped.
-filegroup(name = "BUILD_NOT_YET_STAGED", srcs = [])
-`, elem.Name)
+	placeholder := projectBPlaceholder(elem.Name, " (kind:meson native)")
 	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), placeholder)
 }
 
@@ -212,17 +205,7 @@ package(default_visibility = ["//visibility:public"])
 	// meson's converter derives IR from intro-install_plan.json +
 	// the trace (no make-db; meson uses ninja directly).
 	if mesonConfig.round2FallbackEnabled && srckeyHash != "" {
-		fmt.Fprintf(&b, `
-load("@rules_buildstream_bazel//rules:traces.bzl", "trace_load")
-
-trace_load(
-    name = "%[1]s_trace_load",
-    srckey = "%[2]s",
-    expect_make_db = False,
-    expect_config_bundle = True,
-    trace_lookup = "//tools:trace-lookup",
-)
-`, elem.Name, srckeyHash)
+		b.WriteString(traceLoadBlock(elem.Name, srckeyHash))
 	}
 
 	fmt.Fprintf(&b, `
@@ -268,16 +251,8 @@ filegroup(
 	// converter's --bake-in is a no-op on meson today so we don't
 	// thread it (avoids polluting the cmd with a flag the converter
 	// ignores).
-	fidelityFlag := ""
-	if mesonConfig.fidelity != "" && mesonConfig.fidelity != fidelityStrict {
-		fidelityFlag = fmt.Sprintf(` \
-            --fidelity=%s`, mesonConfig.fidelity)
-	}
-	diagnosticsFlag := ""
-	if mesonConfig.diagnostics {
-		diagnosticsFlag = ` \
-            --diagnostics=true`
-	}
+	fidelityFlag := fidelityFlagFragment(mesonConfig.fidelity)
+	diagnosticsFlag := diagnosticsFlagFragment(mesonConfig.diagnostics)
 
 	fmt.Fprintf(&b, `
 genrule(

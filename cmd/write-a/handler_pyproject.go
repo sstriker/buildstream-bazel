@@ -128,14 +128,7 @@ func (pyprojectHandler) RenderB(elem *element, elemPkg string) error {
 	if err := stageAllSources(elem, elemPkg); err != nil {
 		return err
 	}
-	placeholder := fmt.Sprintf(`# Placeholder for cmd/write-a-rendered project B (kind:pyproject native).
-# The driver script overwrites this file with project A's
-# bazel-bin/elements/%s/BUILD.bazel.out (the converter's output)
-# after the project-A bazel build succeeds. If this file is still
-# the placeholder when project B's bazel build runs, the staging
-# step was skipped.
-filegroup(name = "BUILD_NOT_YET_STAGED", srcs = [])
-`, elem.Name)
+	placeholder := projectBPlaceholder(elem.Name, " (kind:pyproject native)")
 	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), placeholder)
 }
 
@@ -677,16 +670,8 @@ filegroup(
 	// switch; rejection collection isn't wired). Threading them
 	// anyway keeps the per-element cmd byte-identical with what
 	// future converter changes will rely on.
-	fidelityFlag := ""
-	if pyprojectConfig.fidelity != "" && pyprojectConfig.fidelity != fidelityStrict {
-		fidelityFlag = fmt.Sprintf(` \
-            --fidelity=%s`, pyprojectConfig.fidelity)
-	}
-	diagnosticsFlag := ""
-	if pyprojectConfig.diagnostics {
-		diagnosticsFlag = ` \
-            --diagnostics=true`
-	}
+	fidelityFlag := fidelityFlagFragment(pyprojectConfig.fidelity)
+	diagnosticsFlag := diagnosticsFlagFragment(pyprojectConfig.diagnostics)
 
 	fmt.Fprintf(&b, `
 genrule(
