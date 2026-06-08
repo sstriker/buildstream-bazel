@@ -3187,6 +3187,25 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// CompileGroup walk above.
 	if len(executeProcesses) > 0 && len(targetBuildIncs) > 0 {
 		seen := map[string]bool{}
+		// Seed with sources/headers/data already on the target so an
+		// execute_process output that is ALSO a codemodel source isn't attached a
+		// second time (classifyAndAttach's own seen dedups only within this pass,
+		// not against pre-existing entries). The in==out link_to_source drop
+		// (mbedtls's error.c / version_features.c / ssl_debug_helpers_generated.c
+		// under GEN_FILES=OFF: a committed file symlinked into the build dir, whose
+		// redundant copy emitCopyGenrule drops and returns the path for) collides
+		// with the consuming library's own compile-group source list — re-attaching
+		// it duplicates the srcs entry, which Bazel rejects ("attribute srcs has
+		// duplicate entries").
+		for _, s := range irt.Srcs {
+			seen[s] = true
+		}
+		for _, h := range irt.Hdrs {
+			seen[h] = true
+		}
+		for _, d := range irt.Data {
+			seen[d] = true
+		}
 		attached := false
 		for _, ep := range executeProcesses {
 			match := false

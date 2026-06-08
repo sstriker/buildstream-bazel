@@ -96,18 +96,27 @@ transition cleanly.
   touches header-lib synthesis broadly); two earlier point-fixes in this area
   regressed fmt and the cp-dir tests, so validate every green member before/after.
 
-  RELATED mbedtls blocker (separate, AFTER header-staging): mbedtls GENERATES
-  `query_config.c`, `error.c`, `version_features.c` via python scripts, then
-  `link_to_source`-copies them, lowering to execute_process copy genrules with
-  `srcs=[X]`+`outs=[X]` (in==out). Two failed shortcuts, both reverted: (a)
-  "drop the dir copy when srcFileRel==outRel" broke legitimate `cp <srcdir>
-  <build>` staging (the cp-dir-lift tests); (b) "drop the single-file copy"
-  cleared the in==out and got mbedtls compiling 475/591, but then `ld: undefined
-  symbol: query_config / list_config` — because X is GENERATED-ONLY (no usable
-  committed source), so dropping its copy loses the content entirely. So the real
-  fix is NOT to drop or rename the copy — it's to actually GENERATE these files:
-  emit the python-script genrule that produces query_config.c et al., and
-  recognize the link_to_source copy as redundant with it.
+  RELATED mbedtls codegen — RESOLVED (2026-06): the earlier framing ("must
+  GENERATE query_config.c et al. via a python genrule") was wrong for the lens
+  config. mbedtls's `GEN_FILES` defaults OFF ("off in development"), so the
+  perl/python `add_custom_command` paths never run; instead `link_to_source(X)`
+  `ln -s`'s the COMMITTED pre-generated source (`error.c`, `version_features.c`,
+  `ssl_debug_helpers_generated.c` — all shipped in-tree) into the build dir, and
+  the library compiles it. The real blocker was that the in==out copy drop
+  (emitCopyGenrule returns the path without a genrule) then RE-attached that path
+  to the consuming library via the build-dir-include consumer-attribution loop,
+  duplicating the srcs entry the codemodel source list already carried — a
+  `bazel constraint violation: attribute "srcs" has duplicate entries` that
+  ABORTED the whole convert. Fixed by seeding the attribution loop's `seen` set
+  from the target's existing srcs/hdrs/data so a committed link_to_source file is
+  attached exactly once. mbedtls now converts 0-rejection (verified end-to-end:
+  `convert-element-cmake --source-root /tmp/mbedtls --cmake-define
+  ENABLE_TESTING=OFF --cmake-define ENABLE_PROGRAMS=OFF` exit 65 → 0). Guarded by
+  `TestExecuteProcess_InOutCopy_NoDuplicateSrc`. (`query_config.c` is under
+  `programs/`, gated on `ENABLE_PROGRAMS` which the lens sets OFF, so it's
+  configure-scoped out — and is committed in-tree anyway.) The mbedtls
+  PRIVATE-include header-staging item above (tests/include for
+  `mbedtls_test_helpers`) is the remaining mbedtls blocker.
 
   REGRESSION LESSON (do not repeat): an earlier attempt "exec-root anchor the
   PRIVATE `-I` copt" (so `-Itests/libtest`→`-Ielements/<pkg>/tests/libtest`)

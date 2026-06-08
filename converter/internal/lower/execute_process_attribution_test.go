@@ -84,6 +84,69 @@ func TestExecuteProcess_ConsumerAttribution_HeaderUnderBuildInclude(t *testing.T
 	}
 }
 
+// TestExecuteProcess_InOutCopy_NoDuplicateSrc is the mbedtls link_to_source
+// regression. Under GEN_FILES=OFF, mbedtls `ln -s`'s a COMMITTED source
+// (error.c) from the source tree into the build dir, and the library compiles
+// it. emitCopyGenrule drops the redundant in==out copy and returns the path;
+// the consumer-attribution loop then matched that path against the library's
+// build-dir include and re-attached it — duplicating the srcs entry the
+// codemodel source list already carried, which Bazel rejects ("attribute srcs
+// has duplicate entries"). The attach loop now seeds its seen set from the
+// target's existing srcs/hdrs, so the committed source is attached exactly once.
+func TestExecuteProcess_InOutCopy_NoDuplicateSrc(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{Source: "/src", Build: "/build"},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Name: "thelib", Id: "thelib::@1"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"thelib::@1": {
+				Name: "thelib",
+				Type: "STATIC_LIBRARY",
+				Sources: []fileapi.TargetSource{
+					{Path: "error.c", CompileGroupIndex: 0},
+				},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language: "C",
+					Includes: []fileapi.CompileInclude{{Path: "/build"}},
+				}},
+			},
+		},
+	}
+	// link_to_source(error.c): `ln -s <src>/error.c <build>/error.c` — an in==out
+	// copy of a committed source the library already compiles.
+	traceRaw := []byte(
+		`{"args":["COMMAND","ln","-s","/src/error.c","/build/error.c"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/src",
+		BuildDir:       "/build",
+		TraceRaw:       traceRaw,
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	var srcs []string
+	for _, tgt := range pkg.Targets {
+		if tgt.Name == "thelib" {
+			srcs = tgt.Srcs
+			break
+		}
+	}
+	n := 0
+	for _, s := range srcs {
+		if s == "error.c" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("error.c should appear exactly once in srcs (in==out copy of a committed source); got %d in %v", n, srcs)
+	}
+}
+
 // TestExecuteProcess_ConsumerAttribution_NonHeaderUnderBuildInclude
 // is the sister case: a non-header recovered output (e.g.
 // cmake -E touch /build/marker.dat) goes to srcs rather than
