@@ -763,12 +763,13 @@ func buildPlatformConditionalSrcs(pcsList []shadow.PlatformConditionalSource) ma
 	return out
 }
 
-// (cognitive 194 / cyclomatic 110). The reply→IR entrypoint; breaking it down
-// into focused sub-pass extractions is its own ROADMAP "complexity lens"
-// burndown pass — grandfathered so the lens gates as blocking on all other code.
-// Remove this directive as the function comes back under threshold. See ROADMAP.md.
+// ToIR is a tracked complexity giant (cognitive 194 / cyclomatic 110): the
+// reply→IR entrypoint. Breaking it down into focused sub-pass extractions is its
+// own ROADMAP "complexity lens" burndown pass — grandfathered so the lens gates
+// as blocking on all other code. Remove the directive below as the function
+// comes back under threshold. See ROADMAP.md.
 //
-//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // Tracked complexity giant
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
 func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	if got := len(r.Codemodel.Configurations); got != 1 {
 		// The multi-config fold (lowerMultiConfigDeltas, at the
@@ -2056,14 +2057,15 @@ type targetTrace struct {
 	defineSymbol string
 }
 
-// 754 / cyclomatic 322 — the highest in the tree). Breaking it down into focused,
-// behavior-preserving sub-pass extractions (link-fragment attribution,
-// compile-group lowering, generated-source handling) is its own ROADMAP
-// "complexity lens" burndown pass; grandfathered here so the lens can gate as
-// blocking on every other function. Remove this directive as the function comes
-// back under threshold. See ROADMAP.md.
+// lowerTarget is a tracked complexity giant (cognitive 754 / cyclomatic 322 —
+// the highest in the tree). Breaking it down into focused, behavior-preserving
+// sub-pass extractions (link-fragment attribution, compile-group lowering,
+// generated-source handling) is its own ROADMAP "complexity lens" burndown
+// pass; grandfathered here so the lens can gate as blocking on every other
+// function. Remove the directive below as the function comes back under
+// threshold. See ROADMAP.md.
 //
-//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // Tracked complexity giant (cognitive
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
 func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Target, error) {
 	// Unpack the bundled inputs into the locals the body uses: lc is
 	// invariant across the per-target loop, tt is this target's trace.

@@ -719,13 +719,14 @@ func dropGlobSrcFiles(t ir.Target) ir.Target {
 	return t
 }
 
-// planSplit computes the split layout from a lowered package.
-// (cognitive 167 / cyclomatic 85). Builds the per-directory split plan;
+// planSplit computes the split layout (per-directory BUILD plan) from a lowered
+// package. It's a tracked complexity giant (cognitive 167 / cyclomatic 85);
 // breaking it down into focused sub-pass extractions is its own ROADMAP
 // "complexity lens" burndown pass — grandfathered so the lens gates as blocking
-// on all other code. Remove this directive as it comes back under threshold.
+// on all other code. Remove the directive below as it comes back under
+// threshold. See ROADMAP.md.
 //
-//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // Tracked complexity giant
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
 func planSplit(pkg *ir.Package, local bool) *splitPlan {
 	p := &splitPlan{
 		sub:              map[string]string{},
@@ -1202,12 +1203,13 @@ func relocateGenruleTools(rt *ir.Target, t ir.Target, plan *splitPlan) {
 	rt.GenruleCmd = cmd
 }
 
-// (cognitive 107 / cyclomatic 69). Rewrites one target for its split package;
-// breaking it down into focused sub-pass extractions is its own ROADMAP
-// "complexity lens" burndown pass — grandfathered so the lens gates as blocking
-// on all other code. Remove this directive as it comes back under threshold.
+// rewriteTarget is a tracked complexity giant (cognitive 107 / cyclomatic 69):
+// it rewrites one target for its split package. Breaking it down into focused
+// sub-pass extractions is its own ROADMAP "complexity lens" burndown pass —
+// grandfathered so the lens gates as blocking on all other code. Remove the
+// directive below as it comes back under threshold. See ROADMAP.md.
 //
-//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // Tracked complexity giant
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
 func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exportsByDir map[string]map[string]struct{}) ir.Target {
 	rt := t
 
