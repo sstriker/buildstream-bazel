@@ -76,7 +76,21 @@ func Load(replyDir string) (*Reply, error) {
 		Directories: map[string]Directory{},
 	}
 
-	for _, obj := range idx.Objects {
+	if err := loadReplyObjects(r, replyDir); err != nil {
+		return nil, err
+	}
+	if err := loadReplyConfigurations(r, replyDir); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// loadReplyObjects reads each supported top-level reply object (codemodel,
+// toolchains, cmakeFiles, cache, configureLog) into r. Unknown object kinds are
+// skipped (forward-compat with newer cmakes); a supported kind at an
+// unsupported schema major is a hard error.
+func loadReplyObjects(r *Reply, replyDir string) error {
+	for _, obj := range r.Index.Objects {
 		path := filepath.Join(replyDir, obj.JSONFile)
 		want, known := SupportedObjectMajors[obj.Kind]
 		if !known {
@@ -86,35 +100,41 @@ func Load(replyDir string) (*Reply, error) {
 			continue
 		}
 		if obj.Version.Major != want {
-			return nil, fmt.Errorf("fileapi: %s schema major %d.%d not supported (this loader handles major %d); upgrade convert-element-cmake or pin cmake to a compatible version",
+			return fmt.Errorf("fileapi: %s schema major %d.%d not supported (this loader handles major %d); upgrade convert-element-cmake or pin cmake to a compatible version",
 				obj.Kind, obj.Version.Major, obj.Version.Minor, want)
 		}
 		switch obj.Kind {
 		case "codemodel":
 			if err := readJSON(path, &r.Codemodel); err != nil {
-				return nil, fmt.Errorf("fileapi: codemodel: %w", err)
+				return fmt.Errorf("fileapi: codemodel: %w", err)
 			}
 		case "toolchains":
 			if err := readJSON(path, &r.Toolchains); err != nil {
-				return nil, fmt.Errorf("fileapi: toolchains: %w", err)
+				return fmt.Errorf("fileapi: toolchains: %w", err)
 			}
 		case "cmakeFiles":
 			if err := readJSON(path, &r.CMakeFiles); err != nil {
-				return nil, fmt.Errorf("fileapi: cmakeFiles: %w", err)
+				return fmt.Errorf("fileapi: cmakeFiles: %w", err)
 			}
 		case "cache":
 			if err := readJSON(path, &r.Cache); err != nil {
-				return nil, fmt.Errorf("fileapi: cache: %w", err)
+				return fmt.Errorf("fileapi: cache: %w", err)
 			}
 		case "configureLog":
 			var cl ConfigureLog
 			if err := readJSON(path, &cl); err != nil {
-				return nil, fmt.Errorf("fileapi: configureLog: %w", err)
+				return fmt.Errorf("fileapi: configureLog: %w", err)
 			}
 			r.ConfigureLog = &cl
 		}
 	}
+	return nil
+}
 
+// loadReplyConfigurations reads the per-configuration target + directory
+// objects into r. Targets[] mirrors the primary (first-declared) configuration;
+// for multi-config replies TargetsByConfig carries each config's targets too.
+func loadReplyConfigurations(r *Reply, replyDir string) error {
 	// Determine the primary configuration name (first declared in
 	// Codemodel.Configurations). For single-config replies there's
 	// exactly one. Empty when the codemodel carries no configurations
@@ -132,7 +152,7 @@ func Load(replyDir string) (*Reply, error) {
 			path := filepath.Join(replyDir, tref.JSONFile)
 			var t Target
 			if err := readJSON(path, &t); err != nil {
-				return nil, fmt.Errorf("fileapi: target %s: %w", tref.Name, err)
+				return fmt.Errorf("fileapi: target %s: %w", tref.Name, err)
 			}
 			// Targets[] mirrors the primary configuration. Without
 			// this gate, multi-config replies would overwrite the
@@ -158,13 +178,12 @@ func Load(replyDir string) (*Reply, error) {
 			path := filepath.Join(replyDir, d.JSONFile)
 			var dir Directory
 			if err := readJSON(path, &dir); err != nil {
-				return nil, fmt.Errorf("fileapi: directory %s: %w", d.JSONFile, err)
+				return fmt.Errorf("fileapi: directory %s: %w", d.JSONFile, err)
 			}
 			r.Directories[d.JSONFile] = dir
 		}
 	}
-
-	return r, nil
+	return nil
 }
 
 // loadIndex finds the lexicographically-greatest index-*.json (per File API
