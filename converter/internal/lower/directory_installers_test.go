@@ -2,6 +2,7 @@ package lower
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -472,17 +473,25 @@ func TestLowerExportInstallers_DeclarativeWiresThroughEmitDeclarative(t *testing
 	}
 	got := lowerExportInstallers(r, true)
 	// Opt-in (EmitConfig=true): cmake_config_bundle filegroup + foo_import
-	// cc_import + the gen_... write_file that generates FooTargets.cmake. Sorted
-	// by name: cmake_config_bundle, foo_import, gen_lib_cmake_Foo_FooTargets_cmake.
-	if len(got) != 3 {
-		t.Fatalf("want 3 IR targets; got %d (%v)", len(got), got)
+	// cc_import + a gen_... write_file per bundle file — the export
+	// FooTargets.cmake plus the generated find_package(CONFIG) entry point
+	// FooConfig.cmake and version stub FooConfigVersion.cmake. Sorted by name:
+	// cmake_config_bundle, foo_import, gen_..._FooConfig_cmake,
+	// gen_..._FooConfigVersion_cmake, gen_..._FooTargets_cmake.
+	if len(got) != 5 {
+		t.Fatalf("want 5 IR targets; got %d (%v)", len(got), got)
 	}
 	if got[0].Name != "cmake_config_bundle" || got[0].Kind != ir.KindFilegroup {
 		t.Errorf("first target should be cmake_config_bundle filegroup; got %+v", got[0])
 	}
-	// The bundle references the write_file producer, not a raw .cmake path.
-	if len(got[0].Srcs) != 1 || got[0].Srcs[0] != ":gen_lib_cmake_Foo_FooTargets_cmake" {
-		t.Errorf("bundle should reference the write_file producer; got srcs %v", got[0].Srcs)
+	// The bundle references the write_file producers, not raw .cmake paths.
+	wantSrcs := []string{
+		":gen_lib_cmake_Foo_FooConfig_cmake",
+		":gen_lib_cmake_Foo_FooConfigVersion_cmake",
+		":gen_lib_cmake_Foo_FooTargets_cmake",
+	}
+	if !reflect.DeepEqual(got[0].Srcs, wantSrcs) {
+		t.Errorf("bundle should reference the write_file producers; got srcs %v want %v", got[0].Srcs, wantSrcs)
 	}
 	if got[1].Name != "foo_import" || got[1].Kind != ir.KindCCImport {
 		t.Errorf("second target should be foo_import cc_import; got %+v", got[1])
@@ -492,9 +501,16 @@ func TestLowerExportInstallers_DeclarativeWiresThroughEmitDeclarative(t *testing
 	}
 	// The generated FooTargets.cmake carries the real imported-target def with
 	// IMPORTED_LOCATION under ${_IMPORT_PREFIX} — the form synthprefix parses.
-	gen := got[2]
-	if gen.Name != "gen_lib_cmake_Foo_FooTargets_cmake" || gen.Kind != ir.KindWriteFile {
-		t.Fatalf("third target should be the write_file producer; got %+v", gen)
+	// (Found by name: the bundle now has three producers — Config, ConfigVersion,
+	// Targets — so position isn't fixed.)
+	var gen *ir.Target
+	for i := range got {
+		if got[i].Name == "gen_lib_cmake_Foo_FooTargets_cmake" {
+			gen = &got[i]
+		}
+	}
+	if gen == nil || gen.Kind != ir.KindWriteFile {
+		t.Fatalf("missing the FooTargets.cmake write_file producer; got %+v", got)
 	}
 	body := strings.Join(gen.WriteFileContent, "\n")
 	if !strings.Contains(body, "add_library(Foo::foo STATIC IMPORTED)") ||

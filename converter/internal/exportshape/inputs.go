@@ -35,15 +35,20 @@ import (
 //   - DirectoryInstaller.Destination + "/" + ExportName + ".cmake"
 //     → the per-export "<Pkg>Targets.cmake" file the install(EXPORT)
 //     would generate. Surfaced in CMakeConfigBundleFiles so the
-//     bundle filegroup carries the export script alongside any
-//     companion files. The companion <Pkg>Config.cmake /
-//     <Pkg>ConfigVersion.cmake files (from
-//     CMakePackageConfigHelpers::write_basic_package_version_file
-//     and configure_package_config_file) are NOT synthesized here
-//     — they're operator-authored install(FILES …) calls that show
-//     up as separate "file"-type installers; the round-1 install-
-//     files lowering picks them up via the standard install_files__
-//     filegroup path.
+//     bundle filegroup carries the export script alongside its
+//     companion config files. The companion <Pkg>Config.cmake /
+//     <Pkg>ConfigVersion.cmake files (which cmake projects produce
+//     via configure_package_config_file +
+//     write_basic_package_version_file) are install(FILES …) of
+//     build-dir outputs the converter does NOT lift — it never runs
+//     configure_package_config_file at convert time, so those
+//     installers are dropped. To keep the bundle findable by
+//     find_package(<Pkg> CONFIG), BuildInputs SYNTHESIZES the config
+//     pair here (same dest as the targets script) and EmitDeclarative
+//     GENERATES their content declaratively via write_file producers
+//     wired into the cmake_config_bundle filegroup. This is NOT the
+//     install(FILES) lowering path: the dropped operator install(FILES)
+//     and the generated bundle never both produce the same file.
 //
 //   - Target.FileSets[].Type == "HEADERS" with Visibility ∈
 //     {"PUBLIC", "INTERFACE"} → public headers exposed via
@@ -157,6 +162,25 @@ func BuildInputs(inst fileapi.DirectoryInstaller, targets map[string]fileapi.Tar
 		bundle := path.Join(inst.Destination, inst.ExportName+".cmake")
 		bundleSet[bundle] = true
 		installSet[bundle] = true
+		// The export script (<Pkg>Targets.cmake) alone is NOT found by
+		// find_package(<Pkg> CONFIG): that searches the install tree for
+		// <Pkg>Config.cmake as the entry point. cmake projects pair the
+		// install(EXPORT) with a configure_package_config_file'd
+		// <Pkg>Config.cmake (+ write_basic_package_version_file's
+		// <Pkg>ConfigVersion.cmake), but those are install(FILES) of build-dir
+		// outputs the converter doesn't lift — so they're dropped, leaving the
+		// bundle unfindable (the eigen/catch2/zstd/… "…Config.cmake not
+		// generated" survey gap). Generate the standard config-package pair
+		// alongside the targets script (renderConfigFile include()s it;
+		// renderConfigVersionFile is a permissive version stub) so the bundle is
+		// actually consumable. Same dest, so CMAKE_CURRENT_LIST_DIR resolves the
+		// sibling targets script.
+		pkg := pkgFromBundle(inst.Destination, inst.ExportName)
+		for _, f := range []string{pkg + "Config.cmake", pkg + "ConfigVersion.cmake"} {
+			p := path.Join(inst.Destination, f)
+			bundleSet[p] = true
+			installSet[p] = true
+		}
 	}
 
 	in.InstallFiles = sortedKeys(installSet)

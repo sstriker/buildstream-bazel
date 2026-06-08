@@ -202,8 +202,20 @@ func TestEmitDeclarative_BundleFilegroup(t *testing.T) {
 		t.Errorf("Targets.cmake should carry imported-target defs; got:\n%s", targets)
 	}
 	cfg := body("gen_lib_cmake_MyPkg_MyPkgConfig_cmake")
-	if !strings.Contains(cfg, `include("${CMAKE_CURRENT_LIST_DIR}/MyPkgTargets.cmake")`) {
-		t.Errorf("Config.cmake should include() the Targets script; got:\n%s", cfg)
+	// Config.cmake glob-include()s the sibling export scripts (restricted to
+	// export-script naming conventions) so multi-export packages resolve fully
+	// without dragging in non-export helper modules.
+	if !strings.Contains(cfg, `"${CMAKE_CURRENT_LIST_DIR}/*Targets.cmake"`) ||
+		!strings.Contains(cfg, `"${CMAKE_CURRENT_LIST_DIR}/*Exports*.cmake"`) ||
+		!strings.Contains(cfg, `"${CMAKE_CURRENT_LIST_DIR}/*-targets.cmake"`) ||
+		!strings.Contains(cfg, `include("${_bsb_script}")`) {
+		t.Errorf("Config.cmake should glob-include the sibling export scripts by convention; got:\n%s", cfg)
+	}
+	if strings.Contains(cfg, `"${CMAKE_CURRENT_LIST_DIR}/*.cmake"`) {
+		t.Errorf("Config.cmake must NOT glob every *.cmake (would include helper modules); got:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "list(SORT _bsb_target_scripts)") {
+		t.Errorf("Config.cmake should sort the glob results for deterministic include order; got:\n%s", cfg)
 	}
 	if strings.Contains(cfg, "add_library(") {
 		t.Errorf("Config.cmake must NOT carry imported-target defs; got:\n%s", cfg)
