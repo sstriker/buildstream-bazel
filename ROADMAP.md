@@ -1078,6 +1078,44 @@ transition cleanly.
   trees; disambiguate by relative-suffix), config alignment (cmake db is
   single-config; defines/-std/includes are largely config-stable).
 
+- **Symbol-fidelity lens for the corpus survey (opt-in, 6th lens).** The
+  build lens (`SURVEY_BAZEL_BUILD`) proves the converted graph `bazel
+  build`s; the compile-commands lens (`SURVEY_COMPILE_DB`) proves per-TU
+  flag parity at *analysis* time. Neither proves the **emitted artifact
+  carries the same symbols** cmake's does — the question the CI `fidelity`
+  job already answers for a fixed fixture set (zlib / fmt / spdlog / catch2
+  / libpng / nlohmann-json) via `cmd/fidelity-compare`. Bring that
+  comparison to the **whole survey corpus** as a new opt-in lens
+  (`SURVEY_SYMBOL_FIDELITY`, gated like the build lens —
+  `auto`/`all`/name-list, with the same `skip(no-bazel)` / `skip(rej)` /
+  `skip(convert)` short-circuits and an `ok`/`FAIL`/`skip(...)` column).
+  Unlike the compile-db lens it needs BOTH halves built, not just analysis:
+  (1) the Bazel build the build lens already produces (`build-ws`, `bazel
+  build //...`), from which the converted `.a` (library-side) / consumer
+  `.o` (consumer-side) symbols are saved; and (2) a **from-scratch cmake
+  build** of the same source (configure + compile + archive, in the build
+  lens's static `BUILD_SHARED_LIBS=OFF` shape + the `.conf` cmake-defines so
+  both sides align) whose symbols are the ground truth. Then diff the two
+  symbol sets with `cmd/fidelity-compare`, **reusing** the existing harness
+  (`scripts/run-fidelity.sh`'s library- and consumer-side modes + the benign
+  auto-classification: FORTIFY / stack-protector hardening, C++
+  template-instantiation pairs, `.o` vs `.pic.o`), not reimplementing it.
+  Each corpus member gets its **own allowlist of accepted drift** (the
+  `testdata/fidelity/<name>.allowlist.txt` shape; absent/empty = "no deltas
+  tolerated") — so a member's known-benign symbol deltas are recorded
+  per-project and a new impactful delta is a real signal. Report-only,
+  written per-project (`<out>/<name>/symbol-fidelity.json`). Boundaries: on
+  top of the build lens's bazel, the cmake build half needs cmake + a
+  C/C++ toolchain on PATH (so the lens self-skips when either is absent);
+  per-config alignment is handled by forcing the static shape on both
+  sides, and the basename / relative-suffix symbol-keying caveats carry over
+  from the existing harness. **Complements, doesn't replace,** the
+  fixed-fixture CI `fidelity` job: that job is the *blocking* guard on the
+  curated set; this lens is the *broad, opt-in, allowlist-per-member* sweep
+  across the whole corpus (the symbol-level sibling of how the build +
+  compile-db lenses already widen their fixed-fixture CI gates to the
+  corpus).
+
 - **Derive `target_libc` / target triple from the probed sysroot.**
   `builtin_sysroot` now ships: the probe lifts `CMAKE_SYSROOT` into
   `toolchain.Model` and the emit sets `cc_toolchain_config`'s
