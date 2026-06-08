@@ -113,52 +113,67 @@ func buildFindPackageAttrib(events []fileapi.Event, cmakeVars map[string]string)
 	// cmakes. Sort the discovered names for determinism (map
 	// iteration is unordered).
 	if len(cmakeVars) > 0 {
-		var foundFromVars []string
-		for key, value := range cmakeVars {
-			if !strings.HasSuffix(key, "_FOUND") {
-				continue
-			}
-			if !isTruthyCMakeBool(value) {
-				continue
-			}
-			pkg := strings.TrimSuffix(key, "_FOUND")
-			if pkg == "" {
-				continue
-			}
-			foundFromVars = append(foundFromVars, pkg)
-		}
-		sort.Strings(foundFromVars)
-		for _, pkg := range foundFromVars {
+		for _, pkg := range foundPackagesFromVars(cmakeVars) {
 			addPkg(pkg)
 		}
 	}
 
 	// Bind each discovered package's library paths.
-	if len(cmakeVars) > 0 {
-		for _, pkg := range fa.foundPackages {
-			for _, key := range packageVarKeys(pkg) {
-				value, ok := cmakeVars[key]
-				if !ok || value == "" {
-					continue
-				}
-				for _, raw := range strings.Split(value, ";") {
-					path := strings.TrimSpace(raw)
-					if path == "" || !filepath.IsAbs(path) {
-						continue
-					}
-					if _, dup := fa.byPath[path]; dup {
-						continue
-					}
-					fa.byPath[path] = pkg
-				}
-			}
-		}
-	}
+	bindPackageLibraryPaths(fa, cmakeVars)
 
 	if len(fa.foundPackages) == 0 && len(fa.byPath) == 0 {
 		return nil
 	}
 	return fa
+}
+
+// foundPackagesFromVars returns the package names cmake's <Pkg>_FOUND=truthy
+// convention discovered (cmake 3.20+ — the ~15-year-old fallback for the
+// file-api find_package event), sorted for deterministic order.
+func foundPackagesFromVars(cmakeVars map[string]string) []string {
+	var found []string
+	for key, value := range cmakeVars {
+		if !strings.HasSuffix(key, "_FOUND") {
+			continue
+		}
+		if !isTruthyCMakeBool(value) {
+			continue
+		}
+		pkg := strings.TrimSuffix(key, "_FOUND")
+		if pkg == "" {
+			continue
+		}
+		found = append(found, pkg)
+	}
+	sort.Strings(found)
+	return found
+}
+
+// bindPackageLibraryPaths binds each discovered package's absolute library
+// paths (from its cmakeVars entries, `;`-split) into fa.byPath — first writer
+// wins, so a path already attributed to one package isn't reattributed.
+func bindPackageLibraryPaths(fa *findPackageAttrib, cmakeVars map[string]string) {
+	if len(cmakeVars) == 0 {
+		return
+	}
+	for _, pkg := range fa.foundPackages {
+		for _, key := range packageVarKeys(pkg) {
+			value, ok := cmakeVars[key]
+			if !ok || value == "" {
+				continue
+			}
+			for _, raw := range strings.Split(value, ";") {
+				path := strings.TrimSpace(raw)
+				if path == "" || !filepath.IsAbs(path) {
+					continue
+				}
+				if _, dup := fa.byPath[path]; dup {
+					continue
+				}
+				fa.byPath[path] = pkg
+			}
+		}
+	}
 }
 
 // isTruthyCMakeBool returns true when value matches one of
