@@ -4442,30 +4442,8 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		subDeps = append(subDeps, ":"+sub.Name)
 	}
 
-	// Cross-language linkage: a C/C++ sub typically CALLS into the same target's
-	// asm/fortran subs (BLAKE3's blake3_dispatch.c → the per-arch
-	// llvm_blake3_hash_many_* asm functions, compiled hidden-visibility). The
-	// split makes them siblings under the wrapper, so when a C/C++ sub is linked
-	// as a standalone .so (a dynamic consumer of the wrapper triggers it) its
-	// hidden cross-language symbols are undefined. Make each C/C++ sub dep on
-	// the same target's asm/fortran subs (one direction → no cycle): those subs
-	// are alwayslink, so their objects fold into the C/C++ sub's linkage and the
-	// symbols resolve. Asm/fortran calling back into C is rare and not wired.
-	var otherLangSubs []string
-	for i := subStart; i < len(cc.Subs); i++ {
-		switch langByName[cc.Subs[i].Name] {
-		case "ASM", "ASM_NASM", "Fortran":
-			otherLangSubs = append(otherLangSubs, ":"+cc.Subs[i].Name)
-		}
-	}
-	if len(otherLangSubs) > 0 {
-		for i := subStart; i < len(cc.Subs); i++ {
-			switch langByName[cc.Subs[i].Name] {
-			case "C", "CXX", "OBJC", "OBJCXX":
-				cc.Subs[i].Deps = appendUnique(cc.Subs[i].Deps, otherLangSubs...)
-			}
-		}
-	}
+	// Cross-language linkage: see wireCrossLanguageSubDeps.
+	wireCrossLanguageSubDeps(cc, subStart, langByName)
 
 	if len(subDeps) == 0 {
 		// Nothing actually split (e.g. all CGs ended up
@@ -4481,6 +4459,34 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 	irt.Defines = nil
 	irt.Deps = append(irt.Deps, subDeps...)
 	return nil
+}
+
+// wireCrossLanguageSubDeps makes each C/C++ split sub (those added from
+// subStart on in cc.Subs) dep on the same target's asm/fortran subs. A C/C++
+// sub typically CALLS into the asm/fortran subs (BLAKE3's blake3_dispatch.c →
+// the per-arch llvm_blake3_hash_many_* asm functions, compiled
+// hidden-visibility); the split makes them siblings under the wrapper, so when
+// a C/C++ sub is linked as a standalone .so its hidden cross-language symbols
+// would be undefined. The asm/fortran subs are alwayslink, so depending on them
+// folds their objects into the C/C++ sub's linkage and the symbols resolve. One
+// direction only (no cycle); asm/fortran calling back into C is rare and not wired.
+func wireCrossLanguageSubDeps(cc *codegenContext, subStart int, langByName map[string]string) {
+	var otherLangSubs []string
+	for i := subStart; i < len(cc.Subs); i++ {
+		switch langByName[cc.Subs[i].Name] {
+		case "ASM", "ASM_NASM", "Fortran":
+			otherLangSubs = append(otherLangSubs, ":"+cc.Subs[i].Name)
+		}
+	}
+	if len(otherLangSubs) == 0 {
+		return
+	}
+	for i := subStart; i < len(cc.Subs); i++ {
+		switch langByName[cc.Subs[i].Name] {
+		case "C", "CXX", "OBJC", "OBJCXX":
+			cc.Subs[i].Deps = appendUnique(cc.Subs[i].Deps, otherLangSubs...)
+		}
+	}
 }
 
 // langSuffix maps a cmake compile-group language string to the
@@ -7314,39 +7320,12 @@ func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][
 			}
 			continue
 		}
-		var perDir []string
-		walkErr := filepath.WalkDir(absDir, func(p string, d os.DirEntry, err error) error {
-			if err != nil {
-				// Post-stat walk errors (permission denied mid-walk,
-				// I/O failures, etc.) still surface — the absence
-				// case was handled above.
-				return err
-			}
-			if d.IsDir() {
-				return nil
-			}
-			ext := strings.ToLower(filepath.Ext(p))
-			if !headerExts[ext] {
-				// Extensionless C++ headers (eigen ships `Dense`, `Core`,
-				// `Eigenvalues`, … with no extension; VTK's bundled vtkeigen the
-				// same) are real headers consumers `#include <vtkeigen/eigen/Dense>`
-				// — collect them when a content sniff confirms a header, so they're
-				// not silently dropped. Anything else non-header is skipped.
-				if ext != "" || !looksLikeCxxHeader(p) {
-					return nil
-				}
-			}
-			rel, err := filepath.Rel(sourceRoot, p)
-			if err != nil {
-				return err
-			}
-			slash := filepath.ToSlash(rel)
-			seen[slash] = struct{}{}
-			perDir = append(perDir, slash)
-			return nil
-		})
-		if walkErr != nil {
-			return nil, fmt.Errorf("walk include dir %q: %w", absDir, walkErr)
+		perDir, err := collectDirHeaders(sourceRoot, absDir)
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range perDir {
+			seen[h] = struct{}{}
 		}
 		if cache != nil {
 			cache[absDir] = perDir
@@ -7358,4 +7337,40 @@ func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// collectDirHeaders walks absDir and returns every header file under it as a
+// sourceRoot-relative, forward-slashed path. Post-stat walk errors (permission
+// denied mid-walk, I/O failures) surface — discoverHeaders handles the
+// dir-absent case before calling. Extensionless C++ headers (eigen ships
+// `Dense`, `Core`, … with no extension; VTK's bundled vtkeigen the same) are
+// real headers consumers `#include <vtkeigen/eigen/Dense>` — collected when a
+// content sniff confirms a header so they're not silently dropped; any other
+// non-header file is skipped.
+func collectDirHeaders(sourceRoot, absDir string) ([]string, error) {
+	var perDir []string
+	walkErr := filepath.WalkDir(absDir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(p))
+		if !headerExts[ext] {
+			if ext != "" || !looksLikeCxxHeader(p) {
+				return nil
+			}
+		}
+		rel, err := filepath.Rel(sourceRoot, p)
+		if err != nil {
+			return err
+		}
+		perDir = append(perDir, filepath.ToSlash(rel))
+		return nil
+	})
+	if walkErr != nil {
+		return nil, fmt.Errorf("walk include dir %q: %w", absDir, walkErr)
+	}
+	return perDir, nil
 }
