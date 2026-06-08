@@ -735,3 +735,93 @@ func TestEmit_Split_MultiPackageRootIncludeSynthesizesHeaderLibs(t *testing.T) {
 		t.Errorf("base target must KEEP its (package-local) textual_hdrs, not drop them with the re-homed surface:\n%s", baseRule)
 	}
 }
+
+// TestEmit_Split_InstallExportImportSubpackage pins the zstd regression fix:
+// an install(EXPORT) declarative projection emits a cc_import facade (tagged
+// "cmake-codegen-install-export-import") whose static/shared_library points at
+// the INSTALLED artifact path (e.g. "lib/libfoo.so"), plus a
+// "cmake_config_bundle" filegroup referencing per-file write_file producers by
+// ":<name>". When the artifact dir / the producers' output dir is a real
+// sub-package, the split must:
+//   - relabel the cc_import library path cross-package
+//     (//<base>/lib:libfoo.so, not the invalid same-package "lib/libfoo.so"),
+//   - relabel the filegroup's ":gen_*" srcs cross-package,
+//   - publicize the re-homed producer so the root filegroup can reach it,
+//   - tag the cc_import facade "manual" so the standalone wildcard build /
+//     compile-db aquery skip it (its install artifact has no in-graph producer).
+func TestEmit_Split_InstallExportImportSubpackage(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "foo",
+		Targets: []ir.Target{
+			// A real library in the lib sub-package, so "lib" is a package.
+			{
+				Name:       "libfoo",
+				Kind:       ir.KindCCLibrary,
+				Srcs:       []string{"lib/foo.c"},
+				Visibility: []string{"//visibility:public"},
+			},
+			// install(EXPORT) facade in the root, library path in the sub-package.
+			{
+				Name:          "libfoo_import",
+				Kind:          ir.KindCCImport,
+				SharedLibrary: "lib/libfoo.so",
+				Tags:          []string{"cmake-codegen-install-export-import", "manual"},
+				Visibility:    []string{"//visibility:public"},
+			},
+			// The bundle's per-file producer: output lands in the lib package.
+			{
+				Name:             "gen_lib_cmake_foo_fooTargets_cmake",
+				Kind:             ir.KindWriteFile,
+				WriteFileOut:     "lib/cmake/foo/fooTargets.cmake",
+				WriteFileContent: []string{"# fooTargets"},
+				Visibility:       []string{"//visibility:private"},
+			},
+			// The bundle filegroup in the root references the producer by :name.
+			{
+				Name:       "cmake_config_bundle",
+				Kind:       ir.KindFilegroup,
+				Srcs:       []string{":gen_lib_cmake_foo_fooTargets_cmake"},
+				Visibility: []string{"//visibility:public"},
+			},
+		},
+		SubPackages: map[string]string{"libfoo": "lib"},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/foo"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	root, ok := tree[""]
+	if !ok {
+		t.Fatalf("no root package emitted; got dirs %v", keysOf(tree))
+	}
+	rb := string(root)
+	// cc_import library path relabeled cross-package (not the invalid
+	// same-package "lib/libfoo.so", which would be "lib is a subpackage").
+	if !contains(rb, `shared_library = "//elements/foo/lib:libfoo.so"`) {
+		t.Errorf("cc_import shared_library not relabeled cross-package; got:\n%s", rb)
+	}
+	if contains(rb, `shared_library = "lib/libfoo.so"`) {
+		t.Errorf("cc_import kept the invalid same-package subpackage path; got:\n%s", rb)
+	}
+	// Facade tagged manual so the wildcard build / aquery skip it.
+	if !contains(rb, `"manual"`) {
+		t.Errorf("cc_import facade not tagged manual; got:\n%s", rb)
+	}
+	// Filegroup ":gen_*" src relabeled cross-package to the producer's package.
+	if !contains(rb, `"//elements/foo/lib:gen_lib_cmake_foo_fooTargets_cmake"`) {
+		t.Errorf("filegroup src not relabeled cross-package; got:\n%s", rb)
+	}
+	// The re-homed producer is publicized in the lib package (the private
+	// default would be unreachable from the root filegroup).
+	lib, ok := tree["lib"]
+	if !ok {
+		t.Fatalf("no lib package emitted; got dirs %v", keysOf(tree))
+	}
+	lbody := string(lib)
+	if !contains(lbody, "gen_lib_cmake_foo_fooTargets_cmake") {
+		t.Errorf("producer not placed in lib package; got:\n%s", lbody)
+	}
+	if !contains(lbody, `"//visibility:public"`) {
+		t.Errorf("re-homed producer not publicized; got:\n%s", lbody)
+	}
+}

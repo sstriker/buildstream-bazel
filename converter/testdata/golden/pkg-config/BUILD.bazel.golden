@@ -27,5 +27,8 @@ pkg_files(
 cc_import(
     name = "pcuser_import",
     shared_library = "lib/libpcuser.so",
-    tags = ["cmake-codegen-install-export-import"],
+    tags = [
+        "cmake-codegen-install-export-import",
+        "manual",
+    ],
 )  # keep

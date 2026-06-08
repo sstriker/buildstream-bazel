@@ -26,5 +26,8 @@ pkg_files(
 cc_import(
     name = "mfi_import",
     static_library = "lib/libmfi.a",
-    tags = ["cmake-codegen-install-export-import"],
+    tags = [
+        "cmake-codegen-install-export-import",
+        "manual",
+    ],
 )  # keep
