@@ -84,6 +84,12 @@ func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool) []ir.Target {
 	exportTargets := lowerExportInstallers(r, emitConfig)
 
 	cmakeSrc := r.Codemodel.Paths.Source
+	// Build root: install(FILES) of a GENERATED file (e.g. zlib's
+	// configure_file'd zconf.h) records an absolute path under the build dir,
+	// which projectToSourceRoot rejects (outside source). decodeInstallerPath
+	// falls back to the build-relative form so the generated output still
+	// packages — the converter already emits it as a same-package rule output.
+	cmakeBuild := r.Codemodel.Paths.Build
 
 	// Per-(type, destination) accumulators. Files / directories
 	// stored in a map to dedupe (the same path can appear in
@@ -135,7 +141,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool) []ir.Target {
 				byKey[key] = b
 			}
 			for _, raw := range inst.Paths {
-				rel, info, ok := decodeInstallerPath(raw, dirSrc, cmakeSrc, inst.Type)
+				rel, info, ok := decodeInstallerPath(raw, dirSrc, cmakeSrc, cmakeBuild, inst.Type)
 				if !ok {
 					continue
 				}
@@ -463,7 +469,7 @@ type instFile struct {
 //
 // ok is false when the entry can't be decoded or resolves outside the
 // source tree.
-func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, instType string) (rel string, info instFile, ok bool) {
+func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, cmakeBuild, instType string) (rel string, info instFile, ok bool) {
 	// Try plain string first (un-renamed file installer; directory
 	// installer's no-trailing-slash short form).
 	var s string
@@ -472,6 +478,9 @@ func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, instType string)
 			return "", instFile{}, false
 		}
 		rel = projectToSourceRoot(s, dirSrc, cmakeSrc)
+		if rel == "" {
+			rel = projectToBuildRoot(s, cmakeBuild)
+		}
 		if rel == "" {
 			return "", instFile{}, false
 		}
@@ -491,6 +500,9 @@ func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, instType string)
 		return "", instFile{}, false
 	}
 	rel = projectToSourceRoot(obj.From, dirSrc, cmakeSrc)
+	if rel == "" {
+		rel = projectToBuildRoot(obj.From, cmakeBuild)
+	}
 	if rel == "" {
 		return "", instFile{}, false
 	}
@@ -547,6 +559,25 @@ func projectToSourceRoot(p, dirSrc, cmakeSrc string) string {
 	// filepath.Rel returns "../..." when abs is outside cmakeSrc;
 	// reject those — Bazel labels can't traverse up the source root.
 	if strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return filepath.ToSlash(rel)
+}
+
+// projectToBuildRoot returns the build-root-relative form of p when p is an
+// ABSOLUTE path under the cmake build dir — i.e. a GENERATED install entry
+// (configure_file / genrule / write_file output, e.g. zlib's
+// `${CMAKE_CURRENT_BINARY_DIR}/zconf.h`). The converter emits that output as a
+// same-package rule whose `out` is this build-relative path, so packaging it by
+// the returned name resolves to the generating rule's output. Returns "" for a
+// non-absolute path (a source-relative entry handled by projectToSourceRoot),
+// when no build dir is known, or when p escapes the build root.
+func projectToBuildRoot(p, cmakeBuild string) string {
+	if cmakeBuild == "" || !filepath.IsAbs(p) {
+		return ""
+	}
+	rel, err := filepath.Rel(cmakeBuild, filepath.Clean(p))
+	if err != nil || strings.HasPrefix(rel, "..") {
 		return ""
 	}
 	return filepath.ToSlash(rel)

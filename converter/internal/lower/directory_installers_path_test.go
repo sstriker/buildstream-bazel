@@ -61,3 +61,30 @@ func TestProjectToSourceRoot_TopLevelRelative(t *testing.T) {
 		})
 	}
 }
+
+// TestProjectToBuildRoot pins the generated-install-entry fallback: an
+// install(FILES) of a configure_file/genrule output records an absolute path
+// under the cmake build dir (which projectToSourceRoot rejects), and
+// projectToBuildRoot resolves it to the build-relative output name so it still
+// packages. Source-relative paths, out-of-build paths, and missing build dirs
+// return "".
+func TestProjectToBuildRoot(t *testing.T) {
+	const build = "/tmp/convert-build-123"
+	cases := []struct {
+		name, p, cmakeBuild, want string
+	}{
+		{"generated header under build", build + "/zconf.h", build, "zconf.h"},
+		{"generated nested under build", build + "/include/cfg.h", build, "include/cfg.h"},
+		{"relative path (source-relative) → empty", "include/zlib.h", build, ""},
+		{"absolute outside build → empty", "/usr/include/x.h", build, ""},
+		{"escapes build root → empty", build + "/../evil.h", build, ""},
+		{"no build dir → empty", build + "/zconf.h", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := projectToBuildRoot(tc.p, tc.cmakeBuild); got != tc.want {
+				t.Errorf("projectToBuildRoot(%q, %q) = %q; want %q", tc.p, tc.cmakeBuild, got, tc.want)
+			}
+		})
+	}
+}

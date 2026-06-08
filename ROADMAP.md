@@ -1208,8 +1208,13 @@ The six intent-lens producer-gap themes follow as their own entries
     carrying an InstallDest (header-only/no-artifact skipped); the split's
     `:<name>`-ref relabel extends to `pkg_files` so a re-homed lib still
     resolves. zlib's build lens stays green and its libs now package.
-  - **B. generated-header install** — a generated header (zlib's `zconf.h`) is
-    excluded from the header `pkg_files`; include it (curl, eigen, zlib).
+  - **B. generated-header install — DONE.** A generated header
+    (`configure_file`/genrule output, e.g. zlib's `zconf.h`) is recorded in
+    `install(FILES)` by an absolute build-dir path, which `projectToSourceRoot`
+    rejected (outside source) → dropped. `projectToBuildRoot` now resolves a
+    build-dir install entry to its build-relative output name so it packages
+    (the converter already emits that output as a same-package rule). zlib's
+    header `pkg_files` now carries `zconf.h` + `zlib.h`; build lens stays green.
   - **C. pkg-config `.pc`** — the `.pc` is generated but never placed in a
     `pkg_files` (brotli, fmt, grpc, protobuf, sdl, zlib).
   - **D. `<Pkg>Config.cmake`/`<Pkg>Targets.cmake` generation** — the
