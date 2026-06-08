@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "element": "libevent",
+  "summary": {
+    "total": 7,
+    "net_new": 7,
+    "already_flagged": 0,
+    "by_severity": {
+      "high": 1,
+      "low": 1,
+      "medium": 5
+    }
+  },
+  "findings": [
+    {
+      "category": "install",
+      "severity": "high",
+      "summary": "Compiled library binaries (both .so and .a) are absent from all pkg_files install targets",
+      "evidence": "CMake export_install_target() installs every library variant to DESTINATION \"lib\" for both LIBRARY and ARCHIVE components. The Bazel BUILD contains only three pkg_files rules (install_files__bin, install_files__include, install_files__include_event2); none covers the compiled library artifacts for any of the five event libraries.",
+      "cmake_ref": "cmake/AddEventLibrary.cmake:68",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "All cc_library targets are missing -lpthread in linkopts",
+      "evidence": "The add_event_library macro unconditionally passes ${CMAKE_THREAD_LIBS_INIT} (resolved to -lpthread on Linux when EVENT__DISABLE_THREAD_SUPPORT=OFF) to target_link_libraries for both _static and _shared variants of every library (event_core, event_extra, event_openssl, event_pthreads, event). None of the six cc_library rules in BUILD.bazel has \"-lpthread\" in linkopts; consumers that rely on the library's own linkage of pthread will fail at link time.",
+      "cmake_ref": "cmake/AddEventLibrary.cmake:116",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "Generated cmake config files (LibeventConfig.cmake, LibeventConfigVersion.cmake, LibeventTargets-*.cmake) are not installed",
+      "evidence": "CMakeLists.txt installs LibeventConfig.cmake and LibeventConfigVersion.cmake to ${EVENT_INSTALL_CMAKE_DIR} (lib/cmake/libevent), and installs LibeventTargets-shared.cmake and LibeventTargets-static.cmake via install(EXPORT ...). In Bazel, gen_LibeventConfig_cmake and gen_LibeventConfigVersion_cmake are write_file targets with visibility=[\"//visibility:private\"] that are never referenced by any pkg_files rule; the LibeventTargets-*.cmake export files have no Bazel equivalent at all.",
+      "cmake_ref": "CMakeLists.txt:1503",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "Generated event2/event-config.h is missing from install_files__include_event2",
+      "evidence": "CMakeLists.txt sets HDR_PUBLIC to include ${PROJECT_BINARY_DIR}/include/event2/event-config.h (the configure_file output) and installs all of HDR_PUBLIC to DESTINATION \"include/event2\". The Bazel install_files__include_event2 pkg_files rule lists 24 headers but omits event2/event-config.h; the write_file generator gen_include_event2_event_config_h exists in include/BUILD.bazel but is never referenced by any pkg_files target.",
+      "cmake_ref": "CMakeLists.txt:1498",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "pkgconfig .pc files are neither generated nor installed",
+      "evidence": "generate_pkgconfig() is called unconditionally at the end of every add_event_library() invocation (for event_core, event_extra, event_openssl, event_pthreads, event), generating libevent_core.pc etc. from .pc.in templates and installing them to ${CMAKE_INSTALL_PREFIX}/lib/pkgconfig. No write_file or pkg_files counterpart exists anywhere in the Bazel BUILD files.",
+      "cmake_ref": "cmake/AddEventLibrary.cmake:30",
+      "status": "net-new"
+    },
+    {
+      "category": "target",
+      "severity": "medium",
+      "summary": "event_static and event_shared incorrectly carry event_core_shared as a dep, introducing duplicate-symbol linkage",
+      "evidence": "CMakeLists.txt:973 calls add_event_library(event SOURCES ${SRC_CORE} ${SRC_EXTRA}) with no INNER_LIBRARIES argument. The macro therefore sets INNER_LIBRARIES to empty and the resulting event_static/event_shared targets depend on nothing beyond platform libs. In the Bazel BUILD, both event_static (line 835) and event_shared (line 770) list //elements/libevent:event_core_shared in deps. Because event_static and event_shared already compile all of ${SRC_CORE} directly in their srcs, this dep causes the same translation units to appear twice in the link graph (once compiled statically in event_static/event_shared, once via the shared event_core_shared), risking duplicate-symbol link errors.",
+      "cmake_ref": "CMakeLists.txt:973",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "low",
+      "summary": "Unversioned shared-library symlink (e.g. libevent_core.so) is not created or installed",
+      "evidence": "AddEventLibrary.cmake creates a post-build symlink from the plain name (${CMAKE_SHARED_LIBRARY_PREFIX}${LIB_NAME}${CMAKE_SHARED_LIBRARY_SUFFIX}, e.g. libevent_core.so) pointing at the versioned file (libevent_core-2.1.so.7) and installs that symlink to DESTINATION \"lib\". Neither a symlink creation action nor a pkg_files entry for the unversioned name exists in the Bazel BUILD files.",
+      "cmake_ref": "cmake/AddEventLibrary.cmake:169",
+      "status": "net-new"
+    }
+  ]
+}

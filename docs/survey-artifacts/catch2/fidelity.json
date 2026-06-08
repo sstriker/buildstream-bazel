@@ -1,0 +1,1191 @@
+{
+  "matched": 107,
+  "only_cmake": null,
+  "only_bazel": null,
+  "define_mismatch": {},
+  "std_mismatch": {
+    "src/catch2/benchmark/catch_chronometer.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/benchmark/detail/catch_analyse.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/benchmark/detail/catch_benchmark_function.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/benchmark/detail/catch_run_for_at_least.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/benchmark/detail/catch_stats.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_approx.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_assertion_result.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_config.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_get_random_seed.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_message.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_registry_hub.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_session.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_tag_alias_autoregistrar.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_test_case_info.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_test_spec.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_timer.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_tostring.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_totals.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_translate_exception.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/catch_version.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/generators/catch_generator_exception.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/generators/catch_generators.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/generators/catch_generators_random.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/interfaces/catch_interfaces_capture.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/interfaces/catch_interfaces_config.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/interfaces/catch_interfaces_exception.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/interfaces/catch_interfaces_generatortracker.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/interfaces/catch_interfaces_registry_hub.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/interfaces/catch_interfaces_reporter.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/interfaces/catch_interfaces_reporter_factory.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/interfaces/catch_interfaces_testcase.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_assertion_handler.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_case_insensitive_comparisons.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_clara.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_commandline.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_console_colour.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_context.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_debug_console.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_debugger.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_decomposer.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_enforce.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_enum_values_registry.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_errno_guard.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_exception_translator_registry.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_fatal_condition_handler.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_floating_point_helpers.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_getenv.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_istream.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_jsonwriter.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_lazy_expr.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_leak_detector.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_list.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_main.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_message_info.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_output_redirect.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_parse_numbers.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_polyfills.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_random_number_generator.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_random_seed_generation.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_reporter_registry.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_reporter_spec_parser.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_result_type.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_reusable_string_stream.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_run_context.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_section.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_singletons.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_source_line_info.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_startup_exception_registry.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_stdstreams.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_string_manip.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_stringref.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_tag_alias_registry.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_test_case_info_hasher.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_test_case_registry_impl.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_test_case_tracker.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_test_failure_exception.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_test_registry.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_test_spec_parser.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_textflow.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_uncaught_exceptions.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_wildcard_pattern.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/internal/catch_xmlwriter.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/matchers/catch_matchers.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/matchers/catch_matchers_container_properties.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/matchers/catch_matchers_exception.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/matchers/catch_matchers_floating_point.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/matchers/catch_matchers_predicate.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/matchers/catch_matchers_quantifiers.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/matchers/catch_matchers_string.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/matchers/catch_matchers_templated.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/matchers/internal/catch_matchers_impl.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_automake.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_common_base.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_compact.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_console.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_cumulative_base.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_event_listener.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_helpers.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_json.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_junit.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_multi.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_registrars.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_sonarqube.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_streaming_base.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_tap.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_teamcity.cpp": [
+      "",
+      "c++17"
+    ],
+    "src/catch2/reporters/catch_reporter_xml.cpp": [
+      "",
+      "c++17"
+    ]
+  },
+  "include_mismatch": {
+    "src/catch2/benchmark/catch_chronometer.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/benchmark/detail/catch_analyse.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/benchmark/detail/catch_benchmark_function.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/benchmark/detail/catch_run_for_at_least.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/benchmark/detail/catch_stats.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_approx.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_assertion_result.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_config.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_get_random_seed.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_message.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_registry_hub.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_session.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_tag_alias_autoregistrar.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_test_case_info.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_test_spec.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_timer.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_tostring.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_totals.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_translate_exception.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/catch_version.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/generators/catch_generator_exception.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/generators/catch_generators.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/generators/catch_generators_random.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/interfaces/catch_interfaces_capture.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/interfaces/catch_interfaces_config.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/interfaces/catch_interfaces_exception.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/interfaces/catch_interfaces_generatortracker.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/interfaces/catch_interfaces_registry_hub.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/interfaces/catch_interfaces_reporter.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/interfaces/catch_interfaces_reporter_factory.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/interfaces/catch_interfaces_testcase.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_assertion_handler.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_case_insensitive_comparisons.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_clara.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_commandline.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_console_colour.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_context.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_debug_console.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_debugger.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_decomposer.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_enforce.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_enum_values_registry.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_errno_guard.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_exception_translator_registry.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_fatal_condition_handler.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_floating_point_helpers.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_getenv.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_istream.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_jsonwriter.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_lazy_expr.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_leak_detector.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_list.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_main.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_message_info.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_output_redirect.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_parse_numbers.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_polyfills.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_random_number_generator.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_random_seed_generation.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_reporter_registry.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_reporter_spec_parser.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_result_type.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_reusable_string_stream.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_run_context.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_section.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_singletons.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_source_line_info.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_startup_exception_registry.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_stdstreams.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_string_manip.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_stringref.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_tag_alias_registry.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_test_case_info_hasher.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_test_case_registry_impl.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_test_case_tracker.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_test_failure_exception.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_test_registry.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_test_spec_parser.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_textflow.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_uncaught_exceptions.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_wildcard_pattern.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/internal/catch_xmlwriter.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/matchers/catch_matchers.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/matchers/catch_matchers_container_properties.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/matchers/catch_matchers_exception.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/matchers/catch_matchers_floating_point.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/matchers/catch_matchers_predicate.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/matchers/catch_matchers_quantifiers.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/matchers/catch_matchers_string.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/matchers/catch_matchers_templated.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/matchers/internal/catch_matchers_impl.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_automake.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_common_base.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_compact.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_console.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_cumulative_base.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_event_listener.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_helpers.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_json.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_junit.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_multi.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_registrars.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_sonarqube.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_streaming_base.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_tap.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_teamcity.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    },
+    "src/catch2/reporters/catch_reporter_xml.cpp": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "generated-includes"
+      ]
+    }
+  },
+  "copt_mismatch": {},
+  "gen_root_missing": {},
+  "tu_key_collisions": 0,
+  "param_file_skipped": 0
+}

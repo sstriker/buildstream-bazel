@@ -1,0 +1,54 @@
+{
+  "matched": 4,
+  "only_cmake": null,
+  "only_bazel": null,
+  "define_mismatch": {},
+  "std_mismatch": {
+    "googlemock/src/gmock-all.cc": [
+      "",
+      "c++17"
+    ],
+    "googlemock/src/gmock_main.cc": [
+      "",
+      "c++17"
+    ],
+    "googletest/src/gtest-all.cc": [
+      "",
+      "c++17"
+    ],
+    "googletest/src/gtest_main.cc": [
+      "",
+      "c++17"
+    ]
+  },
+  "include_mismatch": {
+    "googlemock/src/gmock-all.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "googlemock/src/gmock_main.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "googletest/src/gtest-all.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "googletest/src/gtest_main.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    }
+  },
+  "copt_mismatch": {},
+  "gen_root_missing": {},
+  "tu_key_collisions": 0,
+  "param_file_skipped": 0
+}

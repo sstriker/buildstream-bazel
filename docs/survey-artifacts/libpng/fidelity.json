@@ -1,0 +1,19 @@
+{
+  "matched": 24,
+  "only_cmake": null,
+  "only_bazel": null,
+  "define_mismatch": {},
+  "std_mismatch": {},
+  "include_mismatch": {
+    "contrib/tools/png-fix-itxt.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    }
+  },
+  "copt_mismatch": {},
+  "gen_root_missing": {},
+  "tu_key_collisions": 34,
+  "param_file_skipped": 0
+}

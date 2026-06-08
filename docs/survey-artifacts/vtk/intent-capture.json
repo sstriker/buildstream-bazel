@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "element": "vtk",
+  "summary": {
+    "total": 9,
+    "net_new": 9,
+    "already_flagged": 0,
+    "by_severity": {
+      "high": 3,
+      "low": 1,
+      "medium": 5
+    }
+  },
+  "findings": [
+    {
+      "category": "codegen",
+      "severity": "high",
+      "summary": "KWIML version.h not generated in Bazel: KWIML_VERSION_DECIMAL and KWIML_VERSION substitutions are absent",
+      "evidence": "CMake configure_file(src/version.h.in include/kwiml/version.h @ONLY) substitutes @KWIML_VERSION_DECIMAL@ and @KWIML_VERSION@; Bazel BUILD.bazel lists vtkkwiml/include/kwiml/abi.h and int.h as hdrs but has no write_file rule for version.h, so consumers that include \u003ckwiml/version.h\u003e fall through to any pre-committed stub, silently reporting wrong version numbers",
+      "cmake_ref": "/tmp/vtk/Utilities/KWIML/vtkkwiml/CMakeLists.txt:63",
+      "status": "net-new"
+    },
+    {
+      "category": "option",
+      "severity": "high",
+      "summary": "VTK_USE_64BIT_IDS baked as enabled in Bazel, overriding the CMake platform-default option",
+      "evidence": "CMake: option(VTK_USE_64BIT_IDS ... \"${vtk_use_64bit_ids_default}\") is user-configurable and on 32-bit platforms defaults to OFF; Bazel generates #define VTK_USE_64BIT_IDS unconditionally in vtkConfigure.h write_file — builds silently assume 64-bit IDs regardless of target architecture or user preference",
+      "cmake_ref": "/tmp/vtk/Common/Core/CMakeLists.txt:66",
+      "status": "net-new"
+    },
+    {
+      "category": "target",
+      "severity": "high",
+      "summary": "vtktoken cc_library uses linkstatic=True but CMake explicitly declares it SHARED",
+      "evidence": "CMake: add_library(token SHARED ${sources} ${headers}) at line 51 — the library is explicitly SHARED so that a single token-registry instance is shared across plugin boundaries; Bazel BUILD: linkstatic = True  # keep, overriding this intent. Programs that load VTK as plugins or use Python wrapping will silently get duplicate registries.",
+      "cmake_ref": "/tmp/vtk/ThirdParty/token/vtktoken/token/CMakeLists.txt:51",
+      "status": "net-new"
+    },
+    {
+      "category": "codegen",
+      "severity": "medium",
+      "summary": "vtkTestSocketFeatures.cmake feature detection baked in as defined; portability to non-POSIX or older UNIX hosts is silently lost",
+      "evidence": "CMake vtkTestSocketFeatures.cmake:12-41 uses try_compile and check_symbol_exists to probe VTK_HAVE_GETSOCKNAME_WITH_SOCKLEN_T and VTK_HAVE_SO_REUSEADDR at configure time; Bazel Common/System BUILD write_file unconditionally emits #define VTK_HAVE_GETSOCKNAME_WITH_SOCKLEN_T and #define VTK_HAVE_SO_REUSEADDR — a host that lacks socklen_t overloads (e.g., very old glibc or embedded POSIX) silently gets wrong function signatures",
+      "cmake_ref": "/tmp/vtk/Common/System/vtkTestSocketFeatures.cmake:12-41",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "FreeType always compiles builds/unix/ftsystem.c; Windows target would silently get the wrong platform source",
+      "evidence": "CMake: if(UNIX) list(APPEND sources builds/unix/ftsystem.c) / if(WIN32) list(APPEND sources src/base/ftsystem.c) — the two platform variants do meaningfully different I/O; Bazel hardcodes builds/unix/ftsystem.c with no select() guard, so a Windows cross-compile silently links the POSIX file-system backend",
+      "cmake_ref": "/tmp/vtk/ThirdParty/freetype/vtkfreetype/CMakeLists.txt:40-52",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "JSONCPP JSON_DLL always undef'd in Bazel; shared-library Windows builds silently miss DLL export symbols",
+      "evidence": "CMake: if(BUILD_SHARED_LIBS) set(JSON_DLL 1) then configure_file generates vtkjsoncpp_config.h with #define JSON_DLL; Bazel write_file hardcodes /* #undef JSON_DLL */ unconditionally — a Windows DLL build would compile without the dllexport/dllimport annotations and produce incorrect import-lib linkage",
+      "cmake_ref": "/tmp/vtk/ThirdParty/jsoncpp/vtkjsoncpp/CMakeLists.txt:10-15",
+      "status": "net-new"
+    },
+    {
+      "category": "option",
+      "severity": "medium",
+      "summary": "SMP backend is permanently locked to Sequential+STDThread; TBB and OpenMP sources are never compiled",
+      "evidence": "CMake: option VTK_SMP_IMPLEMENTATION_TYPE defaults to Sequential but is user-configurable to TBB or OpenMP, and conditionally compiles SMP/TBB/ and SMP/OpenMP/ sources; Bazel Common/Core BUILD hardcodes VTK_SMP_ENABLE_TBB 0 / VTK_SMP_ENABLE_OPENMP 0 and omits SMP/OpenMP/vtkSMPToolsImpl.cxx from srcs — switching backends requires modifying generated BUILD files",
+      "cmake_ref": "/tmp/vtk/Common/Core/vtkSMPSelection.cmake:1-29",
+      "status": "net-new"
+    },
+    {
+      "category": "option",
+      "severity": "medium",
+      "summary": "VTK_DISPATCH_SOA_ARRAYS and VTK_DISPATCH_TYPED_ARRAYS defaults are baked; non-default dispatcher configurations are impossible without editing generated files",
+      "evidence": "CMake: option(VTK_DISPATCH_SOA_ARRAYS ... OFF), option(VTK_DISPATCH_TYPED_ARRAYS ... OFF) etc. are user-toggleable and drive vtkCreateArrayDispatchArrayList.cmake which regenerates vtkArrayDispatchArrayList.h; Bazel write_file hardcodes the array-list with only AOS types — users who need SOA dispatch for memory-layout-sensitive workloads must hand-edit the generated BUILD",
+      "cmake_ref": "/tmp/vtk/Common/Core/CMakeLists.txt:140-148",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "low",
+      "summary": "PNG library missing libm link dependency on UNIX; math symbols may be unresolved on systems that do not auto-link libm",
+      "evidence": "CMake: if(UNIX) target_link_libraries(png PRIVATE m) links libm explicitly; Bazel BUILD png cc_library deps list does not include a system math library entry — on glibc systems this is often satisfied transitively but on musl libc or some embedded targets the floor/ceil/pow calls from libpng will produce undefined-symbol link errors",
+      "cmake_ref": "/tmp/vtk/ThirdParty/png/vtkpng/CMakeLists.txt:35-37",
+      "status": "net-new"
+    }
+  ]
+}

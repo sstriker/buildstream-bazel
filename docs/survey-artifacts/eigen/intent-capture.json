@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "element": "eigen",
+  "summary": {
+    "total": 8,
+    "net_new": 8,
+    "already_flagged": 0,
+    "by_severity": {
+      "high": 2,
+      "medium": 6
+    }
+  },
+  "findings": [
+    {
+      "category": "install",
+      "severity": "high",
+      "summary": "Eigen3Config.cmake not generated and not installed",
+      "evidence": "CMake: configure_package_config_file() generates Eigen3Config.cmake from cmake/Eigen3Config.cmake.in (expands PATH_VARS, PACKAGE_INIT, etc.) and installs it to share/eigen3/cmake. Bazel: only write_file for Eigen3ConfigVersion.cmake exists; no write_file or pkg_files generates or installs Eigen3Config.cmake; install_files__share_eigen3_cmake only contains cmake/UseEigen3.cmake.",
+      "cmake_ref": "CMakeLists.txt:218",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "high",
+      "summary": "Entire Eigen/ header directory tree absent from pkg_files install targets",
+      "evidence": "CMake: install(DIRECTORY Eigen DESTINATION ${INCLUDE_INSTALL_DIR} COMPONENT Devel) installs every file under Eigen/ (Eigen/Core, Eigen/Dense, Eigen/src/Core/*.h, …) to include/eigen3/. Bazel: install_files__include_eigen3 only contains signature_of_eigen3_matrix_library; no pkg_files covers the Eigen/ subtree at all.",
+      "cmake_ref": "CMakeLists.txt:212",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "Eigen3ConfigVersion.cmake generated but never installed",
+      "evidence": "CMake: install(FILES … Eigen3ConfigVersion.cmake DESTINATION ${CMAKEPACKAGE_INSTALL_DIR}) at line 243 places it under share/eigen3/cmake. Bazel: write_file gen_Eigen3ConfigVersion_cmake generates the file but no pkg_files target adds it to any install prefix; it is unreachable from the install graph.",
+      "cmake_ref": "CMakeLists.txt:243",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "Eigen3Targets.cmake not generated or installed",
+      "evidence": "CMake: export(TARGETS eigen NAMESPACE Eigen3:: FILE Eigen3Targets.cmake) plus install(EXPORT Eigen3Targets NAMESPACE Eigen3:: DESTINATION ${CMAKEPACKAGE_INSTALL_DIR}) produces and installs the CMake targets file needed by find_package(Eigen3). Bazel: no write_file, no pkg_files, no alias produces or installs this artifact; find_package(Eigen3) after a Bazel-driven install would fail to import Eigen3::Eigen.",
+      "cmake_ref": "CMakeLists.txt:239",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "eigen3.pc generated but not installed",
+      "evidence": "CMake: install(FILES ${CMAKE_CURRENT_BINARY_DIR}/eigen3.pc DESTINATION ${PKGCONFIG_INSTALL_DIR}) at lines 208-209 places the pkg-config file under share/pkgconfig (CMAKE_INSTALL_DATADIR/pkgconfig). Bazel: write_file gen_eigen3_pc generates eigen3.pc but no pkg_files rule with prefix='share/pkgconfig' exists; pkg-config consumers would not find the file.",
+      "cmake_ref": "CMakeLists.txt:208",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "unsupported/Eigen/CXX11/src/ header tree not installed",
+      "evidence": "CMake: install(DIRECTORY src DESTINATION ${INCLUDE_INSTALL_DIR}/unsupported/Eigen/CXX11 COMPONENT Devel FILES_MATCHING PATTERN '*.h') installs Tensor, TensorSymmetry, ThreadPool implementation headers. Bazel: install_files__include_eigen3_unsupported_Eigen_CXX11 only contains the three top-level CXX11 module files (Tensor, TensorSymmetry, ThreadPool); the src/ tree with ~100 .h files is absent.",
+      "cmake_ref": "unsupported/Eigen/CXX11/CMakeLists.txt:8",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "unsupported/Eigen/src/ header tree not installed",
+      "evidence": "CMake: install(DIRECTORY src DESTINATION ${INCLUDE_INSTALL_DIR}/unsupported/Eigen COMPONENT Devel FILES_MATCHING PATTERN '*.h') installs all implementation headers (AutoDiff, FFT, Splines, etc.) from unsupported/Eigen/src/ recursively. Bazel: no pkg_files target covers this tree; only the top-level unsupported/Eigen/ module headers are installed via install_files__include_eigen3_unsupported_Eigen.",
+      "cmake_ref": "unsupported/Eigen/CMakeLists.txt:30",
+      "status": "net-new"
+    },
+    {
+      "category": "option",
+      "severity": "medium",
+      "summary": "EIGEN_DEFAULT_TO_ROW_MAJOR build option not represented in cc_library",
+      "evidence": "CMake: option(EIGEN_DEFAULT_TO_ROW_MAJOR 'Use row-major as default matrix storage order' OFF); when ON, adds -DEIGEN_DEFAULT_TO_ROW_MAJOR to CMAKE_CXX_FLAGS, changing the default matrix storage order for all translation units. Bazel: the cc_library has no defines=, copts=, or select()-based mechanism for this option; toggling row-major default is silently unavailable to Bazel consumers.",
+      "cmake_ref": "CMakeLists.txt:294",
+      "status": "net-new"
+    }
+  ]
+}

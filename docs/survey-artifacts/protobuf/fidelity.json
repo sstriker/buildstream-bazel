@@ -1,0 +1,2596 @@
+{
+  "matched": 286,
+  "only_cmake": null,
+  "only_bazel": null,
+  "define_mismatch": {
+    "src/google/protobuf/compiler/main.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "LIBPROTOC_EXPORTS"
+      ]
+    }
+  },
+  "std_mismatch": {
+    "src/google/protobuf/any.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/any.pb.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/any_lite.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/api.pb.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/arena.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/arena_align.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/arenastring.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/arenaz_sampler.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/code_generator.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/code_generator_lite.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/command_line_interface.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/enum.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/extension.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/field_chunk.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/field_generators/cord_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/field_generators/enum_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/field_generators/map_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/field_generators/message_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/field_generators/primitive_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/field_generators/string_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/field_generators/string_view_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/file.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/generator.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/helpers.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/ifndef_guard.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/message.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/message_layout_helper.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/namespace_printer.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/parse_function_generator.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/service.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/cpp/tracker.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_doc_comment.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_enum.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_enum_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_field_base.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_generator.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_helpers.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_map_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_message.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_message_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_primitive_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_reflection_class.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_repeated_enum_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_repeated_message_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_repeated_primitive_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_source_generator_base.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/csharp_wrapper_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/csharp/names.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/importer.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/context.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/doc_comment.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/field_common.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/file.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/full/enum.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/full/enum_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/full/extension.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/full/generator_factory.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/full/make_field_gens.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/full/map_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/full/message.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/full/message_builder.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/full/message_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/full/primitive_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/full/service.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/full/string_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/generator.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/helpers.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/internal_helpers.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/java_features.pb.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/lite/enum.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/lite/enum_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/lite/extension.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/lite/generator_factory.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/lite/make_field_gens.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/lite/map_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/lite/message.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/lite/message_builder.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/lite/message_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/lite/primitive_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/lite/string_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/message_serialization.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/name_resolver.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/names.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/java/shared_code_generator.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/kotlin/field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/kotlin/file.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/kotlin/generator.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/kotlin/message.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/main.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/enum.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/enum_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/extension.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/file.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/generator.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/helpers.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/import_writer.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/line_consumer.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/map_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/message.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/message_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/names.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/oneof.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/primitive_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/objectivec/tf_decode_data.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/parser.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/php/names.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/php/php_generator.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/plugin.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/plugin.pb.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/python/generator.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/python/helpers.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/python/pyi_generator.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/retention.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/ruby/ruby_generator.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/accessors/accessor_case.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/accessors/accessors.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/accessors/default_value.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/accessors/map.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/accessors/repeated_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/accessors/singular_cord.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/accessors/singular_message.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/accessors/singular_scalar.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/accessors/singular_string.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/accessors/unsupported_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/accessors/with_presence.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/context.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/crate_mapping.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/enum.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/generator.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/message.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/naming.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/oneof.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/relative_path.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/rust_field_type.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/rust_keywords.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/rust/upb_helpers.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/subprocess.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/versions.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/compiler/zip_writer.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/cpp_features.pb.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/descriptor.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/descriptor.pb.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/descriptor_database.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/duration.pb.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/dynamic_message.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/empty.pb.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/extension_set.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/extension_set_heavy.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/feature_resolver.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/field_mask.pb.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/generated_enum_util.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/generated_message_bases.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/generated_message_reflection.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/generated_message_tctable_full.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/generated_message_tctable_gen.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/generated_message_tctable_lite.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/generated_message_util.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/implicit_weak_message.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/inlined_string_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/internal_feature_helper.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/io/coded_stream.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/io/gzip_stream.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/io/io_win32.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/io/printer.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/io/strtod.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/io/tokenizer.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/io/zero_copy_sink.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/io/zero_copy_stream.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/io/zero_copy_stream_impl.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/io/zero_copy_stream_impl_lite.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/json/internal/lexer.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/json/internal/message_path.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/json/internal/parser.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/json/internal/unparser.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/json/internal/untyped_message.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/json/internal/writer.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/json/internal/zero_copy_buffered_stream.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/json/json.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/map.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/map_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/message.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/message_lite.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/micro_string.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/parse_context.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/port.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/raw_ptr.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/reflection_mode.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/reflection_ops.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/repeated_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/repeated_ptr_field.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/service.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/source_context.pb.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/struct.pb.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/stubs/common.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/text_format.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/timestamp.pb.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/type.pb.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/unknown_field_set.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/util/delimited_message_util.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/util/field_comparator.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/util/field_mask_util.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/util/message_differencer.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/util/time_util.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/util/type_resolver_util.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/wire_format.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/wire_format_lite.cc": [
+      "",
+      "c++17"
+    ],
+    "src/google/protobuf/wrappers.pb.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/c/generator.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/c/names.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/c/names_internal.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/common.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/common/names.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/file_layout.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/minitable/fasttable.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/minitable/generator.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/minitable/names.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/minitable/names_internal.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/plugin.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/reflection/generator.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/reflection/header.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/reflection/names.cc": [
+      "",
+      "c++17"
+    ],
+    "upb_generator/reflection/source.cc": [
+      "",
+      "c++17"
+    ]
+  },
+  "include_mismatch": {
+    "src/google/protobuf/any.pb.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/api.pb.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/command_line_interface.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/enum.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/extension.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/field_chunk.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/field_generators/cord_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/field_generators/enum_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/field_generators/map_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/field_generators/message_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/field_generators/primitive_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/field_generators/string_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/field_generators/string_view_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/file.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/generator.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/helpers.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/ifndef_guard.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/message.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/message_layout_helper.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/namespace_printer.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/parse_function_generator.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/service.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/cpp/tracker.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_doc_comment.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_enum.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_enum_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_field_base.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_generator.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_helpers.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_map_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_message.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_message_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_primitive_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_reflection_class.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_repeated_enum_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_repeated_message_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_repeated_primitive_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_source_generator_base.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/csharp_wrapper_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/csharp/names.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/importer.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/context.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/doc_comment.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/field_common.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/file.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/full/enum.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/full/enum_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/full/extension.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/full/generator_factory.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/full/make_field_gens.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/full/map_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/full/message.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/full/message_builder.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/full/message_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/full/primitive_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/full/service.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/full/string_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/generator.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/helpers.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/internal_helpers.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/java_features.pb.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/lite/enum.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/lite/enum_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/lite/extension.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/lite/generator_factory.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/lite/make_field_gens.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/lite/map_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/lite/message.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/lite/message_builder.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/lite/message_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/lite/primitive_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/lite/string_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/message_serialization.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/name_resolver.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/names.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/java/shared_code_generator.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/kotlin/field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/kotlin/file.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/kotlin/generator.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/kotlin/message.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/main.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/enum.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/enum_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/extension.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/file.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/generator.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/helpers.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/import_writer.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/line_consumer.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/map_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/message.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/message_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/names.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/oneof.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/primitive_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/objectivec/tf_decode_data.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/parser.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/php/names.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/php/php_generator.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/python/generator.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/python/helpers.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/python/pyi_generator.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/ruby/ruby_generator.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/accessors/accessor_case.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/accessors/accessors.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/accessors/default_value.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/accessors/map.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/accessors/repeated_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/accessors/singular_cord.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/accessors/singular_message.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/accessors/singular_scalar.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/accessors/singular_string.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/accessors/unsupported_field.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/accessors/with_presence.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/context.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/crate_mapping.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/enum.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/generator.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/message.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/naming.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/oneof.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/relative_path.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/rust_field_type.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/rust_keywords.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/rust/upb_helpers.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/subprocess.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/versions.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/compiler/zip_writer.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/duration.pb.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/empty.pb.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/field_mask.pb.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/json/internal/lexer.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/json/internal/message_path.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/json/internal/parser.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/json/internal/unparser.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/json/internal/untyped_message.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/json/internal/writer.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/json/internal/zero_copy_buffered_stream.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/json/json.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/source_context.pb.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/struct.pb.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/timestamp.pb.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/type.pb.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/util/delimited_message_util.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/util/field_comparator.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/util/field_mask_util.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/util/message_differencer.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/util/time_util.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/util/type_resolver_util.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "src/google/protobuf/wrappers.pb.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "third_party/utf8_range/utf8_range.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "third_party/utf8_range",
+        "upb/reflection/cmake",
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/base/status.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/hash/common.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/json/decode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/json/encode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/lex/atoi.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/lex/round_trip.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/lex/strtod.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/lex/unicode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/mem/alloc.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/mem/arena.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/message/accessors.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/message/array.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/message/compare.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/message/compat.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/message/copy.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/message/internal/compare_unknown.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/message/internal/extension.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/message/internal/iterator.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/message/internal/message.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/message/map.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/message/map_sorter.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/message/merge.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/message/message.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/mini_descriptor/build_enum.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/mini_descriptor/decode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/mini_descriptor/internal/base92.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/mini_descriptor/internal/encode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/mini_descriptor/link.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/mini_table/extension_registry.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/mini_table/internal/message.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/mini_table/message.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/cmake/google/protobuf/descriptor.upb_minitable.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/def_pool.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/def_type.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/desc_state.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/enum_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/enum_reserved_range.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/enum_value_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/extension_range.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/field_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/file_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/internal/def_builder.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/internal/strdup2.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/message.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/message_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/message_reserved_range.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/method_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/oneof_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/reflection/service_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/text/debug_string.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/text/encode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/text/internal/encode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/util/def_to_proto.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/util/required_fields.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/wire/byte_size.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/wire/decode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/wire/encode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/wire/eps_copy_input_stream.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/wire/internal/decode_fast.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb/wire/reader.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb_generator/minitable/fasttable.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    },
+    "upb_generator/minitable/generator.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "upb_generator/cmake"
+      ]
+    }
+  },
+  "copt_mismatch": {
+    "upb/base/status.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/hash/common.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/json/decode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/json/encode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/lex/atoi.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/lex/round_trip.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/lex/strtod.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/lex/unicode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/mem/alloc.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/mem/arena.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/message/accessors.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/message/array.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/message/compare.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/message/compat.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/message/copy.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/message/internal/compare_unknown.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/message/internal/extension.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/message/internal/iterator.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/message/internal/message.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/message/map.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/message/map_sorter.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/message/merge.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/message/message.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/mini_descriptor/build_enum.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/mini_descriptor/decode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/mini_descriptor/internal/base92.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/mini_descriptor/internal/encode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/mini_descriptor/link.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/mini_table/extension_registry.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/mini_table/internal/message.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/mini_table/message.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/cmake/google/protobuf/descriptor.upb_minitable.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/def_pool.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/def_type.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/desc_state.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/enum_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/enum_reserved_range.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/enum_value_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/extension_range.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/field_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/file_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/internal/def_builder.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/internal/strdup2.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/message.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/message_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/message_reserved_range.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/method_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/oneof_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/reflection/service_def.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/text/debug_string.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/text/encode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/text/internal/encode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/util/def_to_proto.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/util/required_fields.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/wire/byte_size.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/wire/decode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/wire/encode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/wire/eps_copy_input_stream.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/wire/internal/decode_fast.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    },
+    "upb/wire/reader.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "-fvisibility-inlines-hidden"
+      ]
+    }
+  },
+  "gen_root_missing": {},
+  "tu_key_collisions": 308,
+  "param_file_skipped": 0
+}

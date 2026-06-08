@@ -1,0 +1,907 @@
+{
+  "matched": 113,
+  "only_cmake": null,
+  "only_bazel": null,
+  "define_mismatch": {},
+  "std_mismatch": {},
+  "include_mismatch": {
+    "3rdparty/everest/library/Hacl_Curve25519_joined.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "3rdparty/everest/library/everest.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "3rdparty/everest/library/x25519.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "3rdparty/p256-m/p256-m/p256-m.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "3rdparty/p256-m/p256-m_driver_entrypoints.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "library/aes.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/aesce.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/aesni.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/aria.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/asn1parse.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/asn1write.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/base64.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/bignum.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/bignum_core.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/bignum_mod.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/bignum_mod_raw.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/block_cipher.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/camellia.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ccm.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/chacha20.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/chachapoly.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/cipher.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/cipher_wrap.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/cmac.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/constant_time.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ctr_drbg.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/debug.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/des.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/dhm.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ecdh.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ecdsa.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ecjpake.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ecp.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ecp_curves.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ecp_curves_new.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/entropy.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/entropy_poll.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/error.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/gcm.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/hkdf.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/hmac_drbg.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/lmots.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/lms.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/md.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/md5.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/memory_buffer_alloc.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/mps_reader.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/mps_trace.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/net_sockets.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/nist_kw.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/oid.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/padlock.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/pem.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/pk.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/pk_ecc.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/pk_wrap.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/pkcs12.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/pkcs5.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/pkcs7.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/pkparse.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/pkwrite.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/platform.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/platform_util.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/poly1305.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_crypto.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_crypto_aead.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_crypto_cipher.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_crypto_client.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_crypto_driver_wrappers_no_static.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_crypto_ecp.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_crypto_ffdh.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_crypto_hash.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_crypto_mac.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_crypto_pake.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_crypto_rsa.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_crypto_se.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_crypto_slot_management.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_crypto_storage.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_its_file.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/psa_util.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ripemd160.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/rsa.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/rsa_alt_helpers.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/sha1.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/sha256.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/sha3.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/sha512.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ssl_cache.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ssl_ciphersuites.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ssl_client.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ssl_cookie.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ssl_debug_helpers_generated.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ssl_msg.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ssl_ticket.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ssl_tls.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ssl_tls12_client.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ssl_tls12_server.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ssl_tls13_client.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ssl_tls13_generic.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ssl_tls13_keys.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/ssl_tls13_server.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/threading.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/timing.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/version.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/version_features.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/x509.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/x509_create.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/x509_crl.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/x509_crt.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/x509_csr.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/x509write.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/x509write_crt.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    },
+    "library/x509write_csr.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        ".",
+        "3rdparty/everest/include/everest",
+        "3rdparty/everest/include/everest/kremlib"
+      ]
+    }
+  },
+  "copt_mismatch": {},
+  "gen_root_missing": {},
+  "tu_key_collisions": 8,
+  "param_file_skipped": 0
+}

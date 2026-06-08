@@ -1,0 +1,485 @@
+{
+  "matched": 29,
+  "only_cmake": null,
+  "only_bazel": null,
+  "define_mismatch": {
+    "src/format.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "src/os.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/args-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/assert-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/base-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/chrono-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/color-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/compile-fp-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/compile-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/enforce-checks-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/format-impl-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/format-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/gtest-extra-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/gtest-extra.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": [
+        "FMT_HEADER_ONLY=1"
+      ]
+    },
+    "test/gtest/gmock-gtest-all.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/header-only-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/os-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/ostream-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/perf-sanity.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/posix-mock-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/printf-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/ranges-odr-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/ranges-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/scan-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/std-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/test-main.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": [
+        "FMT_HEADER_ONLY=1"
+      ]
+    },
+    "test/unicode-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "test/util.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": [
+        "FMT_HEADER_ONLY=1"
+      ]
+    },
+    "test/xchar-test.cc": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    }
+  },
+  "std_mismatch": {
+    "src/format.cc": [
+      "",
+      "c++17"
+    ],
+    "src/os.cc": [
+      "",
+      "c++17"
+    ],
+    "test/args-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/assert-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/base-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/chrono-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/color-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/compile-fp-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/compile-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/enforce-checks-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/format-impl-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/format-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/gtest-extra-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/gtest-extra.cc": [
+      "",
+      "c++17"
+    ],
+    "test/gtest/gmock-gtest-all.cc": [
+      "",
+      "c++17"
+    ],
+    "test/header-only-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/os-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/ostream-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/perf-sanity.cc": [
+      "",
+      "c++17"
+    ],
+    "test/posix-mock-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/printf-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/ranges-odr-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/ranges-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/scan-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/std-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/test-main.cc": [
+      "",
+      "c++17"
+    ],
+    "test/unicode-test.cc": [
+      "",
+      "c++17"
+    ],
+    "test/util.cc": [
+      "",
+      "c++17"
+    ],
+    "test/xchar-test.cc": [
+      "",
+      "c++17"
+    ]
+  },
+  "include_mismatch": {
+    "src/format.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "src/os.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/args-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/assert-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/base-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/chrono-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/color-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/compile-fp-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/compile-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/enforce-checks-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/format-impl-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/format-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/gtest-extra-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/gtest-extra.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/gtest/gmock-gtest-all.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/header-only-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/os-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/ostream-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/perf-sanity.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/posix-mock-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/printf-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/ranges-odr-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/ranges-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/scan-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/std-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/test-main.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/unicode-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/util.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "test/xchar-test.cc": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    }
+  },
+  "copt_mismatch": {},
+  "gen_root_missing": {},
+  "tu_key_collisions": 40,
+  "param_file_skipped": 0
+}

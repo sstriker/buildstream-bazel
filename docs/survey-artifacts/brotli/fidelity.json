@@ -1,0 +1,446 @@
+{
+  "matched": 36,
+  "only_cmake": null,
+  "only_bazel": null,
+  "define_mismatch": {
+    "c/common/constants.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/common/context.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/common/dictionary.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/common/platform.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/common/shared_dictionary.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/common/transform.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/dec/bit_reader.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/dec/decode.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/dec/huffman.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/dec/prefix.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/dec/state.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/dec/static_init.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/backward_references.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/backward_references_hq.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/bit_cost.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/block_splitter.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/brotli_bit_stream.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/cluster.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/command.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/compound_dictionary.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/compress_fragment.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/compress_fragment_two_pass.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/dictionary_hash.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/encode.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/encoder_dict.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/entropy_encode.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/fast_log.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/histogram.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/literal_cost.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/memory.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/metablock.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/static_dict.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/static_dict_lut.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/static_init.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/enc/utf8_util.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    },
+    "c/tools/brotli.c": {
+      "missing_in_bazel": [
+        "NDEBUG"
+      ],
+      "extra_in_bazel": null
+    }
+  },
+  "std_mismatch": {},
+  "include_mismatch": {
+    "c/common/constants.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/common/context.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/common/dictionary.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/common/platform.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/common/shared_dictionary.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/common/transform.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/dec/bit_reader.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/dec/decode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/dec/huffman.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/dec/prefix.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/dec/state.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/dec/static_init.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/backward_references.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/backward_references_hq.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/bit_cost.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/block_splitter.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/brotli_bit_stream.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/cluster.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/command.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/compound_dictionary.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/compress_fragment.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/compress_fragment_two_pass.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/dictionary_hash.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/encode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/encoder_dict.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/entropy_encode.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/fast_log.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/histogram.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/literal_cost.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/memory.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/metablock.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/static_dict.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/static_dict_lut.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/static_init.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/enc/utf8_util.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    },
+    "c/tools/brotli.c": {
+      "missing_in_bazel": null,
+      "extra_in_bazel": [
+        "."
+      ]
+    }
+  },
+  "copt_mismatch": {},
+  "gen_root_missing": {},
+  "tu_key_collisions": 0,
+  "param_file_skipped": 0
+}

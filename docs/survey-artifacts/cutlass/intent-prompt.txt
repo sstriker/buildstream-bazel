@@ -1,0 +1,393 @@
+# Intent-capture review — cutlass
+
+This is a Bazel project mechanically converted from a CMake project. It targets Bazel 9 and is authored against these rule providers, NOT native rules (Bazel 9 removed the native sh rules and deprecated native cc): C/C++ via `@rules_cc//cc:defs.bzl`; shell tests/binaries via `@rules_shell//shell:*.bzl`; file-comparison tests via `@bazel_skylib//rules:diff_test.bzl`; install/packaging via `@rules_pkg//pkg:mappings.bzl`. The converted BUILD files are gazelle-cc-maintained. Some constructs have no faithful mechanical translation and were deliberately left for a post-pass (see conversion-todos.json) or refused (see rejections.json) — those are ALREADY KNOWN, not misses.
+
+## Your task
+Did the converted Bazel project capture ALL the intent of the cmake project? What did it MISS? Hunt the SILENT losses — a dropped test target, an install layout, an option default, a visibility constraint, a build-time codegen step — that compile fine and are flagged NOWHERE. Do NOT re-report anything already in the already-flagged set below; report only NET-NEW misses.
+
+## Read these (the converted bundle)
+- Rendered Bazel (the mechanical output you are auditing):
+  - /tmp/survey-lens/cutlass/build-ws/MODULE.bazel
+  - /tmp/survey-lens/cutlass/build-ws/config/BUILD.bazel
+  - /tmp/survey-lens/cutlass/build-ws/elements/cutlass/BUILD.bazel
+- Original cmake sources (the intent to compare against):
+  - /tmp/cutlass/CMakeLists.txt
+  - /tmp/cutlass/CUDA.cmake
+  - /tmp/cutlass/bin2hex.cmake
+  - /tmp/cutlass/cmake/CTestTestfile.configure.cmake
+  - /tmp/cutlass/cmake/CTestTestfile.test.configure.cmake
+  - /tmp/cutlass/cmake/NvidiaCutlassPackageConfig.cmake
+  - /tmp/cutlass/cmake/googletest.cmake
+  - /tmp/cutlass/cuBLAS.cmake
+  - /tmp/cutlass/cuDNN.cmake
+  - /tmp/cutlass/customConfigs.cmake
+  - /tmp/cutlass/examples/00_basic_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/01_cutlass_utilities/CMakeLists.txt
+  - /tmp/cutlass/examples/02_dump_reg_shmem/CMakeLists.txt
+  - /tmp/cutlass/examples/03_visualize_layout/CMakeLists.txt
+  - /tmp/cutlass/examples/04_tile_iterator/CMakeLists.txt
+  - /tmp/cutlass/examples/05_batched_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/06_splitK_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/07_volta_tensorop_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/08_turing_tensorop_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/09_turing_tensorop_conv2dfprop/CMakeLists.txt
+  - /tmp/cutlass/examples/10_planar_complex/CMakeLists.txt
+  - /tmp/cutlass/examples/111_hopper_ssd/CMakeLists.txt
+  - /tmp/cutlass/examples/112_blackwell_ssd/CMakeLists.txt
+  - /tmp/cutlass/examples/11_planar_complex_array/CMakeLists.txt
+  - /tmp/cutlass/examples/12_gemm_bias_relu/CMakeLists.txt
+  - /tmp/cutlass/examples/13_two_tensor_op_fusion/CMakeLists.txt
+  - /tmp/cutlass/examples/14_ampere_tf32_tensorop_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/15_ampere_sparse_tensorop_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/16_ampere_tensorop_conv2dfprop/CMakeLists.txt
+  - /tmp/cutlass/examples/17_fprop_per_channel_bias/CMakeLists.txt
+  - /tmp/cutlass/examples/18_ampere_fp64_tensorop_affine2_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/19_tensorop_canonical/CMakeLists.txt
+  - /tmp/cutlass/examples/20_simt_canonical/CMakeLists.txt
+  - /tmp/cutlass/examples/21_quaternion_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/22_quaternion_conv/CMakeLists.txt
+  - /tmp/cutlass/examples/23_ampere_gemm_operand_reduction_fusion/CMakeLists.txt
+  - /tmp/cutlass/examples/24_gemm_grouped/CMakeLists.txt
+  - /tmp/cutlass/examples/25_ampere_fprop_mainloop_fusion/CMakeLists.txt
+  - /tmp/cutlass/examples/26_ampere_wgrad_mainloop_fusion/CMakeLists.txt
+  - /tmp/cutlass/examples/27_ampere_3xtf32_fast_accurate_tensorop_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/28_ampere_3xtf32_fast_accurate_tensorop_fprop/CMakeLists.txt
+  - /tmp/cutlass/examples/29_ampere_3xtf32_fast_accurate_tensorop_complex_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/30_wgrad_split_k/CMakeLists.txt
+  - /tmp/cutlass/examples/31_basic_syrk/CMakeLists.txt
+  - /tmp/cutlass/examples/32_basic_trmm/CMakeLists.txt
+  - /tmp/cutlass/examples/33_ampere_3xtf32_tensorop_symm/CMakeLists.txt
+  - /tmp/cutlass/examples/34_transposed_conv2d/CMakeLists.txt
+  - /tmp/cutlass/examples/35_gemm_softmax/CMakeLists.txt
+  - /tmp/cutlass/examples/36_gather_scatter_fusion/CMakeLists.txt
+  - /tmp/cutlass/examples/37_gemm_layernorm_gemm_fusion/CMakeLists.txt
+  - /tmp/cutlass/examples/38_syr2k_grouped/CMakeLists.txt
+  - /tmp/cutlass/examples/39_gemm_permute/CMakeLists.txt
+  - /tmp/cutlass/examples/41_fused_multi_head_attention/CMakeLists.txt
+  - /tmp/cutlass/examples/42_ampere_tensorop_group_conv/CMakeLists.txt
+  - /tmp/cutlass/examples/43_ell_block_sparse_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/45_dual_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/46_depthwise_simt_conv2dfprop/CMakeLists.txt
+  - /tmp/cutlass/examples/47_ampere_gemm_universal_streamk/CMakeLists.txt
+  - /tmp/cutlass/examples/48_hopper_warp_specialized_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/49_hopper_gemm_with_collective_builder/CMakeLists.txt
+  - /tmp/cutlass/examples/50_hopper_gemm_with_epilogue_swizzle/CMakeLists.txt
+  - /tmp/cutlass/examples/51_hopper_gett/CMakeLists.txt
+  - /tmp/cutlass/examples/52_hopper_gather_scatter_fusion/CMakeLists.txt
+  - /tmp/cutlass/examples/53_hopper_gemm_permute/CMakeLists.txt
+  - /tmp/cutlass/examples/54_hopper_fp8_warp_specialized_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/55_hopper_mixed_dtype_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/56_hopper_ptr_array_batched_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/57_hopper_grouped_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/58_ada_fp8_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/59_ampere_gather_scatter_conv/CMakeLists.txt
+  - /tmp/cutlass/examples/60_cutlass_import/CMakeLists.txt
+  - /tmp/cutlass/examples/61_hopper_gemm_with_topk_and_softmax/CMakeLists.txt
+  - /tmp/cutlass/examples/62_hopper_sparse_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/63_hopper_gemm_with_weight_prefetch/CMakeLists.txt
+  - /tmp/cutlass/examples/64_ada_fp8_gemm_grouped/CMakeLists.txt
+  - /tmp/cutlass/examples/65_distributed_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/67_hopper_fp8_warp_specialized_gemm_with_blockwise_scaling/CMakeLists.txt
+  - /tmp/cutlass/examples/68_hopper_fp8_warp_specialized_grouped_gemm_with_blockwise_scaling/CMakeLists.txt
+  - /tmp/cutlass/examples/69_hopper_mixed_dtype_grouped_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/70_blackwell_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/71_blackwell_gemm_with_collective_builder/CMakeLists.txt
+  - /tmp/cutlass/examples/72_blackwell_narrow_precision_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/73_blackwell_gemm_preferred_cluster/CMakeLists.txt
+  - /tmp/cutlass/examples/74_blackwell_gemm_streamk/CMakeLists.txt
+  - /tmp/cutlass/examples/75_blackwell_grouped_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/76_blackwell_conv/CMakeLists.txt
+  - /tmp/cutlass/examples/77_blackwell_fmha/CMakeLists.txt
+  - /tmp/cutlass/examples/78_blackwell_emulated_bf16x9_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/79_blackwell_geforce_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/80_blackwell_geforce_sparse_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/81_blackwell_gemm_blockwise/CMakeLists.txt
+  - /tmp/cutlass/examples/82_blackwell_distributed_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/83_blackwell_sparse_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/84_blackwell_narrow_precision_sparse_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/86_blackwell_mixed_dtype_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/87_blackwell_geforce_gemm_blockwise/CMakeLists.txt
+  - /tmp/cutlass/examples/88_hopper_fmha/CMakeLists.txt
+  - /tmp/cutlass/examples/89_sm103_fp4_ultra_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/90_sm103_fp4_ultra_grouped_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/91_fp4_gemv/CMakeLists.txt
+  - /tmp/cutlass/examples/92_blackwell_moe_gemm/CMakeLists.txt
+  - /tmp/cutlass/examples/93_blackwell_low_latency_gqa/CMakeLists.txt
+  - /tmp/cutlass/examples/94_ada_fp8_blockwise/CMakeLists.txt
+  - /tmp/cutlass/examples/95_blackwell_gemm_green_context/CMakeLists.txt
+  - /tmp/cutlass/examples/CMakeLists.txt
+  - /tmp/cutlass/examples/cute/CMakeLists.txt
+  - /tmp/cutlass/examples/cute/tutorial/CMakeLists.txt
+  - /tmp/cutlass/examples/cute/tutorial/blackwell/CMakeLists.txt
+  - /tmp/cutlass/examples/cute/tutorial/hopper/CMakeLists.txt
+  - /tmp/cutlass/examples/python/CuTeDSL/dsl_tutorials/ffi/CMakeLists.txt
+  - /tmp/cutlass/test/CMakeLists.txt
+  - /tmp/cutlass/test/self_contained_includes/CMakeLists.txt
+  - /tmp/cutlass/test/unit/CMakeLists.txt
+  - /tmp/cutlass/test/unit/cluster_launch/CMakeLists.txt
+  - /tmp/cutlass/test/unit/conv/CMakeLists.txt
+  - /tmp/cutlass/test/unit/conv/device/CMakeLists.txt
+  - /tmp/cutlass/test/unit/conv/device_3x/CMakeLists.txt
+  - /tmp/cutlass/test/unit/conv/device_3x/dgrad/CMakeLists.txt
+  - /tmp/cutlass/test/unit/conv/device_3x/fprop/CMakeLists.txt
+  - /tmp/cutlass/test/unit/conv/device_3x/wgrad/CMakeLists.txt
+  - /tmp/cutlass/test/unit/core/CMakeLists.txt
+  - /tmp/cutlass/test/unit/cute/CMakeLists.txt
+  - /tmp/cutlass/test/unit/cute/ampere/CMakeLists.txt
+  - /tmp/cutlass/test/unit/cute/core/CMakeLists.txt
+  - /tmp/cutlass/test/unit/cute/hopper/CMakeLists.txt
+  - /tmp/cutlass/test/unit/cute/layout/CMakeLists.txt
+  - /tmp/cutlass/test/unit/cute/msvc_compilation/CMakeLists.txt
+  - /tmp/cutlass/test/unit/cute/turing/CMakeLists.txt
+  - /tmp/cutlass/test/unit/cute/volta/CMakeLists.txt
+  - /tmp/cutlass/test/unit/epilogue/CMakeLists.txt
+  - /tmp/cutlass/test/unit/epilogue/thread/CMakeLists.txt
+  - /tmp/cutlass/test/unit/epilogue/threadblock/CMakeLists.txt
+  - /tmp/cutlass/test/unit/epilogue/warp/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/device/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/device/sm100_blockscaled_sparse_tensorop_gemm/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/device/sm100_blockscaled_tensorop_gemm/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/device/sm100_sparse_tensorop_gemm/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/device/sm100_sparse_tensorop_gemm/narrow_precision/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/device/sm100_tensorop_gemm/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/device/sm100_tensorop_gemm/extra_tests/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/device/sm100_tensorop_gemm/narrow_precision/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/device/sm120_blockscaled_sparse_tensorop_gemm/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/device/sm120_blockscaled_tensorop_gemm/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/device/sm120_sparse_tensorop_gemm/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/device/sm120_tensorop_gemm/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/thread/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/thread/host/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/threadblock/CMakeLists.txt
+  - /tmp/cutlass/test/unit/gemm/warp/CMakeLists.txt
+  - /tmp/cutlass/test/unit/layout/CMakeLists.txt
+  - /tmp/cutlass/test/unit/nvrtc/CMakeLists.txt
+  - /tmp/cutlass/test/unit/nvrtc/thread/CMakeLists.txt
+  - /tmp/cutlass/test/unit/pipeline/CMakeLists.txt
+  - /tmp/cutlass/test/unit/reduction/CMakeLists.txt
+  - /tmp/cutlass/test/unit/reduction/device/CMakeLists.txt
+  - /tmp/cutlass/test/unit/reduction/kernel/CMakeLists.txt
+  - /tmp/cutlass/test/unit/reduction/thread/CMakeLists.txt
+  - /tmp/cutlass/test/unit/substrate/CMakeLists.txt
+  - /tmp/cutlass/test/unit/transform/CMakeLists.txt
+  - /tmp/cutlass/test/unit/transform/device/CMakeLists.txt
+  - /tmp/cutlass/test/unit/transform/kernel/CMakeLists.txt
+  - /tmp/cutlass/test/unit/transform/threadblock/CMakeLists.txt
+  - /tmp/cutlass/test/unit/util/CMakeLists.txt
+  - /tmp/cutlass/tools/CMakeLists.txt
+  - /tmp/cutlass/tools/library/CMakeLists.txt
+  - /tmp/cutlass/tools/profiler/CMakeLists.txt
+  - /tmp/cutlass/tools/util/CMakeLists.txt
+
+## Already flagged — do NOT re-report these
+- todo `todo-b34d5022f6c03935` [bake/improvement] gen_examples_00_basic_gemm_ctest_ctest_examples_00_basic_gemm_CTestTestfile_ctest_examples_00_basic_gemm_install_cmake
+- todo `todo-8992a7cfef13f464` [bake/improvement] gen_examples_01_cutlass_utilities_ctest_ctest_examples_01_cutlass_utilities_CTestTestfile_ctest_examples_01_cutlass_utilities_install_cmake
+- todo `todo-1762350fa3c727c1` [bake/improvement] gen_examples_02_dump_reg_shmem_ctest_ctest_examples_02_dump_reg_shmem_CTestTestfile_ctest_examples_02_dump_reg_shmem_install_cmake
+- todo `todo-3276994ca2ef92d9` [bake/improvement] gen_examples_03_visualize_layout_ctest_ctest_examples_03_visualize_layout_CTestTestfile_ctest_examples_03_visualize_layout_install_cmake
+- todo `todo-3263c73b45b37682` [bake/improvement] gen_examples_04_tile_iterator_ctest_ctest_examples_04_tile_iterator_CTestTestfile_ctest_examples_04_tile_iterator_install_cmake
+- todo `todo-144bd66f7171f66e` [bake/improvement] gen_examples_05_batched_gemm_ctest_ctest_examples_05_batched_gemm_CTestTestfile_ctest_examples_05_batched_gemm_install_cmake
+- todo `todo-e37883a190a99175` [bake/improvement] gen_examples_06_splitK_gemm_ctest_ctest_examples_06_splitK_gemm_CTestTestfile_ctest_examples_06_splitK_gemm_install_cmake
+- todo `todo-d53bb28459e36806` [bake/improvement] gen_examples_07_volta_tensorop_gemm_ctest_ctest_examples_07_volta_tensorop_gemm_CTestTestfile_ctest_examples_07_volta_tensorop_gemm_install_cmake
+- todo `todo-d88fbc92a12873c4` [bake/improvement] gen_examples_08_turing_tensorop_gemm_ctest_ctest_examples_08_turing_tensorop_gemm_CTestTestfile_ctest_examples_08_turing_tensorop_gemm_install_cmake
+- todo `todo-fdf69e77b5e1d461` [bake/improvement] gen_examples_09_turing_tensorop_conv2dfprop_ctest_ctest_examples_09_turing_tensorop_conv2dfprop_CTestTestfile_ctest_examples_09_turing_tensorop_conv2dfprop_install_cmake
+- todo `todo-2256aca623f36751` [bake/improvement] gen_examples_10_planar_complex_ctest_ctest_examples_10_planar_complex_CTestTestfile_ctest_examples_10_planar_complex_install_cmake
+- todo `todo-0de98e252eec783f` [bake/improvement] gen_examples_111_hopper_ssd_ctest_ctest_examples_111_hopper_ssd_CTestTestfile_ctest_examples_111_hopper_ssd_install_cmake
+- todo `todo-c095d9baa4603ac2` [bake/improvement] gen_examples_11_planar_complex_array_ctest_ctest_examples_11_planar_complex_array_CTestTestfile_ctest_examples_11_planar_complex_array_install_cmake
+- todo `todo-8d5dca03551366c9` [bake/improvement] gen_examples_12_gemm_bias_relu_ctest_ctest_examples_12_gemm_bias_relu_CTestTestfile_ctest_examples_12_gemm_bias_relu_install_cmake
+- todo `todo-dfef1b30162f384e` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_convs_f16_sm75_rf_CTestTestfile_ctest_examples_13_fused_two_convs_f16_sm75_rf_install_cmake
+- todo `todo-14cc36269c227d50` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_convs_f16_sm75_shmem_CTestTestfile_ctest_examples_13_fused_two_convs_f16_sm75_shmem_install_cmake
+- todo `todo-418a67c16f2606d8` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_convs_f16_sm80_rf_CTestTestfile_ctest_examples_13_fused_two_convs_f16_sm80_rf_install_cmake
+- todo `todo-aaa088ef3164a837` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_convs_f16_sm80_shmem_CTestTestfile_ctest_examples_13_fused_two_convs_f16_sm80_shmem_install_cmake
+- todo `todo-cebcca84b34ec022` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_convs_s8_sm75_rf_CTestTestfile_ctest_examples_13_fused_two_convs_s8_sm75_rf_install_cmake
+- todo `todo-f92428aebdc15bbd` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_convs_s8_sm75_shmem_CTestTestfile_ctest_examples_13_fused_two_convs_s8_sm75_shmem_install_cmake
+- todo `todo-c4776df992744cc0` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_convs_s8_sm80_shmem_CTestTestfile_ctest_examples_13_fused_two_convs_s8_sm80_shmem_install_cmake
+- todo `todo-1ee5eec1d1af2032` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_gemms_f16_sm75_rf_CTestTestfile_ctest_examples_13_fused_two_gemms_f16_sm75_rf_install_cmake
+- todo `todo-fdf60106456b5447` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_gemms_f16_sm75_shmem_CTestTestfile_ctest_examples_13_fused_two_gemms_f16_sm75_shmem_install_cmake
+- todo `todo-507d6bff56409bf2` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_gemms_f16_sm80_rf_CTestTestfile_ctest_examples_13_fused_two_gemms_f16_sm80_rf_install_cmake
+- todo `todo-a10d4536c5009f63` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_gemms_f16_sm80_shmem_CTestTestfile_ctest_examples_13_fused_two_gemms_f16_sm80_shmem_install_cmake
+- todo `todo-ac4ad6c0c8931e22` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_gemms_grouped_f16_sm80_rf_CTestTestfile_ctest_examples_13_fused_two_gemms_grouped_f16_sm80_rf_install_cmake
+- todo `todo-6e230611fab0370f` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_gemms_s8_sm75_rf_CTestTestfile_ctest_examples_13_fused_two_gemms_s8_sm75_rf_install_cmake
+- todo `todo-7ed0e64a1107e756` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_gemms_s8_sm75_shmem_CTestTestfile_ctest_examples_13_fused_two_gemms_s8_sm75_shmem_install_cmake
+- todo `todo-e3734563adba5fa6` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_gemms_s8_sm80_rf_CTestTestfile_ctest_examples_13_fused_two_gemms_s8_sm80_rf_install_cmake
+- todo `todo-aff1f7a317c47904` [bake/improvement] gen_examples_13_two_tensor_op_fusion_ctest_ctest_examples_13_fused_two_gemms_s8_sm80_shmem_CTestTestfile_ctest_examples_13_fused_two_gemms_s8_sm80_shmem_install_cmake
+- todo `todo-82c36e5520753bdb` [bake/improvement] gen_examples_14_ampere_tf32_tensorop_gemm_ctest_ctest_examples_14_ampere_tf32_tensorop_gemm_CTestTestfile_ctest_examples_14_ampere_tf32_tensorop_gemm_install_cmake
+- todo `todo-22d8aa9fe9692c1a` [bake/improvement] gen_examples_15_ampere_sparse_tensorop_gemm_ctest_ctest_examples_15_ampere_sparse_tensorop_gemm_CTestTestfile_ctest_examples_15_ampere_sparse_tensorop_gemm_install_cmake
+- todo `todo-e68819db3c84e867` [bake/improvement] gen_examples_15_ampere_sparse_tensorop_gemm_ctest_ctest_examples_15_ampere_sparse_tensorop_gemm_universal_CTestTestfile_ctest_examples_15_ampere_sparse_tensorop_gemm_universal_install_cmake
+- todo `todo-0c709a52c7c8fc85` [bake/improvement] gen_examples_15_ampere_sparse_tensorop_gemm_ctest_ctest_examples_15_ampere_sparse_tensorop_gemm_with_visitor_CTestTestfile_ctest_examples_15_ampere_sparse_tensorop_gemm_with_visitor_install_cmake
+- todo `todo-dd0ff43220d31189` [bake/improvement] gen_examples_16_ampere_tensorop_conv2dfprop_ctest_ctest_examples_16_ampere_tensorop_conv2dfprop_CTestTestfile_ctest_examples_16_ampere_tensorop_conv2dfprop_install_cmake
+- todo `todo-30c8deaab0aa6c2f` [bake/improvement] gen_examples_17_fprop_per_channel_bias_ctest_ctest_examples_17_fprop_per_channel_bias_CTestTestfile_ctest_examples_17_fprop_per_channel_bias_install_cmake
+- todo `todo-3ed2415a3ea17d48` [bake/improvement] gen_examples_18_ampere_fp64_tensorop_affine2_gemm_ctest_ctest_examples_18_ampere_fp64_tensorop_affine2_gemm_CTestTestfile_ctest_examples_18_ampere_fp64_tensorop_affine2_gemm_install_cmake
+- todo `todo-48addce935043f90` [bake/improvement] gen_examples_19_tensorop_canonical_ctest_ctest_examples_19_tensorop_canonical_CTestTestfile_ctest_examples_19_tensorop_canonical_install_cmake
+- todo `todo-d63507a51d7bc228` [bake/improvement] gen_examples_20_simt_canonical_ctest_ctest_examples_20_simt_canonical_CTestTestfile_ctest_examples_20_simt_canonical_install_cmake
+- todo `todo-722813019c6a837d` [bake/improvement] gen_examples_21_quaternion_gemm_ctest_ctest_examples_21_quaternion_gemm_CTestTestfile_ctest_examples_21_quaternion_gemm_install_cmake
+- todo `todo-04c193424b64734d` [bake/improvement] gen_examples_22_quaternion_conv_ctest_ctest_examples_22_quaternion_conv_CTestTestfile_ctest_examples_22_quaternion_conv_install_cmake
+- todo `todo-2a213be42e347bb7` [bake/improvement] gen_examples_23_ampere_gemm_operand_reduction_fusion_ctest_ctest_examples_23_ampere_gemm_operand_reduction_fusion_CTestTestfile_ctest_examples_23_ampere_gemm_operand_reduction_fusion_install_cmake
+- todo `todo-7f769fb3736ee0d8` [bake/improvement] gen_examples_24_gemm_grouped_ctest_ctest_examples_24_gemm_grouped_CTestTestfile_ctest_examples_24_gemm_grouped_install_cmake
+- todo `todo-820ff64238d8f134` [bake/improvement] gen_examples_25_ampere_fprop_mainloop_fusion_ctest_ctest_examples_25_ampere_3d_fprop_mainloop_fusion_CTestTestfile_ctest_examples_25_ampere_3d_fprop_mainloop_fusion_install_cmake
+- todo `todo-034eb2b62762a65e` [bake/improvement] gen_examples_25_ampere_fprop_mainloop_fusion_ctest_ctest_examples_25_ampere_fprop_mainloop_fusion_CTestTestfile_ctest_examples_25_ampere_fprop_mainloop_fusion_install_cmake
+- todo `todo-e9031c6caa1a50b5` [bake/improvement] gen_examples_26_ampere_wgrad_mainloop_fusion_ctest_ctest_examples_26_ampere_wgrad_mainloop_fusion_CTestTestfile_ctest_examples_26_ampere_wgrad_mainloop_fusion_install_cmake
+- todo `todo-c0ebb1e02ca64b7a` [bake/improvement] gen_examples_27_ampere_3xtf32_fast_accurate_tensorop_gemm_ctest_ctest_examples_27_ampere_3xtf32_fast_accurate_tensorop_gemm_CTestTestfile_ctest_examples_27_ampere_3xtf32_fast_accurate_tensorop_gemm_install_cmake
+- todo `todo-4a711d0bf0f52224` [bake/improvement] gen_examples_28_ampere_3xtf32_fast_accurate_tensorop_fprop_ctest_ctest_examples_28_ampere_3xtf32_fast_accurate_tensorop_fprop_CTestTestfile_ctest_examples_28_ampere_3xtf32_fast_accurate_tensorop_fprop_install_cmake
+- todo `todo-433667343cb53bdf` [bake/improvement] gen_examples_29_ampere_3xtf32_fast_accurate_tensorop_complex_gemm_ctest_ctest_examples_29_3xtf32_complex_gemm_CTestTestfile_ctest_examples_29_3xtf32_complex_gemm_install_cmake
+- todo `todo-ff5f4eda28ec6207` [bake/improvement] gen_examples_30_wgrad_split_k_ctest_ctest_examples_30_wgrad_split_k_CTestTestfile_ctest_examples_30_wgrad_split_k_install_cmake
+- todo `todo-424e977b3eba8859` [bake/improvement] gen_examples_31_basic_syrk_ctest_ctest_examples_31_basic_syrk_CTestTestfile_ctest_examples_31_basic_syrk_install_cmake
+- todo `todo-c368d759f765bfd6` [bake/improvement] gen_examples_32_basic_trmm_ctest_ctest_examples_32_basic_trmm_CTestTestfile_ctest_examples_32_basic_trmm_install_cmake
+- todo `todo-763bc1d23a110b3a` [bake/improvement] gen_examples_33_ampere_3xtf32_tensorop_symm_ctest_ctest_examples_33_ampere_3xtf32_tensorop_symm_CTestTestfile_ctest_examples_33_ampere_3xtf32_tensorop_symm_install_cmake
+- todo `todo-cfdd94ad2763b41b` [bake/improvement] gen_examples_34_transposed_conv2d_ctest_ctest_examples_34_transposed_conv2d_CTestTestfile_ctest_examples_34_transposed_conv2d_install_cmake
+- todo `todo-21d1521034f3a4c3` [bake/improvement] gen_examples_35_gemm_softmax_ctest_ctest_examples_35_gemm_softmax_CTestTestfile_ctest_examples_35_gemm_softmax_install_cmake
+- todo `todo-43f13f674ba56320` [bake/improvement] gen_examples_36_gather_scatter_fusion_ctest_ctest_examples_36_gather_scatter_fusion_CTestTestfile_ctest_examples_36_gather_scatter_fusion_install_cmake
+- todo `todo-b541b736fa1e74cf` [bake/improvement] gen_examples_37_gemm_layernorm_gemm_fusion_ctest_ctest_examples_37_gemm_layernorm_gemm_fusion_CTestTestfile_ctest_examples_37_gemm_layernorm_gemm_fusion_install_cmake
+- todo `todo-fdafb22e35e496c4` [bake/improvement] gen_examples_38_syr2k_grouped_ctest_ctest_examples_38_syr2k_grouped_CTestTestfile_ctest_examples_38_syr2k_grouped_install_cmake
+- todo `todo-d26c41ff4452b94b` [bake/improvement] gen_examples_39_gemm_permute_ctest_ctest_examples_39_gemm_permute_CTestTestfile_ctest_examples_39_gemm_permute_install_cmake
+- todo `todo-32ffdcd9f944e563` [bake/improvement] gen_examples_41_fused_multi_head_attention_ctest_ctest_examples_41_fused_multi_head_attention_backward_CTestTestfile_ctest_examples_41_fused_multi_head_attention_backward_install_cmake
+- todo `todo-a7290e6463f50b7d` [bake/improvement] gen_examples_41_fused_multi_head_attention_ctest_ctest_examples_41_fused_multi_head_attention_fixed_seqlen_CTestTestfile_ctest_examples_41_fused_multi_head_attention_fixed_seqlen_install_cmake
+- todo `todo-911b5fe8a2bf699b` [bake/improvement] gen_examples_41_fused_multi_head_attention_ctest_ctest_examples_41_fused_multi_head_attention_variable_seqlen_CTestTestfile_ctest_examples_41_fused_multi_head_attention_variable_seqlen_install_cmake
+- todo `todo-51e3d3ed41b9d464` [bake/improvement] gen_examples_42_ampere_tensorop_group_conv_ctest_ctest_examples_42_ampere_tensorop_group_conv_CTestTestfile_ctest_examples_42_ampere_tensorop_group_conv_install_cmake
+- todo `todo-c5df7109e46c6685` [bake/improvement] gen_examples_43_ell_block_sparse_gemm_ctest_ctest_examples_43_ell_block_sparse_gemm_CTestTestfile_ctest_examples_43_ell_block_sparse_gemm_install_cmake
+- todo `todo-05c871b679847a3a` [bake/improvement] gen_examples_45_dual_gemm_ctest_ctest_examples_45_dual_gemm_CTestTestfile_ctest_examples_45_dual_gemm_install_cmake
+- todo `todo-139925936e4b853b` [bake/improvement] gen_examples_46_depthwise_simt_conv2dfprop_ctest_ctest_examples_46_depthwise_simt_conv2dfprop_CTestTestfile_ctest_examples_46_depthwise_simt_conv2dfprop_install_cmake
+- todo `todo-27a1511fa8a97e6e` [bake/improvement] gen_examples_47_ampere_gemm_universal_streamk_ctest_ctest_examples_47_ampere_gemm_universal_streamk_CTestTestfile_ctest_examples_47_ampere_gemm_universal_streamk_install_cmake
+- todo `todo-79ee80046eb09c10` [bake/improvement] gen_examples_47_ampere_gemm_universal_streamk_ctest_ctest_examples_47_ampere_gemm_universal_streamk_broadcast_CTestTestfile_ctest_examples_47_ampere_gemm_universal_streamk_broadcast_install_cmake
+- todo `todo-014a0ebd828a1a2e` [bake/improvement] gen_examples_48_hopper_warp_specialized_gemm_ctest_ctest_examples_48_hopper_warp_specialized_gemm_CTestTestfile_ctest_examples_48_hopper_warp_specialized_gemm_install_cmake
+- todo `todo-99de7be2b6372201` [bake/improvement] gen_examples_49_hopper_gemm_with_collective_builder_ctest_ctest_examples_49_collective_builder_CTestTestfile_ctest_examples_49_collective_builder_install_cmake
+- todo `todo-412c19f63d6be38c` [bake/improvement] gen_examples_50_hopper_gemm_with_epilogue_swizzle_ctest_ctest_examples_50_hopper_gemm_with_epilogue_swizzle_CTestTestfile_ctest_examples_50_hopper_gemm_with_epilogue_swizzle_install_cmake
+- todo `todo-f2eb61241795cd15` [bake/improvement] gen_examples_51_hopper_gett_ctest_ctest_examples_51_hopper_gett_CTestTestfile_ctest_examples_51_hopper_gett_install_cmake
+- todo `todo-17d88c2e02c2eaa9` [bake/improvement] gen_examples_52_hopper_gather_scatter_fusion_ctest_ctest_examples_52_hopper_gather_scatter_fusion_CTestTestfile_ctest_examples_52_hopper_gather_scatter_fusion_install_cmake
+- todo `todo-0d07a1a0d4e52fa8` [bake/improvement] gen_examples_53_hopper_gemm_permute_ctest_ctest_examples_53_hopper_gemm_permute_CTestTestfile_ctest_examples_53_hopper_gemm_permute_install_cmake
+- todo `todo-15a034fb95521e52` [bake/improvement] gen_examples_54_hopper_fp8_warp_specialized_gemm_ctest_ctest_examples_54_hopper_fp8_warp_specialized_gemm_CTestTestfile_ctest_examples_54_hopper_fp8_warp_specialized_gemm_install_cmake
+- todo `todo-313a6ee435be65da` [bake/improvement] gen_examples_55_hopper_mixed_dtype_gemm_ctest_ctest_examples_55_hopper_int4_bf16_gemm_CTestTestfile_ctest_examples_55_hopper_int4_bf16_gemm_install_cmake
+- todo `todo-bfa1686869faff69` [bake/improvement] gen_examples_55_hopper_mixed_dtype_gemm_ctest_ctest_examples_55_hopper_int4_fp8_gemm_CTestTestfile_ctest_examples_55_hopper_int4_fp8_gemm_install_cmake
+- todo `todo-29335879f06eaffb` [bake/improvement] gen_examples_55_hopper_mixed_dtype_gemm_ctest_ctest_examples_55_hopper_mixed_dtype_gemm_CTestTestfile_ctest_examples_55_hopper_mixed_dtype_gemm_install_cmake
+- todo `todo-9d16a9f21279107d` [bake/improvement] gen_examples_56_hopper_ptr_array_batched_gemm_ctest_ctest_examples_56_hopper_ptr_array_batched_gemm_CTestTestfile_ctest_examples_56_hopper_ptr_array_batched_gemm_install_cmake
+- todo `todo-3c06562bcf9a724b` [bake/improvement] gen_examples_57_hopper_grouped_gemm_ctest_ctest_examples_57_hopper_grouped_gemm_CTestTestfile_ctest_examples_57_hopper_grouped_gemm_install_cmake
+- todo `todo-cc97269eada4808e` [bake/improvement] gen_examples_58_ada_fp8_gemm_ctest_ctest_examples_58_ada_fp8_gemm_CTestTestfile_ctest_examples_58_ada_fp8_gemm_install_cmake
+- todo `todo-54ab7ff25cb69039` [bake/improvement] gen_examples_59_ampere_gather_scatter_conv_ctest_ctest_examples_59_ampere_gather_scatter_conv_CTestTestfile_ctest_examples_59_ampere_gather_scatter_conv_install_cmake
+- todo `todo-b09fc2ab3a4895a3` [bake/improvement] gen_examples_61_hopper_gemm_with_topk_and_softmax_ctest_ctest_examples_61_hopper_gemm_with_topk_and_softmax_CTestTestfile_ctest_examples_61_hopper_gemm_with_topk_and_softmax_install_cmake
+- todo `todo-26ab2db2878a7e54` [bake/improvement] gen_examples_62_hopper_sparse_gemm_ctest_ctest_examples_62_hopper_sparse_gemm_CTestTestfile_ctest_examples_62_hopper_sparse_gemm_install_cmake
+- todo `todo-2e018eaa0ecd1b09` [bake/improvement] gen_examples_63_hopper_gemm_with_weight_prefetch_ctest_ctest_examples_63_hopper_gemm_with_weight_prefetch_CTestTestfile_ctest_examples_63_hopper_gemm_with_weight_prefetch_install_cmake
+- todo `todo-04b84d428b09e10f` [bake/improvement] gen_examples_64_ada_fp8_gemm_grouped_ctest_ctest_examples_64_ada_fp8_gemm_grouped_CTestTestfile_ctest_examples_64_ada_fp8_gemm_grouped_install_cmake
+- todo `todo-6d60dcfbb7d5a54b` [bake/improvement] gen_examples_65_distributed_gemm_ctest_ctest_examples_65_distributed_gemm_CTestTestfile_ctest_examples_65_distributed_gemm_install_cmake
+- todo `todo-a4d2c4b706d5b25c` [bake/improvement] gen_examples_67_hopper_fp8_warp_specialized_gemm_with_blockwise_scaling_ctest_ctest_examples_67_hopper_fp8_warp_specialized_gemm_with_blockwise_scaling_CTestTestfile_ctest_examples_67_hopper_fp8_warp_specialized_gemm_with_blockwise_scaling_install_cmake
+- todo `todo-c113905b3350afcb` [bake/improvement] gen_examples_67_hopper_fp8_warp_specialized_gemm_with_blockwise_scaling_ctest_ctest_examples_67_hopper_fp8_warp_specialized_gemm_with_groupwise_scaling_CTestTestfile_ctest_examples_67_hopper_fp8_warp_specialized_gemm_with_groupwise_scaling_install_cmake
+- todo `todo-4a795380c5d26327` [bake/improvement] gen_examples_68_hopper_fp8_warp_specialized_grouped_gemm_with_blockwise_scaling_ctest_ctest_examples_68_hopper_fp8_warp_specialized_grouped_gemm_with_blockwise_scaling_CTestTestfile_ctest_examples_68_hopper_fp8_warp_specialized_grouped_gemm_with_blockwise_scaling_install_cmake
+- todo `todo-fa2da0afcb1f9628` [bake/improvement] gen_examples_68_hopper_fp8_warp_specialized_grouped_gemm_with_blockwise_scaling_ctest_ctest_examples_68_hopper_fp8_warp_specialized_grouped_gemm_with_blockwise_scaling_with_sparse_groups_CTestTestfile_ctest_examples_68_hopper_fp8_warp_specialized_grouped_gemm_with_blockwise_scaling_with_sparse_groups_install_cmake
+- todo `todo-2cd4b60882186ecb` [bake/improvement] gen_examples_69_hopper_mixed_dtype_grouped_gemm_ctest_ctest_examples_69_hopper_int4_bf16_grouped_gemm_CTestTestfile_ctest_examples_69_hopper_int4_bf16_grouped_gemm_install_cmake
+- todo `todo-6da213ef0db5d2a7` [bake/improvement] gen_examples_69_hopper_mixed_dtype_grouped_gemm_ctest_ctest_examples_69_hopper_int4_fp8_grouped_gemm_CTestTestfile_ctest_examples_69_hopper_int4_fp8_grouped_gemm_install_cmake
+- todo `todo-41118148ee10b39e` [bake/improvement] gen_examples_69_hopper_mixed_dtype_grouped_gemm_ctest_ctest_examples_69_hopper_mixed_dtype_grouped_gemm_CTestTestfile_ctest_examples_69_hopper_mixed_dtype_grouped_gemm_install_cmake
+- todo `todo-9f53890ccede107b` [bake/improvement] gen_examples_86_blackwell_mixed_dtype_gemm_ctest_ctest_examples_86_blackwell_mixed_dtype_gemm_CTestTestfile_ctest_examples_86_blackwell_mixed_dtype_gemm_install_cmake
+- todo `todo-a293f8d3b3c35d67` [bake/improvement] gen_examples_88_hopper_fmha_ctest_ctest_examples_88_hopper_fmha_CTestTestfile_ctest_examples_88_hopper_fmha_install_cmake
+- todo `todo-d1530db8bd9e34b2` [bake/improvement] gen_examples_88_hopper_fmha_ctest_ctest_examples_88_hopper_fmha_fp8_CTestTestfile_ctest_examples_88_hopper_fmha_fp8_install_cmake
+- todo `todo-f049e2929359c315` [bake/improvement] gen_examples_91_fp4_gemv_ctest_ctest_examples_91_fp4_gemv_CTestTestfile_ctest_examples_91_fp4_gemv_install_cmake
+- todo `todo-8765f73cca22004f` [bake/improvement] gen_examples_94_ada_fp8_blockwise_ctest_ctest_examples_94_ada_fp8_blockwise_CTestTestfile_ctest_examples_94_ada_fp8_blockwise_install_cmake
+- todo `todo-2f02a96222dc8a54` [bake/improvement] gen_examples_cute_tutorial_ctest_ctest_examples_cute_tutorial_sgemm_1_CTestTestfile_ctest_examples_cute_tutorial_sgemm_1_install_cmake
+- todo `todo-7963fad40c0c6520` [bake/improvement] gen_examples_cute_tutorial_ctest_ctest_examples_cute_tutorial_sgemm_2_CTestTestfile_ctest_examples_cute_tutorial_sgemm_2_install_cmake
+- todo `todo-31c745ff57c9c0e2` [bake/improvement] gen_examples_cute_tutorial_ctest_ctest_examples_cute_tutorial_sgemm_sm70_CTestTestfile_ctest_examples_cute_tutorial_sgemm_sm70_install_cmake
+- todo `todo-c3f79d30b8bc4552` [bake/improvement] gen_examples_cute_tutorial_ctest_ctest_examples_cute_tutorial_sgemm_sm80_CTestTestfile_ctest_examples_cute_tutorial_sgemm_sm80_install_cmake
+- todo `todo-ee189cd65db8a4d3` [bake/improvement] gen_examples_cute_tutorial_ctest_ctest_examples_cute_tutorial_tiled_copy_CTestTestfile_ctest_examples_cute_tutorial_tiled_copy_install_cmake
+- todo `todo-8da451e1323970d1` [bake/improvement] gen_examples_cute_tutorial_ctest_ctest_examples_cute_tutorial_tiled_copy_if_CTestTestfile_ctest_examples_cute_tutorial_tiled_copy_if_install_cmake
+- todo `todo-ba92339092a0a033` [bake/improvement] gen_examples_cute_tutorial_hopper_ctest_ctest_examples_cute_tutorial_wgmma_sm90_CTestTestfile_ctest_examples_cute_tutorial_wgmma_sm90_install_cmake
+- todo `todo-bb42e45afaf52fb7` [bake/improvement] gen_examples_cute_tutorial_hopper_ctest_ctest_examples_cute_tutorial_wgmma_tma_sm90_CTestTestfile_ctest_examples_cute_tutorial_wgmma_tma_sm90_install_cmake
+- todo `todo-b671a521f7a2e273` [bake/improvement] gen_test_unit_cluster_launch_ctest_ctest_unit_cluster_launch_CTestTestfile_ctest_unit_cluster_launch_install_cmake
+- todo `todo-8c88d836adb28eee` [bake/improvement] gen_test_unit_conv_device_3x_dgrad_ctest_ctest_unit_conv_dgrad_device_tensorop_sm90_CTestTestfile_ctest_unit_conv_dgrad_device_tensorop_sm90_install_cmake
+- todo `todo-faf96cf75d7c3c2c` [bake/improvement] gen_test_unit_conv_device_3x_fprop_ctest_ctest_unit_conv1d_fprop_device_tensorop_sm90_CTestTestfile_ctest_unit_conv1d_fprop_device_tensorop_sm90_install_cmake
+- todo `todo-161c3bae301d69d3` [bake/improvement] gen_test_unit_conv_device_3x_fprop_ctest_ctest_unit_conv2d_fprop_device_tensorop_sm90_CTestTestfile_ctest_unit_conv2d_fprop_device_tensorop_sm90_install_cmake
+- todo `todo-f89c600b09a7c3d9` [bake/improvement] gen_test_unit_conv_device_3x_fprop_ctest_ctest_unit_conv3d_fprop_device_tensorop_sm90_CTestTestfile_ctest_unit_conv3d_fprop_device_tensorop_sm90_install_cmake
+- todo `todo-448dd35219e70953` [bake/improvement] gen_test_unit_conv_device_3x_wgrad_ctest_ctest_unit_conv_wgrad_device_tensorop_sm90_CTestTestfile_ctest_unit_conv_wgrad_device_tensorop_sm90_install_cmake
+- todo `todo-28e889a4ed0b5e8b` [bake/improvement] gen_test_unit_conv_device_ctest_ctest_unit_conv_device_simt_CTestTestfile_ctest_unit_conv_device_simt_install_cmake
+- todo `todo-a4f96b4a6955e163` [bake/improvement] gen_test_unit_conv_device_ctest_ctest_unit_conv_device_tensorop_f16_sm80_CTestTestfile_ctest_unit_conv_device_tensorop_f16_sm80_install_cmake
+- todo `todo-da9dc60b1c03a875` [bake/improvement] gen_test_unit_conv_device_ctest_ctest_unit_conv_device_tensorop_f32_sm70_CTestTestfile_ctest_unit_conv_device_tensorop_f32_sm70_install_cmake
+- todo `todo-6488576ab1dd7af0` [bake/improvement] gen_test_unit_conv_device_ctest_ctest_unit_conv_device_tensorop_f32_sm75_CTestTestfile_ctest_unit_conv_device_tensorop_f32_sm75_install_cmake
+- todo `todo-70ce5d97b27bbb35` [bake/improvement] gen_test_unit_conv_device_ctest_ctest_unit_conv_device_tensorop_f32_sm80_CTestTestfile_ctest_unit_conv_device_tensorop_f32_sm80_install_cmake
+- todo `todo-0d3ff301d6f41481` [bake/improvement] gen_test_unit_conv_device_ctest_ctest_unit_conv_device_tensorop_f32_tf32_sm80_CTestTestfile_ctest_unit_conv_device_tensorop_f32_tf32_sm80_install_cmake
+- todo `todo-dbda5897f03cefac` [bake/improvement] gen_test_unit_conv_device_ctest_ctest_unit_conv_device_tensorop_f8_sm89_CTestTestfile_ctest_unit_conv_device_tensorop_f8_sm89_install_cmake
+- todo `todo-c3a3ba2fa0a21437` [bake/improvement] gen_test_unit_conv_device_ctest_ctest_unit_conv_device_tensorop_s32_CTestTestfile_ctest_unit_conv_device_tensorop_s32_install_cmake
+- todo `todo-2694373eabc3e08c` [bake/improvement] gen_test_unit_conv_device_ctest_ctest_unit_conv_device_tensorop_s32_interleaved_CTestTestfile_ctest_unit_conv_device_tensorop_s32_interleaved_install_cmake
+- todo `todo-dcb68704de36ce53` [bake/improvement] gen_test_unit_core_ctest_ctest_unit_core_CTestTestfile_ctest_unit_core_install_cmake
+- todo `todo-1915b898b03a0490` [bake/improvement] gen_test_unit_cute_ampere_ctest_ctest_unit_cute_ampere_CTestTestfile_ctest_unit_cute_ampere_install_cmake
+- todo `todo-1e3f8ddbc54aef29` [bake/improvement] gen_test_unit_cute_ampere_ctest_ctest_unit_cute_ampere_tiled_cp_async_CTestTestfile_ctest_unit_cute_ampere_tiled_cp_async_install_cmake
+- todo `todo-2df9d425172e1040` [bake/improvement] gen_test_unit_cute_core_ctest_ctest_unit_cute_core_CTestTestfile_ctest_unit_cute_core_install_cmake
+- todo `todo-7dd363ec414f0a0e` [bake/improvement] gen_test_unit_cute_hopper_ctest_ctest_unit_cute_hopper_bulk_load_CTestTestfile_ctest_unit_cute_hopper_bulk_load_install_cmake
+- todo `todo-12c1d943a6170284` [bake/improvement] gen_test_unit_cute_hopper_ctest_ctest_unit_cute_hopper_bulk_store_CTestTestfile_ctest_unit_cute_hopper_bulk_store_install_cmake
+- todo `todo-f5b569a2b6f3c148` [bake/improvement] gen_test_unit_cute_hopper_ctest_ctest_unit_cute_hopper_cooperative_gemm_CTestTestfile_ctest_unit_cute_hopper_cooperative_gemm_install_cmake
+- todo `todo-743a91322fe653c8` [bake/improvement] gen_test_unit_cute_hopper_ctest_ctest_unit_cute_hopper_stsm_CTestTestfile_ctest_unit_cute_hopper_stsm_install_cmake
+- todo `todo-f584493b2cf77760` [bake/improvement] gen_test_unit_cute_hopper_ctest_ctest_unit_cute_hopper_tma_load_CTestTestfile_ctest_unit_cute_hopper_tma_load_install_cmake
+- todo `todo-fd43007f9cf141e7` [bake/improvement] gen_test_unit_cute_hopper_ctest_ctest_unit_cute_hopper_tma_mcast_load_CTestTestfile_ctest_unit_cute_hopper_tma_mcast_load_install_cmake
+- todo `todo-c1539bb0e05c7672` [bake/improvement] gen_test_unit_cute_hopper_ctest_ctest_unit_cute_hopper_tma_store_CTestTestfile_ctest_unit_cute_hopper_tma_store_install_cmake
+- todo `todo-7f6771cb753e619e` [bake/improvement] gen_test_unit_cute_layout_ctest_ctest_unit_cute_layout_CTestTestfile_ctest_unit_cute_layout_install_cmake
+- todo `todo-74de48a55362e2b1` [bake/improvement] gen_test_unit_cute_msvc_compilation_ctest_ctest_unit_cute_msvc_compilation_CTestTestfile_ctest_unit_cute_msvc_compilation_install_cmake
+- todo `todo-508e7f16a2144f04` [bake/improvement] gen_test_unit_cute_turing_ctest_ctest_unit_cute_turing_CTestTestfile_ctest_unit_cute_turing_install_cmake
+- todo `todo-1906a1739e88f951` [bake/improvement] gen_test_unit_cute_volta_ctest_ctest_unit_cute_volta_CTestTestfile_ctest_unit_cute_volta_install_cmake
+- todo `todo-cbe76be46d49f0ee` [bake/improvement] gen_test_unit_epilogue_thread_ctest_ctest_unit_epilogue_thread_CTestTestfile_ctest_unit_epilogue_thread_install_cmake
+- todo `todo-b8c6b2454f08fc8b` [bake/improvement] gen_test_unit_epilogue_threadblock_ctest_ctest_unit_epilogue_threadblock_CTestTestfile_ctest_unit_epilogue_threadblock_install_cmake
+- todo `todo-c48bc2be0df928f7` [bake/improvement] gen_test_unit_epilogue_warp_ctest_ctest_unit_epilogue_warp_CTestTestfile_ctest_unit_epilogue_warp_install_cmake
+- todo `todo-a68ac61c7e7e14dd` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_blas3_CTestTestfile_ctest_unit_gemm_device_blas3_install_cmake
+- todo `todo-f62012c11b07836d` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_blas3_gaussian_CTestTestfile_ctest_unit_gemm_device_blas3_gaussian_install_cmake
+- todo `todo-81af8351c3bb2504` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_broadcast_CTestTestfile_ctest_unit_gemm_device_broadcast_install_cmake
+- todo `todo-1a841f68ad6e28ac` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_gemm_with_fused_epilogue_tensorop_CTestTestfile_ctest_unit_gemm_device_gemm_with_fused_epilogue_tensorop_install_cmake
+- todo `todo-16ff181b3c1456c4` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_grouped_CTestTestfile_ctest_unit_gemm_device_grouped_install_cmake
+- todo `todo-428b5f463a104139` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_grouped_blas3_CTestTestfile_ctest_unit_gemm_device_grouped_blas3_install_cmake
+- todo `todo-dab288747af756aa` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_grouped_rank_2k_scheduler_CTestTestfile_ctest_unit_gemm_device_grouped_rank_2k_scheduler_install_cmake
+- todo `todo-8c379fefc829a7d9` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_grouped_scheduler_CTestTestfile_ctest_unit_gemm_device_grouped_scheduler_install_cmake
+- todo `todo-a757789abdb7dd80` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_mixed_input_tensorop_sm80_CTestTestfile_ctest_unit_gemm_device_mixed_input_tensorop_sm80_install_cmake
+- todo `todo-b7233c6067b18891` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_simt_3x_CTestTestfile_ctest_unit_gemm_device_simt_3x_install_cmake
+- todo `todo-5c179ad7e611347c` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_simt_CTestTestfile_ctest_unit_gemm_device_simt_install_cmake
+- todo `todo-d6bc6efa04ba5122` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_simt_sm100_CTestTestfile_ctest_unit_gemm_device_simt_sm100_install_cmake
+- todo `todo-eb0ca21d153fb2b9` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_simt_sm100_bias_relu_CTestTestfile_ctest_unit_gemm_device_simt_sm100_bias_relu_install_cmake
+- todo `todo-c1511693d6bb194f` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_simt_sm100_ptr_array_CTestTestfile_ctest_unit_gemm_device_simt_sm100_ptr_array_install_cmake
+- todo `todo-ab2f800f181661f8` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_sparse_tensorop_sm80_CTestTestfile_ctest_unit_gemm_device_sparse_tensorop_sm80_install_cmake
+- todo `todo-34963547dec42f35` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_alignx_sm90_CTestTestfile_ctest_unit_gemm_device_tensorop_alignx_sm90_install_cmake
+- todo `todo-e73e755202255845` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_cluster_multicast_sm90_CTestTestfile_ctest_unit_gemm_device_tensorop_cluster_multicast_sm90_install_cmake
+- todo `todo-ce7ce70140dcd139` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_epilogue_fusion_sm90_CTestTestfile_ctest_unit_gemm_device_tensorop_epilogue_fusion_sm90_install_cmake
+- todo `todo-d52e8d1e853be183` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_f16_sm80_CTestTestfile_ctest_unit_gemm_device_tensorop_f16_sm80_install_cmake
+- todo `todo-f2485782644d93f0` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_f32_sm80_3x_CTestTestfile_ctest_unit_gemm_device_tensorop_f32_sm80_3x_install_cmake
+- todo `todo-0b9fb2537bd265e0` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_f32_sm80_CTestTestfile_ctest_unit_gemm_device_tensorop_f32_sm80_install_cmake
+- todo `todo-dc4ba3053d4c750f` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_f32_tf32_sm80_CTestTestfile_ctest_unit_gemm_device_tensorop_f32_tf32_sm80_install_cmake
+- todo `todo-27fb33fc09a514f2` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_f64_CTestTestfile_ctest_unit_gemm_device_tensorop_f64_install_cmake
+- todo `todo-073270862ba51847` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_gmma_rs_warpspecialized_sm90_CTestTestfile_ctest_unit_gemm_device_tensorop_gmma_rs_warpspecialized_sm90_install_cmake
+- todo `todo-191dc018f60b6867` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_planar_complex_CTestTestfile_ctest_unit_gemm_device_tensorop_planar_complex_install_cmake
+- todo `todo-ccc61a0f73cc69c4` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_s32_sm80_CTestTestfile_ctest_unit_gemm_device_tensorop_s32_sm80_install_cmake
+- todo `todo-527e78456460043a` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_sm70_CTestTestfile_ctest_unit_gemm_device_tensorop_sm70_install_cmake
+- todo `todo-e9328d76951c223c` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_sm75_CTestTestfile_ctest_unit_gemm_device_tensorop_sm75_install_cmake
+- todo `todo-fb75eac35e8073ac` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_sm89_CTestTestfile_ctest_unit_gemm_device_tensorop_sm89_install_cmake
+- todo `todo-7bca3d34a6876360` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_sm90_CTestTestfile_ctest_unit_gemm_device_tensorop_sm90_install_cmake
+- todo `todo-df77e4903a7ef18c` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_sm90_blockwise_CTestTestfile_ctest_unit_gemm_device_tensorop_sm90_blockwise_install_cmake
+- todo `todo-99a21365c7ec0bfa` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_sm90_group_gemm_CTestTestfile_ctest_unit_gemm_device_tensorop_sm90_group_gemm_install_cmake
+- todo `todo-3b1a3399f8eec54c` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_sm90_group_gemm_pingpong_CTestTestfile_ctest_unit_gemm_device_tensorop_sm90_group_gemm_pingpong_install_cmake
+- todo `todo-ef03236cc7b289af` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_sm90_ptr_array_CTestTestfile_ctest_unit_gemm_device_tensorop_sm90_ptr_array_install_cmake
+- todo `todo-f8aad6d6c4178d95` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_tensorop_sm90_stream_k_CTestTestfile_ctest_unit_gemm_device_tensorop_sm90_stream_k_install_cmake
+- todo `todo-6729adb73e1bc3f1` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemm_device_wmma_CTestTestfile_ctest_unit_gemm_device_wmma_install_cmake
+- todo `todo-cf893b8fe84f1301` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_gemv_device_CTestTestfile_ctest_unit_gemv_device_install_cmake
+- todo `todo-bf607a4cb61f8b64` [bake/improvement] gen_test_unit_gemm_device_ctest_ctest_unit_sparse_gemm_device_tensorop_sm90_CTestTestfile_ctest_unit_sparse_gemm_device_tensorop_sm90_install_cmake
+- todo `todo-738415a1620a806e` [bake/improvement] gen_test_unit_gemm_thread_ctest_ctest_unit_gemm_thread_CTestTestfile_ctest_unit_gemm_thread_install_cmake
+- todo `todo-981c5f6a924ce923` [bake/improvement] gen_test_unit_gemm_thread_host_ctest_ctest_unit_gemm_thread_host_CTestTestfile_ctest_unit_gemm_thread_host_install_cmake
+- todo `todo-6c2625ae8b169b4d` [bake/improvement] gen_test_unit_gemm_threadblock_ctest_ctest_unit_gemm_threadblock_CTestTestfile_ctest_unit_gemm_threadblock_install_cmake
+- todo `todo-60596765b70f2f1e` [bake/improvement] gen_test_unit_gemm_warp_ctest_ctest_unit_gemm_warp_CTestTestfile_ctest_unit_gemm_warp_install_cmake
+- todo `todo-b1bf4043cb774f5d` [bake/improvement] gen_test_unit_layout_ctest_ctest_unit_layout_CTestTestfile_ctest_unit_layout_install_cmake
+- todo `todo-176715cb912916d6` [bake/improvement] gen_test_unit_pipeline_ctest_ctest_unit_pipeline_CTestTestfile_ctest_unit_pipeline_install_cmake
+- todo `todo-ca16f164077fad6f` [bake/improvement] gen_test_unit_reduction_device_ctest_ctest_unit_reduction_device_CTestTestfile_ctest_unit_reduction_device_install_cmake
+- todo `todo-2f516ef725e5cc08` [bake/improvement] gen_test_unit_reduction_kernel_ctest_ctest_unit_reduction_kernel_CTestTestfile_ctest_unit_reduction_kernel_install_cmake
+- todo `todo-d49ba8d8e7c8f44a` [bake/improvement] gen_test_unit_reduction_thread_ctest_ctest_unit_reduction_thread_CTestTestfile_ctest_unit_reduction_thread_install_cmake
+- todo `todo-5c2540c899686809` [bake/improvement] gen_test_unit_substrate_ctest_ctest_unit_substrate_CTestTestfile_ctest_unit_substrate_install_cmake
+- todo `todo-2a45f1ca50cab3ee` [bake/improvement] gen_test_unit_transform_device_ctest_ctest_unit_sm100_structured_sparse_gemm_compressor_f16_CTestTestfile_ctest_unit_sm100_structured_sparse_gemm_compressor_f16_install_cmake
+- todo `todo-b23b31642b8c827e` [bake/improvement] gen_test_unit_transform_device_ctest_ctest_unit_sm100_structured_sparse_gemm_compressor_f32_CTestTestfile_ctest_unit_sm100_structured_sparse_gemm_compressor_f32_install_cmake
+- todo `todo-b767dc51a6a8470b` [bake/improvement] gen_test_unit_transform_device_ctest_ctest_unit_sm100_structured_sparse_gemm_compressor_f4_omma_CTestTestfile_ctest_unit_sm100_structured_sparse_gemm_compressor_f4_omma_install_cmake
+- todo `todo-fb1ecabb9fc7bd28` [bake/improvement] gen_test_unit_transform_device_ctest_ctest_unit_sm100_structured_sparse_gemm_compressor_f4_qmma_CTestTestfile_ctest_unit_sm100_structured_sparse_gemm_compressor_f4_qmma_install_cmake
+- todo `todo-5d70068707a9136b` [bake/improvement] gen_test_unit_transform_device_ctest_ctest_unit_sm100_structured_sparse_gemm_compressor_f6_CTestTestfile_ctest_unit_sm100_structured_sparse_gemm_compressor_f6_install_cmake
+- todo `todo-b35ad9b2bda56cdb` [bake/improvement] gen_test_unit_transform_device_ctest_ctest_unit_sm100_structured_sparse_gemm_compressor_f8_CTestTestfile_ctest_unit_sm100_structured_sparse_gemm_compressor_f8_install_cmake
+- todo `todo-460e1f70c37183f7` [bake/improvement] gen_test_unit_transform_device_ctest_ctest_unit_sm90_structured_sparse_gemm_compressor_f16_CTestTestfile_ctest_unit_sm90_structured_sparse_gemm_compressor_f16_install_cmake
+- todo `todo-d0eca47d8a9476fc` [bake/improvement] gen_test_unit_transform_device_ctest_ctest_unit_sm90_structured_sparse_gemm_compressor_f32_CTestTestfile_ctest_unit_sm90_structured_sparse_gemm_compressor_f32_install_cmake
+- todo `todo-7c083665583d3960` [bake/improvement] gen_test_unit_transform_device_ctest_ctest_unit_sm90_structured_sparse_gemm_compressor_f8_CTestTestfile_ctest_unit_sm90_structured_sparse_gemm_compressor_f8_install_cmake
+- todo `todo-55497cdde4b250e9` [bake/improvement] gen_test_unit_transform_kernel_ctest_ctest_unit_transform_kernel_CTestTestfile_ctest_unit_transform_kernel_install_cmake
+- todo `todo-8a9701d2e0c2a9c7` [bake/improvement] gen_test_unit_transform_threadblock_ctest_ctest_unit_transform_threadblock_CTestTestfile_ctest_unit_transform_threadblock_install_cmake
+- todo `todo-81f792f3048654c7` [bake/improvement] gen_test_unit_util_ctest_ctest_unit_util_CTestTestfile_ctest_unit_util_install_cmake
+- todo `todo-0113b013867263f8` [bake/improvement] gen_tools_profiler_ctest_ctest_profiler_CTestTestfile_ctest_profiler_install_cmake
+- todo `todo-9258d4e5a8c94daa` [cmake-internal-drop/informational] dashboard
+- todo `todo-06419afaa9a8830d` [cmake-p-test/actionable] python3
+- todo `todo-03c84600bb0542d6` [rejection:unsupported-execute-process/actionable] unsupported-execute-process
+- rejection `unsupported-execute-process` 
+
+## Output contract
+Emit STRICT JSON only (no prose), shape:
+`{"findings":[{"category":"test|install|option|visibility|codegen|target|flag|other","severity":"high|medium|low","summary":"…","evidence":"cmake side … vs Bazel side …","cmake_ref":"<file>:<line>"}]}`
+GROUNDING: every finding MUST set `cmake_ref` to the cmake source file (and line if known) that proves the intent exists — an ungrounded claim can't be verified. If you find nothing net-new, emit `{"findings":[]}`.

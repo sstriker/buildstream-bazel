@@ -1,0 +1,12 @@
+{
+  "matched": 1,
+  "only_cmake": null,
+  "only_bazel": null,
+  "define_mismatch": {},
+  "std_mismatch": {},
+  "include_mismatch": {},
+  "copt_mismatch": {},
+  "gen_root_missing": {},
+  "tu_key_collisions": 0,
+  "param_file_skipped": 0
+}

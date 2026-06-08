@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "element": "libpng",
+  "summary": {
+    "total": 9,
+    "net_new": 9,
+    "already_flagged": 0,
+    "by_severity": {
+      "high": 2,
+      "low": 1,
+      "medium": 6
+    }
+  },
+  "findings": [
+    {
+      "category": "flag",
+      "severity": "high",
+      "summary": "libm (-lm) dependency missing directly from png-fix-itxt",
+      "evidence": "cmake side: CMakeLists.txt:967 `target_link_libraries(png-fix-itxt PRIVATE ZLIB::ZLIB ${M_LIBRARY})` — png-fix-itxt links directly against zlib and libm without going through png_shared. Bazel side: png-fix-itxt linkopts=['-lz']+select(...); -lm is absent.",
+      "cmake_ref": "CMakeLists.txt:967",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "high",
+      "summary": "libm (-lm) dependency missing from png_shared and png_static, causing it to propagate to all test and tool binaries",
+      "evidence": "cmake side: CMakeLists.txt:719 `target_link_libraries(png_shared PUBLIC ZLIB::ZLIB ${M_LIBRARY})` and :733 `target_link_libraries(png_static PUBLIC ZLIB::ZLIB ${M_LIBRARY})` where M_LIBRARY='m' on Linux — PUBLIC ensures -lm propagates to every consumer. Bazel side: png_shared linkopts=['-shared','-lz'] and png_static has no linkopts at all; -lm is absent from both, so all dependent binaries (pngtest, pngvalid, pngstest, pngunknown, pngimage, pngfix) also silently lose the libm link.",
+      "cmake_ref": "CMakeLists.txt:719",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "Linker version script flag (-Wl,--version-script) never applied to png_shared even though ld-version-script=ON is baked",
+      "evidence": "cmake side: CMakeLists.txt:700-705 sets LINK_FLAGS '-Wl,--version-script=libpng.vers' on png_shared when HAVE_LD_VERSION_SCRIPT is true; ld-version-script=ON is noted as a baked option (line 28 of BUILD.bazel header). Bazel side: png_shared linkopts=['-shared','-lz'] — the --version-script linker flag is entirely absent. The already-flagged todos cover generation of libpng.vers but not the application of the version-script flag to the shared library link step.",
+      "cmake_ref": "CMakeLists.txt:700",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "No install target for compiled library artifacts (libpng16.so, libpng16.a) and their unversioned symlinks",
+      "evidence": "cmake side: CMakeLists.txt:1059-1082 installs PNG_LIBRARY_TARGETS (png_shared, png_static) to CMAKE_INSTALL_LIBDIR, plus creates and installs unversioned symlinks libpng.so and libpng.a. Bazel side: the four pkg_files rules (BUILD.bazel:11178-11209) cover only headers and man pages; no pkg_files rule installs the compiled .so or .a outputs or their compat symlinks.",
+      "cmake_ref": "CMakeLists.txt:1059",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "No install targets for libpng-config and libpng16-config scripts",
+      "evidence": "cmake side: CMakeLists.txt:1091-1097 installs libpng-config and libpng16-config to CMAKE_INSTALL_BINDIR. Bazel side: libpng16-config appears only as a source file listed in root_headers hdrs (BUILD.bazel:20293) but no pkg_files rule installs it to a bin prefix.",
+      "cmake_ref": "CMakeLists.txt:1091",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "No install targets for pkgconfig files (libpng.pc, libpng16.pc)",
+      "evidence": "cmake side: CMakeLists.txt:1112-1118 installs libpng.pc and libpng16.pc to CMAKE_INSTALL_LIBDIR/pkgconfig. Bazel side: libpng16.pc appears only as a source file in root_headers hdrs (BUILD.bazel:20292) but no pkg_files rule installs it to a pkgconfig prefix.",
+      "cmake_ref": "CMakeLists.txt:1112",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "pnglibconf.h omitted from both include install targets",
+      "evidence": "cmake side: CMakeLists.txt:601 adds `${CMAKE_CURRENT_BINARY_DIR}/pnglibconf.h` to libpng_public_hdrs; lines 1086-1089 install all public headers to both CMAKE_INSTALL_INCLUDEDIR and CMAKE_INSTALL_INCLUDEDIR/libpng16. Bazel side: install_files__include and install_files__include_libpng16 (BUILD.bazel:11178-11194) list only png.h and pngconf.h — pnglibconf.h is missing from both install groups.",
+      "cmake_ref": "CMakeLists.txt:1086",
+      "status": "net-new"
+    },
+    {
+      "category": "target",
+      "severity": "medium",
+      "summary": "png2pnm and pnm2png executables from contrib/pngminus have no Bazel targets",
+      "evidence": "cmake side: contrib/pngminus/CMakeLists.txt:13-14 defines add_executable(png2pnm png2pnm.c) and add_executable(pnm2png pnm2png.c), linking against png_static. Bazel side: grep for pnm2png/png2pnm in BUILD.bazel returns no results — neither cc_binary target exists.",
+      "cmake_ref": "contrib/pngminus/CMakeLists.txt:13",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "low",
+      "summary": "No install targets for pngfix and png-fix-itxt tool binaries",
+      "evidence": "cmake side: CMakeLists.txt:1100-1103 installs PNG_BIN_TARGETS (pngfix, png-fix-itxt) to CMAKE_INSTALL_BINDIR when PNG_TOOLS is ON (baked ON). Bazel side: cc_binary targets for pngfix and png-fix-itxt exist but there is no pkg_files rule placing them under a bin prefix.",
+      "cmake_ref": "CMakeLists.txt:1100",
+      "status": "net-new"
+    }
+  ]
+}
