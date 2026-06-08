@@ -45,6 +45,36 @@ func TestLowerInterfaceLibraries_RoutesInterfaceLinkLibsAsDeps(t *testing.T) {
 	}
 }
 
+// TestLowerInterfaceLibraries_DedupsDepsAcrossCalls pins the per-target dep
+// dedup: two target_link_libraries(lib INTERFACE …) calls for the SAME target
+// (separate decoded.Links entries) that both link `dep_a` must yield `:dep_a`
+// ONCE. A per-group seen set would let it through twice, and Bazel rejects a
+// duplicate label in deps (the emit loop doesn't dedupSlice deps the way it
+// does includes/defines, so the dedup has to be per-target here).
+func TestLowerInterfaceLibraries_DedupsDepsAcrossCalls(t *testing.T) {
+	decoded := &shadow.Decoded{
+		AddLibraries: []shadow.AddLibraryCall{
+			{Name: "wrapper", Type: "INTERFACE"},
+		},
+		Links: []shadow.TargetLinkCall{
+			{Target: "wrapper", Groups: []shadow.TargetLinkGroup{
+				{Visibility: "INTERFACE", Libs: []string{"dep_a", "dep_b"}},
+			}},
+			{Target: "wrapper", Groups: []shadow.TargetLinkGroup{
+				{Visibility: "INTERFACE", Libs: []string{"dep_a", "dep_c"}},
+			}},
+		},
+	}
+	got := lowerInterfaceLibraries(decoded, map[string]bool{}, "/src", "/src", "/src", nil, nil, &codegenContext{HeaderWalkCache: map[string][]string{}, MissingIncludeDirs: map[string]bool{}})
+	if len(got) != 1 {
+		t.Fatalf("want 1 interface lib; got %d", len(got))
+	}
+	want := []string{":dep_a", ":dep_b", ":dep_c"}
+	if !reflect.DeepEqual(got[0].Deps, want) {
+		t.Errorf("deps = %v; want %v (dep_a must appear exactly once across the two calls)", got[0].Deps, want)
+	}
+}
+
 // TestLowerInterfaceLibraries_SplitsSemicolonJoinedLibs: a single Libs entry
 // that is itself a `;`-joined cmake list — abseil's absl_cc_library expands a
 // quoted "${..._DEPS}" variable into one target_link_libraries arg — must

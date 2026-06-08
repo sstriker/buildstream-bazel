@@ -343,12 +343,23 @@ func interfaceDepsByTarget(decoded *shadow.Decoded, imports *manifest.Resolver) 
 		return ":" + strings.ReplaceAll(lib, "::", "_")
 	}
 	depsByTarget := map[string][]string{}
+	// Dedup per TARGET (not per group): a target can carry several
+	// INTERFACE/PUBLIC link groups — across multiple target_link_libraries
+	// calls (separate decoded.Links entries) or arms of one call — and Bazel
+	// rejects a duplicate label in deps. A per-group seen set would let the
+	// same dep through twice; the emit loop doesn't dedupSlice deps the way it
+	// does includes/defines, so the dedup has to happen here.
+	seenByTarget := map[string]map[string]bool{}
 	for _, link := range decoded.Links {
 		for _, grp := range link.Groups {
 			if grp.Visibility != "INTERFACE" && grp.Visibility != "PUBLIC" {
 				continue
 			}
-			seen := map[string]bool{}
+			seen := seenByTarget[link.Target]
+			if seen == nil {
+				seen = map[string]bool{}
+				seenByTarget[link.Target] = seen
+			}
 			for _, raw := range grp.Libs {
 				// A single Libs entry can itself be a `;`-joined cmake list
 				// when the project passes a quoted deps *variable* to
