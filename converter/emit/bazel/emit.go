@@ -2203,18 +2203,7 @@ func sortedCopy(in []string) []string {
 // removed. Cheap for the small slices the emitter typically
 // composes (per-attribute fact lists).
 func sortedDedup(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := append([]string(nil), in...)
-	sort.Strings(out)
-	w := out[:1]
-	for _, x := range out[1:] {
-		if x != w[len(w)-1] {
-			w = append(w, x)
-		}
-	}
-	return w
+	return sliceutil.SortedUnique(in)
 }
 
 // strDict renders a Go map[string]string as a Starlark dict literal,

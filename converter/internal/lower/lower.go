@@ -5867,18 +5867,7 @@ func applyPerSourceCompileDefinitions(pkg *ir.Package, byPath map[string][]strin
 // sortedDedupStrings returns a sorted, deduped copy of in. Small
 // helper for the COMPILE_DEFINITIONS uniformity comparison.
 func sortedDedupStrings(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	cp := append([]string(nil), in...)
-	sort.Strings(cp)
-	out := cp[:1]
-	for _, x := range cp[1:] {
-		if x != out[len(out)-1] {
-			out = append(out, x)
-		}
-	}
-	return out
+	return sliceutil.SortedUnique(in)
 }
 
 // sameDefineSet reports whether the two already-sorted-and-deduped

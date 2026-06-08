@@ -565,15 +565,5 @@ func sortedKeys(m map[string]InstallPlanEntry) []string {
 }
 
 func dedupeSorted(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	sort.Strings(in)
-	out := in[:0]
-	for i, s := range in {
-		if i == 0 || in[i-1] != s {
-			out = append(out, s)
-		}
-	}
-	return out
+	return sliceutil.SortedUnique(in)
 }
