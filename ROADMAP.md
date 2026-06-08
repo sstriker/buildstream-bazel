@@ -1079,8 +1079,9 @@ transition cleanly.
   single-config; defines/-std/includes are largely config-stable).
 
 - **Symbol-fidelity lens for the corpus survey (opt-in, 6th lens).** The
-  build lens (`SURVEY_BAZEL_BUILD`) proves the converted graph `bazel
-  build`s; the compile-commands lens (`SURVEY_COMPILE_DB`) proves per-TU
+  build lens (`SURVEY_BAZEL_BUILD`) proves the converted graph builds
+  under `bazel build //...`; the compile-commands lens
+  (`SURVEY_COMPILE_DB`) proves per-TU
   flag parity at *analysis* time. Neither proves the **emitted artifact
   carries the same symbols** cmake's does — the question the CI `fidelity`
   job already answers for a fixed fixture set (zlib / fmt / spdlog / catch2
