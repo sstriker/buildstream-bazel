@@ -33,7 +33,11 @@ tests + render gates that exercise it.
 
 The fast feedback loop in one paragraph: `go build ./...` then
 `go vet ./...` then `gofmt -l .` (must print nothing) then
-`go test ./...`. After that, run the render gate(s) under `scripts/`
+`make staticcheck` (catches what `vet` doesn't — unused code / U1000,
+simplifications) then `make lint-complexity` (the complexity lens — now a
+blocking gate) then `go test ./...`. All of these gate in CI, so a green
+`go test` alone isn't enough: a stray U1000 or a new complexity regression
+still fails the build. After that, run the render gate(s) under `scripts/`
 matching what you touched (see `CONTRIBUTING.md`'s handler→gate table).
 Render gates skip their bazel-build half cleanly when bazel ≥7 isn't on
 `$PATH`, but the render half they always exercise is still the contract
