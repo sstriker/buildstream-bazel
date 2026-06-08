@@ -54,6 +54,39 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
+// resolveTraceDir handles the --trace-dir dispatch. When the dir has no
+// trace.log yet (the round-2 boot phase: no published trace), it writes a
+// placeholder BUILD.bazel.out (plus a placeholder ir.json when --out-ir-json
+// is set, to satisfy Bazel's declared-outputs invariant for the multi-platform
+// fold) and returns done=true so main returns early. Otherwise it threads the
+// dir's trace.log / make-db.txt into the (still-empty) --trace / --make-db flag
+// vars and returns done=false to continue the normal parse path.
+func resolveTraceDir(traceDir, tracePath, makeDBPath, outBuild, outIRJSON *string) (done bool) {
+	if _, err := os.Stat(filepath.Join(*traceDir, "trace.log")); err != nil {
+		if err := writePlaceholderBuild(*outBuild); err != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-trace: write placeholder: %v\n", err)
+			os.Exit(1)
+		}
+		if *outIRJSON != "" {
+			if err := writePlaceholderIRJSON(*outIRJSON); err != nil {
+				fmt.Fprintf(os.Stderr, "convert-element-trace: write placeholder ir.json: %v\n", err)
+				os.Exit(1)
+			}
+		}
+		return true
+	}
+	if *tracePath == "" {
+		*tracePath = filepath.Join(*traceDir, "trace.log")
+	}
+	if *makeDBPath == "" {
+		candidate := filepath.Join(*traceDir, "make-db.txt")
+		if _, err := os.Stat(candidate); err == nil {
+			*makeDBPath = candidate
+		}
+	}
+	return false
+}
+
 func main() {
 	tracePath := flag.String("trace", "", "path to strace text-format output (`-f -e trace=execve -s 4096 -o <path>`). Required unless --trace-dir is set.")
 	traceDir := flag.String("trace-dir", "", "alternative to --trace + --make-db: a directory containing trace.log + make-db.txt (typically materialized from @trace_<key>//:trace by the round-2 converter genrule). Empty / non-existent / missing-trace.log ⇒ converter emits a placeholder BUILD.bazel.out (the round-2 boot phase signal: no published trace yet, project B keeps using its coarse install genrule until pass-3 publishes one).")
@@ -84,33 +117,8 @@ func main() {
 	//     (so callers can choose between flag-based and dir-based
 	//     wiring without duplicating the parse path).
 	if *traceDir != "" {
-		if _, err := os.Stat(filepath.Join(*traceDir, "trace.log")); err != nil {
-			if err := writePlaceholderBuild(*outBuild); err != nil {
-				fmt.Fprintf(os.Stderr, "convert-element-trace: write placeholder: %v\n", err)
-				os.Exit(1)
-			}
-			// Multi-platform fold contract: the converter genrule
-			// must produce ir.json whenever --out-ir-json is set
-			// (Bazel's declared-outputs invariant), even in the
-			// round-2 boot phase where no trace is published yet.
-			// An empty ir.Package matches the placeholder
-			// BUILD.bazel — the fold composes empties to empty.
-			if *outIRJSON != "" {
-				if err := writePlaceholderIRJSON(*outIRJSON); err != nil {
-					fmt.Fprintf(os.Stderr, "convert-element-trace: write placeholder ir.json: %v\n", err)
-					os.Exit(1)
-				}
-			}
+		if resolveTraceDir(traceDir, tracePath, makeDBPath, outBuild, outIRJSON) {
 			return
-		}
-		if *tracePath == "" {
-			*tracePath = filepath.Join(*traceDir, "trace.log")
-		}
-		if *makeDBPath == "" {
-			candidate := filepath.Join(*traceDir, "make-db.txt")
-			if _, err := os.Stat(candidate); err == nil {
-				*makeDBPath = candidate
-			}
 		}
 	}
 
