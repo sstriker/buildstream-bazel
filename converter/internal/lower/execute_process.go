@@ -1827,23 +1827,7 @@ func executeProcessAnchorSource(p string, anc execAnchors) (string, bool) {
 // distinct prefix so the two recoveries can land in the same
 // package without name collisions.
 func executeProcessGenruleName(rel string) string {
-	rel = filepath.ToSlash(rel)
-	rel = strings.TrimPrefix(rel, "./")
-	var sb strings.Builder
-	sb.WriteString("exec_")
-	for i := 0; i < len(rel); i++ {
-		c := rel[i]
-		switch {
-		case (c >= 'a' && c <= 'z'),
-			(c >= 'A' && c <= 'Z'),
-			(c >= '0' && c <= '9'),
-			c == '_':
-			sb.WriteByte(c)
-		default:
-			sb.WriteByte('_')
-		}
-	}
-	return sb.String()
+	return "exec_" + sanitizePathToNameStem(rel)
 }
 
 // cmakeETags returns the cmake-codegen tag set for a recovered

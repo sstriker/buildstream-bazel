@@ -1313,10 +1313,10 @@ func walkAggregate(
 	defer delete(visiting, name)
 
 	// Start with this target's DIRECT contribution.
-	includes := dedupCopy(directIncludes[name])
-	defines := dedupCopy(directDefines[name])
-	options := dedupCopy(directOptions[name])
-	links := dedupCopy(directLinks[name])
+	includes := uniqueStrings(directIncludes[name], true)
+	defines := uniqueStrings(directDefines[name], true)
+	options := uniqueStrings(directOptions[name], true)
+	links := uniqueStrings(directLinks[name], true)
 
 	// Walk the dep chain (trace-derived, falling back to
 	// codemodel Dependencies[] order — see buildDepChain).
@@ -1420,21 +1420,6 @@ func appendDedup(dst, items []string) []string {
 
 // dedupCopy returns a deduped copy of src, preserving order
 // (first occurrence wins). Empty strings are dropped.
-func dedupCopy(src []string) []string {
-	if len(src) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(src))
-	seen := map[string]bool{}
-	for _, s := range src {
-		if s == "" || seen[s] {
-			continue
-		}
-		seen[s] = true
-		out = append(out, s)
-	}
-	return out
-}
 
 // splitNonEmpty splits a semicolon-joined cmake list into its
 // component entries, dropping empty pieces (cmake's list

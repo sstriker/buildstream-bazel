@@ -685,27 +685,7 @@ func appendTag(tags []string, tag string) []string {
 // and other path separators with underscores; collapses runs of
 // underscores to one; trims leading/trailing underscores.
 func sanitizeDestination(dest string) string {
-	clean := filepath.ToSlash(filepath.Clean(dest))
-	var sb strings.Builder
-	sb.Grow(len(clean))
-	lastWasUnderscore := false
-	for _, r := range clean {
-		isAlnum := (r >= 'a' && r <= 'z') ||
-			(r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9')
-		if isAlnum {
-			sb.WriteRune(r)
-			lastWasUnderscore = false
-			continue
-		}
-		if !lastWasUnderscore {
-			sb.WriteRune('_')
-			lastWasUnderscore = true
-		}
-	}
-	out := sb.String()
-	out = strings.Trim(out, "_")
-	return out
+	return sanitizeCollapsingRuns(dest)
 }
 
 // synthesizeTargetInstallPkgFiles emits a pkg_files for each install(TARGETS)

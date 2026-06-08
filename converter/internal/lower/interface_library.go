@@ -103,8 +103,8 @@ func lowerInterfaceLibraries(
 		}
 		emitted[call.Name] = true
 
-		includes := dedupSlice(includesByTarget[call.Name])
-		defines := dedupSlice(definesByTarget[call.Name])
+		includes := uniqueStrings(includesByTarget[call.Name], false)
+		defines := uniqueStrings(definesByTarget[call.Name], false)
 
 		// Walk each include dir at convert time to materialise an
 		// explicit hdrs list. The walk uses the existing
@@ -444,17 +444,25 @@ func stripPrefix(s, prefix string) (string, bool) {
 
 // dedupSlice returns a copy of vs with duplicate entries removed
 // while preserving first-occurrence order.
-func dedupSlice(vs []string) []string {
-	if len(vs) == 0 {
+// uniqueStrings returns the elements of in with duplicates removed, preserving
+// first-occurrence order. When skipEmpty is true, "" entries are dropped.
+// Returns nil for empty input. (Order-preserving — distinct from the sorted
+// dedupeStrings / sortedDedupStrings variants that assume/produce sorted order.)
+func uniqueStrings(in []string, skipEmpty bool) []string {
+	if len(in) == 0 {
 		return nil
 	}
-	seen := make(map[string]bool, len(vs))
-	out := make([]string, 0, len(vs))
-	for _, v := range vs {
-		if !seen[v] {
-			seen[v] = true
-			out = append(out, v)
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if skipEmpty && v == "" {
+			continue
 		}
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
 	}
 	return out
 }

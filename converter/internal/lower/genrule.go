@@ -542,12 +542,19 @@ func genruleNameFor(b *ninja.Build, buildDir string) string {
 			first = rel
 		}
 	}
-	first = filepath.ToSlash(first)
-	first = strings.TrimPrefix(first, "./")
+	return "gen_" + sanitizePathToNameStem(first)
+}
+
+// sanitizePathToNameStem normalizes a path into a Bazel-target-name-safe stem:
+// ToSlash, drop a leading "./", then map every byte outside [A-Za-z0-9_] to '_'.
+// Callers prepend their own collision-avoidance prefix (gen_ / exec_ / …); the
+// distinct prefixes are deliberate, keeping the per-pass name spaces disjoint.
+func sanitizePathToNameStem(rel string) string {
+	rel = filepath.ToSlash(rel)
+	rel = strings.TrimPrefix(rel, "./")
 	var sb strings.Builder
-	sb.WriteString("gen_")
-	for i := 0; i < len(first); i++ {
-		c := first[i]
+	for i := 0; i < len(rel); i++ {
+		c := rel[i]
 		switch {
 		case (c >= 'a' && c <= 'z'),
 			(c >= 'A' && c <= 'Z'),

@@ -515,23 +515,7 @@ func isConfigureFileKeyword(s string) bool {
 // path into a Bazel-rule-name-safe identifier mirroring
 // genruleNameFor: "config.h" -> "gen_config_h".
 func configureFileGenruleName(rel string) string {
-	rel = filepath.ToSlash(rel)
-	rel = strings.TrimPrefix(rel, "./")
-	var sb strings.Builder
-	sb.WriteString("gen_")
-	for i := 0; i < len(rel); i++ {
-		c := rel[i]
-		switch {
-		case (c >= 'a' && c <= 'z'),
-			(c >= 'A' && c <= 'Z'),
-			(c >= '0' && c <= '9'),
-			c == '_':
-			sb.WriteByte(c)
-		default:
-			sb.WriteByte('_')
-		}
-	}
-	return sb.String()
+	return "gen_" + sanitizePathToNameStem(rel)
 }
 
 // configureFileLegacyCmd builds the fallback shell command
