@@ -1196,19 +1196,26 @@ The six intent-lens producer-gap themes follow as their own entries
 `evidence` + `cmake_ref` to drive a fix + a regression guard.
 
 - **Install/export emission — close the gaps the intent lens flagged (25×
-  high, biggest cluster).** The install→`pkg_files` lowering (above) and the
-  install(EXPORT) Phase 6 `cc_import` projection (above) are shipped, yet the
-  full-corpus run shows standalone-surveyed members shipping **no install
-  tree**: no `pkg_files` for the library artifact / public headers / binaries
-  (`curl`, `protobuf`, `zlib`, `sdl`, `libevent`, `fmt`, `openblas`, …), no
-  pkg-config `.pc` generation+install, and the `find_package(CONFIG)` entry
-  points `<Pkg>Config.cmake` / `<Pkg>Targets.cmake` **never generated**
-  (`eigen`, `catch2`, `zstd`, `cutlass`, `protobuf`, `nlohmann-json`). First
-  question: why isn't the existing pkg_files machinery firing in these converts
-  (EMIT_INSTALL_EXPORT default? standalone-vs-graph? the export bundle only
-  emitted for cross-element consumers?). Then the genuinely-missing producers:
-  `.pc` file generation and the `<Pkg>Config.cmake`/`<Pkg>Targets.cmake`
-  install artifacts. Highest-leverage, most mechanical of the six.
+  high, biggest cluster).** The full-corpus run showed standalone-surveyed
+  members shipping no install tree for their built artifacts. The gap decomposes
+  into four sub-features; **A is done**:
+  - **A. `install(TARGETS)` → `pkg_files` — DONE.** The "why isn't pkg_files
+    firing" question resolved to: install(FILES)/install(DIRECTORY) lowered to
+    `pkg_files` already, but `install(TARGETS)` (the built library / binary) had
+    NO producer-side `pkg_files` — the per-target Install slot fed only the
+    cc_import facade + round-2 tree. `synthesizeTargetInstallPkgFiles` now emits
+    one `pkg_files(srcs=[":<t>"], prefix=<dest>)` per built cc_library/cc_binary
+    carrying an InstallDest (header-only/no-artifact skipped); the split's
+    `:<name>`-ref relabel extends to `pkg_files` so a re-homed lib still
+    resolves. zlib's build lens stays green and its libs now package.
+  - **B. generated-header install** — a generated header (zlib's `zconf.h`) is
+    excluded from the header `pkg_files`; include it (curl, eigen, zlib).
+  - **C. pkg-config `.pc`** — the `.pc` is generated but never placed in a
+    `pkg_files` (brotli, fmt, grpc, protobuf, sdl, zlib).
+  - **D. `<Pkg>Config.cmake`/`<Pkg>Targets.cmake` generation** — the
+    `find_package(CONFIG)` entry points aren't generated at all (eigen, catch2,
+    zstd, cutlass, protobuf, nlohmann-json). A genuinely new producer — scope
+    deliberately.
 
 - **System/threading linkopt propagation — extend the host-system-library
   fallback (25× high).** Extends "Make the host-system-library fallback

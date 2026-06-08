@@ -45,3 +45,21 @@ pkg_files(
     prefix = "include",
     strip_prefix = strip_prefix.from_pkg("include"),
 )  # keep
+
+pkg_files(
+    name = "install_target__multibin",
+    srcs = [":multibin"],
+    prefix = "bin",
+)  # keep
+
+pkg_files(
+    name = "install_target__multishared",
+    srcs = [":multishared"],
+    prefix = "lib",
+)  # keep
+
+pkg_files(
+    name = "install_target__multistatic",
+    srcs = [":multistatic"],
+    prefix = "lib",
+)  # keep

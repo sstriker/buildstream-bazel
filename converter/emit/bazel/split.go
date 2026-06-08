@@ -1347,7 +1347,9 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// (deepestPkg sees no package), so relabel them cross-package here, after the
 	// srcs rewrite, via the target's landing dir. Same-package and non-target
 	// srcs pass through.
-	if local && rt.Kind == ir.KindFilegroup && len(rt.Srcs) > 0 {
+	// Also covers pkg_files: an install(TARGETS) pkg_files lands at root with
+	// srcs = [":<lib>"], but the split may re-home <lib> into a sub-package.
+	if local && (rt.Kind == ir.KindFilegroup || rt.Kind == ir.KindPkgFiles) && len(rt.Srcs) > 0 {
 		srcs := make([]string, len(rt.Srcs))
 		for i, s := range rt.Srcs {
 			if name, ok := strings.CutPrefix(s, ":"); ok {

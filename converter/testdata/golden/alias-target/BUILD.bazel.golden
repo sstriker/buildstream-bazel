@@ -35,6 +35,18 @@ pkg_files(
     strip_prefix = strip_prefix.from_pkg("include"),
 )  # keep
 
+pkg_files(
+    name = "install_target__aliaslib",
+    srcs = [":aliaslib"],
+    prefix = "lib",
+)  # keep
+
+pkg_files(
+    name = "install_target__aliaslib_demo",
+    srcs = [":aliaslib_demo"],
+    prefix = "bin",
+)  # keep
+
 alias(
     name = "aliaslib_aliaslib",
     actual = ":aliaslib",

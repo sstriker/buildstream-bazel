@@ -58,3 +58,9 @@ cc_import(
         "manual",
     ],
 )  # keep
+
+pkg_files(
+    name = "install_target__multilang",
+    srcs = [":multilang"],
+    prefix = "lib",
+)  # keep

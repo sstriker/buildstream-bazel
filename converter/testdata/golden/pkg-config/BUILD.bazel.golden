@@ -32,3 +32,9 @@ cc_import(
         "manual",
     ],
 )  # keep
+
+pkg_files(
+    name = "install_target__pcuser",
+    srcs = [":pcuser"],
+    prefix = "lib",
+)  # keep
