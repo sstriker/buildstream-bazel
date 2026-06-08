@@ -12,7 +12,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,6 +42,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 	"github.com/sstriker/buildstream-bazel/internal/synthprefix"
 )
 
@@ -778,11 +778,7 @@ func run(a cli.Args) error {
 		}
 		rootDir := filepath.Dir(a.OutBuild)
 		// Deterministic write order (sorted dirs) for stable logs.
-		dirs := make([]string, 0, len(tree))
-		for d := range tree {
-			dirs = append(dirs, d)
-		}
-		sort.Strings(dirs)
+		dirs := sliceutil.SortedKeys(tree)
 		for _, d := range dirs {
 			var dst string
 			if d == "" {
@@ -1685,20 +1681,8 @@ func recoverAliases(traceRaw []byte, sourceRoot string, importable map[string]bo
 }
 
 func handleError(a cli.Args, err error) int {
-	var tier1 *failure.Error
-	if errors.As(err, &tier1) {
-		fmt.Fprintf(os.Stderr, "convert-element-cmake: %s\n", tier1.Error())
-		if a.OutFailure != "" {
-			payload, _ := json.MarshalIndent(map[string]any{
-				"tier":    1,
-				"code":    string(tier1.Code),
-				"message": tier1.Message,
-			}, "", "  ")
-			_ = os.MkdirAll(filepath.Dir(a.OutFailure), 0o755)
-			_ = os.WriteFile(a.OutFailure, append(payload, '\n'), 0o644)
-		}
+	if failure.ReportTier1(err, "convert-element-cmake", a.OutFailure, true) {
 		return cli.ExitTier1
 	}
-	fmt.Fprintf(os.Stderr, "convert-element-cmake: %v\n", err)
 	return cli.ExitTier2
 }

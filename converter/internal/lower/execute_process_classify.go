@@ -1,10 +1,10 @@
 package lower
 
 import (
-	"sort"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // Bucket is the per-execute_process classification label that
@@ -143,11 +143,7 @@ var noopExecuteProcessOps = map[string]bool{
 // (...)`. Sort keeps the order stable across runs (Go map
 // iteration is randomized).
 func supportedCMakeEOpsList() string {
-	keys := make([]string, 0, len(supportedCMakeEOps))
-	for k := range supportedCMakeEOps {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(supportedCMakeEOps)
 	parts := make([]string, len(keys))
 	for i, k := range keys {
 		parts[i] = k + " (" + supportedCMakeEOps[k] + ")"

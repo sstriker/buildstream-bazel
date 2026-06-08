@@ -52,6 +52,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/emit/bazel"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // resolveTraceDir handles the --trace-dir dispatch. When the dir has no
@@ -1122,25 +1123,7 @@ func buildRules(g *Graph, imports *manifest.Resolver, makeDB *MakeDB) []CCRule {
 
 // stableUnique sorts and dedupes a slice of strings.
 func stableUnique(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	cp := append([]string(nil), in...)
-	sort.Strings(cp)
-	return dedup(cp)
-}
-
-func dedup(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := []string{in[0]}
-	for _, s := range in[1:] {
-		if s != out[len(out)-1] {
-			out = append(out, s)
-		}
-	}
-	return out
+	return sliceutil.SortedUnique(in)
 }
 
 // parseExecveLine returns the argv from an strace `execve(...)`

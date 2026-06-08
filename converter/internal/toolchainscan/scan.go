@@ -49,6 +49,7 @@ import (
 	"sort"
 
 	"github.com/bazelbuild/buildtools/build"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // ParseDeclared returns the sorted, de-duplicated set of feature names declared
@@ -74,11 +75,7 @@ func ParseDeclared(path string) ([]string, error) {
 			set[n] = struct{}{}
 		}
 	}
-	out := make([]string, 0, len(set))
-	for n := range set {
-		out = append(out, n)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(set)
 	return out, nil
 }
 

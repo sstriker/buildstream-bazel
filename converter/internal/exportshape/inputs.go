@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // BuildInputs synthesizes EmitInputs from codemodel-only sources for a
@@ -328,10 +329,6 @@ func sortedKeys(set map[string]bool) []string {
 	if len(set) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(set))
-	for k := range set {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(set)
 	return out
 }

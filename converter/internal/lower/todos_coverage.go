@@ -1,13 +1,13 @@
 package lower
 
 import (
-	"sort"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
 	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // sanitizeBuildDir replaces the (run-specific, often mktemp) cmake build
@@ -165,11 +165,7 @@ func emitUnresolvedGenexTodos(c *todos.Collector, pkg *ir.Package) {
 			}
 		}
 	}
-	tags := make([]string, 0, len(byTag))
-	for tag := range byTag {
-		tags = append(tags, tag)
-	}
-	sort.Strings(tags)
+	tags := sliceutil.SortedKeys(byTag)
 	for _, tag := range tags {
 		names := byTag[tag]
 		anchors := make([]todos.Anchor, 0, len(names))

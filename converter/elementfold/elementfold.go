@@ -21,6 +21,7 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/empfold"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // Platform names the matrix entry the corresponding cell came
@@ -418,11 +419,7 @@ func foldOrderInsensitiveAttr(def attrDef, merged *ir.Target, variants map[strin
 	}
 	baseline, deltas := empfold.Partition(allCellNames, facts)
 
-	flat := make([]string, 0, len(baseline))
-	for k := range baseline {
-		flat = append(flat, k)
-	}
-	sort.Strings(flat)
+	flat := sliceutil.SortedKeys(baseline)
 	def.set(merged, flat)
 
 	// Emit the pre-existing arm union first, then the cell-membership deltas.
@@ -752,11 +749,7 @@ func sortedUnion(slices [][]string) []string {
 	if len(seen) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(seen))
-	for k := range seen {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(seen)
 	return out
 }
 

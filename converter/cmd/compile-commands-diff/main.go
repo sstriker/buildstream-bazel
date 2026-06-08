@@ -36,6 +36,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // tuFacts is the normalized, path-independent compile view of one translation
@@ -576,11 +578,7 @@ func diff(cmake, bazel map[string]tuFacts, paramSkipped map[string]bool, o normO
 		// the per-root paths legitimately differ (build-dir vs bazel-out), so we
 		// only headline the all-or-nothing case.
 		if cgen := genOnly(cInc); len(cgen) > 0 && len(genOnly(bInc)) == 0 {
-			roots := make([]string, 0, len(cgen))
-			for g := range cgen {
-				roots = append(roots, g)
-			}
-			sort.Strings(roots)
+			roots := sliceutil.SortedKeys(cgen)
 			r.GenRootMissing[k] = roots
 		}
 		if cmiss, cextra := setDelta(cf.Copts, bf.Copts); len(cmiss)+len(cextra) > 0 {
@@ -704,29 +702,17 @@ func printDeltas(w *os.File, m map[string]diffSet) {
 }
 
 func sortedKeys(m map[string]diffSet) []string {
-	ks := make([]string, 0, len(m))
-	for k := range m {
-		ks = append(ks, k)
-	}
-	sort.Strings(ks)
+	ks := sliceutil.SortedKeys(m)
 	return ks
 }
 
 func sortedStrKeys(m map[string][]string) []string {
-	ks := make([]string, 0, len(m))
-	for k := range m {
-		ks = append(ks, k)
-	}
-	sort.Strings(ks)
+	ks := sliceutil.SortedKeys(m)
 	return ks
 }
 
 func sortedStdKeys(m map[string][2]string) []string {
-	ks := make([]string, 0, len(m))
-	for k := range m {
-		ks = append(ks, k)
-	}
-	sort.Strings(ks)
+	ks := sliceutil.SortedKeys(m)
 	return ks
 }
 

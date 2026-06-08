@@ -31,10 +31,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 
 	"github.com/sstriker/buildstream-bazel/internal/cas"
 	"github.com/sstriker/buildstream-bazel/internal/element"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // Resolver checks out source trees on demand and caches them under
@@ -294,11 +294,7 @@ func remoteAssetQualifiers(src element.Source) []cas.Qualifier {
 	if len(raw) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(raw))
-	for k := range raw {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(raw)
 	out := make([]cas.Qualifier, 0, len(keys))
 	for _, k := range keys {
 		v, _ := raw[k].(string)

@@ -23,9 +23,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // File is the on-disk schema. Versioned so M4 can fence on incompatible
@@ -92,11 +92,7 @@ func (r *Registry) Update(elem string, paths []string) error {
 		set[filepath.ToSlash(p)] = struct{}{}
 	}
 
-	out := make([]string, 0, len(set))
-	for p := range set {
-		out = append(out, p)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(set)
 
 	doc := File{Version: 1, Element: elem, Paths: out}
 	body, err := json.MarshalIndent(doc, "", "  ")
@@ -114,11 +110,7 @@ func (r *Registry) Update(elem string, paths []string) error {
 // uninitialized.
 func (r *Registry) Paths(elem string) []string {
 	set := r.byElem[elem]
-	out := make([]string, 0, len(set))
-	for p := range set {
-		out = append(out, p)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(set)
 	return out
 }
 

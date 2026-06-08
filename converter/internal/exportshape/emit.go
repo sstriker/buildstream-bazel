@@ -2,6 +2,7 @@ package exportshape
 
 import (
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
@@ -409,7 +410,7 @@ func resolveExportArtifact(t fileapi.Target, installFiles []string) string {
 	}
 	for _, dest := range t.Install.Destinations {
 		artifact := path.Join(dest.Path, t.NameOnDisk)
-		if containsString(installFiles, artifact) {
+		if slices.Contains(installFiles, artifact) {
 			return artifact
 		}
 	}
@@ -428,7 +429,7 @@ func emitCCImport(name string, t fileapi.Target, installFiles []string) ir.Targe
 	// Try each destination — first that resolves wins.
 	for _, dest := range t.Install.Destinations {
 		artifact := path.Join(dest.Path, t.NameOnDisk)
-		if !containsString(installFiles, artifact) {
+		if !slices.Contains(installFiles, artifact) {
 			continue
 		}
 		ti := ir.Target{
@@ -467,13 +468,4 @@ func emitCCInterface(name string) ir.Target {
 		Kind:       ir.KindCCInterface,
 		Visibility: []string{"//visibility:public"},
 	}
-}
-
-func containsString(xs []string, want string) bool {
-	for _, x := range xs {
-		if x == want {
-			return true
-		}
-	}
-	return false
 }

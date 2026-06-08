@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // quoteIncludeRe matches a C/C++ quote-form include directive — `#include
@@ -241,11 +242,7 @@ func textualIncludeClosure(hostSrc string, seeds []string, compiled map[string]b
 			push(resolveTextualInclude(hostSrc, dir, inc, cur, compiled))
 		}
 	}
-	out := make([]string, 0, len(result))
-	for r := range result {
-		out = append(out, r)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(result)
 	return out
 }
 

@@ -111,7 +111,7 @@ func (pyprojectHandler) RenderA(elem *element, elemPkg string) error {
 	if err := stageAllSources(elem, srcStage); err != nil {
 		return err
 	}
-	hasImports, err := writePyprojectImportsManifest(elem, elemPkg)
+	hasImports, err := writeDepsImportsManifest(elem, elemPkg)
 	if err != nil {
 		return err
 	}
@@ -128,14 +128,7 @@ func (pyprojectHandler) RenderB(elem *element, elemPkg string) error {
 	if err := stageAllSources(elem, elemPkg); err != nil {
 		return err
 	}
-	placeholder := fmt.Sprintf(`# Placeholder for cmd/write-a-rendered project B (kind:pyproject native).
-# The driver script overwrites this file with project A's
-# bazel-bin/elements/%s/BUILD.bazel.out (the converter's output)
-# after the project-A bazel build succeeds. If this file is still
-# the placeholder when project B's bazel build runs, the staging
-# step was skipped.
-filegroup(name = "BUILD_NOT_YET_STAGED", srcs = [])
-`, elem.Name)
+	placeholder := projectBPlaceholder(elem.Name, " (kind:pyproject native)")
 	return writeFile(filepath.Join(elemPkg, "BUILD.bazel"), placeholder)
 }
 
@@ -277,7 +270,7 @@ func pyprojectShouldUseNative(elem *element) bool {
 		// Without a manifest, dep-bearing elements would
 		// falsely refuse here, even when the native genrule
 		// (which gets imports.json staged whenever
-		// writePyprojectImportsManifest writes a non-empty
+		// writeDepsImportsManifest writes a non-empty
 		// manifest — see pyprojectElementBuildA's hasImports
 		// branch) would succeed. Render a temp imports.json
 		// via the same writer; when it returns wrote=true the
@@ -289,7 +282,7 @@ func pyprojectShouldUseNative(elem *element) bool {
 			return cacheAndLogPyprojectFallback(elem.Name, pyprojectFallbackCauseForced, "imports-manifest staging failed: "+err.Error())
 		}
 		defer os.RemoveAll(tmp)
-		wrote, err := writePyprojectImportsManifest(elem, tmp)
+		wrote, err := writeDepsImportsManifest(elem, tmp)
 		if err != nil {
 			return cacheAndLogPyprojectFallback(elem.Name, pyprojectFallbackCauseForced, "imports-manifest write failed: "+err.Error())
 		}
@@ -646,7 +639,7 @@ func pyprojectPipelineHandler() pipelineHandler {
 //   - Produces BUILD.bazel.out (no bundle artifact in v1; cross-
 //     element resolution is purely via the imports manifest).
 //
-// hasImports tells us whether writePyprojectImportsManifest
+// hasImports tells us whether writeDepsImportsManifest
 // wrote a non-empty imports.json; when true, the genrule pulls
 // it into srcs and threads --imports-manifest into the
 // converter invocation.
@@ -677,16 +670,8 @@ filegroup(
 	// switch; rejection collection isn't wired). Threading them
 	// anyway keeps the per-element cmd byte-identical with what
 	// future converter changes will rely on.
-	fidelityFlag := ""
-	if pyprojectConfig.fidelity != "" && pyprojectConfig.fidelity != fidelityStrict {
-		fidelityFlag = fmt.Sprintf(` \
-            --fidelity=%s`, pyprojectConfig.fidelity)
-	}
-	diagnosticsFlag := ""
-	if pyprojectConfig.diagnostics {
-		diagnosticsFlag = ` \
-            --diagnostics=true`
-	}
+	fidelityFlag := fidelityFlagFragment(pyprojectConfig.fidelity)
+	diagnosticsFlag := diagnosticsFlagFragment(pyprojectConfig.diagnostics)
 
 	fmt.Fprintf(&b, `
 genrule(
@@ -726,57 +711,4 @@ filegroup(
 `, elem.Name, srcsList, importsFlag, fidelityFlag, diagnosticsFlag)
 
 	return b.String()
-}
-
-// writePyprojectImportsManifest renders an imports.json next to
-// the element's BUILD.bazel when the element has any cross-
-// element deps. Kind-agnostic walk — convert-element-pyproject
-// resolves [project.dependencies] entries against any provider
-// that emits an exports entry (kind:autotools / kind:cmake /
-// kind:meson / kind:pyproject). Schema is shared with
-// internal/manifest; convention bind <dep>::<dep> →
-// //elements/<dep>:<dep>.
-//
-// Returns (true, nil) when imports.json was written; (false,
-// nil) when the element has no resolvable cross-element deps.
-func writePyprojectImportsManifest(elem *element, elemPkg string) (bool, error) {
-	var entries []string
-	for _, dep := range elem.Deps {
-		if dep == nil || dep.Bst == nil {
-			continue
-		}
-		entries = append(entries, dep.Name)
-	}
-	if len(entries) == 0 {
-		return false, nil
-	}
-	var b strings.Builder
-	b.WriteString(`{
-  "version": 1,
-  "elements": [
-`)
-	for i, name := range entries {
-		if i > 0 {
-			b.WriteString(",\n")
-		}
-		fmt.Fprintf(&b, `    {
-      "name": %q,
-      "exports": [
-        {
-          "cmake_target": %q,
-          "bazel_label": "//elements/%s:%s"
-        }
-      ]
-    }`, name,
-			name+"::"+name,
-			name, name)
-	}
-	b.WriteString(`
-  ]
-}
-`)
-	if err := writeFile(filepath.Join(elemPkg, "imports.json"), b.String()); err != nil {
-		return false, err
-	}
-	return true, nil
 }

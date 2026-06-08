@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // EmitSplit renders a lowered *ir.Package as one BUILD.bazel per
@@ -615,11 +616,7 @@ func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][
 		}
 	}
 	for dir, set := range hdrsByDir {
-		hdrs := make([]string, 0, len(set))
-		for h := range set {
-			hdrs = append(hdrs, h)
-		}
-		sort.Strings(hdrs)
+		hdrs := sliceutil.SortedKeys(set)
 		byDir[dir] = append(byDir[dir], ir.Target{
 			Name:        generatedIncludesName,
 			Kind:        ir.KindCCLibrary,
@@ -1067,11 +1064,7 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 			}
 		}
 		// Deterministic order: synthesize per-package libs in package order.
-		owners := make([]string, 0, len(byPkg))
-		for owner := range byPkg {
-			owners = append(owners, owner)
-		}
-		sort.Strings(owners)
+		owners := sliceutil.SortedKeys(byPkg)
 		for _, owner := range owners {
 			hs := byPkg[owner]
 			sort.Strings(hs)
@@ -1750,11 +1743,7 @@ func recordExportedFile(exportsByDir map[string]map[string]struct{}, dir, file s
 // supplied files and appends it to an already-rendered BUILD body,
 // re-canonicalizing so the result stays buildifier-clean.
 func appendExportsFiles(body []byte, files map[string]struct{}) ([]byte, error) {
-	names := make([]string, 0, len(files))
-	for f := range files {
-		names = append(names, f)
-	}
-	sort.Strings(names)
+	names := sliceutil.SortedKeys(files)
 	var b bytes.Buffer
 	b.Write(body)
 	if len(body) > 0 && !bytes.HasSuffix(body, []byte("\n\n")) {

@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 
 	raa "github.com/bazelbuild/remote-apis/build/bazel/remote/asset/v1"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -177,11 +177,7 @@ type Qualifier struct {
 // slice. Sort by name for stable wire ordering across runs (the spec
 // requires unique names; ordering is otherwise unconstrained).
 func QualifiersFromMap(m map[string]string) []Qualifier {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(m)
 	out := make([]Qualifier, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, Qualifier{Name: k, Value: m[k]})

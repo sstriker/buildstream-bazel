@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // pipelineDefaults is the per-kind default phase command set. Each
@@ -505,11 +507,7 @@ func tupleSuffix(tuple map[string]string) string {
 	if len(tuple) == 0 {
 		return ""
 	}
-	keys := make([]string, 0, len(tuple))
-	for k := range tuple {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(tuple)
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		parts = append(parts, k+"="+tuple[k])
@@ -528,11 +526,7 @@ func composeEnvironment(projectEnv, elemEnv map[string]string) [][2]string {
 	for k, v := range elemEnv {
 		merged[k] = v
 	}
-	keys := make([]string, 0, len(merged))
-	for k := range merged {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(merged)
 	out := make([][2]string, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, [2]string{k, merged[k]})
@@ -1108,11 +1102,7 @@ func sanitizeIdent(s string) string {
 // sortedKeys returns the keys of a map[string]string sorted
 // alphabetically.
 func sortedKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(m)
 	return out
 }
 

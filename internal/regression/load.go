@@ -21,6 +21,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // Run is one orchestrator output directory's regression-relevant state.
@@ -254,11 +256,7 @@ func elementFingerprint(name string, det map[string]string) (string, map[string]
 	if len(files) == 0 {
 		return "", nil
 	}
-	keys := make([]string, 0, len(files))
-	for k := range files {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := sliceutil.SortedKeys(files)
 
 	h := newSHA256()
 	for _, k := range keys {

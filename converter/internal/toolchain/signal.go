@@ -1,6 +1,6 @@
 package toolchain
 
-import "sort"
+import "github.com/sstriker/buildstream-bazel/internal/sliceutil"
 
 // FoldElementSignal additively merges the implicit include / link
 // search directories observed from a real element's cmake configure
@@ -66,10 +66,6 @@ func sortedSetKeys(m map[string]bool) []string {
 	if len(m) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(m)
 	return out
 }

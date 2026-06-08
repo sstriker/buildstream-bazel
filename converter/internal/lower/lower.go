@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -30,6 +31,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // Options controls behavior that the orchestrator (M3) overrides per-package.
@@ -667,11 +669,7 @@ func wireDefineDrivenGeneratedHeaders(pkg *ir.Package) {
 		incs[d] = true
 	}
 	sort.Strings(hdrs)
-	includes := make([]string, 0, len(incs))
-	for d := range incs {
-		includes = append(includes, d)
-	}
-	sort.Strings(includes)
+	includes := sliceutil.SortedKeys(incs)
 	const wrapperName = "define_driven_generated_headers"
 	pkg.Targets = append(pkg.Targets, ir.Target{
 		Name:       wrapperName,
@@ -1819,11 +1817,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		for out, kind := range cc.FilteredInternalCmds {
 			byKind[kind] = append(byKind[kind], out)
 		}
-		kinds := make([]string, 0, len(byKind))
-		for k := range byKind {
-			kinds = append(kinds, k)
-		}
-		sort.Strings(kinds)
+		kinds := sliceutil.SortedKeys(byKind)
 		fmt.Fprintf(opts.Warnings,
 			"lower: filtered %d cmake command edge(s) with no Bazel analogue (dropped, not converted):\n",
 			len(cc.FilteredInternalCmds))
@@ -5875,18 +5869,7 @@ func applyPerSourceCompileDefinitions(pkg *ir.Package, byPath map[string][]strin
 // sortedDedupStrings returns a sorted, deduped copy of in. Small
 // helper for the COMPILE_DEFINITIONS uniformity comparison.
 func sortedDedupStrings(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	cp := append([]string(nil), in...)
-	sort.Strings(cp)
-	out := cp[:1]
-	for _, x := range cp[1:] {
-		if x != out[len(out)-1] {
-			out = append(out, x)
-		}
-	}
-	return out
+	return sliceutil.SortedUnique(in)
 }
 
 // sameDefineSet reports whether the two already-sorted-and-deduped
@@ -6101,12 +6084,7 @@ func relForSource(p string, t *fileapi.Target) string {
 // source slices are short enough (typically <50 entries) that
 // a map+rebuild is overkill.
 func stringSliceContains(s []string, v string) bool {
-	for _, e := range s {
-		if e == v {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s, v)
 }
 
 // scopeForLabelLib looks up a cmake lib name in the
@@ -7420,11 +7398,7 @@ func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][
 			cache[absDir] = perDir
 		}
 	}
-	out := make([]string, 0, len(seen))
-	for h := range seen {
-		out = append(out, h)
-	}
-	sort.Strings(out)
+	out := sliceutil.SortedKeys(seen)
 	return out, nil
 }
 

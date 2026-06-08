@@ -43,6 +43,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/sstriker/buildstream-bazel/internal/pathutil"
 )
 
 // PrefixSub is one (from → to) substitution; Canonicalize replaces
@@ -281,26 +283,11 @@ func (c *canonicalizer) openatLine(s string) (string, bool) {
 		return "", false
 	}
 	rel, err := filepath.Rel(c.sourceRoot, path)
-	if err != nil || !insideSourceRoot(rel) {
+	if err != nil || !pathutil.InsideRoot(rel) {
 		return "", false
 	}
 	rel = filepath.ToSlash(rel)
 	return prefix + quoteStrace(rel) + suffix + " = ?", true
-}
-
-// insideSourceRoot reports whether rel (a filepath.Rel result)
-// names a path inside its base — i.e., it isn't `""`, `"."`,
-// `".."`, and doesn't start with `"../"`. Plain
-// `strings.HasPrefix(rel, "..")` would also reject legitimate
-// in-tree paths whose first component literally starts with
-// the bytes `..` (e.g. `..foo/bar`). filepath.Rel never produces
-// an internal `..` component, so this check only needs to consider
-// the leading position.
-func insideSourceRoot(rel string) bool {
-	if rel == "" || rel == "." || rel == ".." {
-		return false
-	}
-	return !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // unquoteStrace inverts straceQuote (cmd/build-tracer): undoes
