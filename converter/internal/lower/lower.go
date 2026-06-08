@@ -1261,7 +1261,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// module to the includer's scope rather than the module's own dir.
 	configureDirScopes := make([]string, 0, len(cfg.Directories))
 	for _, d := range cfg.Directories {
-		s := filepath.ToSlash(strings.TrimSuffix(d.Source, "/"))
+		// ToSlash first, THEN trim the trailing separator (matching
+		// subPackageDir) — a Windows-separator Source must be slash-normalized
+		// before the trim, else a trailing "/" survives and breaks dirScopeRel's
+		// prefix match.
+		s := strings.TrimSuffix(filepath.ToSlash(d.Source), "/")
 		if s == "." {
 			s = ""
 		}

@@ -74,7 +74,9 @@ func recoverConfigureFiles(traceRaw []byte, hostSrcDir, hostBuildDir, recordedSr
 // or a module outside the source tree) so the caller can fall back.
 func dirScopeRel(callFile, recordedSrcDir string, dirScopes []string) (string, bool) {
 	callDir := filepath.ToSlash(filepath.Dir(callFile))
-	src := filepath.ToSlash(recordedSrcDir)
+	// Trim any trailing separator so scopeAbs doesn't become "<src>/" (or
+	// "<src>//<scope>"), which would defeat the exact/prefix match below.
+	src := strings.TrimSuffix(filepath.ToSlash(recordedSrcDir), "/")
 	best := ""
 	bestLen := -1
 	for _, scope := range dirScopes {

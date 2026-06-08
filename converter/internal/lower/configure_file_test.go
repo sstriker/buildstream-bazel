@@ -592,6 +592,11 @@ func TestDirScopeRel(t *testing.T) {
 			t.Errorf("dirScopeRel(%q) = (%q, %v), want (%q, %v)", c.callFile, got, ok, c.want, c.ok)
 		}
 	}
+
+	// A trailing-slash recordedSrcDir must still match (normalized internally).
+	if got, ok := dirScopeRel("/src/proj/sub/cmake/Mod.cmake", "/src/proj/", scopes); got != "sub" || !ok {
+		t.Errorf("dirScopeRel with trailing-slash src = (%q, %v), want (\"sub\", true)", got, ok)
+	}
 }
 
 func TestReanchorConvertTimePaths(t *testing.T) {
