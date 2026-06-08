@@ -1,0 +1,30 @@
+{
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 156,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch": {},
+ "std_mismatch_total_tus": 156,
+ "std_mismatch_by_signature": [
+  {
+   "signature": [
+    "",
+    "c++17"
+   ],
+   "tu_count": 156,
+   "examples": [
+    "absl/base/casts.cc",
+    "absl/base/internal/cycleclock.cc",
+    "absl/base/internal/low_level_alloc.cc",
+    "absl/base/internal/poison.cc",
+    "absl/base/internal/raw_logging.cc"
+   ]
+  }
+ ],
+ "include_mismatch": {},
+ "copt_mismatch": {},
+ "gen_root_missing": {},
+ "tu_key_collisions": 0,
+ "param_file_skipped": 0
+}

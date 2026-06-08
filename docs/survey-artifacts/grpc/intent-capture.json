@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "element": "grpc",
+  "summary": {
+    "total": 7,
+    "net_new": 7,
+    "already_flagged": 0,
+    "by_severity": {
+      "high": 1,
+      "low": 2,
+      "medium": 4
+    }
+  },
+  "findings": [
+    {
+      "category": "install",
+      "severity": "high",
+      "summary": "Six generated .pc files (gpr.pc, grpc.pc, grpc_unsecure.pc, grpc++.pc, grpc++_unsecure.pc, grpcpp_otel_plugin.pc) are produced by write_file rules in BUILD.bazel but are never referenced in any pkg_files() rule, so they are orphaned build artifacts that cannot be installed to lib/pkgconfig.",
+      "evidence": "CMake side: generate_pkgconfig() at CMakeLists.txt:53170-53186 is called 6 times (lines 53189-53252) and each call invokes install(FILES ... DESTINATION ${gRPC_INSTALL_LIBDIR}/pkgconfig). Bazel side: BUILD.bazel:1520-1690 defines write_file targets gen_libs_opt_pkgconfig_gpr_pc through gen_libs_opt_pkgconfig_grpcpp_otel_plugin_pc but zero pkg_files() rules reference these outputs — confirmed by grep finding no hits for these target names outside the write_file declarations themselves.",
+      "cmake_ref": "/tmp/grpc/CMakeLists.txt:53185",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "Windows/MSVC global preprocessor defines are absent from all Bazel targets: _WIN32_WINNT=0x600, _SCL_SECURE_NO_WARNINGS, _CRT_SECURE_NO_WARNINGS, _WINSOCK_DEPRECATED_NO_WARNINGS. On MSVC builds these suppress security-warning noise and set the minimum Windows API level; without them Windows builds produce spurious warnings and may use a different API floor.",
+      "evidence": "CMake side: CMakeLists.txt:310 calls add_definitions(-D_WIN32_WINNT=0x600 -D_SCL_SECURE_NO_WARNINGS -D_CRT_SECURE_NO_WARNINGS -D_WINSOCK_DEPRECATED_NO_WARNINGS) inside if(MSVC); line 335 adds -D_WIN32_WINNT=0x600 for non-MSVC Windows too. Bazel side: grep across BUILD.bazel, grpc_build_system.bzl, grpc.bzl, and copts.bzl finds zero occurrences of WIN32_WINNT, SCL_SECURE, CRT_SECURE, or WINSOCK.",
+      "cmake_ref": "/tmp/grpc/CMakeLists.txt:310",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "systemd socket-activation support is silently compiled out. systemd_utils.cc is included in several cc_library targets but HAVE_LIBSYSTEMD is never defined and libsystemd is never linked, so all #ifdef HAVE_LIBSYSTEMD blocks are dead.",
+      "evidence": "CMake side: cmake/systemd.cmake:27 calls add_definitions(-DHAVE_LIBSYSTEMD) and CMakeLists.txt:401 adds ${_gRPC_SYSTEMD_LIBRARIES} to _gRPC_ALLTARGETS_LIBRARIES when libsystemd is found. Bazel side: BUILD.bazel lines 2375/2924/3430 include src/core/lib/iomgr/systemd_utils.cc in grpc/grpc_unsecure/grpc++ cc_libraries, but no local_defines contain HAVE_LIBSYSTEMD and no deps or linkopts reference libsystemd.",
+      "cmake_ref": "/tmp/grpc/cmake/systemd.cmake:27",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "utf8_range cmake package config (utf8_range-config.cmake) is not generated or installed. Downstream CMake projects using find_package(utf8_range CONFIG) will fail.",
+      "evidence": "CMake side: third_party/utf8_range/CMakeLists.txt:75-81 calls configure_package_config_file() and install(FILES ... utf8_range-config.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/utf8_range). Bazel side: elements/grpc/third_party/utf8_range/BUILD.bazel has no write_file or pkg_files for a cmake config file; the main BUILD.bazel cmake_config_bundle (line 4124) covers grpc but not utf8_range.",
+      "cmake_ref": "/tmp/grpc/third_party/utf8_range/CMakeLists.txt:75",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "utf8_range.pc pkg-config file is neither generated nor packaged. CMake configures it from a template and installs it; Bazel has no write_file or pkg_files for it.",
+      "evidence": "CMake side: third_party/utf8_range/CMakeLists.txt:83-87 calls configure_file(cmake/utf8_range.pc.cmake ...) and install(FILES ... DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig). Template exists at /tmp/grpc/third_party/utf8_range/cmake/utf8_range.pc.cmake. Bazel side: elements/grpc/third_party/utf8_range/BUILD.bazel contains only cc_library rules for headers and exports_files for utf8_range.c — no write_file, no pkg_files for a .pc file.",
+      "cmake_ref": "/tmp/grpc/third_party/utf8_range/CMakeLists.txt:83",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "low",
+      "summary": "-msse2 optimization flag for 32-bit x86 Linux is not carried into Bazel. On i686 hosts grpc benefits from SSE2 for hash and crypto routines but the Bazel build silently omits it.",
+      "evidence": "CMake side: CMakeLists.txt:279-281 conditionally sets _gRPC_C_CXX_FLAGS with -msse2 when CMAKE_SYSTEM_PROCESSOR is i686 and not cross-compiling. Bazel side: no architecture-conditional copts in copts.bzl or BUILD.bazel cc_library copts.",
+      "cmake_ref": "/tmp/grpc/CMakeLists.txt:281",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "low",
+      "summary": "MSVC /utf-8 compile flag missing. CMake sets it globally to force UTF-8 source interpretation; without it MSVC defaults to the system ANSI codepage, which can mis-parse non-ASCII source identifiers or string literals.",
+      "evidence": "CMake side: CMakeLists.txt:327-328 sets _gRPC_C_CXX_FLAGS with /utf-8 inside the if(MSVC) block, which is then applied to all targets. Bazel side: copts.bzl and BUILD.bazel have no /utf-8 entry in any select() or copts list.",
+      "cmake_ref": "/tmp/grpc/CMakeLists.txt:328",
+      "status": "net-new"
+    }
+  ]
+}

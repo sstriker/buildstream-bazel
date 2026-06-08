@@ -1,0 +1,82 @@
+{
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 29,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch_total_tus": 29,
+ "define_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [],
+    "missing_in_bazel": [
+     "NDEBUG"
+    ]
+   },
+   "tu_count": 26,
+   "examples": [
+    "src/format.cc",
+    "src/os.cc",
+    "test/args-test.cc",
+    "test/assert-test.cc",
+    "test/base-test.cc"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "FMT_HEADER_ONLY=1"
+    ],
+    "missing_in_bazel": [
+     "NDEBUG"
+    ]
+   },
+   "tu_count": 3,
+   "examples": [
+    "test/gtest-extra.cc",
+    "test/test-main.cc",
+    "test/util.cc"
+   ]
+  }
+ ],
+ "std_mismatch_total_tus": 29,
+ "std_mismatch_by_signature": [
+  {
+   "signature": [
+    "",
+    "c++17"
+   ],
+   "tu_count": 29,
+   "examples": [
+    "src/format.cc",
+    "src/os.cc",
+    "test/args-test.cc",
+    "test/assert-test.cc",
+    "test/base-test.cc"
+   ]
+  }
+ ],
+ "include_mismatch_total_tus": 29,
+ "include_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "."
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 29,
+   "examples": [
+    "src/format.cc",
+    "src/os.cc",
+    "test/args-test.cc",
+    "test/assert-test.cc",
+    "test/base-test.cc"
+   ]
+  }
+ ],
+ "copt_mismatch": {},
+ "gen_root_missing": {},
+ "tu_key_collisions": 40,
+ "param_file_skipped": 0
+}

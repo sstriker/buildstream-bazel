@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "element": "spdlog",
+  "summary": {
+    "total": 10,
+    "net_new": 10,
+    "already_flagged": 0,
+    "by_severity": {
+      "high": 3,
+      "low": 3,
+      "medium": 4
+    }
+  },
+  "findings": [
+    {
+      "category": "flag",
+      "severity": "high",
+      "summary": "Threads/pthread linkage missing from both spdlog and spdlog_header_only cc_library targets",
+      "evidence": "CMakeLists.txt:183 target_link_libraries(spdlog PUBLIC Threads::Threads) and CMakeLists.txt:204 target_link_libraries(spdlog_header_only INTERFACE Threads::Threads). Neither elements/spdlog/BUILD.bazel:spdlog nor :spdlog_header_only has linkopts=[\"-pthread\"] or a threads dep. The generated .pc file includes -pthread in Libs: but that does not propagate to Bazel dependents.",
+      "cmake_ref": "CMakeLists.txt:183",
+      "status": "net-new"
+    },
+    {
+      "category": "target",
+      "severity": "high",
+      "summary": "All benchmark targets are absent — no bench/BUILD.bazel exists",
+      "evidence": "bench/CMakeLists.txt defines four executables: bench (bench.cpp), async_bench (async_bench.cpp), latency (latency.cpp, links benchmark::benchmark), formatter-bench (formatter-bench.cpp, links benchmark::benchmark). SPDLOG_BUILD_BENCH=OFF was baked in, but the targets themselves are completely absent from the Bazel workspace; there is no bench/BUILD.bazel.",
+      "cmake_ref": "bench/CMakeLists.txt:26",
+      "status": "net-new"
+    },
+    {
+      "category": "target",
+      "severity": "high",
+      "summary": "All test targets are absent — no tests/BUILD.bazel exists",
+      "evidence": "tests/CMakeLists.txt defines spdlog-utests (20+ source files, Catch2, add_test with RUN_SERIAL) and spdlog-utests-ho (header-only variant). SPDLOG_BUILD_TESTS=OFF was baked in, but neither target nor any cc_test rule exists anywhere in the converted workspace.",
+      "cmake_ref": "tests/CMakeLists.txt:67",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "linkopts in example/BUILD.bazel contains compiler flags (-DNDEBUG, -O3, -O2, -g) which are not valid linker options",
+      "evidence": "example/BUILD.bazel:30-44 places -DNDEBUG, -O3, -O2, -g in linkopts for all build_type select arms. These are compiler flags (c.f. CMake's CMAKE_CXX_FLAGS_RELEASE sets them at compile time, not link time). Passing -DNDEBUG/-O3 to the linker driver is either silently ignored or causes unexpected LTO interactions; the cmake side never applied build-type flags as linker flags.",
+      "cmake_ref": "CMakeLists.txt:21",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "CMake config files (spdlogConfig.cmake, spdlogConfigVersion.cmake, spdlogConfigTargets.cmake) have no Bazel equivalent",
+      "evidence": "CMakeLists.txt:345-353 uses configure_package_config_file + write_basic_package_version_file + install(EXPORT spdlog ...) to install three CMake integration files into lib/cmake/spdlog. No Bazel rule in the converted workspace generates or installs any of these, removing find_package(spdlog CONFIG) compatibility for downstream consumers.",
+      "cmake_ref": "CMakeLists.txt:345",
+      "status": "net-new"
+    },
+    {
+      "category": "install",
+      "severity": "medium",
+      "summary": "pkg-config file is generated but marked private and wired to no install rule",
+      "evidence": "CMakeLists.txt:339-340 configures spdlog.pc and installs it to ${pkgconfig_install_dir} (lib/pkgconfig). The Bazel conversion generates gen_spdlog_pc via write_file but sets visibility=[\"//visibility:private\"] and never references it from any pkg_install or filegroup rule, so it is unreachable by any downstream install target.",
+      "cmake_ref": "CMakeLists.txt:339",
+      "status": "net-new"
+    },
+    {
+      "category": "target",
+      "severity": "medium",
+      "summary": "example_header_only binary target is entirely absent",
+      "evidence": "example/CMakeLists.txt:20-23 defines add_executable(example_header_only example.cpp) linked to spdlog::spdlog_header_only when SPDLOG_BUILD_EXAMPLE_HO is set. SPDLOG_BUILD_EXAMPLE_HO=OFF was baked in, but the target does not exist at all in elements/spdlog/example/BUILD.bazel, meaning the capability is permanently lost rather than just disabled.",
+      "cmake_ref": "example/CMakeLists.txt:20",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "low",
+      "summary": "Android 'log' system library not linked for Android targets",
+      "evidence": "CMakeLists.txt:231-234 conditionally calls target_link_libraries(spdlog PUBLIC log) and target_link_libraries(spdlog_header_only INTERFACE log) when ANDROID is set. No equivalent @platforms//os:android select() arm adding -llog appears in elements/spdlog/BUILD.bazel.",
+      "cmake_ref": "CMakeLists.txt:231",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "low",
+      "summary": "MinGW ws2_32 linkage missing from example target",
+      "evidence": "example/CMakeLists.txt:15 target_link_libraries(example PRIVATE spdlog::spdlog $\u003c$\u003cBOOL:${MINGW}\u003e:ws2_32\u003e). The Bazel example/BUILD.bazel has no select() arm adding -lws2_32 for Windows/MinGW targets.",
+      "cmake_ref": "example/CMakeLists.txt:15",
+      "status": "net-new"
+    },
+    {
+      "category": "other",
+      "severity": "low",
+      "summary": "DEBUG_POSTFIX 'd' for debug builds is not captured",
+      "evidence": "CMakeLists.txt:188 set_target_properties(spdlog PROPERTIES DEBUG_POSTFIX d) causes debug builds to produce libspdlogd.a. The Bazel spdlog cc_library has no equivalent; debug builds produce libspdlog.a, making debug/release artifacts indistinguishable by filename.",
+      "cmake_ref": "CMakeLists.txt:188",
+      "status": "net-new"
+    }
+  ]
+}

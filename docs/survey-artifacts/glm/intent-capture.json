@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "element": "glm",
+  "summary": {
+    "total": 8,
+    "net_new": 8,
+    "already_flagged": 0,
+    "by_severity": {
+      "high": 2,
+      "low": 2,
+      "medium": 4
+    }
+  },
+  "findings": [
+    {
+      "category": "install",
+      "severity": "high",
+      "summary": "Install layout entirely absent despite rules_pkg being declared in MODULE.bazel",
+      "evidence": "CMake installs: (a) the glm header tree to ${CMAKE_INSTALL_INCLUDEDIR} via install(DIRECTORY), (b) both library targets via install(TARGETS glm-header-only glm EXPORT glm), (c) glmConfig.cmake and glmConfigVersion.cmake to ${CMAKE_INSTALL_DATAROOTDIR}/glm for downstream find_package(glm) use. The Bazel workspace has rules_pkg listed as a bazel_dep in MODULE.bazel but no pkg_files, pkg_install, pkg_tar, or any install-phase target in any BUILD.bazel. The only install-adjacent artifact is the inert gen_cmake_uninstall_cmake write_file target, which generates a cmake script but never installs anything.",
+      "cmake_ref": "CMakeLists.txt:233-254",
+      "status": "net-new"
+    },
+    {
+      "category": "test",
+      "severity": "high",
+      "summary": "Entire test suite not translated — ~130 cc_test targets across 5 subdirectories are absent",
+      "evidence": "CMake defines a glmCreateTestGTC() function and populates test/bug (1 test), test/core (52 tests), test/ext (54 tests), test/gtc (20 tests), test/gtx (63 tests) — all wired into CTest. The Bazel workspace contains zero test targets (no cc_test, no sh_test); there is no BUILD.bazel file under any test/ directory. The converter baked GLM_BUILD_TESTS=OFF, which suppressed the entire test subdirectory translation — not a declined translation, just a skipped one.",
+      "cmake_ref": "test/CMakeLists.txt:83-88",
+      "status": "net-new"
+    },
+    {
+      "category": "flag",
+      "severity": "medium",
+      "summary": "GLM_ENABLE_FAST_MATH baked OFF with no Bazel copts select() to opt in",
+      "evidence": "CMake's GLM_ENABLE_FAST_MATH option adds -ffast-math (GCC/Clang) or /fp:fast (MSVC); when disabled, it adds /fp:precise on MSVC. The Bazel cc_library copts only include the debug/release/relwithdebinfo select() block — no config_setting or select() arm for fast-math exists. The option is listed as baked OFF in the BUILD header but has no Bazel-representable toggle.",
+      "cmake_ref": "CMakeLists.txt:98-114",
+      "status": "net-new"
+    },
+    {
+      "category": "option",
+      "severity": "medium",
+      "summary": "Nine SIMD variant options baked OFF with no Bazel config_setting or select() to opt in",
+      "evidence": "CMake defines GLM_ENABLE_SIMD_SSE2/SSE3/SSSE3/SSE4_1/SSE4_2/AVX/AVX2/NEON and GLM_FORCE_PURE, each adding the appropriate -m* compiler flag and -DGLM_FORCE_INTRINSICS (or -DGLM_FORCE_PURE) define. All nine are documented as baked OFF in the BUILD.bazel header comment, but config/BUILD.bazel contains only the debug/release/relwithdebinfo build_type config_settings — no SIMD config_settings and no select() arms for any of the nine options appear anywhere in the output. Unlike build_type, which has a full Bazel mechanism to switch, SIMD variants are permanently locked off with no way to activate them in Bazel.",
+      "cmake_ref": "CMakeLists.txt:116-221",
+      "status": "net-new"
+    },
+    {
+      "category": "target",
+      "severity": "medium",
+      "summary": "glm-header-only alias missing include_prefix — standalone consumers get wrong include paths",
+      "evidence": "CMake sets target_include_directories(glm-header-only INTERFACE \"$\u003cBUILD_INTERFACE:${PROJECT_SOURCE_DIR}\u003e\") so #include \u003cglm/glm.hpp\u003e works. In Bazel, //elements/glm:glm-header-only lists //elements/glm/glm:*.hpp as hdrs but carries no strip_include_prefix or include_prefix attribute. The include_prefix=\"glm\" that makes headers reachable at glm/... is declared only on //elements/glm/glm:glm (the compiled library). A consumer depending solely on the glm_glm-header-only alias (the header-only build path) would find headers at their raw workspace-relative paths (elements/glm/glm/glm.hpp), not at glm/glm.hpp.",
+      "cmake_ref": "glm/CMakeLists.txt:48-51",
+      "status": "net-new"
+    },
+    {
+      "category": "test",
+      "severity": "medium",
+      "summary": "test/cmake package-integration test (find_package consumer) not represented",
+      "evidence": "test/cmake/CMakeLists.txt is a standalone CMake project that calls find_package(glm REQUIRED) and builds test_find_glm against glm::glm. This validates that the install exports work correctly from a consumer perspective. No equivalent Bazel integration test (e.g. a separate module that bazel_dep-s on the installed glm) was created.",
+      "cmake_ref": "test/cmake/CMakeLists.txt:1-8",
+      "status": "net-new"
+    },
+    {
+      "category": "option",
+      "severity": "low",
+      "summary": "GLM_DISABLE_AUTO_DETECTION define set baked OFF but four associated preprocessor defines have no Bazel select() arm",
+      "evidence": "When GLM_DISABLE_AUTO_DETECTION is ON, CMake adds -DGLM_FORCE_PLATFORM_UNKNOWN -DGLM_FORCE_COMPILER_UNKNOWN -DGLM_FORCE_ARCH_UNKNOWN -DGLM_FORCE_CXX_UNKNOWN. The option is documented as baked OFF, but there is no config_setting or defines= select() in any cc_library through which a consumer could activate these four defines in Bazel.",
+      "cmake_ref": "CMakeLists.txt:76-80",
+      "status": "net-new"
+    },
+    {
+      "category": "option",
+      "severity": "low",
+      "summary": "GLM_TEST_ENABLE_SIMD_FMA test option not captured",
+      "evidence": "test/CMakeLists.txt checks GLM_TEST_ENABLE_SIMD_FMA and, when set, adds -DGLM_FORCE_FMA and -mfma to test compilation. This is separate from the library-level SIMD options. It appears nowhere in the Bazel output — not in baked options, not in any config_setting.",
+      "cmake_ref": "test/CMakeLists.txt:10-14",
+      "status": "net-new"
+    }
+  ]
+}

@@ -1,0 +1,134 @@
+# Intent-capture review — protobuf
+
+This is a Bazel project mechanically converted from a CMake project. It targets Bazel 9 and is authored against these rule providers, NOT native rules (Bazel 9 removed the native sh rules and deprecated native cc): C/C++ via `@rules_cc//cc:defs.bzl`; shell tests/binaries via `@rules_shell//shell:*.bzl`; file-comparison tests via `@bazel_skylib//rules:diff_test.bzl`; install/packaging via `@rules_pkg//pkg:mappings.bzl`. The converted BUILD files are gazelle-cc-maintained. Some constructs have no faithful mechanical translation and were deliberately left for a post-pass (see conversion-todos.json) or refused (see rejections.json) — those are ALREADY KNOWN, not misses.
+
+## Your task
+Did the converted Bazel project capture ALL the intent of the cmake project? What did it MISS? Hunt the SILENT losses — a dropped test target, an install layout, an option default, a visibility constraint, a build-time codegen step — that compile fine and are flagged NOWHERE. Do NOT re-report anything already in the already-flagged set below; report only NET-NEW misses.
+
+## Read these (the converted bundle)
+- Rendered Bazel (the mechanical output you are auditing):
+  - /tmp/survey-lens/protobuf/build-ws/MODULE.bazel
+  - /tmp/survey-lens/protobuf/build-ws/absl_umbrella/BUILD.bazel
+  - /tmp/survey-lens/protobuf/build-ws/config/BUILD.bazel
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/BUILD.bazel
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/cc_proto_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/common/proto_common.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/common/proto_info.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/common/proto_lang_toolchain_info.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/java_lite_proto_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/java_proto_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/bazel_cc_proto_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/bazel_java_proto_library_rule.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/cc_proto_aspect.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/cc_proto_support.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/java_lite_proto_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/java_proto_support.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/native.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/native_bool_flag.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/proto_bazel_features.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/proto_info.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/proto_lang_toolchain_rule.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/proto_library_rule.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/proto_toolchain_rule.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/toolchain_helpers.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/upb_proto_library_internal/aspect.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/upb_proto_library_internal/cc_library_func.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/upb_proto_library_internal/copts.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/private/upb_proto_library_internal/rule.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/proto_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/py_proto_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/tests/java_proto_library_tests.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/tests/proto_common_check_collocated_tests.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/tests/proto_common_compile_tests.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/tests/proto_common_declare_generated_files_tests.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/tests/proto_common_should_generate_tests.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/tests/testdata/collect_java_info_rule.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/tests/testdata/compile_rule.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/tests/testdata/should_generate.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/toolchains/proto_lang_toolchain.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/toolchains/proto_toolchain.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/upb_c_proto_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/upb_minitable_proto_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/upb_proto_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/bazel/upb_proto_reflection_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/benchmarks/build_defs.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/build_defs/arch_tests.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/build_defs/cc_proto_blacklist_test.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/build_defs/compiler_config_setting.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/build_defs/cpp_opts.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/build_defs/internal_shell.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/build_defs/java_opts.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/build_defs/kotlin_opts.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/conformance/defs.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/editions/defaults.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/hpb/bazel/hpb_proto_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/java/internal/testing.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/java/osgi/kotlin_osgi.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/java/osgi/osgi.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/lua/lua_proto_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/objectivec/defs.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/php/internal_generated_files.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/pkg/build_systems.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/pkg/cc_dist_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/protobuf.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/protobuf_deps.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/protobuf_release.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/protobuf_version.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/python/build_targets.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/python/dist/dist.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/python/dist/py_proto_library.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/python/dist/python_downloads.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/python/dist/system_python.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/python/internal.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/python/py_extension.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/ruby/defs.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/rust/bazel/aspects.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/rust/defs.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/rust/dist.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/rust/release_crates/substitute_rust_release_version.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/rust/test/rust_proto_library_unit_test/defs.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/rust/test/rust_proto_library_unit_test/rust_proto_library_unit_test.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/src/BUILD.bazel
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/src/google/protobuf/compiler/test_plugin_injection.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/third_party/utf8_range/BUILD.bazel
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/toolchain/cc_toolchain_config.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/upb/bazel/amalgamation.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/upb/bazel/build_defs.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/upb/cmake/build_defs.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/upb/reflection/cmake/BUILD.bazel
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/upb_generator/bootstrap_compiler.bzl
+  - /tmp/survey-lens/protobuf/build-ws/elements/protobuf/upb_generator/cmake/BUILD.bazel
+- Original cmake sources (the intent to compare against):
+  - /tmp/protobuf/CMakeLists.txt
+  - /tmp/protobuf/cmake/abseil-cpp.cmake
+  - /tmp/protobuf/cmake/conformance.cmake
+  - /tmp/protobuf/cmake/dependencies.cmake
+  - /tmp/protobuf/cmake/examples.cmake
+  - /tmp/protobuf/cmake/gtest.cmake
+  - /tmp/protobuf/cmake/install.cmake
+  - /tmp/protobuf/cmake/libprotobuf-lite.cmake
+  - /tmp/protobuf/cmake/libprotobuf.cmake
+  - /tmp/protobuf/cmake/libprotoc.cmake
+  - /tmp/protobuf/cmake/libupb.cmake
+  - /tmp/protobuf/cmake/protobuf-configure-target.cmake
+  - /tmp/protobuf/cmake/protobuf-generate.cmake
+  - /tmp/protobuf/cmake/protobuf-lite.pc.cmake
+  - /tmp/protobuf/cmake/protobuf-options.cmake
+  - /tmp/protobuf/cmake/protobuf.pc.cmake
+  - /tmp/protobuf/cmake/protoc.cmake
+  - /tmp/protobuf/cmake/tests.cmake
+  - /tmp/protobuf/cmake/upb.pc.cmake
+  - /tmp/protobuf/cmake/upb_generators.cmake
+  - /tmp/protobuf/cmake/utf8_range.cmake
+  - /tmp/protobuf/examples/CMakeLists.txt
+  - /tmp/protobuf/src/file_lists.cmake
+  - /tmp/protobuf/third_party/utf8_range/CMakeLists.txt
+  - /tmp/protobuf/third_party/utf8_range/cmake/utf8_range.pc.cmake
+
+## Already flagged — do NOT re-report these
+(none)
+
+## Output contract
+Emit STRICT JSON only (no prose), shape:
+`{"findings":[{"category":"test|install|option|visibility|codegen|target|flag|other","severity":"high|medium|low","summary":"…","evidence":"cmake side … vs Bazel side …","cmake_ref":"<file>:<line>"}]}`
+GROUNDING: every finding MUST set `cmake_ref` to the cmake source file (and line if known) that proves the intent exists — an ungrounded claim can't be verified. If you find nothing net-new, emit `{"findings":[]}`.

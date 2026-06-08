@@ -1,0 +1,50 @@
+{
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 36,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch_total_tus": 36,
+ "define_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [],
+    "missing_in_bazel": [
+     "NDEBUG"
+    ]
+   },
+   "tu_count": 36,
+   "examples": [
+    "c/common/constants.c",
+    "c/common/context.c",
+    "c/common/dictionary.c",
+    "c/common/platform.c",
+    "c/common/shared_dictionary.c"
+   ]
+  }
+ ],
+ "std_mismatch": {},
+ "include_mismatch_total_tus": 36,
+ "include_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "."
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 36,
+   "examples": [
+    "c/common/constants.c",
+    "c/common/context.c",
+    "c/common/dictionary.c",
+    "c/common/platform.c",
+    "c/common/shared_dictionary.c"
+   ]
+  }
+ ],
+ "copt_mismatch": {},
+ "gen_root_missing": {},
+ "tu_key_collisions": 0,
+ "param_file_skipped": 0
+}

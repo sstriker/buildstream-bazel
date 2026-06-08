@@ -1,0 +1,27 @@
+# Intent-capture review — brotli
+
+This is a Bazel project mechanically converted from a CMake project. It targets Bazel 9 and is authored against these rule providers, NOT native rules (Bazel 9 removed the native sh rules and deprecated native cc): C/C++ via `@rules_cc//cc:defs.bzl`; shell tests/binaries via `@rules_shell//shell:*.bzl`; file-comparison tests via `@bazel_skylib//rules:diff_test.bzl`; install/packaging via `@rules_pkg//pkg:mappings.bzl`. The converted BUILD files are gazelle-cc-maintained. Some constructs have no faithful mechanical translation and were deliberately left for a post-pass (see conversion-todos.json) or refused (see rejections.json) — those are ALREADY KNOWN, not misses.
+
+## Your task
+Did the converted Bazel project capture ALL the intent of the cmake project? What did it MISS? Hunt the SILENT losses — a dropped test target, an install layout, an option default, a visibility constraint, a build-time codegen step — that compile fine and are flagged NOWHERE. Do NOT re-report anything already in the already-flagged set below; report only NET-NEW misses.
+
+## Read these (the converted bundle)
+- Rendered Bazel (the mechanical output you are auditing):
+  - /tmp/survey-lens/brotli/build-ws/MODULE.bazel
+  - /tmp/survey-lens/brotli/build-ws/config/BUILD.bazel
+  - /tmp/survey-lens/brotli/build-ws/elements/brotli/BUILD.bazel
+  - /tmp/survey-lens/brotli/build-ws/elements/brotli/c/include/BUILD.bazel
+  - /tmp/survey-lens/brotli/build-ws/elements/brotli/java/org/brotli/dec/build_defs.bzl
+- Original cmake sources (the intent to compare against):
+  - /tmp/brotli/CMakeLists.txt
+  - /tmp/brotli/tests/run-compatibility-test.cmake
+  - /tmp/brotli/tests/run-roundtrip-test.cmake
+
+## Already flagged — do NOT re-report these
+- todo `todo-9258d4e5a8c94daa` [cmake-internal-drop/informational] dashboard
+- todo `todo-bcffb1fa22eb881f` [cmake-p-test/actionable] tests/run-roundtrip-test.cmake
+
+## Output contract
+Emit STRICT JSON only (no prose), shape:
+`{"findings":[{"category":"test|install|option|visibility|codegen|target|flag|other","severity":"high|medium|low","summary":"…","evidence":"cmake side … vs Bazel side …","cmake_ref":"<file>:<line>"}]}`
+GROUNDING: every finding MUST set `cmake_ref` to the cmake source file (and line if known) that proves the intent exists — an ungrounded claim can't be verified. If you find nothing net-new, emit `{"findings":[]}`.

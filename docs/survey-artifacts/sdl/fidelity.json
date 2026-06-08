@@ -1,0 +1,88 @@
+{
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 259,
+ "only_cmake": [
+  "cmake_pch.h.c"
+ ],
+ "only_bazel": null,
+ "define_mismatch": {},
+ "std_mismatch": {},
+ "include_mismatch_total_tus": 259,
+ "include_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "include-config-relwithdebinfo/build_config",
+     "include-revision"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 224,
+   "examples": [
+    "src/SDL.c",
+    "src/SDL_assert.c",
+    "src/SDL_error.c",
+    "src/SDL_guid.c",
+    "src/SDL_hashtable.c"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "include-config-relwithdebinfo/build_config"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 25,
+   "examples": [
+    "src/libm/e_atan2.c",
+    "src/libm/e_exp.c",
+    "src/libm/e_fmod.c",
+    "src/libm/e_log.c",
+    "src/libm/e_log10.c"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "include-revision"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 10,
+   "examples": [
+    "src/test/SDL_test_assert.c",
+    "src/test/SDL_test_common.c",
+    "src/test/SDL_test_compare.c",
+    "src/test/SDL_test_crc32.c",
+    "src/test/SDL_test_font.c"
+   ]
+  }
+ ],
+ "copt_mismatch_total_tus": 223,
+ "copt_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [],
+    "missing_in_bazel": [
+     "-include"
+    ]
+   },
+   "tu_count": 223,
+   "examples": [
+    "src/SDL.c",
+    "src/SDL_assert.c",
+    "src/SDL_error.c",
+    "src/SDL_guid.c",
+    "src/SDL_hashtable.c"
+   ]
+  }
+ ],
+ "gen_root_missing": {},
+ "tu_key_collisions": 0,
+ "param_file_skipped": 0
+}

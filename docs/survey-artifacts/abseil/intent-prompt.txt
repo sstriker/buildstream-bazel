@@ -1,0 +1,275 @@
+# Intent-capture review — abseil
+
+This is a Bazel project mechanically converted from a CMake project. It targets Bazel 9 and is authored against these rule providers, NOT native rules (Bazel 9 removed the native sh rules and deprecated native cc): C/C++ via `@rules_cc//cc:defs.bzl`; shell tests/binaries via `@rules_shell//shell:*.bzl`; file-comparison tests via `@bazel_skylib//rules:diff_test.bzl`; install/packaging via `@rules_pkg//pkg:mappings.bzl`. The converted BUILD files are gazelle-cc-maintained. Some constructs have no faithful mechanical translation and were deliberately left for a post-pass (see conversion-todos.json) or refused (see rejections.json) — those are ALREADY KNOWN, not misses.
+
+## Your task
+Did the converted Bazel project capture ALL the intent of the cmake project? What did it MISS? Hunt the SILENT losses — a dropped test target, an install layout, an option default, a visibility constraint, a build-time codegen step — that compile fine and are flagged NOWHERE. Do NOT re-report anything already in the already-flagged set below; report only NET-NEW misses.
+
+## Read these (the converted bundle)
+- Rendered Bazel (the mechanical output you are auditing):
+  - /tmp/survey-lens/abseil/build-ws/MODULE.bazel
+  - /tmp/survey-lens/abseil/build-ws/config/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/base/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/container/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/copts/GENERATED_copts.bzl
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/copts/configure_copts.bzl
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/crc/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/debugging/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/flags/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/hash/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/log/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/numeric/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/profiling/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/random/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/status/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/strings/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/synchronization/BUILD.bazel
+  - /tmp/survey-lens/abseil/build-ws/elements/abseil/absl/time/BUILD.bazel
+- Original cmake sources (the intent to compare against):
+  - /tmp/abseil-cpp/CMake/AbseilDll.cmake
+  - /tmp/abseil-cpp/CMake/AbseilHelpers.cmake
+  - /tmp/abseil-cpp/CMake/Googletest/DownloadGTest.cmake
+  - /tmp/abseil-cpp/CMake/install_test_project/CMakeLists.txt
+  - /tmp/abseil-cpp/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/algorithm/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/base/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/cleanup/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/container/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/copts/AbseilConfigureCopts.cmake
+  - /tmp/abseil-cpp/absl/copts/GENERATED_AbseilCopts.cmake
+  - /tmp/abseil-cpp/absl/crc/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/debugging/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/flags/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/functional/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/hash/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/log/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/memory/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/meta/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/numeric/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/profiling/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/random/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/status/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/strings/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/synchronization/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/time/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/types/CMakeLists.txt
+  - /tmp/abseil-cpp/absl/utility/CMakeLists.txt
+
+## Already flagged — do NOT re-report these
+- todo `todo-8b7857ab8270c8c3` [bake/improvement] gen_lib_pkgconfig_absl_absl_check_pc
+- todo `todo-6bd2213f4f745042` [bake/improvement] gen_lib_pkgconfig_absl_absl_log_pc
+- todo `todo-33891e084c25b9ac` [bake/improvement] gen_lib_pkgconfig_absl_absl_vlog_is_on_pc
+- todo `todo-3f90e4be88ae397e` [bake/improvement] gen_lib_pkgconfig_absl_algorithm_container_pc
+- todo `todo-08f144140a580f29` [bake/improvement] gen_lib_pkgconfig_absl_algorithm_pc
+- todo `todo-43a27febf0efbd11` [bake/improvement] gen_lib_pkgconfig_absl_any_invocable_pc
+- todo `todo-c0d69b7e51831d4a` [bake/improvement] gen_lib_pkgconfig_absl_any_pc
+- todo `todo-5b0a23f45386cd97` [bake/improvement] gen_lib_pkgconfig_absl_atomic_hook_pc
+- todo `todo-87dd5c4d73e74af2` [bake/improvement] gen_lib_pkgconfig_absl_bad_any_cast_pc
+- todo `todo-0a13b172af5dc2d2` [bake/improvement] gen_lib_pkgconfig_absl_bad_optional_access_pc
+- todo `todo-34b5e76cd1bdc7d3` [bake/improvement] gen_lib_pkgconfig_absl_bad_variant_access_pc
+- todo `todo-4d3806026c4b3de5` [bake/improvement] gen_lib_pkgconfig_absl_base_internal_pc
+- todo `todo-a9d58f025f2b131a` [bake/improvement] gen_lib_pkgconfig_absl_base_pc
+- todo `todo-d657fea69defe729` [bake/improvement] gen_lib_pkgconfig_absl_bind_front_pc
+- todo `todo-ea6ecd7fa761f9ed` [bake/improvement] gen_lib_pkgconfig_absl_bits_pc
+- todo `todo-e3a8e1a2e534290c` [bake/improvement] gen_lib_pkgconfig_absl_borrowed_fixup_buffer_pc
+- todo `todo-807c60ff84db95a8` [bake/improvement] gen_lib_pkgconfig_absl_bounded_utf8_length_sequence_pc
+- todo `todo-4c2d9823b4a0c0a4` [bake/improvement] gen_lib_pkgconfig_absl_btree_pc
+- todo `todo-f25199a3b81b07dc` [bake/improvement] gen_lib_pkgconfig_absl_charset_pc
+- todo `todo-593ed13071050014` [bake/improvement] gen_lib_pkgconfig_absl_check_pc
+- todo `todo-a83228df61ab185d` [bake/improvement] gen_lib_pkgconfig_absl_chunked_queue_pc
+- todo `todo-816ecf94140ef0cd` [bake/improvement] gen_lib_pkgconfig_absl_city_pc
+- todo `todo-854d6f8a5dd4e721` [bake/improvement] gen_lib_pkgconfig_absl_civil_time_pc
+- todo `todo-12ec1233d6f73fcd` [bake/improvement] gen_lib_pkgconfig_absl_cleanup_internal_pc
+- todo `todo-33908b404fc327e7` [bake/improvement] gen_lib_pkgconfig_absl_cleanup_pc
+- todo `todo-43a534b698f2ed70` [bake/improvement] gen_lib_pkgconfig_absl_common_policy_traits_pc
+- todo `todo-d9ee9123f418618d` [bake/improvement] gen_lib_pkgconfig_absl_compare_pc
+- todo `todo-da29402b54bd61df` [bake/improvement] gen_lib_pkgconfig_absl_compressed_tuple_pc
+- todo `todo-8b01d57e95a352b3` [bake/improvement] gen_lib_pkgconfig_absl_config_pc
+- todo `todo-a90c954ff715282b` [bake/improvement] gen_lib_pkgconfig_absl_constexpr_testing_internal_pc
+- todo `todo-657b557dae73d16a` [bake/improvement] gen_lib_pkgconfig_absl_container_common_pc
+- todo `todo-1d8e48e600c6c027` [bake/improvement] gen_lib_pkgconfig_absl_container_memory_pc
+- todo `todo-5eefbcdc7580c52e` [bake/improvement] gen_lib_pkgconfig_absl_cord_internal_pc
+- todo `todo-c2af118d996e120d` [bake/improvement] gen_lib_pkgconfig_absl_cord_pc
+- todo `todo-ff57c63ea18c940f` [bake/improvement] gen_lib_pkgconfig_absl_cordz_functions_pc
+- todo `todo-0fb2b797f8746039` [bake/improvement] gen_lib_pkgconfig_absl_cordz_handle_pc
+- todo `todo-6beb5139556ec007` [bake/improvement] gen_lib_pkgconfig_absl_cordz_info_pc
+- todo `todo-5518f8dace3fd335` [bake/improvement] gen_lib_pkgconfig_absl_cordz_sample_token_pc
+- todo `todo-5b00750129899202` [bake/improvement] gen_lib_pkgconfig_absl_cordz_statistics_pc
+- todo `todo-215739f2ef4eabbb` [bake/improvement] gen_lib_pkgconfig_absl_cordz_update_scope_pc
+- todo `todo-59b0273f52d2fab8` [bake/improvement] gen_lib_pkgconfig_absl_cordz_update_tracker_pc
+- todo `todo-b551e5b75d81a1cd` [bake/improvement] gen_lib_pkgconfig_absl_core_headers_pc
+- todo `todo-fa3dda5bbcdd4efd` [bake/improvement] gen_lib_pkgconfig_absl_crc32c_pc
+- todo `todo-0a6dd954d090dbbf` [bake/improvement] gen_lib_pkgconfig_absl_crc_cord_state_pc
+- todo `todo-5c6c9ed73c500afb` [bake/improvement] gen_lib_pkgconfig_absl_crc_cpu_detect_pc
+- todo `todo-458be88ccbe76248` [bake/improvement] gen_lib_pkgconfig_absl_crc_internal_pc
+- todo `todo-ea81311cc92ff357` [bake/improvement] gen_lib_pkgconfig_absl_debugging_internal_pc
+- todo `todo-690c20a8cccb602a` [bake/improvement] gen_lib_pkgconfig_absl_debugging_pc
+- todo `todo-04f706686a2c144a` [bake/improvement] gen_lib_pkgconfig_absl_decode_rust_punycode_pc
+- todo `todo-abab1f26d6242e32` [bake/improvement] gen_lib_pkgconfig_absl_demangle_internal_pc
+- todo `todo-a1dba00c397b642a` [bake/improvement] gen_lib_pkgconfig_absl_demangle_rust_pc
+- todo `todo-db3018299b478ebb` [bake/improvement] gen_lib_pkgconfig_absl_die_if_null_pc
+- todo `todo-a083da7d90d33ab5` [bake/improvement] gen_lib_pkgconfig_absl_dynamic_annotations_pc
+- todo `todo-82e38cbb2e1eb75c` [bake/improvement] gen_lib_pkgconfig_absl_endian_pc
+- todo `todo-8b5c395c9a11fcba` [bake/improvement] gen_lib_pkgconfig_absl_errno_saver_pc
+- todo `todo-0d7502e0cfaa525d` [bake/improvement] gen_lib_pkgconfig_absl_examine_stack_pc
+- todo `todo-1ab0b79a15f8d19d` [bake/improvement] gen_lib_pkgconfig_absl_exponential_biased_pc
+- todo `todo-55f29579649faf8c` [bake/improvement] gen_lib_pkgconfig_absl_failure_signal_handler_pc
+- todo `todo-a5256f634504cf87` [bake/improvement] gen_lib_pkgconfig_absl_fast_type_id_pc
+- todo `todo-206f9867cc8c4ea5` [bake/improvement] gen_lib_pkgconfig_absl_fixed_array_pc
+- todo `todo-32ab8f5b1a016e99` [bake/improvement] gen_lib_pkgconfig_absl_flags_commandlineflag_internal_pc
+- todo `todo-aec5c2b9819b8cc7` [bake/improvement] gen_lib_pkgconfig_absl_flags_commandlineflag_pc
+- todo `todo-5784e03de1ef3171` [bake/improvement] gen_lib_pkgconfig_absl_flags_config_pc
+- todo `todo-d707c61b2bbfe1c7` [bake/improvement] gen_lib_pkgconfig_absl_flags_internal_pc
+- todo `todo-2c5cb0c325ec2048` [bake/improvement] gen_lib_pkgconfig_absl_flags_marshalling_pc
+- todo `todo-716b18b2d7f15658` [bake/improvement] gen_lib_pkgconfig_absl_flags_parse_pc
+- todo `todo-0069348344699412` [bake/improvement] gen_lib_pkgconfig_absl_flags_path_util_pc
+- todo `todo-5b8c1b9f4eb1c533` [bake/improvement] gen_lib_pkgconfig_absl_flags_pc
+- todo `todo-4ce268ef8f27cfe3` [bake/improvement] gen_lib_pkgconfig_absl_flags_private_handle_accessor_pc
+- todo `todo-6ab1756ab7cd1b3c` [bake/improvement] gen_lib_pkgconfig_absl_flags_program_name_pc
+- todo `todo-ca77abbcf500aede` [bake/improvement] gen_lib_pkgconfig_absl_flags_reflection_pc
+- todo `todo-808bb7864355a11d` [bake/improvement] gen_lib_pkgconfig_absl_flags_usage_internal_pc
+- todo `todo-63d457961c4ab9b7` [bake/improvement] gen_lib_pkgconfig_absl_flags_usage_pc
+- todo `todo-330b7005db37f5e5` [bake/improvement] gen_lib_pkgconfig_absl_flat_hash_map_pc
+- todo `todo-cdb00355f2488490` [bake/improvement] gen_lib_pkgconfig_absl_flat_hash_set_pc
+- todo `todo-6dde6dc69cfdde91` [bake/improvement] gen_lib_pkgconfig_absl_function_ref_pc
+- todo `todo-9090260e56ac3820` [bake/improvement] gen_lib_pkgconfig_absl_generic_printer_internal_pc
+- todo `todo-3d81eefb5aa221fa` [bake/improvement] gen_lib_pkgconfig_absl_graphcycles_internal_pc
+- todo `todo-43038522cb2df69c` [bake/improvement] gen_lib_pkgconfig_absl_has_ostream_operator_pc
+- todo `todo-6195253760fc1dd8` [bake/improvement] gen_lib_pkgconfig_absl_hash_container_defaults_pc
+- todo `todo-943a3b7b0a320a8b` [bake/improvement] gen_lib_pkgconfig_absl_hash_function_defaults_pc
+- todo `todo-7861972870300142` [bake/improvement] gen_lib_pkgconfig_absl_hash_pc
+- todo `todo-463d1dd2dcea475f` [bake/improvement] gen_lib_pkgconfig_absl_hash_policy_traits_pc
+- todo `todo-943b2c1c6e5fc422` [bake/improvement] gen_lib_pkgconfig_absl_hashtable_control_bytes_pc
+- todo `todo-163fb7c6c518a6bd` [bake/improvement] gen_lib_pkgconfig_absl_hashtable_debug_hooks_pc
+- todo `todo-659804d1389a4469` [bake/improvement] gen_lib_pkgconfig_absl_hashtable_debug_pc
+- todo `todo-5c56ea3a840e595b` [bake/improvement] gen_lib_pkgconfig_absl_hashtable_profiler_pc
+- todo `todo-9715cfb4419ecf7b` [bake/improvement] gen_lib_pkgconfig_absl_hashtablez_sampler_pc
+- todo `todo-8e0badd24babed4b` [bake/improvement] gen_lib_pkgconfig_absl_heterogeneous_lookup_testing_pc
+- todo `todo-3b58f7c9c9946be1` [bake/improvement] gen_lib_pkgconfig_absl_inlined_vector_internal_pc
+- todo `todo-479f1d1a2e1b4f95` [bake/improvement] gen_lib_pkgconfig_absl_inlined_vector_pc
+- todo `todo-508afac836dab395` [bake/improvement] gen_lib_pkgconfig_absl_int128_pc
+- todo `todo-b0c50db06cf47d92` [bake/improvement] gen_lib_pkgconfig_absl_iterator_traits_internal_pc
+- todo `todo-13e41f602762954f` [bake/improvement] gen_lib_pkgconfig_absl_iterator_traits_test_helper_internal_pc
+- todo `todo-ef4e7ffd392b5142` [bake/improvement] gen_lib_pkgconfig_absl_kernel_timeout_internal_pc
+- todo `todo-bfbb65d4158b0da0` [bake/improvement] gen_lib_pkgconfig_absl_layout_pc
+- todo `todo-c758bf10b02b6778` [bake/improvement] gen_lib_pkgconfig_absl_leak_check_pc
+- todo `todo-caab2e014ac8244f` [bake/improvement] gen_lib_pkgconfig_absl_linked_hash_map_pc
+- todo `todo-f8ddb309ec3f3889` [bake/improvement] gen_lib_pkgconfig_absl_linked_hash_set_pc
+- todo `todo-a5641d505551b07a` [bake/improvement] gen_lib_pkgconfig_absl_log_entry_pc
+- todo `todo-73773edaca1d2e73` [bake/improvement] gen_lib_pkgconfig_absl_log_flags_pc
+- todo `todo-f458e53397d93a3a` [bake/improvement] gen_lib_pkgconfig_absl_log_globals_pc
+- todo `todo-fa8beb825981eaa9` [bake/improvement] gen_lib_pkgconfig_absl_log_initialize_pc
+- todo `todo-f461bcaff85c783d` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_append_truncated_pc
+- todo `todo-07184723380815ae` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_check_impl_pc
+- todo `todo-82a874b147fec483` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_check_op_pc
+- todo `todo-9576c7b571834ef0` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_conditions_pc
+- todo `todo-527193babe412d4a` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_config_pc
+- todo `todo-dd22bdca00814ca4` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_container_pc
+- todo `todo-151b13c534bbed96` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_flags_pc
+- todo `todo-342b8f8b576c3ad2` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_fnmatch_pc
+- todo `todo-76a2c7c4ff20ab45` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_format_pc
+- todo `todo-7e3fd0228d221f2c` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_globals_pc
+- todo `todo-ec38bdd7848f2731` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_log_impl_pc
+- todo `todo-2983df330f39190d` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_log_sink_set_pc
+- todo `todo-fc240cc5641ecbfe` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_message_pc
+- todo `todo-8a2779b19ab28a34` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_nullguard_pc
+- todo `todo-e070804f33807aee` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_nullstream_pc
+- todo `todo-ce4405db71fb160f` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_proto_pc
+- todo `todo-df1f7769b323a3e8` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_strip_pc
+- todo `todo-ae1ea3c3a07281f0` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_structured_pc
+- todo `todo-0025ec7dec00fae6` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_structured_proto_pc
+- todo `todo-f433e410a8ebb9a4` [bake/improvement] gen_lib_pkgconfig_absl_log_internal_voidify_pc
+- todo `todo-2bb39941dd6343b3` [bake/improvement] gen_lib_pkgconfig_absl_log_pc
+- todo `todo-db07e808d9733b1d` [bake/improvement] gen_lib_pkgconfig_absl_log_severity_pc
+- todo `todo-a84469e7667699bc` [bake/improvement] gen_lib_pkgconfig_absl_log_sink_pc
+- todo `todo-66f420ee9daf3d8f` [bake/improvement] gen_lib_pkgconfig_absl_log_sink_registry_pc
+- todo `todo-24df22fd185d43e3` [bake/improvement] gen_lib_pkgconfig_absl_log_streamer_pc
+- todo `todo-6971a4d1cf5dac18` [bake/improvement] gen_lib_pkgconfig_absl_log_structured_pc
+- todo `todo-d4190ba13ae5f27e` [bake/improvement] gen_lib_pkgconfig_absl_malloc_internal_pc
+- todo `todo-6b08d3e38feac721` [bake/improvement] gen_lib_pkgconfig_absl_memory_pc
+- todo `todo-d9455617d4c999c8` [bake/improvement] gen_lib_pkgconfig_absl_meta_pc
+- todo `todo-1967e80bc8a10790` [bake/improvement] gen_lib_pkgconfig_absl_no_destructor_pc
+- todo `todo-ec11574eef9d8394` [bake/improvement] gen_lib_pkgconfig_absl_node_hash_map_pc
+- todo `todo-0cb19a7102c7aed7` [bake/improvement] gen_lib_pkgconfig_absl_node_hash_set_pc
+- todo `todo-2d3879ed7b11cd89` [bake/improvement] gen_lib_pkgconfig_absl_node_slot_policy_pc
+- todo `todo-f5797887e98f47ca` [bake/improvement] gen_lib_pkgconfig_absl_non_temporal_arm_intrinsics_pc
+- todo `todo-536923385fd8fa87` [bake/improvement] gen_lib_pkgconfig_absl_non_temporal_memcpy_pc
+- todo `todo-3e364c4e27880483` [bake/improvement] gen_lib_pkgconfig_absl_nullability_pc
+- todo `todo-78c6dcec67f6e388` [bake/improvement] gen_lib_pkgconfig_absl_nullability_traits_internal_pc
+- todo `todo-0d039825b48d3076` [bake/improvement] gen_lib_pkgconfig_absl_numeric_pc
+- todo `todo-e0a4d2c403d69f6c` [bake/improvement] gen_lib_pkgconfig_absl_numeric_representation_pc
+- todo `todo-c064d7f7be5a5530` [bake/improvement] gen_lib_pkgconfig_absl_optional_pc
+- todo `todo-1f7d4150afde4706` [bake/improvement] gen_lib_pkgconfig_absl_overload_pc
+- todo `todo-0e57958e304285d1` [bake/improvement] gen_lib_pkgconfig_absl_periodic_sampler_pc
+- todo `todo-4390211703b62fd4` [bake/improvement] gen_lib_pkgconfig_absl_poison_pc
+- todo `todo-0ec308c90a92d038` [bake/improvement] gen_lib_pkgconfig_absl_prefetch_pc
+- todo `todo-5f5f10b68465bfe4` [bake/improvement] gen_lib_pkgconfig_absl_pretty_function_pc
+- todo `todo-8cd681cb247c33cc` [bake/improvement] gen_lib_pkgconfig_absl_profile_builder_pc
+- todo `todo-943f594442837fbf` [bake/improvement] gen_lib_pkgconfig_absl_random_bit_gen_ref_pc
+- todo `todo-c372a4d2bf85dfc0` [bake/improvement] gen_lib_pkgconfig_absl_random_distributions_pc
+- todo `todo-5d71a20b1497ddc8` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_distribution_caller_pc
+- todo `todo-798313f5b6ff0561` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_distribution_test_util_pc
+- todo `todo-4bebf354ee57d28b` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_entropy_pool_pc
+- todo `todo-fb1be09676d08a8c` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_fast_uniform_bits_pc
+- todo `todo-c2c6a8188e3e9e25` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_fastmath_pc
+- todo `todo-30c264a7f03027b2` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_generate_real_pc
+- todo `todo-7c50bc252d769b49` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_iostream_state_saver_pc
+- todo `todo-0a8f330dcd95bef7` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_mock_helpers_pc
+- todo `todo-fc61cd29f41ccfb5` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_nonsecure_base_pc
+- todo `todo-d519bf45d897a960` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_pcg_engine_pc
+- todo `todo-a74b12f6370206bf` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_platform_pc
+- todo `todo-f52d70a040dc6c3c` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_randen_engine_pc
+- todo `todo-d20f35f8d6161815` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_randen_hwaes_impl_pc
+- todo `todo-a103b172e895804f` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_randen_hwaes_pc
+- todo `todo-cc7b4683c9464ca5` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_randen_pc
+- todo `todo-7907190527deba62` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_randen_slow_pc
+- todo `todo-cedb552eb8d72733` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_salted_seed_seq_pc
+- todo `todo-8e22f9edf54a2e45` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_seed_material_pc
+- todo `todo-f96378c4a141f404` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_traits_pc
+- todo `todo-0f6d9344f29c8582` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_uniform_helper_pc
+- todo `todo-e2233bec43935859` [bake/improvement] gen_lib_pkgconfig_absl_random_internal_wide_multiply_pc
+- todo `todo-8469f81985f2d38c` [bake/improvement] gen_lib_pkgconfig_absl_random_random_pc
+- todo `todo-46bf68130128091f` [bake/improvement] gen_lib_pkgconfig_absl_random_seed_gen_exception_pc
+- todo `todo-fec0ed3a74128278` [bake/improvement] gen_lib_pkgconfig_absl_random_seed_sequences_pc
+- todo `todo-d1b8717bb6f26a79` [bake/improvement] gen_lib_pkgconfig_absl_raw_hash_map_pc
+- todo `todo-d5c5e2782f3ddb62` [bake/improvement] gen_lib_pkgconfig_absl_raw_hash_set_pc
+- todo `todo-8571f0230637a778` [bake/improvement] gen_lib_pkgconfig_absl_raw_hash_set_resize_impl_pc
+- todo `todo-3aad623fe737b39a` [bake/improvement] gen_lib_pkgconfig_absl_raw_logging_internal_pc
+- todo `todo-f007334c26562939` [bake/improvement] gen_lib_pkgconfig_absl_requires_internal_pc
+- todo `todo-8eb819239d6bbcac` [bake/improvement] gen_lib_pkgconfig_absl_sample_recorder_pc
+- todo `todo-270f988cd477f88f` [bake/improvement] gen_lib_pkgconfig_absl_scoped_set_env_pc
+- todo `todo-3f376e2fe3f167cc` [bake/improvement] gen_lib_pkgconfig_absl_span_pc
+- todo `todo-7fcf1c8ccde8cb4a` [bake/improvement] gen_lib_pkgconfig_absl_spinlock_wait_pc
+- todo `todo-c7a69e06431a0cce` [bake/improvement] gen_lib_pkgconfig_absl_stacktrace_pc
+- todo `todo-595acd7d270bb3e9` [bake/improvement] gen_lib_pkgconfig_absl_status_pc
+- todo `todo-425451befda03551` [bake/improvement] gen_lib_pkgconfig_absl_statusor_pc
+- todo `todo-e298e75f08e0cc3f` [bake/improvement] gen_lib_pkgconfig_absl_str_format_internal_pc
+- todo `todo-08b2514c0cda72d7` [bake/improvement] gen_lib_pkgconfig_absl_str_format_pc
+- todo `todo-e7346e75e198732a` [bake/improvement] gen_lib_pkgconfig_absl_strerror_pc
+- todo `todo-b250c612d9ddecf1` [bake/improvement] gen_lib_pkgconfig_absl_string_view_pc
+- todo `todo-821d6284d81f38f8` [bake/improvement] gen_lib_pkgconfig_absl_strings_append_and_overwrite_pc
+- todo `todo-4cd43d9f1301b1ca` [bake/improvement] gen_lib_pkgconfig_absl_strings_internal_pc
+- todo `todo-218aab4ba758b9bd` [bake/improvement] gen_lib_pkgconfig_absl_strings_pc
+- todo `todo-5d56674fd7d2bcfe` [bake/improvement] gen_lib_pkgconfig_absl_strings_resize_and_overwrite_pc
+- todo `todo-883ea947bb770018` [bake/improvement] gen_lib_pkgconfig_absl_symbolize_pc
+- todo `todo-ad2b73f09a0f620d` [bake/improvement] gen_lib_pkgconfig_absl_synchronization_pc
+- todo `todo-9f8ae9dea56a1fac` [bake/improvement] gen_lib_pkgconfig_absl_throw_delegate_pc
+- todo `todo-f0df122185348696` [bake/improvement] gen_lib_pkgconfig_absl_time_pc
+- todo `todo-eab57c432b565f4e` [bake/improvement] gen_lib_pkgconfig_absl_time_zone_pc
+- todo `todo-3bfd0c349efb7b2e` [bake/improvement] gen_lib_pkgconfig_absl_tracing_internal_pc
+- todo `todo-dd138f9b15df1fce` [bake/improvement] gen_lib_pkgconfig_absl_type_traits_pc
+- todo `todo-d5e75bdcd45c19f1` [bake/improvement] gen_lib_pkgconfig_absl_utf8_for_code_point_pc
+- todo `todo-683eb5739367c2f0` [bake/improvement] gen_lib_pkgconfig_absl_utility_pc
+- todo `todo-cf3b737b2c889e5d` [bake/improvement] gen_lib_pkgconfig_absl_variant_pc
+- todo `todo-00a867dbe6b249cc` [bake/improvement] gen_lib_pkgconfig_absl_vlog_config_internal_pc
+- todo `todo-60ea94d9a61c9f72` [bake/improvement] gen_lib_pkgconfig_absl_vlog_is_on_pc
+- todo `todo-2c3aa51ab92dce64` [bake/improvement] gen_lib_pkgconfig_absl_weakly_mixed_integer_pc
+- todo `todo-43fee517c668e4b6` [bake/improvement] gen_options_pinned_h
+- todo `todo-9258d4e5a8c94daa` [cmake-internal-drop/informational] dashboard
+
+## Output contract
+Emit STRICT JSON only (no prose), shape:
+`{"findings":[{"category":"test|install|option|visibility|codegen|target|flag|other","severity":"high|medium|low","summary":"…","evidence":"cmake side … vs Bazel side …","cmake_ref":"<file>:<line>"}]}`
+GROUNDING: every finding MUST set `cmake_ref` to the cmake source file (and line if known) that proves the intent exists — an ungrounded claim can't be verified. If you find nothing net-new, emit `{"findings":[]}`.

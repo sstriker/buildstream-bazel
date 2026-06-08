@@ -1,0 +1,46 @@
+{
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 4,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch": {},
+ "std_mismatch_total_tus": 4,
+ "std_mismatch_by_signature": [
+  {
+   "signature": [
+    "",
+    "c++17"
+   ],
+   "tu_count": 4,
+   "examples": [
+    "googlemock/src/gmock-all.cc",
+    "googlemock/src/gmock_main.cc",
+    "googletest/src/gtest-all.cc",
+    "googletest/src/gtest_main.cc"
+   ]
+  }
+ ],
+ "include_mismatch_total_tus": 4,
+ "include_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "."
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 4,
+   "examples": [
+    "googlemock/src/gmock-all.cc",
+    "googlemock/src/gmock_main.cc",
+    "googletest/src/gtest-all.cc",
+    "googletest/src/gtest_main.cc"
+   ]
+  }
+ ],
+ "copt_mismatch": {},
+ "gen_root_missing": {},
+ "tu_key_collisions": 0,
+ "param_file_skipped": 0
+}

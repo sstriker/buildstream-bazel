@@ -1,0 +1,83 @@
+{
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 1061,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch_total_tus": 1061,
+ "define_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "CARES_STATICLIB",
+     "NDEBUG"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 948,
+   "examples": [
+    "channelz.grpc.pb.cc",
+    "channelz.pb.cc",
+    "reflection.grpc.pb.cc",
+    "reflection.pb.cc",
+    "service.grpc.pb.cc"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "NDEBUG"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 113,
+   "examples": [
+    "src/compiler/cpp_generator.cc",
+    "src/compiler/cpp_plugin.cc",
+    "src/compiler/csharp_generator.cc",
+    "src/compiler/csharp_plugin.cc",
+    "src/compiler/node_generator.cc"
+   ]
+  }
+ ],
+ "std_mismatch_total_tus": 673,
+ "std_mismatch_by_signature": [
+  {
+   "signature": [
+    "",
+    "c++17"
+   ],
+   "tu_count": 673,
+   "examples": [
+    "channelz.grpc.pb.cc",
+    "channelz.pb.cc",
+    "reflection.grpc.pb.cc",
+    "reflection.pb.cc",
+    "service.grpc.pb.cc"
+   ]
+  }
+ ],
+ "include_mismatch_total_tus": 58,
+ "include_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "gens"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 58,
+   "examples": [
+    "channelz.grpc.pb.cc",
+    "channelz.pb.cc",
+    "reflection.grpc.pb.cc",
+    "reflection.pb.cc",
+    "service.grpc.pb.cc"
+   ]
+  }
+ ],
+ "copt_mismatch": {},
+ "gen_root_missing": {},
+ "tu_key_collisions": 1604,
+ "param_file_skipped": 0
+}

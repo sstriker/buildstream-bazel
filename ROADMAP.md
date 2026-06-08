@@ -7,6 +7,17 @@ transition cleanly.
 
 ## Now
 
+- **Regression: zstd split-emit emits an invalid subpackage label.** The
+  full-corpus fidelity run (2026-06-08) caught zstd — otherwise docs-green —
+  failing analysis with `Label '//elements/zstd:lib/libzstd.so' is invalid
+  because 'elements/zstd/lib' is a subpackage`. Split-emit's cross-package
+  relabel produces a same-package `:lib/libzstd.so` string for an artifact that
+  actually lives in the `elements/zstd/lib` subpackage; it must be relabeled to
+  the cross-package form `//elements/zstd/lib:libzstd.so` (the same relabel the
+  header-lib / `exports_files` paths already do). Blocks zstd's compile-db
+  fidelity row. Likely main-drift since zstd last went green — guard with the
+  zstd survey once fixed.
+
 - **Refactor: source-classification chokepoints in `lower` (largely done).** The
   "is this path a cc compile/link/header input, and which attribute does it go
   in (srcs/hdrs/data/drop)?" decision was duplicated across ~6 sites in
@@ -1181,7 +1192,72 @@ transition cleanly.
   let triage *verify* a claimed miss against structured truth, not just dedup it
   (and would sharpen if the todo producers populated structured `Anchor.File`
   uniformly — today only the rejection-mirror does); (c) a **real-judge corpus
-  pass** to calibrate false-positive rate and confirm the producer-gaps it finds.
+  pass** to calibrate false-positive rate and confirm the producer-gaps it finds
+  — **done (2026-06-08)**: a full-corpus run with `claude -p` as judge, output
+  committed under `docs/survey-artifacts/` and summarized in
+  `docs/survey-corpus.md` ("Full-corpus lens snapshot"). It surfaced 77
+  high-severity net-new findings clustering into six producer-gap themes (the
+  entries below); the open calibration work is now (a) scoring the queue, not
+  whether the lens finds real gaps.
+
+The six intent-lens producer-gap themes follow as their own entries
+(2026-06-08 full-corpus run, biggest cluster first). Each member's
+`docs/survey-artifacts/<member>/intent-capture.json` carries the per-finding
+`evidence` + `cmake_ref` to drive a fix + a regression guard.
+
+- **Install/export emission — close the gaps the intent lens flagged (25×
+  high, biggest cluster).** The install→`pkg_files` lowering (above) and the
+  install(EXPORT) Phase 6 `cc_import` projection (above) are shipped, yet the
+  full-corpus run shows standalone-surveyed members shipping **no install
+  tree**: no `pkg_files` for the library artifact / public headers / binaries
+  (`curl`, `protobuf`, `zlib`, `sdl`, `libevent`, `fmt`, `openblas`, …), no
+  pkg-config `.pc` generation+install, and the `find_package(CONFIG)` entry
+  points `<Pkg>Config.cmake` / `<Pkg>Targets.cmake` **never generated**
+  (`eigen`, `catch2`, `zstd`, `cutlass`, `protobuf`, `nlohmann-json`). First
+  question: why isn't the existing pkg_files machinery firing in these converts
+  (EMIT_INSTALL_EXPORT default? standalone-vs-graph? the export bundle only
+  emitted for cross-element consumers?). Then the genuinely-missing producers:
+  `.pc` file generation and the `<Pkg>Config.cmake`/`<Pkg>Targets.cmake`
+  install artifacts. Highest-leverage, most mechanical of the six.
+
+- **System/threading linkopt propagation — extend the host-system-library
+  fallback (25× high).** Extends "Make the host-system-library fallback
+  EXPLICIT" (above, the `systemLibName` sites): the lens shows `-lm`
+  (`brotli`, `libpng`, `libxml2`), `-ldl` (`libxml2`, `llvm`), and `-lpthread`
+  (`googletest`, `spdlog`, `zstd`, `grpc`, `llvm`'s `${LLVM_PTHREAD_LIB}`)
+  still dropped — the link fragment either isn't attributed or `systemLibName`
+  doesn't cover it. Same entry also covers two adjacent flag drops: build-type
+  -conditional defines hardcoded `1` regardless of `//config` (LLVM's
+  `LLVM_ENABLE_ABI_BREAKING_CHECKS` / `LLVM_ENABLE_PLUGINS` / …) and dropped
+  `target_compile_features` (googletest's PUBLIC `cxx_std_17`).
+
+- **Optional-feature conditional deps (find_package under a feature flag, 3×
+  high).** LLVM's `LLVM_ENABLE_ZLIB` / `_ZSTD` / `_OPENCSD` deps aren't linked,
+  so `Compression.cpp` would fail to link. Same find_package→linkopt mechanism
+  as the entry above, tracked distinctly because the dep is gated on a CMake
+  feature option the converter must honor (or default).
+
+- **Emit absent targets / subpackages (9× high).** Whole targets the converter
+  produces no `BUILD.bazel` for: abseil's 7 interface subpackages (algorithm,
+  cleanup, functional, memory, meta, types, utility), llvm's 19/20 backends
+  under default `LLVM_TARGETS_TO_BUILD=all`, mbedtls's `programs/` executables,
+  vtk's `Rendering::VolumeAMR` module. Investigate the emit/skip decision that
+  drops them.
+
+- **Lower dropped test trees to `cc_test` — extend test-target coverage (10×
+  high).** Extends "Test-target coverage" (below): the faithful survey convert
+  emits no `cc_test` for abseil (232 `absl_cc_test`), glm (~130), sdl (~50),
+  catch2, boost-core, mbedtls, vtk, openblas. **Caveat:** confirm each is a
+  real `add_test`/`enable_testing` lowering gap vs. an intentional build-lens
+  scope-out before fixing — some members deliberately disable their test tree.
+
+- **`configure_file` / script-codegen genrule coverage — specific instances
+  (5× high).** Extends the configure_file-lift work (above): generated headers
+  with no genrule — vtk's libproj `proj_config.h`, mbedtls's `test_certs.h` /
+  `test_keys.h` Python codegen, cutlass's `version_extended.h`. Plus a
+  **correctness** case: curl's `configurehelp.pm` bakes a convert-time temp
+  path (`/tmp/convert-element-build-*/`) into the emitted output, breaking the
+  Perl test infra at build time.
 
 - **A-B-C fidelity harness — productionized (CI-wired, BLOCKING).**
   Runs in CI as the `fidelity` job, now **blocking** — the

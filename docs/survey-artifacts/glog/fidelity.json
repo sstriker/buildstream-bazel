@@ -1,0 +1,67 @@
+{
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 20,
+ "only_cmake": [
+  "src/demangle_unittest.cc"
+ ],
+ "only_bazel": null,
+ "define_mismatch_total_tus": 1,
+ "define_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "GOOGLE_STRIP_LOG=2"
+    ],
+    "missing_in_bazel": [
+     "GOOGLE_STRIP_LOG=10"
+    ]
+   },
+   "tu_count": 1,
+   "examples": [
+    "src/striplog_unittest.cc"
+   ]
+  }
+ ],
+ "std_mismatch_total_tus": 20,
+ "std_mismatch_by_signature": [
+  {
+   "signature": [
+    "",
+    "c++17"
+   ],
+   "tu_count": 20,
+   "examples": [
+    "glog.cc",
+    "src/cleanup_immediately_unittest.cc",
+    "src/cleanup_with_absolute_prefix_unittest.cc",
+    "src/cleanup_with_relative_prefix_unittest.cc",
+    "src/demangle.cc"
+   ]
+  }
+ ],
+ "include_mismatch_total_tus": 20,
+ "include_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     ".",
+     "glog"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 20,
+   "examples": [
+    "glog.cc",
+    "src/cleanup_immediately_unittest.cc",
+    "src/cleanup_with_absolute_prefix_unittest.cc",
+    "src/cleanup_with_relative_prefix_unittest.cc",
+    "src/demangle.cc"
+   ]
+  }
+ ],
+ "copt_mismatch": {},
+ "gen_root_missing": {},
+ "tu_key_collisions": 4,
+ "param_file_skipped": 0
+}
