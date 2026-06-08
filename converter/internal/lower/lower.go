@@ -712,12 +712,16 @@ func buildPrivateIncludeDirs(includes []shadow.TargetIncludeCall) map[string]map
 	return out
 }
 
-// buildTraceLinkInfo collects, per target, the ordered deduped link libraries
-// and each library's link-scope keyword from the decoded target_link_libraries
-// trace calls. Scope is first-write-wins so an earlier PUBLIC arm isn't
-// overwritten by a later PRIVATE one for the same library — cmake's own
-// semantics for a doubly-listed library with differing keywords are undefined,
-// but the upstream-most call governs header propagation in the typical case.
+// buildTraceLinkInfo collects, per target, the ordered link libraries and each
+// library's link-scope keyword from the decoded target_link_libraries trace
+// calls. Libraries are deduped WITHIN each call (the `seen` set is per
+// TargetLinkCall); a library named in two separate target_link_libraries() calls
+// for the same target is kept in both, preserving the recorded call order.
+// Scope, by contrast, is first-write-wins ACROSS all of a target's calls (the
+// per-target scope map persists), so an earlier PUBLIC arm isn't overwritten by
+// a later PRIVATE one for the same library — cmake's own semantics for a
+// doubly-listed library with differing keywords are undefined, but the
+// upstream-most call governs header propagation in the typical case.
 func buildTraceLinkInfo(links []shadow.TargetLinkCall) (map[string][]string, map[string]map[string]string) {
 	traceLinkLibs := map[string][]string{}
 	traceLinkScope := map[string]map[string]string{}
