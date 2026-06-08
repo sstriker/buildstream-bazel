@@ -13,7 +13,7 @@ transition cleanly.
   the code-complexity axis `go vet` / `gofmt` / `staticcheck` don't cover. It
   runs in the CI `Build + unit tests` job as **non-blocking
   (`continue-on-error`)** so its output is the gap-to-green worklist, not a wall.
-  The burndown is underway (launch flagged 55; **40** now). The dominant
+  The burndown is underway (launch flagged 55; **39** now). The dominant
   remaining offenders are flagged by **gocognit** (the giants are cognitive, not
   cyclomatic): `lower.lowerTarget` (cognitive **713**),
   `convert-element-cmake`'s `run` (291), `lower.ToIR` (278), and `emit/bazel`
