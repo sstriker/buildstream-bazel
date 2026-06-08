@@ -1,11 +1,32 @@
 package lower
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 )
+
+// resolveElementSourceRoot validates the --element-source-root override and
+// returns the forced label root. The override anchors labels at the overlay
+// root regardless of the escape heuristic (cuda-samples: per-sample cmake
+// configure + whole-repo overlay), so a bad value would otherwise surface later
+// as a confusing Tier-1 failure (absolute source paths outside labelRoot) or be
+// silently ignored. Enforce the documented constraint up front: it must be an
+// ABSOLUTE path that is an ancestor of (or equal to) the cmake source root.
+func resolveElementSourceRoot(elementSourceRoot, cmakeSrc string) (string, error) {
+	esr := filepath.Clean(elementSourceRoot)
+	if !filepath.IsAbs(esr) {
+		return "", fmt.Errorf("--element-source-root must be an absolute path, got %q", elementSourceRoot)
+	}
+	rel, err := filepath.Rel(esr, cmakeSrc)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("--element-source-root %q must be an ancestor of (or equal to) the cmake source root %q", esr, cmakeSrc)
+	}
+	return esr, nil
+}
 
 // sourcesEscapeCmakeSrc reports whether any target source resolves OUTSIDE
 // cmakeSrc but INSIDE workspaceRoot — the signal that a project genuinely needs

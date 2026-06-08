@@ -1058,7 +1058,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// own sources don't escape cmakeSrc (cuda-samples: per-sample configure +
 	// whole-repo overlay so the repo-root Common/ headers resolve).
 	if opts.ElementSourceRoot != "" {
-		workspaceRoot = filepath.Clean(opts.ElementSourceRoot)
+		root, err := resolveElementSourceRoot(opts.ElementSourceRoot, cmakeSrc)
+		if err != nil {
+			return nil, err
+		}
+		workspaceRoot = root
 	}
 	hostSrc := opts.HostSourceRoot
 	if hostSrc == "" {
