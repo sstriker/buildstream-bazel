@@ -43,6 +43,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/sstriker/buildstream-bazel/internal/pathutil"
 )
 
 // PrefixSub is one (from → to) substitution; Canonicalize replaces
@@ -281,7 +283,7 @@ func (c *canonicalizer) openatLine(s string) (string, bool) {
 		return "", false
 	}
 	rel, err := filepath.Rel(c.sourceRoot, path)
-	if err != nil || !insideSourceRoot(rel) {
+	if err != nil || !pathutil.InsideRoot(rel) {
 		return "", false
 	}
 	rel = filepath.ToSlash(rel)

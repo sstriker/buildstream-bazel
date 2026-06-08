@@ -1,9 +1,11 @@
 package ninja
 
 import (
-	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 	"path/filepath"
 	"strings"
+
+	"github.com/sstriker/buildstream-bazel/internal/pathutil"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // ProjectToSourceTree filters a raw RERUN_CMAKE implicit-input list to the
@@ -60,7 +62,7 @@ func ProjectToSourceTree(inputs []string, sourceRoot, buildDir string) []string 
 		// sourceRoot=/work, buildDir=/work/build) would let
 		// CMakeCache.txt and friends pass the inside-sourceRoot
 		// test below as `build/CMakeCache.txt`.
-		if relBuild, err := filepath.Rel(buildAbs, abs); err == nil && insideRoot(relBuild) {
+		if relBuild, err := filepath.Rel(buildAbs, abs); err == nil && pathutil.InsideRoot(relBuild) {
 			continue
 		}
 		// Edge: the buildDir itself (relBuild == ".") shouldn't
@@ -73,7 +75,7 @@ func ProjectToSourceTree(inputs []string, sourceRoot, buildDir string) []string 
 		if err != nil {
 			continue
 		}
-		if !insideRoot(rel) {
+		if !pathutil.InsideRoot(rel) {
 			continue
 		}
 		seen[filepath.ToSlash(rel)] = struct{}{}
