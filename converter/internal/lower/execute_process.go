@@ -913,27 +913,37 @@ func liftCp(args []string, anc execAnchors, cc *codegenContext) ([]string, strin
 // rewrite the bytes (a stripped binary != the source), so they refuse; and
 // any unrecognized flag refuses rather than risk mis-splitting SRC/DEST
 // (safe round-2 fallback).
-func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
+// installOpts holds the install(1) flag state parseInstallArgs recovers and
+// liftInstall acts on (directory mode, byte-mutating strip, the -t target
+// directory, and the -T force-file override).
+type installOpts struct {
+	dirMode      bool
+	strip        bool
+	forceFile    bool // -T / --no-target-directory: DEST is always a file
+	targetDir    string
+	hasTargetDir bool
+}
+
+// parseInstallArgs parses an install(1) command line (GNU coreutils + the
+// common BSD subset) into its operands and the option flags liftInstall acts
+// on. It returns ok=false with a human-readable reason when an option is
+// unrecognized or malformed — install refuses rather than risk mis-splitting
+// SRC/DEST.
+//
+// Option model:
+//   - short value-taking (joined `-m755` or next-arg `-m 755`):
+//     -m MODE, -o OWNER, -g GROUP, -t DIR, -S SUFFIX;
+//   - short boolean: -d (dir), -s (strip), -D/-p/-v/-b/-c/-C/-T/-Z/-P;
+//   - long value-taking (--opt VALUE or --opt=VALUE) + long boolean (see maps).
+func parseInstallArgs(args []string) ([]string, installOpts, string, bool) {
 	var operands []string
-	dirMode := false
-	targetDir := ""
-	hasTargetDir := false
-	forceFile := false // -T / --no-target-directory: DEST is always a file
-
-	strip := false
-
-	// install's option model (GNU coreutils + the common BSD subset).
-	// Short value-taking flags (joined `-m755` or next-arg `-m 755`):
-	//   -m MODE, -o OWNER, -g GROUP, -t DIR, -S SUFFIX.
-	// Short boolean flags: -d (dir), -s (strip), -D/-p/-v/-b/-c/-C/-T/-Z/-P.
+	var o installOpts
 	const valueShort = "mogtS"
 	const boolShort = "dsDpvbcCTZP"
-	// Long value-taking options: --opt VALUE or --opt=VALUE.
 	longValue := map[string]bool{
 		"--mode": true, "--owner": true, "--group": true,
 		"--suffix": true, "--target-directory": true, "--strip-program": true,
 	}
-	// Long boolean options.
 	longBool := map[string]bool{
 		"--directory": true, "--compare": true, "--preserve-timestamps": true,
 		"--strip": true, "--verbose": true,
@@ -948,134 +958,165 @@ func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, 
 			operands = append(operands, args[i+1:]...)
 			i = len(args)
 		case strings.HasPrefix(a, "--"):
-			name, val := a, ""
-			hasEq := false
-			if eq := strings.IndexByte(a, '='); eq >= 0 {
-				name, val, hasEq = a[:eq], a[eq+1:], true
+			ni, reason, ok := parseInstallLongOption(args, i, longValue, longBool, &o)
+			if !ok {
+				return nil, installOpts{}, reason, false
 			}
-			switch {
-			case name == "--directory":
-				dirMode = true
-				i++
-			case name == "--no-target-directory":
-				forceFile = true
-				i++
-			case name == "--strip":
-				strip = true
-				i++
-			case name == "--strip-program":
-				strip = true
-				if hasEq {
-					i++
-				} else {
-					i += 2 // consume the program-path value
-				}
-			case name == "--target-directory":
-				if hasEq {
-					targetDir, hasTargetDir = val, true
-					i++
-				} else {
-					if i+1 >= len(args) {
-						return nil, "install: --target-directory without a value", false
-					}
-					targetDir, hasTargetDir = args[i+1], true
-					i += 2
-				}
-			case longValue[name]:
-				if hasEq {
-					i++
-				} else {
-					if i+1 >= len(args) {
-						return nil, fmt.Sprintf("install: %s without a value", name), false
-					}
-					i += 2 // flag + its separate value
-				}
-			case longBool[name]:
-				i++
-			default:
-				return nil, fmt.Sprintf("install: unrecognized option %q (refusing rather than risk mis-splitting SRC/DEST)", a), false
-			}
+			i = ni
 		case strings.HasPrefix(a, "-") && len(a) > 1:
-			// Short cluster. A value-taking flag (mogtS) swallows the rest of
-			// the cluster as its value, or — when it's the last char — the
-			// next argv element. Unknown chars refuse (don't guess whether
-			// they consume a value and shift the operands).
-			body := a[1:]
-			consumedNext := false
-			recognized := true
-			for j := 0; j < len(body); j++ {
-				c := body[j]
-				if c == 'd' {
-					dirMode = true
-					continue
-				}
-				if c == 's' {
-					strip = true
-					continue
-				}
-				if c == 'T' {
-					forceFile = true // DEST is always a file, never a dir
-					continue
-				}
-				if strings.IndexByte(valueShort, c) >= 0 {
-					rest := body[j+1:]
-					if rest != "" {
-						if c == 't' {
-							targetDir, hasTargetDir = rest, true
-						}
-					} else {
-						// Value is the next argv element — required for EVERY
-						// value-taking short flag (-m/-o/-g/-t/-S), not just
-						// -t. Validate it exists so a malformed trailing flag
-						// (`install -m`) refuses with a clear diagnostic
-						// instead of mis-counting operands.
-						if i+1 >= len(args) {
-							return nil, fmt.Sprintf("install: -%c given without a value", c), false
-						}
-						if c == 't' {
-							targetDir, hasTargetDir = args[i+1], true
-						}
-						consumedNext = true
-					}
-					break // value-taking flag swallows the cluster remainder
-				}
-				if strings.IndexByte(boolShort, c) < 0 {
-					recognized = false
-					break
-				}
+			ni, reason, ok := parseInstallShortCluster(args, i, valueShort, boolShort, &o)
+			if !ok {
+				return nil, installOpts{}, reason, false
 			}
-			if !recognized {
-				return nil, fmt.Sprintf("install: unrecognized short option in %q (refusing rather than risk mis-splitting SRC/DEST)", a), false
-			}
-			if consumedNext {
-				i += 2
-			} else {
-				i++
-			}
+			i = ni
 		default:
 			operands = append(operands, args[i:]...)
 			i = len(args)
 		}
+	}
+	return operands, o, "", true
+}
+
+// parseInstallLongOption handles one `--foo[=val]` argv element at args[i],
+// updating o and returning the next index to scan from. ok=false + a reason on
+// an unrecognized option, or on a value-taking option (`--target-directory`,
+// and the `longValue` set) given without a value. `--strip-program` is the one
+// value-taking option NOT value-validated here: it sets o.strip, and liftInstall
+// refuses ANY strip ("modifies the copied bytes") regardless of the value, so a
+// value-less `--strip-program` already gets a clear refusal — validating it
+// would be dead code.
+func parseInstallLongOption(args []string, i int, longValue, longBool map[string]bool, o *installOpts) (int, string, bool) {
+	a := args[i]
+	name, val := a, ""
+	hasEq := false
+	if eq := strings.IndexByte(a, '='); eq >= 0 {
+		name, val, hasEq = a[:eq], a[eq+1:], true
+	}
+	switch {
+	case name == "--directory":
+		o.dirMode = true
+		return i + 1, "", true
+	case name == "--no-target-directory":
+		o.forceFile = true
+		return i + 1, "", true
+	case name == "--strip":
+		o.strip = true
+		return i + 1, "", true
+	case name == "--strip-program":
+		o.strip = true
+		if hasEq {
+			return i + 1, "", true
+		}
+		return i + 2, "", true // consume the program-path value
+	case name == "--target-directory":
+		if hasEq {
+			o.targetDir, o.hasTargetDir = val, true
+			return i + 1, "", true
+		}
+		if i+1 >= len(args) {
+			return i, "install: --target-directory without a value", false
+		}
+		o.targetDir, o.hasTargetDir = args[i+1], true
+		return i + 2, "", true
+	case longValue[name]:
+		if hasEq {
+			return i + 1, "", true
+		}
+		if i+1 >= len(args) {
+			return i, fmt.Sprintf("install: %s without a value", name), false
+		}
+		return i + 2, "", true // flag + its separate value
+	case longBool[name]:
+		return i + 1, "", true
+	default:
+		return i, fmt.Sprintf("install: unrecognized option %q (refusing rather than risk mis-splitting SRC/DEST)", a), false
+	}
+}
+
+// parseInstallShortCluster handles one `-xyz` short-flag cluster at args[i],
+// updating o and returning the next index to scan from. A value-taking flag
+// (mogtS) swallows the rest of the cluster as its value, or — when it's the
+// last char — the next argv element. Unknown chars refuse (don't guess whether
+// they consume a value and shift the operands).
+func parseInstallShortCluster(args []string, i int, valueShort, boolShort string, o *installOpts) (int, string, bool) {
+	a := args[i]
+	body := a[1:]
+	consumedNext := false
+	recognized := true
+	for j := 0; j < len(body); j++ {
+		c := body[j]
+		if c == 'd' {
+			o.dirMode = true
+			continue
+		}
+		if c == 's' {
+			o.strip = true
+			continue
+		}
+		if c == 'T' {
+			o.forceFile = true // DEST is always a file, never a dir
+			continue
+		}
+		if strings.IndexByte(valueShort, c) >= 0 {
+			rest := body[j+1:]
+			if rest != "" {
+				if c == 't' {
+					o.targetDir, o.hasTargetDir = rest, true
+				}
+			} else {
+				// Value is the next argv element — required for EVERY
+				// value-taking short flag (-m/-o/-g/-t/-S), not just -t.
+				// Validate it exists so a malformed trailing flag (`install
+				// -m`) refuses with a clear diagnostic instead of mis-counting
+				// operands.
+				if i+1 >= len(args) {
+					return i, fmt.Sprintf("install: -%c given without a value", c), false
+				}
+				if c == 't' {
+					o.targetDir, o.hasTargetDir = args[i+1], true
+				}
+				consumedNext = true
+			}
+			break // value-taking flag swallows the cluster remainder
+		}
+		if strings.IndexByte(boolShort, c) < 0 {
+			recognized = false
+			break
+		}
+	}
+	if !recognized {
+		return i, fmt.Sprintf("install: unrecognized short option in %q (refusing rather than risk mis-splitting SRC/DEST)", a), false
+	}
+	if consumedNext {
+		return i + 2, "", true
+	}
+	return i + 1, "", true
+}
+
+func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
+	operands, o, reason, ok := parseInstallArgs(args)
+	if !ok {
+		return nil, reason, false
 	}
 
 	// -s / --strip / --strip-program rewrite the copied bytes (a stripped
 	// binary differs from the source), so the call can't be reproduced as a
 	// plain byte copy. Refuse → round-2 fallback rather than emit a wrong
 	// artifact.
-	if strip {
+	if o.strip {
 		return nil, "install: -s/--strip(-program) modifies the copied bytes; can't reproduce as a plain copy", false
 	}
 
 	// `install -d DIR...`: directory creation. No Bazel artifact (fresh
 	// sandbox per action), so skip benignly — same as mkdir / cmake -E
 	// make_directory.
-	if dirMode {
+	if o.dirMode {
 		return nil, "", true
 	}
 
 	// -T / --no-target-directory forces DEST to be a file and is mutually
 	// exclusive with -t / --target-directory (which forces a directory).
-	if forceFile && hasTargetDir {
+	if o.forceFile && o.hasTargetDir {
 		return nil, "install: -T/--no-target-directory and -t are mutually exclusive", false
 	}
 
@@ -1083,11 +1124,11 @@ func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, 
 	var dest string
 	destIsDir := false
 	switch {
-	case hasTargetDir:
+	case o.hasTargetDir:
 		if len(operands) == 0 {
 			return nil, "install: -t given but no source operands", false
 		}
-		sources, dest, destIsDir = operands, targetDir, true
+		sources, dest, destIsDir = operands, o.targetDir, true
 	case len(operands) >= 2:
 		dest = operands[len(operands)-1]
 		sources = operands[:len(operands)-1]
@@ -1100,7 +1141,7 @@ func liftInstall(args []string, anc execAnchors, cc *codegenContext) ([]string, 
 		// paths exist on this host (reply-dir paths won't, falling back to
 		// the syntactic signals). -T/--no-target-directory overrides ALL of
 		// these: DEST is then always the file path.
-		destIsDir = !forceFile &&
+		destIsDir = !o.forceFile &&
 			(len(sources) > 1 || strings.HasSuffix(dest, "/") || isExistingDir(dest))
 	default:
 		return nil, fmt.Sprintf("install: expected SRC... DEST (got %d operand(s))", len(operands)), false
