@@ -1608,7 +1608,14 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// first, generated content next, then install-side packaging
 	// rules (pkg_files for FILES/DIRECTORY, cmake_config_bundle
 	// filegroup for declarative install(EXPORT)).
-	pkg.Targets = append(pkg.Targets, lowerDirectoryInstallers(r, opts.EmitInstallExportConfig)...)
+	// Build-relative outputs the convert actually PRODUCES (genrule / write_file
+	// / configure_file). install(FILES) of a generated build-dir file packages
+	// only when its output has a producer — otherwise the pkg_files would
+	// reference a missing input (e.g. fmt's configure_package_config_file
+	// fmt-config.cmake, which the converter doesn't lift, must NOT be packaged
+	// until a producer exists; see the Config.cmake-generation follow-up).
+	produced := producedOutputs(pkg.Targets)
+	pkg.Targets = append(pkg.Targets, lowerDirectoryInstallers(r, opts.EmitInstallExportConfig, produced)...)
 	// install(TARGETS) → pkg_files: package each built library / binary under
 	// its install destination (the per-target Install slot otherwise only feeds
 	// the cc_import facade + round-2 tree, leaving the artifact in no install

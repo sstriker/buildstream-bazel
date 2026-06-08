@@ -13,6 +13,27 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
+// producedOutputs collects the set of element-root-relative output paths the
+// convert actually produces (genrule outs, write_file out, configure_file out).
+// It gates the generated-file install(FILES) fallback (projectToBuildRoot): a
+// build-dir install entry packages only when a rule produces it, so the emitted
+// pkg_files never references a missing input.
+func producedOutputs(targets []ir.Target) map[string]bool {
+	out := map[string]bool{}
+	for _, t := range targets {
+		for _, o := range t.GenruleOuts {
+			out[o] = true
+		}
+		if t.WriteFileOut != "" {
+			out[t.WriteFileOut] = true
+		}
+		if t.CMakeConfigureFile != nil && t.CMakeConfigureFile.Out != "" {
+			out[t.CMakeConfigureFile.Out] = true
+		}
+	}
+	return out
+}
+
 // lowerDirectoryInstallers walks every Directory.Installers entry in
 // the reply and emits KindPkgFiles IR targets for the install(FILES)
 // and install(DIRECTORY) shapes:
@@ -70,7 +91,7 @@ import (
 //
 // Returns IR targets in deterministic order (sorted by target name)
 // so downstream emit produces byte-stable BUILD output.
-func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool) []ir.Target {
+func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool, produced map[string]bool) []ir.Target {
 	if r == nil || len(r.Directories) == 0 {
 		return nil
 	}
@@ -141,7 +162,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool) []ir.Target {
 				byKey[key] = b
 			}
 			for _, raw := range inst.Paths {
-				rel, info, ok := decodeInstallerPath(raw, dirSrc, cmakeSrc, cmakeBuild, inst.Type)
+				rel, info, ok := decodeInstallerPath(raw, dirSrc, cmakeSrc, cmakeBuild, produced, inst.Type)
 				if !ok {
 					continue
 				}
@@ -472,7 +493,7 @@ type instFile struct {
 // by an absolute path under the cmake build dir (e.g. a configure_file output).
 // ok is false when the entry can't be decoded or resolves outside BOTH the
 // source tree and the build dir.
-func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, cmakeBuild, instType string) (rel string, info instFile, ok bool) {
+func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, cmakeBuild string, produced map[string]bool, instType string) (rel string, info instFile, ok bool) {
 	// Try plain string first (un-renamed file installer; directory
 	// installer's no-trailing-slash short form).
 	var s string
@@ -485,7 +506,12 @@ func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, cmakeBuild, inst
 			// Generated-file fallback is FILES-only: a generated FILE
 			// resolves to a same-package rule output, but a build-tree
 			// install(DIRECTORY) isn't a representable Bazel dir output.
-			rel = projectToBuildRoot(s, cmakeBuild)
+			// And only when a rule actually PRODUCES it — packaging a build-dir
+			// file with no producer (fmt's unlifted fmt-config.cmake) would
+			// reference a missing input and break the build.
+			if b := projectToBuildRoot(s, cmakeBuild); b != "" && produced[b] {
+				rel = b
+			}
 		}
 		if rel == "" {
 			return "", instFile{}, false
@@ -509,8 +535,12 @@ func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, cmakeBuild, inst
 	if rel == "" && instType == "file" {
 		// FILES-only build-dir fallback (see the string-form site): a
 		// generated FILE resolves to a same-package rule output, but a
-		// build-tree install(DIRECTORY) glob has no on-disk dir to match.
-		rel = projectToBuildRoot(obj.From, cmakeBuild)
+		// build-tree install(DIRECTORY) glob has no on-disk dir to match — and
+		// only when a rule actually produces the file (else it'd be a missing
+		// pkg_files input).
+		if b := projectToBuildRoot(obj.From, cmakeBuild); b != "" && produced[b] {
+			rel = b
+		}
 	}
 	if rel == "" {
 		return "", instFile{}, false
