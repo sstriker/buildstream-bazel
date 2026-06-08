@@ -126,64 +126,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool, produced map[st
 	// packages — the converter already emits it as a same-package rule output.
 	cmakeBuild := r.Codemodel.Paths.Build
 
-	// Per-(type, destination) accumulators. Files / directories
-	// stored in a map to dedupe (the same path can appear in
-	// multiple installer entries under the same destination); the
-	// map is then sorted on emit. The instFile value carries the
-	// per-path metadata the File API surfaces beyond the source path:
-	// a rename target (install(FILES ... RENAME ...)) and, for
-	// directory installers, the contents-vs-tree mode.
-	type bucket struct {
-		kind  string // "file" or "directory"
-		dest  string
-		files map[string]instFile
-	}
-	byKey := map[string]*bucket{}
-
-	for _, dir := range r.Directories {
-		dirSrc := dir.Paths.Source
-		if dirSrc == "" {
-			dirSrc = cmakeSrc
-		} else if !filepath.IsAbs(dirSrc) {
-			dirSrc = filepath.Join(cmakeSrc, dirSrc)
-		}
-		for _, inst := range dir.Installers {
-			if inst.Type != "file" && inst.Type != "directory" {
-				// install(TARGETS) (Type=="target") rides through the
-				// per-target Install slot, not here — including the
-				// versioned-shared-lib namelink split cmake records as
-				// paired target installers (TargetInstallNamelink
-				// "skip" for the real SONAME files, "only" for the
-				// libfoo.so symlink). Bazel resolves shared-lib imports
-				// by artifact (cc_import), not by SONAME symlink, so the
-				// "only" namelink installer is intentionally not
-				// reproduced; dropping it here is correct, not lossy.
-				continue
-			}
-			if inst.Destination == "" {
-				continue
-			}
-			// EXCLUDE_FROM_ALL / OPTIONAL installers don't fire
-			// under the default install — skip them so the emitted
-			// filegroup doesn't promise files that may not exist.
-			if inst.IsExcludeFromAll || inst.IsOptional {
-				continue
-			}
-			key := inst.Type + "\x00" + inst.Destination
-			b, ok := byKey[key]
-			if !ok {
-				b = &bucket{kind: inst.Type, dest: inst.Destination, files: map[string]instFile{}}
-				byKey[key] = b
-			}
-			for _, raw := range inst.Paths {
-				rel, info, ok := decodeInstallerPath(raw, dirSrc, cmakeSrc, cmakeBuild, produced, inst.Type)
-				if !ok {
-					continue
-				}
-				b.files[rel] = info
-			}
-		}
-	}
+	byKey := accumulateInstallerBuckets(r, cmakeSrc, cmakeBuild, produced)
 
 	if len(byKey) == 0 && len(exportTargets) == 0 {
 		return nil
@@ -251,13 +194,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool, produced map[st
 			// of "<dest>/<basename>". Without this the object-form entry
 			// used to be dropped entirely (the file silently vanished
 			// from the package).
-			renames := map[string]string{}
-			for f, info := range b.files {
-				if info.rename != "" {
-					renames[f] = info.rename
-				}
-			}
-			if len(renames) > 0 {
+			if renames := installerRenames(b.files); len(renames) > 0 {
 				t.PkgRenames = renames
 			}
 		}
@@ -307,16 +244,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool, produced map[st
 			// directory (rare) we emit no strip_prefix (files keep their
 			// dir-qualified paths under the prefix — the never-wrong
 			// conservative shape).
-			t.PkgSrcsGlob = true
-			if len(files) == 1 {
-				if b.files[files[0]].dirTree {
-					if parent := path.Dir(files[0]); parent != "." && parent != "/" {
-						t.PkgStripPrefix = parent
-					}
-				} else {
-					t.PkgStripPrefix = files[0]
-				}
-			}
+			t.PkgSrcsGlob, t.PkgStripPrefix = installerDirStrip(files, b.files)
 		}
 		out = append(out, t)
 	}
@@ -327,6 +255,106 @@ func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool, produced map[st
 	// (install-files / install-directory / export-import).
 	out = append(out, exportTargets...)
 	return out
+}
+
+// installerBucket accumulates the files/directories installed under one
+// (type, destination) pair. files is a map to dedupe (the same path can appear
+// in multiple installer entries under the same destination); the instFile value
+// carries the per-path metadata the File API surfaces beyond the source path —
+// a rename target (install(FILES … RENAME …)) and, for directory installers,
+// the contents-vs-tree mode.
+type installerBucket struct {
+	kind  string // "file" or "directory"
+	dest  string
+	files map[string]instFile
+}
+
+// accumulateInstallerBuckets walks every file/directory installer in the reply
+// and groups its decoded paths by (type, destination) into installerBuckets.
+// install(TARGETS) (Type=="target"), destination-less, and EXCLUDE_FROM_ALL /
+// OPTIONAL installers are skipped (see the inline notes).
+func accumulateInstallerBuckets(r *fileapi.Reply, cmakeSrc, cmakeBuild string, produced map[string]bool) map[string]*installerBucket {
+	byKey := map[string]*installerBucket{}
+	for _, dir := range r.Directories {
+		dirSrc := dir.Paths.Source
+		if dirSrc == "" {
+			dirSrc = cmakeSrc
+		} else if !filepath.IsAbs(dirSrc) {
+			dirSrc = filepath.Join(cmakeSrc, dirSrc)
+		}
+		for _, inst := range dir.Installers {
+			if inst.Type != "file" && inst.Type != "directory" {
+				// install(TARGETS) (Type=="target") rides through the
+				// per-target Install slot, not here — including the
+				// versioned-shared-lib namelink split cmake records as
+				// paired target installers (TargetInstallNamelink
+				// "skip" for the real SONAME files, "only" for the
+				// libfoo.so symlink). Bazel resolves shared-lib imports
+				// by artifact (cc_import), not by SONAME symlink, so the
+				// "only" namelink installer is intentionally not
+				// reproduced; dropping it here is correct, not lossy.
+				continue
+			}
+			if inst.Destination == "" {
+				continue
+			}
+			// EXCLUDE_FROM_ALL / OPTIONAL installers don't fire
+			// under the default install — skip them so the emitted
+			// filegroup doesn't promise files that may not exist.
+			if inst.IsExcludeFromAll || inst.IsOptional {
+				continue
+			}
+			key := inst.Type + "\x00" + inst.Destination
+			b, ok := byKey[key]
+			if !ok {
+				b = &installerBucket{kind: inst.Type, dest: inst.Destination, files: map[string]instFile{}}
+				byKey[key] = b
+			}
+			for _, raw := range inst.Paths {
+				rel, info, ok := decodeInstallerPath(raw, dirSrc, cmakeSrc, cmakeBuild, produced, inst.Type)
+				if !ok {
+					continue
+				}
+				b.files[rel] = info
+			}
+		}
+	}
+	return byKey
+}
+
+// installerRenames collects the per-file RENAME map for an install(FILES …
+// RENAME) bucket — each dest name relative to the prefix, so the file lands at
+// "<dest>/<rename>" instead of "<dest>/<basename>".
+func installerRenames(files map[string]instFile) map[string]string {
+	renames := map[string]string{}
+	for f, info := range files {
+		if info.rename != "" {
+			renames[f] = info.rename
+		}
+	}
+	return renames
+}
+
+// installerDirStrip computes the pkg_files glob + strip_prefix for an
+// install(DIRECTORY) bucket (see the long note at the call site). glob is
+// always true; the strip prefix flattens the single source dir so files land
+// under DESTINATION correctly — trailing-slash "contents" form strips the whole
+// dir, no-trailing-slash "the dir itself" form strips the dir's PARENT (keeping
+// the dir name; parentless → no strip). A single strip_prefix can only flatten
+// one source dir, so a multi-dir bucket (rare) gets no strip — the conservative
+// dir-qualified shape.
+func installerDirStrip(files []string, byPath map[string]instFile) (glob bool, strip string) {
+	glob = true
+	if len(files) == 1 {
+		if byPath[files[0]].dirTree {
+			if parent := path.Dir(files[0]); parent != "." && parent != "/" {
+				strip = parent
+			}
+		} else {
+			strip = files[0]
+		}
+	}
+	return glob, strip
 }
 
 // lowerExportInstallers walks every Type=="export" DirectoryInstaller

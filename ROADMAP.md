@@ -14,10 +14,12 @@ transition cleanly.
   step runs in the `Build + unit tests` job as **non-blocking
   (`continue-on-error`)** so its output is the gap-to-green worklist, not a wall.
   At launch it flagged **55** issues against the gate thresholds (gocyclo>30,
-  gocognit>50, nestif>10, funlen); the burndown is underway (**52** now — pass 1
-  decomposed `lowerInterfaceLibraries` into three pure build-pass helpers (60→15);
-  pass 2 split `applyProbeGenexProperties` into build-flag vs tag-only helpers
-  (cognitive 84→6) — establishing the extract-cohesive-passes pattern). The
+  gocognit>50, nestif>10, funlen); the burndown is underway (**51** now — pass 1
+  decomposed `lowerInterfaceLibraries` (60→15); pass 2 split
+  `applyProbeGenexProperties` into build-flag vs tag-only helpers (cognitive
+  84→6); pass 3 split `lowerDirectoryInstallers` into accumulate / renames /
+  dir-strip helpers (cognitive 72→24) — establishing the extract-cohesive-passes
+  pattern). The
   dominant remaining offenders are flagged by **gocognit** (the giants are
   cognitive, not cyclomatic): `lower.lowerTarget` (cognitive **713**),
   `convert-element-cmake`'s `run` (291), `lower.ToIR` (278), and `emit/bazel`
