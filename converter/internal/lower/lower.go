@@ -6424,6 +6424,36 @@ func buildCompileGroupSet(t *fileapi.Target) map[int]bool {
 // never these source paths). Empty bazelPackagePath (the fidelity harness
 // converting AT the workspace root) preserves the prior labelRoot-relative
 // behavior exactly.
+// stripLeadingCd removes a leading `cd <abs-dir> && ` prefix from cmd when the
+// directory is inside buildDir or cmakeSrc, returning the trimmed cmd and the
+// build/source-relative subdir that was stripped (empty when nothing matched).
+// The subdir lets a later pass (qualifyRedirectBasenames) re-qualify
+// bare-basename redirect targets the cd would otherwise have rooted.
+func stripLeadingCd(cmd, buildDir, cmakeSrc string) (string, string) {
+	if !strings.HasPrefix(cmd, "cd ") {
+		return cmd, ""
+	}
+	end := strings.Index(cmd, " && ")
+	if end <= 0 {
+		return cmd, ""
+	}
+	target := strings.TrimSpace(strings.TrimPrefix(cmd[:end], "cd "))
+	if !filepath.IsAbs(target) {
+		return cmd, ""
+	}
+	if buildDir != "" {
+		if rel, ok := relativeIfInside(buildDir, target); ok {
+			return cmd[end+4:], rel
+		}
+	}
+	if cmakeSrc != "" {
+		if rel, ok := relativeIfInside(cmakeSrc, target); ok {
+			return cmd[end+4:], rel
+		}
+	}
+	return cmd, ""
+}
+
 func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath string) string {
 	if cmd == "" {
 		return cmd
@@ -6436,30 +6466,7 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath
 	// targets (cmake records `> LLVMHello.exports` as relative
 	// to the cd dir; after the cd-strip the basename is in the
 	// wrong cwd unless qualified).
-	var strippedCdSubdir string
-	if strings.HasPrefix(cmd, "cd ") {
-		if end := strings.Index(cmd, " && "); end > 0 {
-			target := strings.TrimSpace(strings.TrimPrefix(cmd[:end], "cd "))
-			if filepath.IsAbs(target) {
-				drop := false
-				if buildDir != "" {
-					if rel, ok := relativeIfInside(buildDir, target); ok {
-						drop = true
-						strippedCdSubdir = rel
-					}
-				}
-				if !drop && cmakeSrc != "" {
-					if rel, ok := relativeIfInside(cmakeSrc, target); ok {
-						drop = true
-						strippedCdSubdir = rel
-					}
-				}
-				if drop {
-					cmd = cmd[end+4:]
-				}
-			}
-		}
-	}
+	cmd, strippedCdSubdir := stripLeadingCd(cmd, buildDir, cmakeSrc)
 	// Strip cmakeSrc and buildDir prefixes from the cmd body.
 	// Two variants per anchor:
 	//
