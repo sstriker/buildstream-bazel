@@ -220,133 +220,145 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			}
 			collect(rels)
 		default:
-			// Configure-time probes produce no file artifact a consumer
-			// #includes, so none lifts to a genrule — and a recognized
-			// host/toolchain probe (BucketProbe) is never a build INPUT.
-			// Its build-affecting consequence is recovered independently:
-			//   - a captured OUTPUT_/RESULT_VARIABLE value feeds a
-			//     configure_file (@VAR@) / file(GENERATE) lift via Reply.Vars;
-			//   - a host triple (uname, config.guess) lands in a generated
-			//     config header (config.h, llvm-config.h) the converter
-			//     recovers directly;
-			//   - a tool capability (ar/ranlib -D) lands in the recovered
-			//     compile flags.
-			// So a probe is SKIPPED whether or not the dump-vars hook caught
-			// its value — the operator endorsed host/toolchain probes as
-			// benign-skippable. The lone probe shape that emits is a
-			// feature-declaration probe: it lifts to an operator-overridable
-			// bool_flag + config_setting (Bazel targets, still not a file
-			// input). A STAMP differs and gates on capture below.
-			if v.Bucket == BucketProbe && call.OutputFile == "" {
-				// Feature probe -> declared build setting. A probe writing a
-				// HAVE_X-style variable is a deferred declaration ("does the
-				// host have X?"); the faithful Bazel shape is an
-				// operator-overridable bool_flag + a select()-able
-				// config_setting, not a refusal or a silent bake. The default
-				// is derived per writeback channel (featureProbeDefault): a
-				// RESULT_VARIABLE "0" (exit success) and a truthy
-				// OUTPUT_VARIABLE stdout both mean "feature present" -> True,
-				// else False (including uncaptured).
-				if varName, fromResult := featureDeclarationProbeVar(call); varName != "" {
-					flag := sanitizeBuildSettingName(varName)
-					if prev, ok := seenProbeFlags[flag]; ok {
-						if prev == varName {
-							continue // same probe recurred in the trace
-						}
-						// Distinct cmake variables collide on one Bazel target
-						// name (e.g. case-only HAVE_ZLIB vs have_zlib). Refuse so
-						// the operator disambiguates rather than silently losing
-						// the second knob.
-						unsupported = append(unsupported, executeProcessRefusal{
-							File:   call.File,
-							Line:   call.Line,
-							Bucket: v.Bucket,
-							Reason: fmt.Sprintf("feature probes %q and %q both lift to build setting %q", prev, varName, flag),
-							Argv:   formatExecuteProcessArgv(call),
-						})
-						continue
-					}
-					seenProbeFlags[flag] = varName
-					cc.Genrules = append(cc.Genrules,
-						ir.Target{
-							Name:            flag,
-							Kind:            ir.KindBoolFlag,
-							BoolFlagDefault: featureProbeDefault(cmakeVars[varName], fromResult),
-							Tags:            []string{"cmake-codegen-probe-option"},
-							Visibility:      publicVisibility(),
-						},
-						ir.Target{
-							Name:               flag + "_enabled",
-							Kind:               ir.KindConfigSetting,
-							ConfigSettingFlag:  ":" + flag,
-							ConfigSettingValue: "True",
-							Visibility:         publicVisibility(),
-						},
-					)
-					continue
-				}
-				// Any other recognized probe with no file output: skip. Its
-				// result is recovered independently (see above) and is never
-				// a Bazel build input, so emitting nothing is faithful.
-				continue
+			if ref := recoverProbeOrStampCall(call, v, cc, cmakeVars, forwardedStampVars, seenProbeFlags); ref != nil {
+				unsupported = append(unsupported, *ref)
 			}
-			// Record a stamp output variable for the configure_file lift:
-			// a stamp's OUTPUT_VARIABLE (a git/hg/svn revision, a
-			// whoami/id/hostid identity, or a `date` timestamp) re-reads from
-			// the Bazel workspace status at build time, so a `@GIT_SHA@` /
-			// `@BUILD_DATE@` header stays live instead of baking the
-			// convert-time value. The key's prefix is driver-aware
-			// (stampStatusKey): STABLE_ for identity/revision, VOLATILE_ for
-			// `date`. Recorded regardless of the capture gate below — the lift
-			// (which runs later over the same cc) consults cc.StampVars; the
-			// stamp call itself still skips (captured) or refuses (not) here.
-			if v.Bucket == BucketStamp && call.OutputVariable != "" {
-				driver := executeProcessDriverBasename(call.Commands[0][0])
-				cc.StampVars[call.OutputVariable] = stampStatusKey(call.OutputVariable, driver)
-			}
-			// Stamp / probe capture gate. A stamp's value (a VCS revision)
-			// WOULD bake into the srckey of any configure_file that consumed
-			// it — silently pinning the build to one commit — so unlike a probe
-			// a stamp isn't skipped blindly. It rescues when that value is
-			// reachable by a consuming configure_file: captured at top level by
-			// dump-vars (OUTPUT_VARIABLE in cmakeVars), OR forwarded onward by a
-			// recovered `set()` copy — including a helper function's
-			// `set(${_var} "${out}" PARENT_SCOPE)` return, whose function-local
-			// OUTPUT_VARIABLE the dump-vars top-level snapshot can't see but
-			// whose value still reaches a captured var the configure_file reads
-			// (git_describe()'s shape, as in SDL). A stamp whose OUTPUT_VARIABLE
-			// is neither captured nor forwarded has no namespace path to a
-			// consumer and stays refused so the operator opts into round-2 (the
-			// synthetic single-pass fixtures, with no recovered set() copies,
-			// model exactly that). A BucketProbe reaches here only when it set
-			// OUTPUT_FILE; it follows the capture gate but not the stamp-only
-			// forwarded rescue.
-			if v.Bucket == BucketProbe || v.Bucket == BucketStamp {
-				if call.OutputVariable != "" {
-					if _, ok := cmakeVars[call.OutputVariable]; ok {
-						continue
-					}
-					if v.Bucket == BucketStamp && forwardedStampVars[call.OutputVariable] {
-						continue
-					}
-				}
-				if call.ResultVariable != "" {
-					if _, ok := cmakeVars[call.ResultVariable]; ok {
-						continue
-					}
-				}
-			}
-			unsupported = append(unsupported, executeProcessRefusal{
-				File:   call.File,
-				Line:   call.Line,
-				Bucket: v.Bucket,
-				Reason: v.Reason,
-				Argv:   formatExecuteProcessArgv(call),
-			})
 		}
 	}
 	sort.Slice(outs, func(i, j int) bool { return outs[i].RelOutput < outs[j].RelOutput })
 	return outs, unsupported
+}
+
+// recoverProbeOrStampCall handles the default Classify bucket (configure-time
+// probe / stamp / unrecognized) for one execute_process call. It records a
+// feature-declaration probe as a bool_flag + config_setting pair and a stamp
+// output variable as a workspace-status key (mutating cc / seenProbeFlags),
+// then applies the stamp/probe capture gate. Returns a refusal to append when
+// the call can't be rescued, or nil when it was lifted, recorded, or
+// benign-skipped (every `continue` in the original inline switch default).
+func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, cc *codegenContext, cmakeVars map[string]string, forwardedStampVars map[string]bool, seenProbeFlags map[string]string) *executeProcessRefusal {
+	// Configure-time probes produce no file artifact a consumer
+	// #includes, so none lifts to a genrule — and a recognized
+	// host/toolchain probe (BucketProbe) is never a build INPUT.
+	// Its build-affecting consequence is recovered independently:
+	//   - a captured OUTPUT_/RESULT_VARIABLE value feeds a
+	//     configure_file (@VAR@) / file(GENERATE) lift via Reply.Vars;
+	//   - a host triple (uname, config.guess) lands in a generated
+	//     config header (config.h, llvm-config.h) the converter
+	//     recovers directly;
+	//   - a tool capability (ar/ranlib -D) lands in the recovered
+	//     compile flags.
+	// So a probe is SKIPPED whether or not the dump-vars hook caught
+	// its value — the operator endorsed host/toolchain probes as
+	// benign-skippable. The lone probe shape that emits is a
+	// feature-declaration probe: it lifts to an operator-overridable
+	// bool_flag + config_setting (Bazel targets, still not a file
+	// input). A STAMP differs and gates on capture below.
+	if v.Bucket == BucketProbe && call.OutputFile == "" {
+		// Feature probe -> declared build setting. A probe writing a
+		// HAVE_X-style variable is a deferred declaration ("does the
+		// host have X?"); the faithful Bazel shape is an
+		// operator-overridable bool_flag + a select()-able
+		// config_setting, not a refusal or a silent bake. The default
+		// is derived per writeback channel (featureProbeDefault): a
+		// RESULT_VARIABLE "0" (exit success) and a truthy
+		// OUTPUT_VARIABLE stdout both mean "feature present" -> True,
+		// else False (including uncaptured).
+		if varName, fromResult := featureDeclarationProbeVar(call); varName != "" {
+			flag := sanitizeBuildSettingName(varName)
+			if prev, ok := seenProbeFlags[flag]; ok {
+				if prev == varName {
+					return nil // same probe recurred in the trace
+				}
+				// Distinct cmake variables collide on one Bazel target
+				// name (e.g. case-only HAVE_ZLIB vs have_zlib). Refuse so
+				// the operator disambiguates rather than silently losing
+				// the second knob.
+				return &executeProcessRefusal{
+					File:   call.File,
+					Line:   call.Line,
+					Bucket: v.Bucket,
+					Reason: fmt.Sprintf("feature probes %q and %q both lift to build setting %q", prev, varName, flag),
+					Argv:   formatExecuteProcessArgv(call),
+				}
+			}
+			seenProbeFlags[flag] = varName
+			cc.Genrules = append(cc.Genrules,
+				ir.Target{
+					Name:            flag,
+					Kind:            ir.KindBoolFlag,
+					BoolFlagDefault: featureProbeDefault(cmakeVars[varName], fromResult),
+					Tags:            []string{"cmake-codegen-probe-option"},
+					Visibility:      publicVisibility(),
+				},
+				ir.Target{
+					Name:               flag + "_enabled",
+					Kind:               ir.KindConfigSetting,
+					ConfigSettingFlag:  ":" + flag,
+					ConfigSettingValue: "True",
+					Visibility:         publicVisibility(),
+				},
+			)
+			return nil
+		}
+		// Any other recognized probe with no file output: skip. Its
+		// result is recovered independently (see above) and is never
+		// a Bazel build input, so emitting nothing is faithful.
+		return nil
+	}
+	// Record a stamp output variable for the configure_file lift:
+	// a stamp's OUTPUT_VARIABLE (a git/hg/svn revision, a
+	// whoami/id/hostid identity, or a `date` timestamp) re-reads from
+	// the Bazel workspace status at build time, so a `@GIT_SHA@` /
+	// `@BUILD_DATE@` header stays live instead of baking the
+	// convert-time value. The key's prefix is driver-aware
+	// (stampStatusKey): STABLE_ for identity/revision, VOLATILE_ for
+	// `date`. Recorded regardless of the capture gate below — the lift
+	// (which runs later over the same cc) consults cc.StampVars; the
+	// stamp call itself still skips (captured) or refuses (not) here.
+	if v.Bucket == BucketStamp && call.OutputVariable != "" {
+		driver := executeProcessDriverBasename(call.Commands[0][0])
+		cc.StampVars[call.OutputVariable] = stampStatusKey(call.OutputVariable, driver)
+	}
+	// Stamp / probe capture gate. A stamp's value (a VCS revision)
+	// WOULD bake into the srckey of any configure_file that consumed
+	// it — silently pinning the build to one commit — so unlike a probe
+	// a stamp isn't skipped blindly. It rescues when that value is
+	// reachable by a consuming configure_file: captured at top level by
+	// dump-vars (OUTPUT_VARIABLE in cmakeVars), OR forwarded onward by a
+	// recovered `set()` copy — including a helper function's
+	// `set(${_var} "${out}" PARENT_SCOPE)` return, whose function-local
+	// OUTPUT_VARIABLE the dump-vars top-level snapshot can't see but
+	// whose value still reaches a captured var the configure_file reads
+	// (git_describe()'s shape, as in SDL). A stamp whose OUTPUT_VARIABLE
+	// is neither captured nor forwarded has no namespace path to a
+	// consumer and stays refused so the operator opts into round-2 (the
+	// synthetic single-pass fixtures, with no recovered set() copies,
+	// model exactly that). A BucketProbe reaches here only when it set
+	// OUTPUT_FILE; it follows the capture gate but not the stamp-only
+	// forwarded rescue.
+	if v.Bucket == BucketProbe || v.Bucket == BucketStamp {
+		if call.OutputVariable != "" {
+			if _, ok := cmakeVars[call.OutputVariable]; ok {
+				return nil
+			}
+			if v.Bucket == BucketStamp && forwardedStampVars[call.OutputVariable] {
+				return nil
+			}
+		}
+		if call.ResultVariable != "" {
+			if _, ok := cmakeVars[call.ResultVariable]; ok {
+				return nil
+			}
+		}
+	}
+	return &executeProcessRefusal{
+		File:   call.File,
+		Line:   call.Line,
+		Bucket: v.Bucket,
+		Reason: v.Reason,
+		Argv:   formatExecuteProcessArgv(call),
+	}
 }
 
 // stampStatusKey derives the Bazel workspace-status key a stamp cmake
