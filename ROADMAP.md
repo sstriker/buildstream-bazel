@@ -181,7 +181,7 @@ transition cleanly.
   tests need no extra infra (fmt, libxml2, glog, glm, googletest, abseil
   surface, curl test PROGRAMS). The `add_test`→`cc_test` lowering itself is
   sound and shape-agnostic — it's driven by cmake's generated
-  `CTestTestfile.cmake` (`internal/ctest`), so it captures every registration
+  `CTestTestfile.cmake` (`converter/internal/ctest`), so it captures every registration
   (`add_test(name exe)` AND `add_test(NAME … COMMAND …)`) once the executable +
   its registration are CONFIGURED. So a member's "no `cc_test`" is never a
   lowering bug; it's that tests weren't configured (a missing test dep, or a
@@ -416,7 +416,7 @@ trees, optional-feature deps, codegen instances). Each member's
   `CTestTestfile.cmake`; proven by fmt/libxml2/glog), so the absences are tests
   that weren't CONFIGURED: mbedtls (`ENABLE_TESTING=OFF`) + openblas
   (`BUILD_TESTING=OFF`) explicitly scope tests off in their `.conf`; abseil's
-  need GTest (not wired); the rest are dep-availability / faithful-survey-config
+  tests need GTest (not wired); the rest are dep-availability / faithful-survey-config
   gaps. The actionable enablement work (wire each member's test dep) is tracked
   per-member under "Test-target coverage" above; there's no separate lowering
   fix to make here.
