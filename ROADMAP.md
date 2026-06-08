@@ -1195,7 +1195,7 @@ transition cleanly.
   pass** to calibrate false-positive rate and confirm the producer-gaps it finds
   — **done (2026-06-08)**: a full-corpus run with `claude -p` as judge, output
   committed under `docs/survey-artifacts/` and summarized in
-  `docs/survey-corpus.md` ("Full-corpus lens snapshot"). It surfaced 74
+  `docs/survey-corpus.md` ("Full-corpus lens snapshot"). It surfaced 77
   high-severity net-new findings clustering into six producer-gap themes (next
   bullet); the open calibration work is now (a) scoring the queue, not whether
   the lens finds real gaps.

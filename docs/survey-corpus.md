@@ -766,7 +766,7 @@ comparable across runs (see the lens caveats above).
 | llvm | 2054 | 29 | 14 |
 | mbedtls | 113 | 14 | 5 |
 | nlohmann-json | —† | 6 | 2 |
-| openblas | (pending) | (pending) | (pending) |
+| openblas | 6277 | 9 | 3 |
 | protobuf | 286 | 11 | 5 |
 | sdl | 259 | 9 | 2 |
 | spdlog | 8 | 10 | 3 |
@@ -787,32 +787,33 @@ to fix; tracked in `ROADMAP.md`.
 #### Producer-gap themes (the intent backlog)
 
 The net-new intent findings are **producer/lowering-gap candidates** — intent
-the converter silently dropped. Across the corpus the **74 high-severity**
+the converter silently dropped. Across the corpus the **77 high-severity**
 net-new findings cluster into six recurring themes (full detail, with
 `evidence` + `cmake_ref` per finding, in each member's
 `survey-artifacts/<member>/intent-capture.json`):
 
-1. **Dropped link libraries** (24× high) — system/threading linkopts CMake
+1. **Dropped link libraries** (25× high) — system/threading linkopts CMake
    resolves but the converter omits: `-lm` (`brotli`, `libpng`, `libxml2`),
    `-ldl` (`libxml2`, `llvm`), `-lpthread` (`googletest`, `spdlog`, `zstd`,
    `grpc`, `llvm`'s `${LLVM_PTHREAD_LIB}`). Also build-type-conditional
    defines hardcoded on (LLVM's `LLVM_ENABLE_ABI_BREAKING_CHECKS`,
-   `LLVM_ENABLE_PLUGINS`, …, all forced `1` regardless of `//config`) and
-   dropped `target_compile_features` (`googletest`'s PUBLIC `cxx_std_17`).
-2. **Unmodeled install/export layout** (24× high) — the convert builds the
+   `LLVM_ENABLE_PLUGINS`, …, all forced `1` regardless of `//config`),
+   dropped `target_compile_features` (`googletest`'s PUBLIC `cxx_std_17`),
+   and `openblas`'s missing SONAME/VERSION (no versioned `.so` symlinks).
+2. **Unmodeled install/export layout** (25× high) — the convert builds the
    artifacts but ships no install tree: no `pkg_files` for libs / public
    headers / binaries / `.pc` files (`curl`, `protobuf`, `zlib`, `sdl`,
-   `libevent`, `fmt`, …), and the `find_package(CONFIG)` entry points
-   (`<Pkg>Config.cmake` / `<Pkg>Targets.cmake`) are never generated
+   `libevent`, `fmt`, `openblas`, …), and the `find_package(CONFIG)` entry
+   points (`<Pkg>Config.cmake` / `<Pkg>Targets.cmake`) are never generated
    (`eigen`, `catch2`, `zstd`, `cutlass`, `protobuf`, `nlohmann-json`).
    This is the single biggest cluster and the most mechanical to close.
 3. **Absent targets / subpackages** (9× high) — whole targets with no
    `BUILD.bazel`: `abseil`'s 7 interface subpackages, `llvm`'s 19/20
    backends under default `LLVM_TARGETS_TO_BUILD=all`, `mbedtls`'s
    programs, `vtk`'s `VolumeAMR` module.
-4. **Dropped test suites** (9× high) — `enable_testing()` trees lowered
+4. **Dropped test suites** (10× high) — `enable_testing()` trees lowered
    nowhere: `abseil` (232 `absl_cc_test`), `glm` (~130), `sdl` (~50),
-   `catch2`, `boost-core`, `mbedtls`, `vtk`.
+   `catch2`, `boost-core`, `mbedtls`, `vtk`, `openblas`.
 5. **Unrepresented codegen** (5× high) — `configure_file` / script codegen
    with no genrule: `vtk`'s libproj `proj_config.h`, `mbedtls`'s
    `test_certs.h`, `curl`'s `configurehelp.pm` (bakes a convert-time temp

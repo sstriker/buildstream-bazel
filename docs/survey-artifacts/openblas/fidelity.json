@@ -1,0 +1,110 @@
+{
+ "_compacted": true,
+ "_note": "per-TU *_mismatch maps signature-grouped; see README.md",
+ "matched": 6277,
+ "only_cmake": null,
+ "only_bazel": null,
+ "define_mismatch_total_tus": 6277,
+ "define_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "NDEBUG",
+     "VERSION=\"\\0.3.28\""
+    ],
+    "missing_in_bazel": [
+     "VERSION=\"0.3.28\""
+    ]
+   },
+   "tu_count": 6212,
+   "examples": [
+    "c_abs.c",
+    "camax.c",
+    "camin.c",
+    "caxpby.c",
+    "caxpby_k.c"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "BUILD_COMPLEX",
+     "BUILD_COMPLEX16",
+     "BUILD_DOUBLE",
+     "BUILD_SINGLE",
+     "NDEBUG",
+     "VERSION=\"\\0.3.28\""
+    ],
+    "missing_in_bazel": [
+     "VERSION=\"0.3.28\""
+    ]
+   },
+   "tu_count": 65,
+   "examples": [
+    "camax_k.S",
+    "camin_k.S",
+    "casum_k.S",
+    "ccopy_k.S",
+    "cgemm_beta.S"
+   ]
+  }
+ ],
+ "std_mismatch": {},
+ "include_mismatch_total_tus": 6277,
+ "include_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "."
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 4553,
+   "examples": [
+    "lapack-netlib/INSTALL/dlamch.c",
+    "lapack-netlib/INSTALL/dsecnd_NONE.c",
+    "lapack-netlib/INSTALL/ilaver.c",
+    "lapack-netlib/INSTALL/second_NONE.c",
+    "lapack-netlib/INSTALL/slamch.c"
+   ]
+  },
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "lapack-netlib/LAPACKE/include"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 1724,
+   "examples": [
+    "c_abs.c",
+    "camax.c",
+    "camax_k.S",
+    "camin.c",
+    "camin_k.S"
+   ]
+  }
+ ],
+ "copt_mismatch_total_tus": 65,
+ "copt_mismatch_by_signature": [
+  {
+   "signature": {
+    "extra_in_bazel": [
+     "-mfma"
+    ],
+    "missing_in_bazel": []
+   },
+   "tu_count": 65,
+   "examples": [
+    "camax_k.S",
+    "camin_k.S",
+    "casum_k.S",
+    "ccopy_k.S",
+    "cgemm_beta.S"
+   ]
+  }
+ ],
+ "gen_root_missing": {},
+ "tu_key_collisions": 0,
+ "param_file_skipped": 0
+}
