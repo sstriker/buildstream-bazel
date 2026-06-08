@@ -239,10 +239,16 @@ func stripOuterParens(expr string) string {
 			depth++
 		case ')':
 			depth--
+			if depth < 0 {
+				return expr // unbalanced: a ')' with no matching '('
+			}
 			if depth == 0 && i != len(expr)-1 {
 				return expr // closing paren doesn't span the whole expr
 			}
 		}
+	}
+	if depth != 0 {
+		return expr // unbalanced: leftover '(' (e.g. "((a)")
 	}
 	return strings.TrimSpace(expr[1 : len(expr)-1])
 }
