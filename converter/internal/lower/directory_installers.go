@@ -481,7 +481,10 @@ func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, cmakeBuild, inst
 			return "", instFile{}, false
 		}
 		rel = projectToSourceRoot(s, dirSrc, cmakeSrc)
-		if rel == "" {
+		if rel == "" && instType == "file" {
+			// Generated-file fallback is FILES-only: a generated FILE
+			// resolves to a same-package rule output, but a build-tree
+			// install(DIRECTORY) isn't a representable Bazel dir output.
 			rel = projectToBuildRoot(s, cmakeBuild)
 		}
 		if rel == "" {
@@ -503,7 +506,10 @@ func decodeInstallerPath(raw json.RawMessage, dirSrc, cmakeSrc, cmakeBuild, inst
 		return "", instFile{}, false
 	}
 	rel = projectToSourceRoot(obj.From, dirSrc, cmakeSrc)
-	if rel == "" {
+	if rel == "" && instType == "file" {
+		// FILES-only build-dir fallback (see the string-form site): a
+		// generated FILE resolves to a same-package rule output, but a
+		// build-tree install(DIRECTORY) glob has no on-disk dir to match.
 		rel = projectToBuildRoot(obj.From, cmakeBuild)
 	}
 	if rel == "" {
