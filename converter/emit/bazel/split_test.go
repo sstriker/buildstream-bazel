@@ -98,6 +98,53 @@ func TestEmit_SubdirLibrary_Split_Golden(t *testing.T) {
 	}
 }
 
+// TestEmit_Split_InterfaceLib_PlacedBySubPackageEntry pins the theme-4
+// "absent subpackages" mechanism: under --split-packages a target's landing
+// package is decided SOLELY by its pkg.SubPackages entry, regardless of Kind.
+// A codemodel INTERFACE_LIBRARY (KindCCInterface) gets a SubPackages entry in
+// the lower (lower.go: every codemodel target does), so it lands in — and
+// MATERIALIZES — its own sub-package BUILD.bazel, exactly like a compiled lib.
+// Only a target with NO SubPackages entry (a trace-synthesized interface lib,
+// a synthesized filegroup, …) falls to the root package. This is why abseil's
+// header-only interface subpackages do get a BUILD.bazel when their libs are
+// codemodel-present; an absent subdir BUILD.bazel would mean the lib was
+// trace-synthesized (no entry), not that the target was dropped.
+func TestEmit_Split_InterfaceLib_PlacedBySubPackageEntry(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{
+			{Name: "rootlib", Kind: ir.KindCCLibrary, Srcs: []string{"root.c"}},
+			// Header-only interface lib declared in subdir "sub".
+			{Name: "ifacelib", Kind: ir.KindCCInterface, Defines: []string{"IFACE=1"}},
+			// Trace-synthesized interface lib: no SubPackages entry.
+			{Name: "synthiface", Kind: ir.KindCCInterface, Defines: []string{"SYNTH=1"}},
+		},
+		SubPackages: map[string]string{
+			"rootlib":  "",
+			"ifacelib": "sub",
+			// "synthiface" deliberately omitted.
+		},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/p"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	sub, ok := tree["sub"]
+	if !ok {
+		t.Fatalf("no BUILD.bazel emitted for the interface lib's sub-package; packages = %v", keysOf(tree))
+	}
+	if !strings.Contains(string(sub), `name = "ifacelib"`) {
+		t.Errorf("sub/BUILD.bazel should carry the interface lib; got:\n%s", sub)
+	}
+	root := string(tree[""])
+	if strings.Contains(root, `name = "ifacelib"`) {
+		t.Errorf("root BUILD.bazel must NOT carry the sub-package interface lib; got:\n%s", root)
+	}
+	// The entry-less (trace-synth) interface lib falls to root.
+	if !strings.Contains(root, `name = "synthiface"`) {
+		t.Errorf("root BUILD.bazel should carry the entry-less interface lib; got:\n%s", root)
+	}
+}
+
 // TestEmit_Split_SourceKey_LeavesElementRootRelative asserts the
 // SourceKey (orchestrator FUSE-sources) regime under --split-packages:
 // srcs/hdrs are emitted as @src_<key>//:tree_dir/<element-root-relative>

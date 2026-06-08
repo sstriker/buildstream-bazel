@@ -366,16 +366,39 @@ trees, optional-feature deps, codegen instances). Each member's
     `cc_library` can't express transitively (no `exported_copts`). Needs a design
     call, not a quick fix.
 
-- **Emit absent targets / subpackages (9× high).** Whole targets the converter
-  produces no `BUILD.bazel` for: abseil's 7 interface subpackages (algorithm,
-  cleanup, functional, memory, meta, types, utility), llvm's 19/20 backends
-  under default `LLVM_TARGETS_TO_BUILD=all`, mbedtls's `programs/` executables,
-  vtk's `Rendering::VolumeAMR` module. Investigate the emit/skip decision that
-  drops them. (Note: `lowerInterfaceLibraries` already lifts codemodel-omitted
-  INTERFACE libs, and cmake ≥3.19 surfaces them in the codemodel — so confirm
-  the current-main state on a real survey run before concluding the abseil
-  interface subpackages are dropped; the gap may be in package-split emission,
-  not the lift.)
+- **Emit absent targets / subpackages — investigated; mostly configure-scope,
+  one real layout gap left.** Investigation (2026-06): the intent lens diffs the
+  cmake SOURCE TREE, but the converter faithfully emits only what the codemodel
+  (the *configured* build) contains — so three of the four flagged sub-cases are
+  NOT converter bugs, they're the build-lens's own reduced configure:
+  - **llvm's 19 backends + Testing/* libs**: `llvm.conf` sets
+    `LLVM_TARGETS_TO_BUILD=X86` + `LLVM_INCLUDE_TESTS=OFF` → never configured.
+  - **mbedtls's `programs/` + test targets**: `mbedtls.conf` sets
+    `ENABLE_PROGRAMS=OFF` + `ENABLE_TESTING=OFF`.
+  - **vtk's VolumeAMR / GenericBridge / Benchmarks**: non-default VTK modules,
+    not enabled by the lens's default module set.
+
+  The remaining **abseil interface-subpackage** case IS a real gap — but a
+  *layout* one, not a dropped target. Verified: cmake (even 4.3.3) does NOT emit
+  pure-header `INTERFACE_LIBRARY` targets (no sources) into codemodel-v2 —
+  abseil's codemodel has 119 targets, **0** INTERFACE_LIBRARY — so abseil's
+  interface libs reach the converter only via the trace-synth path
+  (`lowerInterfaceLibraries`), which emits them correctly but in the ROOT package
+  (no `pkg.SubPackages` entry). Under `--split-packages` the 7 subdirs
+  (algorithm/cleanup/functional/memory/meta/types/utility) therefore get no
+  BUILD.bazel even though the libs themselves are present + consumable from root.
+  (Placement-by-`SubPackages`-entry is regression-guarded by
+  `TestEmit_Split_InterfaceLib_PlacedBySubPackageEntry`.)
+  **Fix:** `lowerInterfaceLibraries` should set `pkg.SubPackages[name]` from the
+  trace `add_library(<name> INTERFACE)` call's declaring CMakeLists dir
+  (`AddLibraryCall.File`, relativized like `subPackageDir`), mirroring the
+  codemodel path's per-target assignment (`lower.go:1439`).
+  **Caveat — validate before shipping:** abseil's interface libs carry the
+  repo-ROOT include root (so `#include "absl/<m>/<h>.h"` resolves), which sits
+  ABOVE their declaring subpackage; moving them into subpackages interacts with
+  split's header-lib / include-root machinery, so a full abseil
+  `--split-packages` convert + build AND the other green members must be
+  re-validated before landing (the fmt / cp-dir regression lesson).
 
 - **Lower dropped test trees to `cc_test` — extend test-target coverage (10×
   high).** Extends "Test-target coverage" (above): the faithful survey convert
