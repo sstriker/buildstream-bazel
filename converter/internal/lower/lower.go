@@ -4677,154 +4677,12 @@ func applyProbeGenexProperties(pkg *ir.Package, probes []cmakerun.GenexProbe) {
 		if !ok {
 			continue
 		}
-		// RPATH lifts to linkopts. BUILD_RPATH covers the
-		// build/test-time consumer (relevant under Bazel);
-		// INSTALL_RPATH covers cmake-install consumers (only
-		// affects downstream cmake users). Bazel build typically
-		// wants the BUILD_RPATH semantics.
-		if r := strings.TrimSpace(p.Properties["BUILD_RPATH"]); r != "" {
-			for _, entry := range strings.Split(r, ";") {
-				if entry == "" {
-					continue
-				}
-				tgt.LinkOpts = append(tgt.LinkOpts, "-Wl,-rpath,"+entry)
-			}
-		}
-		// POSITION_INDEPENDENT_CODE = TRUE → features=["pic"].
-		//
-		// FALSE/unset emits NOTHING — deliberately. In cmake this property
-		// only ever ADDS -fPIC (libs) / -fPIE (executables) when TRUE; it
-		// never adds -fno-PIC/-fno-PIE for FALSE, so a FALSE/unset target
-		// just inherits the compiler's default (PIE on modern toolchains).
-		// Emitting features=["-pic"] there actively DISABLES pic, producing
-		// non-PIC objects that then can't link into Bazel's PIE binaries /
-		// shared libs (ld: "relocation R_X86_64_PC32 ... recompile with
-		// -fPIC"). Letting Bazel's toolchain default govern matches cmake's
-		// actual behavior and links cleanly. (Found via the brotli build
-		// lens: its `brotli` tool leaves PIC unset, only the libs set it.)
-		if v := strings.TrimSpace(p.Properties["POSITION_INDEPENDENT_CODE"]); v != "" && cmakeTruthy(v) {
-			if !stringSliceContains(tgt.Features, "pic") {
-				tgt.Features = append(tgt.Features, "pic")
-			}
-		}
-		// Visibility presets — gcc/clang -fvisibility=<value>.
-		// CXX and C variants typically agree; emit each
-		// separately if cmake records different values.
-		for _, key := range []string{"CXX_VISIBILITY_PRESET", "C_VISIBILITY_PRESET"} {
-			if v := strings.TrimSpace(p.Properties[key]); v != "" {
-				flag := "-fvisibility=" + v
-				if !stringSliceContains(tgt.Copts, flag) {
-					tgt.Copts = append(tgt.Copts, flag)
-				}
-			}
-		}
-		// VISIBILITY_INLINES_HIDDEN: common modern-cmake idiom
-		// (set in projects that follow the GenerateExportHeader
-		// recipe). Maps to -fvisibility-inlines-hidden copt.
-		if cmakeTruthy(p.Properties["VISIBILITY_INLINES_HIDDEN"]) {
-			flag := "-fvisibility-inlines-hidden"
-			if !stringSliceContains(tgt.Copts, flag) {
-				tgt.Copts = append(tgt.Copts, flag)
-			}
-		}
-		// ENABLE_EXPORTS (executables / shared libs that export
-		// their symbols so dynamically-loaded plugins can resolve
-		// against them). cmake implements this by adding the
-		// platform's export-dynamic linker flag — `-rdynamic`
-		// (a.k.a. `-Wl,--export-dynamic`) on GNU/Clang ld. That IS
-		// a native Bazel concept: a linkopts entry. Emit it so the
-		// converted binary actually exports its dynamic symbol
-		// table, instead of only tagging the gap for the operator
-		// to wire by hand. The tag is kept alongside for
-		// auditability (so the bazel-idiom pass and operators can
-		// still see the cmake-side intent), but the flag now
-		// carries the real effect.
-		//
-		// Scope: GNU/Clang-style flag. The structural probe doesn't
-		// record the target platform's linker family here, so we
-		// emit the GNU/Clang spelling — correct for the Linux/macOS
-		// (ld/lld) toolchains this converter targets; an MSVC-link
-		// toolchain ignores `-rdynamic` (it's not the right spelling
-		// there, but cmake's ENABLE_EXPORTS is also a no-op for the
-		// MSVC import-lib model, so emitting nothing harmful).
-		if cmakeTruthy(p.Properties["ENABLE_EXPORTS"]) {
-			const exportDynamic = "-rdynamic"
-			if !stringSliceContains(tgt.LinkOpts, exportDynamic) {
-				tgt.LinkOpts = append(tgt.LinkOpts, exportDynamic)
-			}
-			tag := "cmake-codegen-enable-exports"
-			if !stringSliceContains(tgt.Tags, tag) {
-				tgt.Tags = append(tgt.Tags, tag)
-			}
-		}
-		// SOVERSION / VERSION (shared library naming). Bazel
-		// cc_library has no version-suffix attribute; surface
-		// as tags so operators see the cmake-side intent.
-		if v := strings.TrimSpace(p.Properties["SOVERSION"]); v != "" {
-			tag := "cmake-codegen-soversion=" + v
-			if !stringSliceContains(tgt.Tags, tag) {
-				tgt.Tags = append(tgt.Tags, tag)
-			}
-		}
-		if v := strings.TrimSpace(p.Properties["VERSION"]); v != "" {
-			tag := "cmake-codegen-version=" + v
-			if !stringSliceContains(tgt.Tags, tag) {
-				tgt.Tags = append(tgt.Tags, tag)
-			}
-		}
-		// Qt's auto-source-generation toggles (AUTOMOC / AUTOUIC /
-		// AUTORCC). cmake's generator runs moc / uic / rcc as
-		// part of `cmake --build`; outside cmake (i.e. under
-		// Bazel) those don't fire, so any target with these
-		// enabled MISSES the Qt-generated sources at compile
-		// time. Surface as tags so operators see the gap and
-		// route via a kind:bazel override that wraps moc / uic /
-		// rcc as host-tool genrules. Bazel cc_library has no
-		// native AUTOMOC equivalent.
-		for _, qt := range []string{"AUTOMOC", "AUTOUIC", "AUTORCC"} {
-			if cmakeTruthy(p.Properties[qt]) {
-				tag := "cmake-codegen-qt-" + strings.ToLower(qt)
-				if !stringSliceContains(tgt.Tags, tag) {
-					tgt.Tags = append(tgt.Tags, tag)
-				}
-			}
-		}
-		// EXCLUDE_FROM_ALL — cmake skips this target when
-		// building the default ALL target. Bazel's closest
-		// match is `tags = ["manual"]`, which excludes the
-		// target from `bazel build //...` wildcard expansion.
-		if cmakeTruthy(p.Properties["EXCLUDE_FROM_ALL"]) {
-			if !stringSliceContains(tgt.Tags, "manual") {
-				tgt.Tags = append(tgt.Tags, "manual")
-			}
-			if !stringSliceContains(tgt.Tags, "cmake-codegen-exclude-from-all") {
-				tgt.Tags = append(tgt.Tags, "cmake-codegen-exclude-from-all")
-			}
-		}
-		// MSVC_RUNTIME_LIBRARY — Windows-only runtime selection
-		// (MultiThreaded vs MultiThreadedDLL, with/without
-		// Debug). Bazel cc_library has no direct attribute;
-		// the operator's cc_toolchain feature owns the actual
-		// /MT vs /MD flag. Surface as tag.
-		if v := strings.TrimSpace(p.Properties["MSVC_RUNTIME_LIBRARY"]); v != "" {
-			tag := "cmake-codegen-msvc-runtime=" + v
-			if !stringSliceContains(tgt.Tags, tag) {
-				tgt.Tags = append(tgt.Tags, tag)
-			}
-		}
-		// JOB_POOL_COMPILE / JOB_POOL_LINK — ninja-specific
-		// job-pool routing for compile/link actions. Bazel's
-		// closest analog is `exec_properties = {"pool": "..."}`
-		// under remote execution. Surface as tag so operators
-		// see the cmake-side intent.
-		for _, jp := range []string{"JOB_POOL_COMPILE", "JOB_POOL_LINK"} {
-			if v := strings.TrimSpace(p.Properties[jp]); v != "" {
-				tag := "cmake-codegen-" + strings.ReplaceAll(strings.ToLower(jp), "_", "-") + "=" + v
-				if !stringSliceContains(tgt.Tags, tag) {
-					tgt.Tags = append(tgt.Tags, tag)
-				}
-			}
-		}
+		// Probe-recovered target properties, split by effect: build-flag props
+		// (linkopts/copts/features) and surface-as-tag props. The CXX/C
+		// extension rewrites stay inline below (they mutate the already-prepended
+		// -std copt rather than appending).
+		applyProbeBuildProps(tgt, p)
+		applyProbeTagProps(tgt, p)
 		// CXX_EXTENSIONS / C_EXTENSIONS — toggle gnu extensions on
 		// the language standard flag. cmake's default is ON
 		// (gnu++NN / gnuNN); our prepend hardcodes the strict
@@ -4840,6 +4698,169 @@ func applyProbeGenexProperties(pkg *ir.Package, probes []cmakerun.GenexProbe) {
 		// explicit) or hand-edit the resulting BUILD copts.
 		rewriteStdForExtensions(tgt, "CXX_EXTENSIONS", p.Properties["CXX_EXTENSIONS"], "c++", "gnu++")
 		rewriteStdForExtensions(tgt, "C_EXTENSIONS", p.Properties["C_EXTENSIONS"], "c", "gnu")
+	}
+}
+
+// applyProbeBuildProps maps the probe-recovered target properties that carry a
+// real Bazel build-flag effect (linkopts / copts / features) onto tgt:
+// BUILD_RPATH, POSITION_INDEPENDENT_CODE, the C/CXX visibility presets,
+// VISIBILITY_INLINES_HIDDEN, and ENABLE_EXPORTS.
+func applyProbeBuildProps(tgt *ir.Target, p cmakerun.GenexProbe) {
+	// RPATH lifts to linkopts. BUILD_RPATH covers the
+	// build/test-time consumer (relevant under Bazel);
+	// INSTALL_RPATH covers cmake-install consumers (only
+	// affects downstream cmake users). Bazel build typically
+	// wants the BUILD_RPATH semantics.
+	if r := strings.TrimSpace(p.Properties["BUILD_RPATH"]); r != "" {
+		for _, entry := range strings.Split(r, ";") {
+			if entry == "" {
+				continue
+			}
+			tgt.LinkOpts = append(tgt.LinkOpts, "-Wl,-rpath,"+entry)
+		}
+	}
+	// POSITION_INDEPENDENT_CODE = TRUE → features=["pic"].
+	//
+	// FALSE/unset emits NOTHING — deliberately. In cmake this property
+	// only ever ADDS -fPIC (libs) / -fPIE (executables) when TRUE; it
+	// never adds -fno-PIC/-fno-PIE for FALSE, so a FALSE/unset target
+	// just inherits the compiler's default (PIE on modern toolchains).
+	// Emitting features=["-pic"] there actively DISABLES pic, producing
+	// non-PIC objects that then can't link into Bazel's PIE binaries /
+	// shared libs (ld: "relocation R_X86_64_PC32 ... recompile with
+	// -fPIC"). Letting Bazel's toolchain default govern matches cmake's
+	// actual behavior and links cleanly. (Found via the brotli build
+	// lens: its `brotli` tool leaves PIC unset, only the libs set it.)
+	if v := strings.TrimSpace(p.Properties["POSITION_INDEPENDENT_CODE"]); v != "" && cmakeTruthy(v) {
+		if !stringSliceContains(tgt.Features, "pic") {
+			tgt.Features = append(tgt.Features, "pic")
+		}
+	}
+	// Visibility presets — gcc/clang -fvisibility=<value>.
+	// CXX and C variants typically agree; emit each
+	// separately if cmake records different values.
+	for _, key := range []string{"CXX_VISIBILITY_PRESET", "C_VISIBILITY_PRESET"} {
+		if v := strings.TrimSpace(p.Properties[key]); v != "" {
+			flag := "-fvisibility=" + v
+			if !stringSliceContains(tgt.Copts, flag) {
+				tgt.Copts = append(tgt.Copts, flag)
+			}
+		}
+	}
+	// VISIBILITY_INLINES_HIDDEN: common modern-cmake idiom
+	// (set in projects that follow the GenerateExportHeader
+	// recipe). Maps to -fvisibility-inlines-hidden copt.
+	if cmakeTruthy(p.Properties["VISIBILITY_INLINES_HIDDEN"]) {
+		flag := "-fvisibility-inlines-hidden"
+		if !stringSliceContains(tgt.Copts, flag) {
+			tgt.Copts = append(tgt.Copts, flag)
+		}
+	}
+	// ENABLE_EXPORTS (executables / shared libs that export
+	// their symbols so dynamically-loaded plugins can resolve
+	// against them). cmake implements this by adding the
+	// platform's export-dynamic linker flag — `-rdynamic`
+	// (a.k.a. `-Wl,--export-dynamic`) on GNU/Clang ld. That IS
+	// a native Bazel concept: a linkopts entry. Emit it so the
+	// converted binary actually exports its dynamic symbol
+	// table, instead of only tagging the gap for the operator
+	// to wire by hand. The tag is kept alongside for
+	// auditability (so the bazel-idiom pass and operators can
+	// still see the cmake-side intent), but the flag now
+	// carries the real effect.
+	//
+	// Scope: GNU/Clang-style flag. The structural probe doesn't
+	// record the target platform's linker family here, so we
+	// emit the GNU/Clang spelling — correct for the Linux/macOS
+	// (ld/lld) toolchains this converter targets; an MSVC-link
+	// toolchain ignores `-rdynamic` (it's not the right spelling
+	// there, but cmake's ENABLE_EXPORTS is also a no-op for the
+	// MSVC import-lib model, so emitting nothing harmful).
+	if cmakeTruthy(p.Properties["ENABLE_EXPORTS"]) {
+		const exportDynamic = "-rdynamic"
+		if !stringSliceContains(tgt.LinkOpts, exportDynamic) {
+			tgt.LinkOpts = append(tgt.LinkOpts, exportDynamic)
+		}
+		tag := "cmake-codegen-enable-exports"
+		if !stringSliceContains(tgt.Tags, tag) {
+			tgt.Tags = append(tgt.Tags, tag)
+		}
+	}
+}
+
+// applyProbeTagProps maps the probe-recovered target properties that have no
+// native Bazel build-flag equivalent onto tgt as audit tags (so the bazel-idiom
+// pass and operators see the cmake-side intent): SOVERSION/VERSION, the Qt
+// AUTO* toggles, EXCLUDE_FROM_ALL (also → tags=["manual"]), MSVC_RUNTIME_LIBRARY,
+// and the JOB_POOL_* routing.
+func applyProbeTagProps(tgt *ir.Target, p cmakerun.GenexProbe) {
+	// SOVERSION / VERSION (shared library naming). Bazel
+	// cc_library has no version-suffix attribute; surface
+	// as tags so operators see the cmake-side intent.
+	if v := strings.TrimSpace(p.Properties["SOVERSION"]); v != "" {
+		tag := "cmake-codegen-soversion=" + v
+		if !stringSliceContains(tgt.Tags, tag) {
+			tgt.Tags = append(tgt.Tags, tag)
+		}
+	}
+	if v := strings.TrimSpace(p.Properties["VERSION"]); v != "" {
+		tag := "cmake-codegen-version=" + v
+		if !stringSliceContains(tgt.Tags, tag) {
+			tgt.Tags = append(tgt.Tags, tag)
+		}
+	}
+	// Qt's auto-source-generation toggles (AUTOMOC / AUTOUIC /
+	// AUTORCC). cmake's generator runs moc / uic / rcc as
+	// part of `cmake --build`; outside cmake (i.e. under
+	// Bazel) those don't fire, so any target with these
+	// enabled MISSES the Qt-generated sources at compile
+	// time. Surface as tags so operators see the gap and
+	// route via a kind:bazel override that wraps moc / uic /
+	// rcc as host-tool genrules. Bazel cc_library has no
+	// native AUTOMOC equivalent.
+	for _, qt := range []string{"AUTOMOC", "AUTOUIC", "AUTORCC"} {
+		if cmakeTruthy(p.Properties[qt]) {
+			tag := "cmake-codegen-qt-" + strings.ToLower(qt)
+			if !stringSliceContains(tgt.Tags, tag) {
+				tgt.Tags = append(tgt.Tags, tag)
+			}
+		}
+	}
+	// EXCLUDE_FROM_ALL — cmake skips this target when
+	// building the default ALL target. Bazel's closest
+	// match is `tags = ["manual"]`, which excludes the
+	// target from `bazel build //...` wildcard expansion.
+	if cmakeTruthy(p.Properties["EXCLUDE_FROM_ALL"]) {
+		if !stringSliceContains(tgt.Tags, "manual") {
+			tgt.Tags = append(tgt.Tags, "manual")
+		}
+		if !stringSliceContains(tgt.Tags, "cmake-codegen-exclude-from-all") {
+			tgt.Tags = append(tgt.Tags, "cmake-codegen-exclude-from-all")
+		}
+	}
+	// MSVC_RUNTIME_LIBRARY — Windows-only runtime selection
+	// (MultiThreaded vs MultiThreadedDLL, with/without
+	// Debug). Bazel cc_library has no direct attribute;
+	// the operator's cc_toolchain feature owns the actual
+	// /MT vs /MD flag. Surface as tag.
+	if v := strings.TrimSpace(p.Properties["MSVC_RUNTIME_LIBRARY"]); v != "" {
+		tag := "cmake-codegen-msvc-runtime=" + v
+		if !stringSliceContains(tgt.Tags, tag) {
+			tgt.Tags = append(tgt.Tags, tag)
+		}
+	}
+	// JOB_POOL_COMPILE / JOB_POOL_LINK — ninja-specific
+	// job-pool routing for compile/link actions. Bazel's
+	// closest analog is `exec_properties = {"pool": "..."}`
+	// under remote execution. Surface as tag so operators
+	// see the cmake-side intent.
+	for _, jp := range []string{"JOB_POOL_COMPILE", "JOB_POOL_LINK"} {
+		if v := strings.TrimSpace(p.Properties[jp]); v != "" {
+			tag := "cmake-codegen-" + strings.ReplaceAll(strings.ToLower(jp), "_", "-") + "=" + v
+			if !stringSliceContains(tgt.Tags, tag) {
+				tgt.Tags = append(tgt.Tags, tag)
+			}
+		}
 	}
 }
 
