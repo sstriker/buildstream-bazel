@@ -99,110 +99,108 @@ type Partition struct {
 // but Project on single-config returns no useful split (every
 // fact lands in baseline), so callers should gate on
 // len(configs) > 1.
-func Project(byConfig map[string]map[string]fileapi.Target, configs []string) []TargetFold {
-	// Pre-compute per-target fact tables, keyed (factName → cell → true).
-	type tables struct {
-		defines  map[string]map[string]bool
-		includes map[string]map[string]bool
-		link     map[string]map[string]bool
-		compile  map[string]map[string]bool
-		sources  map[string]map[string]bool
-		deps     map[string]map[string]bool
+// configTables holds one target's per-fact tables, each keyed
+// (factValue → configName → present), accumulated across configs by
+// recordConfigTarget and then partitioned into baseline + per-config deltas.
+type configTables struct {
+	defines  map[string]map[string]bool
+	includes map[string]map[string]bool
+	link     map[string]map[string]bool
+	compile  map[string]map[string]bool
+	sources  map[string]map[string]bool
+	deps     map[string]map[string]bool
+}
+
+func newConfigTables() *configTables {
+	return &configTables{
+		defines:  map[string]map[string]bool{},
+		includes: map[string]map[string]bool{},
+		link:     map[string]map[string]bool{},
+		compile:  map[string]map[string]bool{},
+		sources:  map[string]map[string]bool{},
+		deps:     map[string]map[string]bool{},
 	}
-	perTarget := map[string]*tables{}
+}
+
+// mark records that fact `value` is present under `cfgName` in table m.
+func mark(m map[string]map[string]bool, value, cfgName string) {
+	if m[value] == nil {
+		m[value] = map[string]bool{}
+	}
+	m[value][cfgName] = true
+}
+
+// recordConfigTarget folds one config's view of a target (t, seen under
+// cfgName) into tbl: its non-generated sources, codemodel dependencies, the
+// per-compile-group defines / includes / tokenised compile flags, and the
+// tokenised link fragments.
+func recordConfigTarget(tbl *configTables, t fileapi.Target, cfgName string) {
+	// Per-config sources. Skip generated sources (cmake records `<gen>` flag on
+	// sources from configure_file / add_custom_command outputs; those are
+	// handled by the genrule lift, not the per-config srcs fold).
+	for _, src := range t.Sources {
+		if src.IsGenerated {
+			continue
+		}
+		mark(tbl.sources, src.Path, cfgName)
+	}
+	// Per-config codemodel dependencies (target IDs the lower path later
+	// resolves to Bazel labels).
+	for _, d := range t.Dependencies {
+		mark(tbl.deps, d.Id, cfgName)
+	}
+	for _, cg := range t.CompileGroups {
+		for _, def := range cg.Defines {
+			mark(tbl.defines, def.Define, cfgName)
+		}
+		for _, inc := range cg.Includes {
+			mark(tbl.includes, inc.Path, cfgName)
+		}
+		for _, frag := range cg.CompileCommandFragments {
+			// cmake's File API serialises compile flags as ONE
+			// whitespace-joined fragment per compile group (the verbatim
+			// `CMAKE_CXX_FLAGS_<CFG>` + per-target value). Tokenise on
+			// whitespace so each flag lands as its own select() arm element —
+			// Bazel passes each list entry as a separate argv to gcc; without
+			// this split gcc receives the entire string as one (invalid) flag.
+			//
+			// Disambiguate same-string fragments across languages — a `-O2`
+			// under C compiles differently from a `-O2` under CXX in practice,
+			// so partition per (language, token).
+			for _, tok := range strings.Fields(frag.Fragment) {
+				mark(tbl.compile, cg.Language+"|"+tok, cfgName)
+			}
+		}
+	}
+	if t.Link != nil {
+		for _, frag := range t.Link.CommandFragments {
+			// Same tokenisation as compile fragments. The "flags" role
+			// typically carries multiple `-Wl,...` joined; "libraries" /
+			// "libraryPath" / "frameworkPath" are usually single tokens
+			// already so Fields is a no-op for those.
+			for _, tok := range strings.Fields(frag.Fragment) {
+				mark(tbl.link, frag.Role+"|"+tok, cfgName)
+			}
+		}
+	}
+}
+
+func Project(byConfig map[string]map[string]fileapi.Target, configs []string) []TargetFold {
+	// Accumulate per-target fact tables across every (config, target) cell.
+	perTarget := map[string]*configTables{}
 	targetNames := map[string]string{} // id → display name
 
 	for id, byCell := range byConfig {
 		for cfgName, t := range byCell {
 			tbl, ok := perTarget[id]
 			if !ok {
-				tbl = &tables{
-					defines:  map[string]map[string]bool{},
-					includes: map[string]map[string]bool{},
-					link:     map[string]map[string]bool{},
-					compile:  map[string]map[string]bool{},
-					sources:  map[string]map[string]bool{},
-					deps:     map[string]map[string]bool{},
-				}
+				tbl = newConfigTables()
 				perTarget[id] = tbl
 			}
 			if t.Name != "" {
 				targetNames[id] = t.Name
 			}
-			// Per-config sources. Skip generated sources (cmake
-			// records `<gen>` flag on sources from configure_file
-			// / add_custom_command outputs; those are handled by
-			// the genrule lift, not the per-config srcs fold).
-			for _, src := range t.Sources {
-				if src.IsGenerated {
-					continue
-				}
-				if tbl.sources[src.Path] == nil {
-					tbl.sources[src.Path] = map[string]bool{}
-				}
-				tbl.sources[src.Path][cfgName] = true
-			}
-			// Per-config codemodel dependencies (target IDs that
-			// the lower path will later resolve to Bazel labels).
-			for _, d := range t.Dependencies {
-				if tbl.deps[d.Id] == nil {
-					tbl.deps[d.Id] = map[string]bool{}
-				}
-				tbl.deps[d.Id][cfgName] = true
-			}
-			for _, cg := range t.CompileGroups {
-				for _, def := range cg.Defines {
-					if tbl.defines[def.Define] == nil {
-						tbl.defines[def.Define] = map[string]bool{}
-					}
-					tbl.defines[def.Define][cfgName] = true
-				}
-				for _, inc := range cg.Includes {
-					if tbl.includes[inc.Path] == nil {
-						tbl.includes[inc.Path] = map[string]bool{}
-					}
-					tbl.includes[inc.Path][cfgName] = true
-				}
-				for _, frag := range cg.CompileCommandFragments {
-					// cmake's File API serialises compile flags as
-					// ONE whitespace-joined fragment per compile
-					// group (the verbatim `CMAKE_CXX_FLAGS_<CFG>`
-					// + per-target value). Tokenise on whitespace
-					// so each flag lands as its own select() arm
-					// element — Bazel passes each list entry as
-					// a separate argv to gcc; without this split
-					// gcc receives the entire string as one
-					// (invalid) flag.
-					//
-					// Disambiguate same-string fragments across
-					// languages — a `-O2` under C compiles
-					// differently from a `-O2` under CXX in
-					// practice, so partition per (language, token).
-					for _, tok := range strings.Fields(frag.Fragment) {
-						key := cg.Language + "|" + tok
-						if tbl.compile[key] == nil {
-							tbl.compile[key] = map[string]bool{}
-						}
-						tbl.compile[key][cfgName] = true
-					}
-				}
-			}
-			if t.Link != nil {
-				for _, frag := range t.Link.CommandFragments {
-					// Same tokenisation as compile fragments. The
-					// "flags" role typically carries multiple
-					// `-Wl,...` joined; "libraries" / "libraryPath"
-					// / "frameworkPath" are usually single tokens
-					// already so Fields is a no-op for those.
-					for _, tok := range strings.Fields(frag.Fragment) {
-						key := frag.Role + "|" + tok
-						if tbl.link[key] == nil {
-							tbl.link[key] = map[string]bool{}
-						}
-						tbl.link[key][cfgName] = true
-					}
-				}
-			}
+			recordConfigTarget(tbl, t, cfgName)
 		}
 	}
 
