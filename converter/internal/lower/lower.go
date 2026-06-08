@@ -665,7 +665,7 @@ func wireDefineDrivenGeneratedHeaders(pkg *ir.Package) {
 		Kind:       ir.KindCCLibrary,
 		Hdrs:       hdrs,
 		Includes:   includes, // propagate -I<dir> so the BASENAME include resolves
-		Visibility: []string{"//visibility:public"},
+		Visibility: publicVisibility(),
 		Tags:       []string{"cmake-define-driven-generated-headers"},
 	})
 	for i := range pkg.Targets {
@@ -3791,7 +3791,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	}
 
 	if t.Install != nil && len(t.Install.Destinations) > 0 {
-		irt.Visibility = []string{"//visibility:public"}
+		irt.Visibility = publicVisibility()
 		irt.InstallDest = t.Install.Destinations[0].Path
 	}
 
@@ -5296,7 +5296,7 @@ func partitionFortranSources(pkg *ir.Package) {
 			Name:       t.Name + "_fortran_srcs",
 			Kind:       ir.KindFilegroup,
 			Srcs:       ftn,
-			Visibility: []string{"//visibility:public"},
+			Visibility: publicVisibility(),
 			Tags:       []string{"cmake-codegen-fortran-target"},
 		}
 		added = append(added, fg)
@@ -5795,6 +5795,12 @@ func cmakeTruthy(v string) bool {
 	}
 	return false
 }
+
+// publicVisibility returns the visibility list for a target that must be
+// reachable cross-package (synthesized install / import / interface targets,
+// install-derived targets). Centralizes the `//visibility:public` convention;
+// returns a fresh slice so callers can't alias a shared one.
+func publicVisibility() []string { return []string{"//visibility:public"} }
 
 // isAddDependenciesEdge reports whether a TargetDependency came
 // from an `add_dependencies(target dep)` call rather than a

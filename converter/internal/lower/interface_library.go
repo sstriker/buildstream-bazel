@@ -383,7 +383,7 @@ func lowerInterfaceLibraries(
 			Defines:     defines,
 			Deps:        filtered,
 			RootInclude: rootWalkByTarget[call.Name],
-			Visibility:  []string{"//visibility:public"},
+			Visibility:  publicVisibility(),
 			Tags:        []string{"cmake-codegen-interface-library-from-trace"},
 		}
 		out = append(out, tgt)
@@ -422,7 +422,7 @@ func evalNestedBoolGenex(s string) (string, bool) {
 			return "", false
 		}
 		body = body[:len(body)-1]
-		if isBoolTrue(val) {
+		if cmakeTruthy(val) {
 			return body, true
 		}
 		return "", true
@@ -439,7 +439,7 @@ func evalNestedBoolGenex(s string) (string, bool) {
 			return "", false
 		}
 		body = body[:len(body)-1]
-		if isBoolTrue(val) {
+		if cmakeTruthy(val) {
 			return "", true
 		}
 		return body, true
@@ -452,18 +452,6 @@ func stripPrefix(s, prefix string) (string, bool) {
 		return s[len(prefix):], true
 	}
 	return "", false
-}
-
-// isBoolTrue mirrors cmake's BOOL coercion: case-insensitive
-// "1", "ON", "YES", "TRUE", "Y" → true; anything else → false.
-// cmake's actual rules cover more strings (any non-zero number,
-// etc.) but the common cases the genex shape carries are limited.
-func isBoolTrue(s string) bool {
-	switch strings.ToUpper(strings.TrimSpace(s)) {
-	case "1", "ON", "YES", "TRUE", "Y":
-		return true
-	}
-	return false
 }
 
 // dedupSlice returns a copy of vs with duplicate entries removed

@@ -199,7 +199,7 @@ func lowerDirectoryInstallers(r *fileapi.Reply, emitConfig bool) []ir.Target {
 			// as the prefix attribute so consumers reconstruct the
 			// install layout.
 			PkgPrefix:  b.dest,
-			Visibility: []string{"//visibility:public"},
+			Visibility: publicVisibility(),
 		}
 		if b.kind == "file" {
 			// install(FILES ... RENAME <to>): the File API records the

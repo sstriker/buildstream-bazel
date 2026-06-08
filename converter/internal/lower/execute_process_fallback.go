@@ -151,7 +151,7 @@ func emitFallbackPlaceholder(r *fileapi.Reply, hostSrc, installTarget string) (*
 			// Visibility comes from cmake's INTERFACE
 			// declarations); operators who want native render's
 			// visibility semantics drop the fallback flag.
-			Visibility: []string{"//visibility:public"},
+			Visibility: publicVisibility(),
 		}
 
 		// Use the codemodel's recording-time source root for
