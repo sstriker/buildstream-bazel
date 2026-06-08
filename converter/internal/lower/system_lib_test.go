@@ -42,3 +42,28 @@ func TestSystemLibName(t *testing.T) {
 		}
 	}
 }
+
+func TestLinkLibFlagName(t *testing.T) {
+	cases := []struct {
+		frag string
+		want string
+		ok   bool
+	}{
+		{"-lm", "m", true},
+		{"-lpthread", "pthread", true},
+		{"-ldl", "dl", true},
+		{"-lstdc++", "stdc++", true},
+		// Not the -l<name> shape.
+		{"-pthread", "", false},
+		{"-l", "", false},
+		{"-Wl,--as-needed", "", false},
+		{"libfoo.a", "", false},
+		{"", "", false},
+	}
+	for _, c := range cases {
+		got, ok := linkLibFlagName(c.frag)
+		if got != c.want || ok != c.ok {
+			t.Errorf("linkLibFlagName(%q) = (%q, %v), want (%q, %v)", c.frag, got, ok, c.want, c.ok)
+		}
+	}
+}

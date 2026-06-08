@@ -1255,13 +1255,14 @@ The six intent-lens producer-gap themes follow as their own entries
     target surface (the orchestrated graph resolves via exports.json + the
     imports-manifest; this bundle is for EXTERNAL config-mode consumers).
 
-- **System/threading linkopt propagation — extend the host-system-library
-  fallback (25× high).** Extends "Make the host-system-library fallback
-  EXPLICIT" (above, the `systemLibName` sites): the lens shows `-lm`
-  (`brotli`, `libpng`, `libxml2`), `-ldl` (`libxml2`, `llvm`), and `-lpthread`
-  (`googletest`, `spdlog`, `zstd`, `grpc`, `llvm`'s `${LLVM_PTHREAD_LIB}`)
-  still dropped — the link fragment either isn't attributed or `systemLibName`
-  doesn't cover it. Same entry also covers two adjacent flag drops: build-type
+- **Two adjacent flag drops from the system/threading-linkopt theme.** The bare
+  system-library link drop that headlined this entry is FIXED: cmake emits bare
+  links (`target_link_libraries(foo m)` → `-lm`, `Threads::Threads` →
+  `-lpthread`/`-pthread`, `${CMAKE_DL_LIBS}` → `-ldl`) as non-absolute
+  `libraries`-role command fragments, which the lower dropped as in-codebase
+  target refs; it now routes any `-`-prefixed `libraries` fragment to linkopts
+  (with the same producer-element precedence as the absolute `systemLibName`
+  lift). Still open, two flag drops the lens surfaced alongside it: build-type
   -conditional defines hardcoded `1` regardless of `//config` (LLVM's
   `LLVM_ENABLE_ABI_BREAKING_CHECKS` / `LLVM_ENABLE_PLUGINS` / …) and dropped
   `target_compile_features` (googletest's PUBLIC `cxx_std_17`).

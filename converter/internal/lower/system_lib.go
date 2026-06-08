@@ -32,6 +32,22 @@ var systemLibPrefixes = []string{
 	"/usr/local/lib64/",
 }
 
+// linkLibFlagName extracts `<name>` from a `-l<name>` link flag, e.g.
+// `-lpthread` → "pthread", `-lm` → "m". Returns ("", false) for anything
+// that isn't the `-l<name>` shape — an empty name (`-l`) or a different
+// link flag (`-pthread`, `-Wl,...`, `-framework`). Used to route bare
+// system-library links that cmake emits as `libraries`-role command
+// fragments (target_link_libraries(foo m), Threads::Threads,
+// ${CMAKE_DL_LIBS}) through the same producer-element precedence the
+// absolute-path system-lib lift uses.
+func linkLibFlagName(frag string) (string, bool) {
+	name, ok := strings.CutPrefix(frag, "-l")
+	if !ok || name == "" {
+		return "", false
+	}
+	return name, true
+}
+
 // systemLibName returns the library name (the `<name>` in
 // `lib<name>.so*` / `lib<name>.a`) when `path` points at a system-
 // resident library that the linker can resolve via its default
