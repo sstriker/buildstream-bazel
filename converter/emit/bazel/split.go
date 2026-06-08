@@ -1600,7 +1600,8 @@ func rewriteDeps(deps []string, plan *splitPlan, extra []string) []string {
 }
 
 // crossPkgLabel returns the cross-package label `//<pkg>:<name>` for an
-// element-root-relative directory dir and a target/file name. dir == ""
+// element-root-relative directory dir and a target name or package-relative
+// file path (callers pass a relUnder result for files). dir == ""
 // resolves to the element's root package. This is the single chokepoint for
 // cross-package label formation; the named wrappers below delegate to it so
 // the package-path computation lives in one place.
@@ -1627,9 +1628,10 @@ func (p *splitPlan) bazelRoot() string { return p.base }
 // call.)
 func (p *splitPlan) setBase(b string) { p.base = b }
 
-// recordExportedFile notes that file (a basename in package dir) must be
-// reachable cross-package, so the owning package emits it in exports_files().
-// Single chokepoint for the per-package collection the rewrite paths feed.
+// recordExportedFile notes that file (a package-relative path within dir —
+// from relUnder, so it may include subdirectories) must be reachable
+// cross-package, so the owning package emits it in exports_files(). Single
+// chokepoint for the per-package collection the rewrite paths feed.
 func recordExportedFile(exportsByDir map[string]map[string]struct{}, dir, file string) {
 	if exportsByDir[dir] == nil {
 		exportsByDir[dir] = map[string]struct{}{}
