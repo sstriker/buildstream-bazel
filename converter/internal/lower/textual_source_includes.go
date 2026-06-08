@@ -20,7 +20,7 @@ import (
 // converter's include handling — not a full preprocessor.
 var quoteIncludeRe = regexp.MustCompile(`(?m)^[ \t]*#[ \t]*include[ \t]*"([^"]+)"`)
 
-// ccSourceExts are the compiled-source extensions whose presence in a
+// CCSourceExts are the compiled-source extensions whose presence in a
 // quote-include marks a "textually include a compiled source to intercept its
 // internals" idiom (fmt's posix-mock-test does `#include "../src/os.cc"`;
 // OpenBLAS's GenerateNamedObjects wrappers do `#include "kernel/x86_64/amax_sse.S"`).
@@ -29,7 +29,11 @@ var quoteIncludeRe = regexp.MustCompile(`(?m)^[ \t]*#[ \t]*include[ \t]*"([^"]+)
 // compiled standalone, duplicating its symbols), so the caller routes it to a
 // textual_hdrs slot instead. Keys are lowercase; callers lowercase the ext
 // before lookup (so preprocessed-assembly `.S` matches `.s`).
-var ccSourceExts = map[string]bool{
+//
+// Exported so the split-emit side's compiledSourceExts can be drift-guarded
+// against it — the two must stay reconciled (see bazel's
+// TestCompiledSourceExtsMatchesLowering).
+var CCSourceExts = map[string]bool{
 	".cc": true, ".cpp": true, ".cxx": true, ".c++": true, ".c": true,
 	".cu": true, ".cl": true, ".cppm": true, ".ixx": true,
 	".s": true, ".sx": true, ".asm": true,
@@ -76,7 +80,7 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) []string {
 		dir := filepath.Dir(s)
 		for _, m := range quoteIncludeRe.FindAllSubmatch(data, -1) {
 			inc := string(m[1])
-			if !ccSourceExts[strings.ToLower(filepath.Ext(inc))] {
+			if !CCSourceExts[strings.ToLower(filepath.Ext(inc))] {
 				continue
 			}
 			// An absolute include ("/usr/...", "C:\\...") is non-portable and
@@ -232,7 +236,7 @@ func textualIncludeClosure(hostSrc string, seeds []string, compiled map[string]b
 		dir := filepath.Dir(cur)
 		for _, m := range quoteIncludeRe.FindAllSubmatch(data, -1) {
 			inc := string(m[1])
-			if !ccSourceExts[strings.ToLower(filepath.Ext(inc))] {
+			if !CCSourceExts[strings.ToLower(filepath.Ext(inc))] {
 				continue
 			}
 			if strings.HasPrefix(inc, "/") || filepath.IsAbs(inc) {

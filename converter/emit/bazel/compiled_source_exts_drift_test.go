@@ -1,40 +1,84 @@
 package bazel
 
-import "testing"
+import (
+	"testing"
 
-// TestCompiledSourceExtsDriftGuard pins compiledSourceExts and documents its
-// intended relationship to lower.ccSourceExts (the lowering-side compiled-source
-// classifier). The two sets must agree on which extensions name a compiled
-// translation unit: a file recognized as a TU in lowering but not in split-emit
-// (or vice versa) gets classified inconsistently between the two passes. They
-// are intentionally NOT auto-derived from each other (separate packages,
-// separate concerns), so this guard and its twin in converter/internal/lower
-// (TestCCSourceExtsDriftGuard) make both sets load-bearing under test: editing
-// either one trips its guard, forcing whoever changes it to reconcile the pair.
+	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
+)
+
+// compiledSourceExtsLowerOnly lists extensions intentionally present in
+// lowering's lower.CCSourceExts but deliberately absent from split-emit's
+// compiledSourceExts. Every divergence between the two compiled-source sets must
+// be enumerated here with a rationale — TestCompiledSourceExtsMatchesLowering
+// fails on any un-enumerated difference, so adding an extension to one set
+// forces either adding it to the other or justifying the asymmetry here.
 //
-// Known, intentional deltas vs lower.ccSourceExts (update here AND in the lower
-// guard if these change):
-//   - compiledSourceExts handles ".S" case-insensitively in split.go rather than
-//     listing it (a capital-S asm is preprocessed then assembled).
-//   - compiledSourceExts omits ".sx", which lower.ccSourceExts carries. This is
-//     a pre-existing divergence flagged for review (PR description): if a project
-//     ships .sx translation units, split-emit would not recognize them as
-//     compiled sources. The guard pins the current behavior; reconcile the two
-//     sets if the omission turns out to be unintentional.
-func TestCompiledSourceExtsDriftGuard(t *testing.T) {
-	want := map[string]bool{
-		".c": true, ".cc": true, ".cpp": true, ".cxx": true, ".c++": true,
-		".cu": true, ".cl": true, ".cppm": true, ".ixx": true,
-		".s": true, ".asm": true,
+//   - ".sx": a preprocessed-assembly TU lowering recognizes (CCSourceExts) but
+//     split-emit's compiledSourceExts currently omits. PRE-EXISTING divergence,
+//     flagged for review (PR #506): if a project ships .sx TUs, split-emit won't
+//     classify them as compiled. Remove this entry once the sets are reconciled.
+var compiledSourceExtsLowerOnly = map[string]bool{
+	".sx": true,
+}
+
+// TestCompiledSourceExtsMatchesLowering is the real drift guard: it mechanically
+// enforces that split-emit's compiledSourceExts equals lowering's
+// lower.CCSourceExts minus the enumerated, justified deltas. Unlike a per-set
+// content pin, this fails whenever the two sets diverge in an un-enumerated way —
+// so a future edit to either set (in either package) that isn't mirrored in the
+// other trips the test.
+func TestCompiledSourceExtsMatchesLowering(t *testing.T) {
+	want := map[string]bool{}
+	for e := range lower.CCSourceExts {
+		if !compiledSourceExtsLowerOnly[e] {
+			want[e] = true
+		}
 	}
 	for e := range want {
 		if !compiledSourceExts[e] {
-			t.Errorf("compiledSourceExts is missing %q — reconcile with lower.ccSourceExts and update this guard", e)
+			t.Errorf("compiledSourceExts is missing %q (present in lower.CCSourceExts and not listed as a known delta) — add it to compiledSourceExts or to compiledSourceExtsLowerOnly with a rationale", e)
 		}
 	}
 	for e := range compiledSourceExts {
 		if !want[e] {
-			t.Errorf("compiledSourceExts gained unexpected %q — reconcile with lower.ccSourceExts and update this guard", e)
+			t.Errorf("compiledSourceExts has %q not in lower.CCSourceExts — add it to lower.CCSourceExts or reconcile the two sets", e)
+		}
+	}
+	// Guard the delta list itself: every lower-only ext must actually be in
+	// lowering's set (else the entry is stale) and must NOT be in compiledSourceExts.
+	for e := range compiledSourceExtsLowerOnly {
+		if !lower.CCSourceExts[e] {
+			t.Errorf("compiledSourceExtsLowerOnly lists %q but it's not in lower.CCSourceExts — remove the stale delta entry", e)
+		}
+		if compiledSourceExts[e] {
+			t.Errorf("compiledSourceExtsLowerOnly lists %q but compiledSourceExts also has it — the sets no longer diverge here; drop the delta entry", e)
+		}
+	}
+}
+
+// TestIsCompiledSourceExtBehavior makes the documented classifier behavior
+// load-bearing: isCompiledSourceExt drives whether a generated TU is excluded
+// from a synthesized header library, so the case-insensitive ".S" handling and
+// the ".sx" omission must hold (this catches regressions like dropping the
+// strings.ToLower normalization).
+func TestIsCompiledSourceExtBehavior(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"foo.cpp", true},
+		{"foo.c", true},
+		{"foo.asm", true},
+		{"foo.s", true},
+		{"kernel/amax.S", true}, // capital-S asm: matched case-insensitively
+		{"foo.sx", false},       // intentionally not recognized (see lower-only delta)
+		{"foo.h", false},        // header, not a compiled TU
+		{"foo.hpp", false},      // header
+		{"noext", false},        // no extension
+	}
+	for _, c := range cases {
+		if got := isCompiledSourceExt(c.path); got != c.want {
+			t.Errorf("isCompiledSourceExt(%q) = %v, want %v", c.path, got, c.want)
 		}
 	}
 }
