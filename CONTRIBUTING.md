@@ -53,6 +53,20 @@ scripts/meta-autotools-multitarget.sh
 If any of step 1–3 prints output other than the green-path
 expected lines, the change isn't ready.
 
+### Optional lenses (not gates)
+
+Two extra targets that aren't part of the fast loop or CI, but are
+worth reaching for situationally:
+
+- `make cover` — coverage profile + annotated `coverage.html`, scoped
+  to packages that have tests. A measurement lens for "what's
+  under-tested?", deliberately **not** a threshold gate (coverage
+  gates are noisy). Run it when you want a map of the gaps.
+- `make test-race` — the unit suite under the race detector. The
+  converter is mostly single-threaded (the only concurrency lives in
+  `internal/cas/fakecas`), so this isn't in the default `test` loop;
+  run it before changes that touch goroutine / channel code.
+
 ## Render gates
 
 Render gates live under `scripts/` as `meta-*.sh`. Each
