@@ -92,13 +92,15 @@ transition cleanly.
   outputs onto the target's hdrs (guard `TestAttachSiblingGeneratedHeaders`).
   General (any `.c`+`.h` codegen pair), not libevent-specific.
 
-  **libevent tests-on:** with the hang + in-source + sibling-header fixes,
-  `EVENT__DISABLE_TESTS=ON` libevent now converts **0-rejection** and builds past
-  the regress codegen (`regress.gen.{c,h}`) under the split lens. Un-scoping the
-  conf is the remaining step, gated on re-validating the FULL regress-tree build
-  (its many test binaries pull in openssl/zlib/threads host libs — the
-  host-system-library wiring), so it's tracked as its own validation rather than
-  flipped here.
+  **libevent tests-on — UN-SCOPED + green.** With the hang + in-source +
+  sibling-header fixes, libevent with its regress tests ENABLED converts
+  0-rejection and `bazel build //...` is green under the split lens (the regress
+  tree's openssl/zlib/threads deps resolved without special host-lib wiring). So
+  `libevent.conf` dropped `EVENT__DISABLE_TESTS=ON` (replaced with
+  `CMAKE_POLICY_VERSION_MINIMUM=3.5` to keep modern-cmake configure of libevent's
+  old `cmake_minimum_required` working); the lens no longer scopes the tests off.
+  Validated: `SURVEY_BAZEL_BUILD=libevent SURVEY_SPLIT_PACKAGES=1 → libevent ok
+  ok` (the residual 5 idiom / 2 todo notes are non-blocking).
 
 - **Green the remaining heavyweight corpus members: vtk (tail), cuda-samples.**
   25/26 are green (protobuf + sdl + vtk + grpc landed). Remaining:
