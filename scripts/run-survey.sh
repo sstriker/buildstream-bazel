@@ -432,6 +432,16 @@ EOF
         _cc_cm="$_bb_po/cc-cmake"
         rm -rf "$_cc_cm"; mkdir -p "$_cc_cm/.cmake/api/v1/query"
         : > "$_cc_cm/.cmake/api/v1/query/codemodel-v2"  # for the link-ORDER check
+        # Match the converter's build type. cmakerun defaults a SINGLE-config
+        # convert to CMAKE_BUILD_TYPE=Release, so the reference cmake must
+        # configure Release too — else a project that declares no default of its
+        # own (OpenBLAS) resolves an EMPTY build type here (no -DNDEBUG / -O*)
+        # while the converted bazel carries the Release flags, a spurious per-TU
+        # drift on EVERY TU (OpenBLAS's 6277-TU NDEBUG delta). A project that DOES
+        # default Release (fmt/spdlog) is unchanged (already Release). Multi-config
+        # members ($_bb_bt set) keep the cache-read alignment below instead — their
+        # convert uses --build-types select() arms, not a single Release.
+        [ -z "$_bb_bt" ] && _cc_defs="$_cc_defs -DCMAKE_BUILD_TYPE=Release"
         # shellcheck disable=SC2086
         if cmake -S "$_bb_src" -B "$_cc_cm" -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON $_cc_defs \
                 >> "$_bb_po/fidelity.log" 2>&1 && [ -f "$_cc_cm/compile_commands.json" ]; then
