@@ -1,0 +1,6 @@
+# Symbol-fidelity lens config for spdlog (7th survey lens, SURVEY_SYMBOL_FIDELITY).
+# Mirrors the Makefile e2e-fidelity-compare-spdlog fixture: compare the converted
+# Bazel libspdlog.a against cmake's libspdlog.a (allowlist auto-picked from
+# testdata/fidelity/spdlog.allowlist.txt).
+SYMFID_TARGET=spdlog
+SYMFID_ARTIFACT=libspdlog.a

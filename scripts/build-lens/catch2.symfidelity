@@ -1,0 +1,9 @@
+# Symbol-fidelity lens config for Catch2 (7th survey lens, SURVEY_SYMBOL_FIDELITY).
+# Mirrors the Makefile e2e-fidelity-compare-catch2 fixture: compare the converted
+# Bazel libCatch2.a against cmake's libCatch2.a. Catch2 generates its version
+# header via configure_file, so the convert needs --lift-configure-file (threaded
+# through SYMFID_CONVERT_FLAGS). Allowlist auto-picked from
+# testdata/fidelity/catch2.allowlist.txt.
+SYMFID_TARGET=Catch2
+SYMFID_ARTIFACT=libCatch2.a
+SYMFID_CONVERT_FLAGS=--lift-configure-file=true

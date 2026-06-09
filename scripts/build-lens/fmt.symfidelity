@@ -1,0 +1,6 @@
+# Symbol-fidelity lens config for fmt (7th survey lens, SURVEY_SYMBOL_FIDELITY).
+# Mirrors the Makefile e2e-fidelity-compare-fmt fixture: compare the converted
+# Bazel libfmt.a against cmake's libfmt.a (allowlist auto-picked from
+# testdata/fidelity/fmt.allowlist.txt).
+SYMFID_TARGET=fmt
+SYMFID_ARTIFACT=libfmt.a
