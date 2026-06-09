@@ -81,9 +81,24 @@ transition cleanly.
   host the `exports_files()`. Validated end-to-end both modes
   (`SURVEY_SPLIT_PACKAGES=0|1 … → insrc 0 0 0 0 ok ok`). Guards:
   `TestInSourceOutputs`, `TestBuildInSourceWorkdirGenrule`,
-  `TestEmit_Split_InSourceWorkdirGenrule_CrossPackageRefs`. With this, libevent's
-  `EVENT__DISABLE_TESTS=ON` lens scoping can come off (its regress codegen now
-  lowers + builds).
+  `TestEmit_Split_InSourceWorkdirGenrule_CrossPackageRefs`.
+
+  **Sibling generated headers — SHIPPED.** A code generator routinely emits a
+  `.c` PLUS a sibling `.h` the `.c` `#include`s by bare same-dir quote (libevent's
+  `regress.gen.c` → `regress.gen.h`), but cmake omits the generated header from
+  the consuming target's source list — so the `.c`'s compile couldn't find it.
+  When a target consumes a generated source, `attachSiblingGeneratedHeaders` now
+  also stages the producing custom-command edge's sibling generated HEADER
+  outputs onto the target's hdrs (guard `TestAttachSiblingGeneratedHeaders`).
+  General (any `.c`+`.h` codegen pair), not libevent-specific.
+
+  **libevent tests-on:** with the hang + in-source + sibling-header fixes,
+  `EVENT__DISABLE_TESTS=ON` libevent now converts **0-rejection** and builds past
+  the regress codegen (`regress.gen.{c,h}`) under the split lens. Un-scoping the
+  conf is the remaining step, gated on re-validating the FULL regress-tree build
+  (its many test binaries pull in openssl/zlib/threads host libs — the
+  host-system-library wiring), so it's tracked as its own validation rather than
+  flipped here.
 
 - **Green the remaining heavyweight corpus members: vtk (tail), cuda-samples.**
   25/26 are green (protobuf + sdl + vtk + grpc landed). Remaining:
