@@ -43,9 +43,16 @@ var quoteIncludeRe = regexp.MustCompile(`(?m)^[ \t]*#[ \t]*include[ \t]*"([^"]+)
 // that escapes the element root (".." after cleaning) or names a file the
 // target already compiles, or one absent on disk, is skipped — only a real,
 // in-tree, not-otherwise-compiled source qualifies.
-func findTextualSourceIncludes(hostSrc string, srcs []string) []string {
+// Also returns `readers`: the element-root-relative INCLUDER sources whose
+// bytes yielded ≥1 kept textual include — i.e. the source files whose CONTENT
+// determined the result (the includer's `#include "x.cc"` line). The included
+// file itself is only os.Stat'd (existence) by resolveTextualInclude, so its
+// bytes don't affect the output and it is NOT a reader. readers is the declared
+// source-byte-read set this scan contributes (see ir.Package.SourceByteReads):
+// the source-narrowing lens keeps these real so the detection stays stable.
+func findTextualSourceIncludes(hostSrc string, srcs []string) (includes, readers []string) {
 	if hostSrc == "" || len(srcs) == 0 {
-		return nil
+		return nil, nil
 	}
 	compiled := make(map[string]bool, len(srcs))
 	for _, s := range srcs {
@@ -53,6 +60,7 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) []string {
 	}
 	seen := map[string]bool{}
 	var out []string
+	var read []string
 	for _, s := range srcs {
 		data, err := os.ReadFile(filepath.Join(hostSrc, filepath.FromSlash(s)))
 		if err != nil {
@@ -61,6 +69,7 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) []string {
 			continue
 		}
 		dir := filepath.Dir(s)
+		hit := false
 		for _, m := range quoteIncludeRe.FindAllSubmatch(data, -1) {
 			inc := string(m[1])
 			if !cclang.IsCompiledSource(inc) {
@@ -75,15 +84,23 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) []string {
 				continue
 			}
 			rel := resolveTextualInclude(hostSrc, dir, inc, s, compiled)
-			if rel == "" || seen[rel] {
+			if rel == "" {
+				continue
+			}
+			hit = true
+			if seen[rel] {
 				continue
 			}
 			seen[rel] = true
 			out = append(out, rel)
 		}
+		if hit {
+			read = append(read, filepath.ToSlash(filepath.Clean(s)))
+		}
 	}
 	sort.Strings(out)
-	return out
+	sort.Strings(read)
+	return out, read
 }
 
 // resolveTextualInclude resolves a quote-include `inc` (a compiled-source path)
@@ -152,10 +169,14 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 		default:
 			continue
 		}
-		incs := findTextualSourceIncludes(hostSrc, t.Srcs)
+		incs, readers := findTextualSourceIncludes(hostSrc, t.Srcs)
 		if len(incs) == 0 {
 			continue
 		}
+		// Publish the includer sources whose bytes drove this detection, so the
+		// source-narrowing lens keeps them real (the declared exception to the
+		// no-source-read rule). See ir.Package.SourceByteReads.
+		pkg.SourceByteReads = append(pkg.SourceByteReads, readers...)
 		lib := attachTextualSourceIncludes(pkg, t, incs, "cmake-codegen-textual-source-include", &synth, uniqueName)
 		if lib == "" {
 			inlineRecs = append(inlineRecs, rec{target: t.Name, srcs: incs})
@@ -196,8 +217,15 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 // just the first hop — must be staged. Returns the closure (seeds included),
 // sorted, excluding any path in `compiled` (a source the target builds
 // standalone) and any absent/escaping path. hostSrc must be on disk.
-func textualIncludeClosure(hostSrc string, seeds []string, compiled map[string]bool) []string {
+// Also returns `readers`: the closure files whose bytes yielded ≥1 further
+// textual include — i.e. the files whose CONTENT shaped the closure (a leaf,
+// read but with no resolving include, is part of the result by virtue of its
+// parent's include line + its own existence, not its bytes, so it is NOT a
+// reader). readers is the declared source-byte-read set this closure
+// contributes (see ir.Package.SourceByteReads).
+func textualIncludeClosure(hostSrc string, seeds []string, compiled map[string]bool) (closure, readers []string) {
 	result := map[string]bool{}
+	read := map[string]bool{}
 	var work []string
 	push := func(rel string) {
 		if rel == "" || result[rel] || compiled[rel] {
@@ -225,11 +253,15 @@ func textualIncludeClosure(hostSrc string, seeds []string, compiled map[string]b
 			if strings.HasPrefix(inc, "/") || filepath.IsAbs(inc) {
 				continue
 			}
-			push(resolveTextualInclude(hostSrc, dir, inc, cur, compiled))
+			rel := resolveTextualInclude(hostSrc, dir, inc, cur, compiled)
+			if rel == "" {
+				continue
+			}
+			read[cur] = true // cur's bytes resolved ≥1 child → output-affecting
+			push(rel)
 		}
 	}
-	out := sliceutil.SortedKeys(result)
-	return out
+	return sliceutil.SortedKeys(result), sliceutil.SortedKeys(read)
 }
 
 // targetNamer returns a closure that yields collision-free target names within

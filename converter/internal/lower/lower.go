@@ -2110,6 +2110,15 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// above (it can also feed textual_hdrs onto the same cc_library).
 	stageGeneratedSourceRootIncludes(pkg, hostSrc, opts.BazelPackagePath, hostSrcOnDisk, opts.Warnings)
 
+	// Dedup/sort the declared source-byte reads the two passes above
+	// published — the few SOURCE files whose bytes shaped the BUILD (fused-
+	// source includers + generated-source-include closure). Published via
+	// --out-source-reads for the source-narrowing lens. See
+	// ir.Package.SourceByteReads.
+	if len(pkg.SourceByteReads) > 0 {
+		pkg.SourceByteReads = sliceutil.SortedUnique(pkg.SourceByteReads)
+	}
+
 	return pkg, nil
 }
 

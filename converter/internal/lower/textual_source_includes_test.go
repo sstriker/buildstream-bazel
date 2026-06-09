@@ -37,10 +37,17 @@ func TestFindTextualSourceIncludes(t *testing.T) {
 	write("test/util.cc", "#include \"../../outside/x.cc\"\n")
 
 	srcs := []string{"test/posix-mock-test.cc", "src/format.cc", "test/util.cc"}
-	got := findTextualSourceIncludes(hostSrc, srcs)
+	got, readers := findTextualSourceIncludes(hostSrc, srcs)
 	want := []string{"src/os.cc"}
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("findTextualSourceIncludes = %v, want %v", got, want)
+		t.Errorf("findTextualSourceIncludes includes = %v, want %v", got, want)
+	}
+	// readers = the INCLUDER source whose bytes drove the detection (the
+	// declared source-byte read). The included os.cc is only Stat'd, not a
+	// reader; util.cc's escaping include produced no hit, so it isn't a reader.
+	wantReaders := []string{"test/posix-mock-test.cc"}
+	if !reflect.DeepEqual(readers, wantReaders) {
+		t.Errorf("findTextualSourceIncludes readers = %v, want %v", readers, wantReaders)
 	}
 }
 
@@ -63,15 +70,15 @@ func TestFindTextualSourceIncludes_NoneAndGuards(t *testing.T) {
 	write("a.cc", "#include \"a.h\"\n#include \"b.cc\"\n")
 	write("a.h", "#define A 1\n")
 	write("b.cc", "int b(){return 0;}\n")
-	if got := findTextualSourceIncludes(hostSrc, []string{"a.cc", "b.cc"}); got != nil {
-		t.Errorf("expected nil (b.cc is compiled), got %v", got)
+	if got, readers := findTextualSourceIncludes(hostSrc, []string{"a.cc", "b.cc"}); got != nil || readers != nil {
+		t.Errorf("expected nil (b.cc is compiled), got includes=%v readers=%v", got, readers)
 	}
 	// Empty inputs / missing host root are safe no-ops.
-	if got := findTextualSourceIncludes("", []string{"a.cc"}); got != nil {
-		t.Errorf("empty hostSrc: got %v, want nil", got)
+	if got, readers := findTextualSourceIncludes("", []string{"a.cc"}); got != nil || readers != nil {
+		t.Errorf("empty hostSrc: got includes=%v readers=%v, want nil", got, readers)
 	}
-	if got := findTextualSourceIncludes(hostSrc, nil); got != nil {
-		t.Errorf("nil srcs: got %v, want nil", got)
+	if got, readers := findTextualSourceIncludes(hostSrc, nil); got != nil || readers != nil {
+		t.Errorf("nil srcs: got includes=%v readers=%v, want nil", got, readers)
 	}
 }
 
@@ -112,6 +119,9 @@ func TestSynthesizeTextualSourceIncludeLibs(t *testing.T) {
 	if len(noop.Targets) != 1 {
 		t.Fatalf("hostSrcOnDisk=false should be a no-op; got %d targets", len(noop.Targets))
 	}
+	if len(noop.SourceByteReads) != 0 {
+		t.Errorf("no-op must publish no source reads; got %v", noop.SourceByteReads)
+	}
 
 	pkg := mk()
 	var warn bytes.Buffer
@@ -136,6 +146,12 @@ func TestSynthesizeTextualSourceIncludeLibs(t *testing.T) {
 	}
 	if !stringSliceContains(test.Deps, ":posix-mock-test_textual_srcs") {
 		t.Errorf("test deps missing synth lib: %v", test.Deps)
+	}
+	// The includer source whose bytes drove the detection is published as a
+	// declared source-byte read (the narrowing-lens exception); the included
+	// os.cc (only Stat'd) is NOT.
+	if !reflect.DeepEqual(pkg.SourceByteReads, []string{"test/posix-mock-test.cc"}) {
+		t.Errorf("SourceByteReads = %v, want [test/posix-mock-test.cc]", pkg.SourceByteReads)
 	}
 	if !stringSliceContains(test.Deps, ":gtest") {
 		t.Errorf("test lost its original dep: %v", test.Deps)
@@ -167,8 +183,8 @@ func TestFindTextualSourceIncludes_AbsoluteRejected(t *testing.T) {
 	}
 	write("test/a.cc", "#include \"/src/os.cc\"\n")
 	write("test/src/os.cc", "int x(){return 0;}\n") // the would-be fold target
-	if got := findTextualSourceIncludes(hostSrc, []string{"test/a.cc"}); got != nil {
-		t.Errorf("absolute include should be rejected; got %v", got)
+	if got, readers := findTextualSourceIncludes(hostSrc, []string{"test/a.cc"}); got != nil || readers != nil {
+		t.Errorf("absolute include should be rejected; got includes=%v readers=%v", got, readers)
 	}
 }
 
