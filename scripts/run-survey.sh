@@ -735,9 +735,15 @@ for entry in $projects; do
                 # cmake Release build below. Deps are cached in the build lens's
                 # bzcache, so this is an incremental release recompile.
                 _sf_rc="${SURVEY_REPO_CACHE:-${HOME:-/tmp}/.cache/bsb-survey-repos}"
+                # Thread the member's .conf BAZEL_FLAGS (e.g. glog's
+                # --dynamic_mode=off, which the build lens also uses) so this
+                # release rebuild matches what the build lens built — the loop
+                # sources confs only in subshells, so read it here.
+                _sf_bzlflags="$(BAZEL_FLAGS=""; [ -f "$repo_root/scripts/build-lens/$name.conf" ] && . "$repo_root/scripts/build-lens/$name.conf" >/dev/null 2>&1 || true; printf '%s' "$BAZEL_FLAGS")"
+                # shellcheck disable=SC2086
                 ( cd "$proj_out/build-ws" && $bzl_bin --output_user_root="$proj_out/.bzcache" \
                     --noworkspace_rc ${META_BAZEL_STARTUP_ARGS:-} build --repository_cache="$_sf_rc" \
-                    --//config:build_type=release //... ) >>"$_sf_log" 2>&1 || true
+                    $_sf_bzlflags --//config:build_type=release //... ) >>"$_sf_log" 2>&1 || true
                 _sf_bzlart="$(find -L "$proj_out/build-ws/bazel-bin" -name "$_sf_bzl" -type f 2>/dev/null | head -1)"
 
                 # (2) Cmake side: cmake configures+builds the target natively at

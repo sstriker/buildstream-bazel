@@ -1,0 +1,11 @@
+# Symbol-fidelity lens config for glog (7th survey lens, SURVEY_SYMBOL_FIDELITY).
+# glog uses a CMake OBJECT library: add_library(glog_internal OBJECT ...) then
+# add_library(glog $<TARGET_OBJECTS:glog_internal> <empty.cc>). cmake folds the
+# objects into libglog.a; the converter models glog_internal as its own
+# cc_library (alwayslink=True -> whole-archive libglog_internal.lo) that glog
+# deps on, so glog's own archive is empty and the symbols live in the .lo.
+# Compare cmake's libglog.a against that .lo. (glog also needs --dynamic_mode=off,
+# supplied by glog.conf BAZEL_FLAGS, which the lens threads into the build.)
+SYMFID_TARGET=glog
+SYMFID_CMAKE_ARTIFACT=libglog.a
+SYMFID_BAZEL_ARTIFACT=libglog_internal.lo

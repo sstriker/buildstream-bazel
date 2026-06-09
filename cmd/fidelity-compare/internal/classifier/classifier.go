@@ -480,6 +480,15 @@ func isLibcRuntimeHelper(sym string) bool {
 		"__cxa_guard_abort",
 		"__cxa_pure_virtual": // pure-virtual call handler
 		return true
+	// _FORTIFY_SOURCE fortified libc variants. cmake's distro toolchain
+	// compiles with -D_FORTIFY_SOURCE (spec-file default) so calls to
+	// open/openat fold to these checked entry points; Bazel's hermetic
+	// toolchain doesn't, so the undefined ref lands only on the cmake side.
+	// Same distro-vs-hermetic class as the `__*_chk` suffix rule below (which
+	// covers the checked string/IO funcs; these `__*_2` open-family variants
+	// don't carry that suffix). glog references __open_2.
+	case "__open_2", "__open64_2", "__openat_2", "__openat64_2":
+		return true
 	}
 	// libstdc++ vtables / typeinfo / VTTs for std types — the std::exception
 	// family (std::runtime_error, std::bad_alloc, …) plus stream types like
