@@ -3251,18 +3251,48 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			have[h] = true
 		}
 		var extra []string
+		extraDirs := map[string]bool{}
 		for _, cfgOut := range configureFiles {
 			if !cclang.IsHeader(cfgOut.RelOutput) || have[cfgOut.RelOutput] {
 				continue
 			}
-			if srcDirs[filepath.ToSlash(filepath.Dir(cfgOut.RelOutput))] {
+			d := filepath.ToSlash(filepath.Dir(cfgOut.RelOutput))
+			if srcDirs[d] {
 				extra = append(extra, cfgOut.RelOutput)
 				have[cfgOut.RelOutput] = true
+				extraDirs[d] = true
 			}
 		}
 		if len(extra) > 0 {
 			irt.Hdrs = append(irt.Hdrs, extra...)
 			irt.Tags = append(irt.Tags, "has-cmake-codegen")
+			// Staging the header as an input is necessary but NOT sufficient: it's
+			// a GENERATED file (lands in genfiles, not the source tree), and the
+			// consuming .c #includes it by BARE same-dir quote. cmake resolves that
+			// against the source dir (where a same-named source copy sits) or its
+			// own CMAKE_CURRENT_BINARY_DIR; under Bazel the compiler's same-dir
+			// search walks only the .c's SOURCE dir and misses the genfiles copy.
+			// When this target's headers route to a header lib at a PARENT package
+			// (VTK's kwsys: the vtksys sources route to //…/Utilities/KWSys:…_headers
+			// with includes=["."] at the PARENT), that lib's include dir is the
+			// parent — not the vtksys subdir where kwsysPrivate.h is generated — so
+			// the bare include stays unresolved. Add the header's OWN directory to
+			// Includes so the genfiles variant of exactly that dir is on the search
+			// path (split synthesizes its header lib / the literal include as
+			// needed), mirroring stageSiblingGeneratedHeaders for genrule siblings.
+			haveInc := make(map[string]bool, len(irt.Includes))
+			for _, inc := range irt.Includes {
+				haveInc[inc] = true
+			}
+			for d := range extraDirs {
+				if d == "" || d == "." {
+					continue
+				}
+				if !haveInc[d] {
+					irt.Includes = append(irt.Includes, d)
+					haveInc[d] = true
+				}
+			}
 		}
 	}
 
