@@ -2828,22 +2828,8 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		}
 		irt.Defines = defs
 
-		// DEFINE_SYMBOL export-macro routing. cmake defines the export macro
-		// (`-D<DEFINE_SYMBOL>`, default `<target>_EXPORTS`) ONLY when compiling
-		// a SHARED/MODULE library's OWN sources — it's the __declspec(dllexport)
-		// trigger and is PRIVATE (never propagated to consumers). The
-		// SHARED->cc_library collapse otherwise emits it as a transitive
-		// `defines`, leaking it to every consumer (zlib's DEFINE_SYMBOL=ZLIB_DLL
-		// reaching example.c/minigzip.c — caught by the compile-commands fidelity
-		// lens). Move the macro to local_defines. Value: the trace-recovered
-		// DEFINE_SYMBOL, else cmake's default `<C-identifier of target>_EXPORTS`.
-		if t.Type == "SHARED_LIBRARY" || t.Type == "MODULE_LIBRARY" {
-			macro := tt.defineSymbol
-			if macro == "" {
-				macro = makeCIdentifier(t.Name) + "_EXPORTS"
-			}
-			moveDefineToLocal(irt, macro)
-		}
+		// DEFINE_SYMBOL export-macro routing — see applyExportMacro.
+		applyExportMacro(irt, t.Type, t.Name, tt.defineSymbol)
 
 		// Sysroot: tag the target with the cmake-recorded sysroot
 		// path. Operators see cross-compile context via grep;
@@ -7223,6 +7209,52 @@ func moveDefineToLocal(irt *ir.Target, macro string) {
 	if moved {
 		irt.Defines = kept
 	}
+}
+
+// applyExportMacro routes a shared/module library's export macro to
+// local_defines. cmake defines the export macro (`-D<DEFINE_SYMBOL>`, default
+// `<target>_EXPORTS`) ONLY when compiling the library's OWN sources — it's the
+// __declspec(dllexport) / visibility trigger and is PRIVATE (never propagated
+// to consumers). Two sources for the macro, both handled:
+//
+//   - a CUSTOM DEFINE_SYMBOL (zlib's ZLIB_DLL) IS surfaced in the codemodel
+//     defines — the SHARED->cc_library collapse would otherwise emit it as a
+//     transitive `defines`, leaking it to every consumer; moveDefineToLocal
+//     relocates it to local_defines.
+//   - the DEFAULT `<target>_EXPORTS` is generator-implicit and usually ABSENT
+//     from the codemodel defines (libevent's event_shared_EXPORTS etc. — caught
+//     missing by the compile-commands fidelity lens), so nothing is moved; ADD
+//     it so the converted compile matches what cmake actually compiles with.
+//
+// No-op for non-shared/module targets (the macro gate is cmake's own).
+func applyExportMacro(irt *ir.Target, targetType, targetName, defineSymbol string) {
+	if targetType != "SHARED_LIBRARY" && targetType != "MODULE_LIBRARY" {
+		return
+	}
+	macro := defineSymbol
+	if macro == "" {
+		macro = makeCIdentifier(targetName) + "_EXPORTS"
+	}
+	moveDefineToLocal(irt, macro)
+	if !localDefineHasName(irt, macro) {
+		irt.LocalDefines = append(irt.LocalDefines, macro)
+	}
+}
+
+// localDefineHasName reports whether irt.LocalDefines already carries a define
+// with the given NAME (matched before any `=value`), so callers don't append a
+// duplicate of a macro that moveDefineToLocal may have just relocated.
+func localDefineHasName(irt *ir.Target, macro string) bool {
+	for _, d := range irt.LocalDefines {
+		name := d
+		if i := strings.IndexByte(d, '='); i >= 0 {
+			name = d[:i]
+		}
+		if name == macro {
+			return true
+		}
+	}
+	return false
 }
 
 // isCMakePCHPath reports whether p is a cmake target_precompile_headers
