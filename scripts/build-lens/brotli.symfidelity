@@ -1,0 +1,7 @@
+# Symbol-fidelity lens config for brotli (7th survey lens, SURVEY_SYMBOL_FIDELITY).
+# Compares the converted Bazel libbrotlicommon.a against cmake's, forced static
+# (brotli builds shared by default). brotlicommon is the base library; enc/dec
+# layer on it. No allowlist needed — the symbol sets match exactly.
+SYMFID_TARGET=brotlicommon
+SYMFID_ARTIFACT=libbrotlicommon.a
+SYMFID_CMAKE_FLAGS=-DBUILD_SHARED_LIBS=OFF
