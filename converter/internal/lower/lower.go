@@ -630,50 +630,76 @@ func stageSiblingGeneratedHeaders(pkg *ir.Package) {
 		t := &pkg.Targets[i]
 		switch t.Kind {
 		case ir.KindCCLibrary, ir.KindCCBinary, ir.KindCCInterface, ir.KindCCTest:
+			stageSiblingHeadersForTarget(t, sib)
 		default:
 			continue
 		}
-		have := make(map[string]bool, len(t.Srcs))
-		for _, s := range t.Srcs {
-			have[s] = true
-		}
-		var add []string
-		consider := func(srcs []string) {
-			for _, s := range srcs {
-				for _, h := range sib[s] {
-					if !have[h] {
-						add = append(add, h)
-						have[h] = true
-					}
+	}
+}
+
+// stageSiblingHeadersForTarget attaches the sibling generated headers of every
+// genrule SOURCE output this target compiles (mapped by `sib`) and surfaces
+// each header's genfiles directory on the target's include path. Split out of
+// stageSiblingGeneratedHeaders to keep that pass under the cognitive-complexity
+// gate; see the caller for the why.
+func stageSiblingHeadersForTarget(t *ir.Target, sib map[string][]string) {
+	have := make(map[string]bool, len(t.Srcs))
+	for _, s := range t.Srcs {
+		have[s] = true
+	}
+	var add []string
+	var surfaceDirs []string
+	seenDir := map[string]bool{}
+	consider := func(srcs []string) {
+		for _, s := range srcs {
+			for _, h := range sib[s] {
+				// Record the sibling header's directory REGARDLESS of whether the
+				// header is already staged in srcs: the genfiles -I is what makes
+				// the .c's bare same-dir `#include "<gen>.h"` resolve, and an
+				// earlier attribution path that already put the header in srcs
+				// (e.g. a project that lists its generated header in the
+				// add_library source list for IDE/moc visibility) need NOT have
+				// surfaced its genfiles dir. Decoupling the dir from the
+				// "newly-staged" gate mirrors the same-dir configure_file pass,
+				// which had the same pre-emption gap (VTK's kwsysPrivate.h was
+				// added to hdrs by an earlier pass, so its dir was skipped).
+				dir := filepath.Dir(h)
+				if dir == "" {
+					dir = "."
+				}
+				if !seenDir[dir] {
+					seenDir[dir] = true
+					surfaceDirs = append(surfaceDirs, dir)
+				}
+				if !have[h] {
+					add = append(add, h)
+					have[h] = true
 				}
 			}
 		}
-		consider(t.Srcs)
-		// Multi-config targets carry per-config srcs in select() arms (the
-		// generated .c can be config-divergent — libevent's regress.gen.c); scan
-		// those too. The sibling header goes to flat srcs (a declared input is
-		// config-invariant), staged for every arm.
-		for _, arm := range t.PerPlatform["srcs"] {
-			consider(arm)
-		}
-		t.Srcs = append(t.Srcs, add...)
-		// Put each staged header's directory on the target's include path so the
-		// .c's bare same-dir `#include "<gen>.h"` resolves against the genfiles
-		// copy (the staged srcs entry alone doesn't add the -I). Dedup against
-		// the includes the target already carries.
-		haveInc := make(map[string]bool, len(t.Includes))
-		for _, inc := range t.Includes {
-			haveInc[inc] = true
-		}
-		for _, h := range add {
-			dir := filepath.Dir(h)
-			if dir == "" {
-				dir = "."
-			}
-			if !haveInc[dir] {
-				t.Includes = append(t.Includes, dir)
-				haveInc[dir] = true
-			}
+	}
+	consider(t.Srcs)
+	// Multi-config targets carry per-config srcs in select() arms (the
+	// generated .c can be config-divergent — libevent's regress.gen.c); scan
+	// those too. The sibling header goes to flat srcs (a declared input is
+	// config-invariant), staged for every arm.
+	for _, arm := range t.PerPlatform["srcs"] {
+		consider(arm)
+	}
+	t.Srcs = append(t.Srcs, add...)
+	// Put each sibling header's directory on the target's include path so the
+	// .c's bare same-dir `#include "<gen>.h"` resolves against the genfiles copy
+	// (the staged srcs entry alone doesn't add the -I). surfaceDirs is built in
+	// srcs/sib order for deterministic output and deduped against the includes
+	// the target already carries.
+	haveInc := make(map[string]bool, len(t.Includes))
+	for _, inc := range t.Includes {
+		haveInc[inc] = true
+	}
+	for _, dir := range surfaceDirs {
+		if !haveInc[dir] {
+			t.Includes = append(t.Includes, dir)
+			haveInc[dir] = true
 		}
 	}
 }
@@ -3251,18 +3277,63 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			have[h] = true
 		}
 		var extra []string
+		extraDirs := map[string]bool{}
 		for _, cfgOut := range configureFiles {
-			if !cclang.IsHeader(cfgOut.RelOutput) || have[cfgOut.RelOutput] {
+			if !cclang.IsHeader(cfgOut.RelOutput) {
 				continue
 			}
-			if srcDirs[filepath.ToSlash(filepath.Dir(cfgOut.RelOutput))] {
-				extra = append(extra, cfgOut.RelOutput)
-				have[cfgOut.RelOutput] = true
+			d := filepath.ToSlash(filepath.Dir(cfgOut.RelOutput))
+			if !srcDirs[d] {
+				continue
 			}
+			// Surface the OWN directory of every same-dir configure_file header
+			// this target compiles against, REGARDLESS of whether the header is
+			// already in hdrs. The prefix-match pass above (gated on a build-dir
+			// `-I` match) may have already added the header to hdrs and settled
+			// its hosting include on a shallower PARENT dir (VTK kwsys: the
+			// vtksys sources route to //…/Utilities/KWSys:…_headers with
+			// includes=["."] at the PARENT). That parent include doesn't put the
+			// vtksys genfiles subdir — where kwsysPrivate.h is generated — on the
+			// search path, so the bare `#include "kwsysPrivate.h"` stays
+			// unresolved. Recording the dir here (decoupled from the have[] gate)
+			// lets the includes addition below put exactly that genfiles subdir on
+			// the path.
+			extraDirs[d] = true
+			if have[cfgOut.RelOutput] {
+				continue
+			}
+			extra = append(extra, cfgOut.RelOutput)
+			have[cfgOut.RelOutput] = true
 		}
 		if len(extra) > 0 {
 			irt.Hdrs = append(irt.Hdrs, extra...)
 			irt.Tags = append(irt.Tags, "has-cmake-codegen")
+		}
+		// Staging the header as an input is necessary but NOT sufficient: it's a
+		// GENERATED file (lands in genfiles, not the source tree), and the
+		// consuming .c #includes it by BARE same-dir quote. cmake resolves that
+		// against the source dir (where a same-named source copy sits) or its own
+		// CMAKE_CURRENT_BINARY_DIR; under Bazel the compiler's same-dir search
+		// walks only the .c's SOURCE dir and misses the genfiles copy. Add the
+		// header's OWN directory to Includes so the genfiles variant of exactly
+		// that dir is on the search path (split synthesizes its header lib / the
+		// literal include as needed), mirroring stageSiblingGeneratedHeaders for
+		// genrule siblings. Runs whenever any such dir was recorded — even if the
+		// header was already staged in hdrs by the prefix-match pass above.
+		if len(extraDirs) > 0 {
+			haveInc := make(map[string]bool, len(irt.Includes))
+			for _, inc := range irt.Includes {
+				haveInc[inc] = true
+			}
+			for d := range extraDirs {
+				if d == "" || d == "." {
+					continue
+				}
+				if !haveInc[d] {
+					irt.Includes = append(irt.Includes, d)
+					haveInc[d] = true
+				}
+			}
 		}
 	}
 

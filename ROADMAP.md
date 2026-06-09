@@ -58,19 +58,21 @@ transition cleanly.
   - **vtk** — configures + converts with 0 rejections, analysis fully green
     (2359/2359), and `bazel build //...` compiles **~6,345 / 6,366 (~99.6%)**.
     REMAINING TAIL (~20, well-diagnosed):
-    - **configure_file config-headers not wired to consumers (~19):**
-      `kwsysPrivate.h` (15), `proj_config.h` (4), `pugiconfig.hpp` (3). A header
-      `configure_file(... COPYONLY)` output, #included by BARE quote name from a
-      same-dir source — cmake needs no `-I` (quote resolves same-dir), so
-      `targetBuildIncs` never records it and the prefix-match attribution misses
-      it; the consuming multi-language SUB-library never declares the generated
-      header. A same-dir-attribution pass was added but DOESN'T engage for these:
-      `lowerTarget`'s `t.Name` for the kwsys-consuming target is NOT "vtksys"
-      (the converter renames on emit) and/or VTK's configure_files don't reach
-      the `configureFiles` slice the attribution iterates — the precise
-      recovery-path/target-identity needs one more instrumented pass. Fix lands
-      the output in the consuming sub-lib's hdrs (rides `splitCompileGroups`'
-      sharedHdrs).
+    - **configure_file same-dir config-headers (~19) — CONVERTER FIX SHIPPED,
+      build recount pending.** `kwsysPrivate.h` (15), `proj_config.h` (4),
+      `pugiconfig.hpp` (3): a header `configure_file(... COPYONLY)` output
+      #included by BARE quote name from a same-dir source. cmake needs no `-I`
+      (quote resolves same-dir), so the prefix-match attribution (gated on a
+      build-dir `-I`) settled the header's hosting include on a shallower PARENT
+      package and never put the header's OWN genfiles dir on the search path. The
+      same-dir-attribution pass DID record the header but its include-dir
+      surfacing was gated on the header being *newly* added — and the prefix-match
+      pass had already staged it, so the dir was skipped. Fix decouples the dir
+      surfacing from that gate (and mirrors it in the genrule sibling-header
+      pass). Verified on a VTK re-convert: the `vtksys` sub-libs now dep a header
+      lib at their OWN package (`Utilities_KWSys_vtksys_headers`, `includes=["."]`,
+      hosting `kwsysPrivate.h`). OPEN: re-run the vtk build lens to confirm the
+      ~19 now compile (the ~99.6% count below predates this fix).
     - **2 genrule-EXECUTION failures:** `proj_db` (`cmake -P
       generate_proj_db.cmake` fails at `include(sql_filelist.cmake)` — relative
       include not staged in the genrule's cwd at build time) and
