@@ -698,7 +698,7 @@ for entry in $projects; do
         if [ -f "$_sf_conf" ]; then
             (
                 SYMFID_TARGET=""; SYMFID_ARTIFACT=""; SYMFID_CMAKE_ARTIFACT=""
-                SYMFID_BAZEL_ARTIFACT=""; SYMFID_CMAKE_FLAGS=""
+                SYMFID_BAZEL_ARTIFACT=""; SYMFID_CMAKE_FLAGS=""; SYMFID_CONVERT_FLAGS=""
                 # shellcheck disable=SC1090
                 . "$_sf_conf"
                 _sf_pat=""
@@ -709,9 +709,13 @@ for entry in $projects; do
                 [ -f "$repo_root/testdata/fidelity/$name.allowlist.txt" ] && _sf_al="--allowlist $repo_root/testdata/fidelity/$name.allowlist.txt"
                 _sf_cf=""
                 [ -n "$SYMFID_CMAKE_FLAGS" ] && _sf_cf="--cmake-flags $SYMFID_CMAKE_FLAGS"
+                # SYMFID_CONVERT_FLAGS: extra convert args some members need (e.g.
+                # Catch2's --lift-configure-file for its generated version header).
+                _sf_xf=""
+                [ -n "$SYMFID_CONVERT_FLAGS" ] && _sf_xf="--convert-flags $SYMFID_CONVERT_FLAGS"
                 # shellcheck disable=SC2086
                 if sh "$repo_root/scripts/run-fidelity.sh" --project-name "$name" \
-                        --source-root "$src" --target "$SYMFID_TARGET" $_sf_pat $_sf_al $_sf_cf \
+                        --source-root "$src" --target "$SYMFID_TARGET" $_sf_pat $_sf_al $_sf_cf $_sf_xf \
                         > "$proj_out/symbol-fidelity.log" 2>&1; then
                     printf '{"member":"%s","ok":true}\n' "$name" > "$proj_out/symbol-fidelity.json"
                     echo "  $name: symbol-fidelity -> ok" >&2
