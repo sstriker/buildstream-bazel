@@ -1,0 +1,9 @@
+# Symbol-fidelity lens config for libxml2 (7th survey lens, SURVEY_SYMBOL_FIDELITY).
+# libxml2 generates libxml/xmlversion.h via configure_file; the survey lens reuses
+# the build lens's SPLIT artifact (where the synthesized root_headers wires that
+# generated header onto the include path), so no convert flags are needed here —
+# unlike the mono CI path (run-fidelity), which can't build it. cmake's OUTPUT_NAME
+# is xml2 (libxml2.a); the bazel cc_library rule is LibXml2 (libLibXml2.a).
+SYMFID_TARGET=LibXml2
+SYMFID_CMAKE_ARTIFACT=libxml2.a
+SYMFID_BAZEL_ARTIFACT=libLibXml2.a

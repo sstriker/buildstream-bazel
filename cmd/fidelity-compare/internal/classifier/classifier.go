@@ -541,13 +541,19 @@ func mangledSymbols(s map[string]bool) map[string]bool {
 // stdlibMangledPrefixes are the Itanium-mangling heads for
 // standard-library / compiler-internal names: `St` (std::), the
 // `Ss`/`Sa`/`Si`/`So`/`Sd` std substitutions (string / allocator /
-// streams), and `__gnu_cxx`. `K`/`V` cover const/volatile members.
+// streams), and `__gnu_cxx`. `K`/`V` cover const/volatile members. The
+// `_ZZ*` variants are the SAME std names defined in a LOCAL (function/block)
+// scope — a lambda or local static INSIDE a std template method (e.g.
+// `std::__detail::_Compiler<regex_traits>::_M_expression_term<...>::{lambda}`,
+// mangled `_ZZNSt8__detail...`). These are as toolchain-determined as the
+// top-level std instantiations, so they classify the same.
 var stdlibMangledPrefixes = []string{
 	"_ZSt", "_ZNSt", "_ZNKSt", "_ZNVSt",
+	"_ZZSt", "_ZZNSt", "_ZZNKSt", "_ZZNVSt",
 	"_ZSs", "_ZNSs", "_ZNKSs",
 	"_ZSa", "_ZNSa",
 	"_ZNSi", "_ZNSo", "_ZNSd",
-	"_ZN9__gnu_cxx", "_ZNK9__gnu_cxx",
+	"_ZN9__gnu_cxx", "_ZNK9__gnu_cxx", "_ZZN9__gnu_cxx",
 }
 
 // isStdlibInternalMangled reports whether sym is a mangled name in a
