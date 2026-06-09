@@ -291,9 +291,26 @@ transition cleanly.
   compile-db lenses already widen their fixed-fixture CI gates to the
   corpus).
 
-- **Source-narrowing-compatibility lens for the corpus survey (opt-in,
-  BwoB guarantee).** The orchestrated path (project A → project B) runs
-  `convert-element-cmake` against **zero-stub sources** — the narrowing /
+- **Source-narrowing-compatibility lens — SHIPPED (v1, opt-in
+  `SURVEY_NARROWING_COMPAT=1`).** `scripts/narrowing-compat-lens.sh` (wired into
+  `run-survey.sh` as a STRUCTURAL lens — runs before the build) converts the real
+  source tree (capturing the read-set via `--out-read-paths`), makes a copy with
+  every SOURCE/HEADER file zeroed except the read-set (build-system files —
+  CMakeLists/`*.cmake`/`*.in` — stay real so cmake still configures), re-converts
+  with the same flags, and asserts a byte-identical `BUILD.bazel.out` (modulo the
+  source-root + ephemeral cmake-build-dir paths). A diff is a narrowing-soundness
+  bug — the converter secretly read a zeroed source byte — and the diff names the
+  affected srcs/hdrs. `ok`/`FAIL`/`skip(...)`, report-only
+  (`<out>/<name>/narrowing-compat.json`). Validated: zlib / spdlog / insrc → ok;
+  fmt self-skips (configure-time link on zeroed sources). **v1 scope / follow-ups:**
+  zeros source/header bytes (the narrowing target) but keeps ALL `*.cmake`/`*.in`
+  real rather than only the read-set ones (avoids the `include(<name>)`-arg vs
+  file-path mismatch in the read-set); per-zeroed-file bisection to pinpoint the
+  exact culprit (the diff already names the srcs/hdrs); a survey summary column.
+  Complements the static `narrowing-audit` (`cmd/audit-narrowing`) lower bound
+  with empirical proof. Design rationale: the orchestrated path (project A →
+  project B) runs `convert-element-cmake` against **zero-stub sources** — the
+  narrowing /
   FUSE source layer presents real bytes only for the declared read-set and
   0-byte stubs for everything else (see `docs/design/sources.md`,
   `docs/design/narrowing-audit.md`). The converter's translation is meant
