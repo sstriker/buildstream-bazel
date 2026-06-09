@@ -3,7 +3,6 @@ package lower
 import (
 	"testing"
 
-	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
@@ -58,45 +57,63 @@ func TestBuildInSourceWorkdirGenrule(t *testing.T) {
 	}
 }
 
-// TestAttachSiblingGeneratedHeaders pins the sibling-generated-header staging:
-// a custom command emitting a .c plus a sibling .h (rpcgen shape — libevent's
-// regress.gen.c / regress.gen.h) must stage the .h as a hdr on a consumer of
-// the .c, since cmake omits the generated header from the target's source list
-// and the .c #includes it by bare same-dir quote.
-func TestAttachSiblingGeneratedHeaders(t *testing.T) {
-	irt := &ir.Target{Srcs: []string{"test/regress.gen.c"}}
-	b := &ninja.Build{Outputs: []string{
-		"/src/test/regress.gen.c",
-		"/src/test/regress.gen.h",
-		"/src/test/notes.txt", // non-header sibling: ignored
-	}}
-	attachSiblingGeneratedHeaders(irt, b, "test/regress.gen.c", "/src")
-	has := func(s string) bool {
-		for _, h := range irt.Hdrs {
-			if h == s {
+// TestStageSiblingGeneratedHeaders pins the path-independent sibling-generated-
+// header staging: a genrule emitting a .c plus a sibling .h (rpcgen shape —
+// libevent's regress.gen.c / regress.gen.h) must add the .h to the SRCS of any
+// cc target consuming the .c (the .c #includes the .h by bare same-dir quote,
+// and cmake omits the generated header from the target's source list). srcs (not
+// hdrs) because cc_test/cc_binary have no hdrs attribute. Covers both flat srcs
+// and multi-config select() arms; non-header siblings are ignored; non-consuming
+// cc targets untouched.
+func TestStageSiblingGeneratedHeaders(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{
+			{
+				Name:        "gen",
+				Kind:        ir.KindGenrule,
+				GenruleOuts: []string{"test/regress.gen.c", "test/regress.gen.h", "test/notes.txt"},
+			},
+			{Name: "regress", Kind: ir.KindCCTest, Srcs: []string{"test/regress.c", "test/regress.gen.c"}},
+			{
+				Name: "lib", Kind: ir.KindCCLibrary,
+				PerPlatform: map[string]map[string][]string{
+					"srcs": {"//config:debug": {"test/regress.gen.c"}},
+				},
+			},
+			{Name: "other", Kind: ir.KindCCBinary, Srcs: []string{"main.c"}},
+		},
+	}
+	stageSiblingGeneratedHeaders(pkg)
+	has := func(tg *ir.Target, s string) bool {
+		for _, x := range tg.Srcs {
+			if x == s {
 				return true
 			}
 		}
 		return false
 	}
-	if !has("test/regress.gen.h") {
-		t.Errorf("sibling generated header not staged; hdrs=%v", irt.Hdrs)
+	regress, lib, other := &pkg.Targets[1], &pkg.Targets[2], &pkg.Targets[3]
+	if !has(regress, "test/regress.gen.h") {
+		t.Errorf("flat-srcs consumer missing sibling header in srcs; got %v", regress.Srcs)
 	}
-	if has("test/regress.gen.c") {
-		t.Errorf("the just-attached source must not be re-added as a hdr; hdrs=%v", irt.Hdrs)
+	if has(regress, "test/notes.txt") {
+		t.Errorf("non-header sibling must not be staged; got %v", regress.Srcs)
 	}
-	if has("test/notes.txt") {
-		t.Errorf("non-header sibling must not be staged as a hdr; hdrs=%v", irt.Hdrs)
+	if !has(lib, "test/regress.gen.h") {
+		t.Errorf("select-arm consumer missing sibling header in srcs; got %v", lib.Srcs)
 	}
-	// Idempotent: a second call doesn't duplicate.
-	attachSiblingGeneratedHeaders(irt, b, "test/regress.gen.c", "/src")
+	if has(other, "test/regress.gen.h") {
+		t.Errorf("unrelated target must not get the sibling header; got %v", other.Srcs)
+	}
+	// Idempotent.
+	stageSiblingGeneratedHeaders(pkg)
 	n := 0
-	for _, h := range irt.Hdrs {
-		if h == "test/regress.gen.h" {
+	for _, s := range pkg.Targets[1].Srcs {
+		if s == "test/regress.gen.h" {
 			n++
 		}
 	}
 	if n != 1 {
-		t.Errorf("sibling header duplicated; hdrs=%v", irt.Hdrs)
+		t.Errorf("sibling header duplicated in srcs; got %v", pkg.Targets[1].Srcs)
 	}
 }

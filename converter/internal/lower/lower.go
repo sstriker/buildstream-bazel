@@ -574,31 +574,76 @@ func attachGeneratedSource(irt *ir.Target, path string, inCG, dropNonCc bool, em
 	}
 }
 
-// attachSiblingGeneratedHeaders stages the in-source GENERATED HEADER outputs of
-// custom-command edge b (other than the just-attached source rel) onto irt.Hdrs.
-// A code generator routinely emits a .c plus a sibling .h the .c #includes by
-// bare same-dir quote (libevent's regress.gen.c → regress.gen.h); cmake omits
-// the generated header from the consuming target's source list, so without this
-// the .c's compile can't find it. Headers are referenced by their element-
-// relative path (which resolves to the producing genrule's output); split's hdrs
-// relabel re-homes them cross-package as needed. Deduped against existing hdrs.
-func attachSiblingGeneratedHeaders(irt *ir.Target, b *ninja.Build, rel, cmakeSrc string) {
-	have := map[string]bool{}
-	for _, h := range irt.Hdrs {
-		have[h] = true
+// stageSiblingGeneratedHeaders stages sibling generated headers (path-independent
+// post-pass). A code generator routinely emits a .c PLUS a sibling .h the .c
+// #includes by bare same-dir quote (libevent's regress.gen.c → regress.gen.h),
+// but cmake omits the generated header from the consuming target's source list,
+// so the .c's compile can't find it. This maps each genrule SOURCE output to the
+// genrule's HEADER outputs, then for every cc target attaches the sibling
+// headers of any genrule source the target compiles — regardless of which
+// attribution path put the .c there.
+//
+// The sibling header is added to SRCS (not hdrs): a header in srcs is a valid
+// private-header input for EVERY cc rule kind (cc_test / cc_binary have no hdrs
+// attribute), and the generated header is genuinely an implementation detail of
+// the generated .c. Referenced by element-relative path (resolving to the
+// producing genrule's output); split's srcs relabel re-homes it as needed.
+func stageSiblingGeneratedHeaders(pkg *ir.Package) {
+	isHdr := func(p string) bool { return cclang.IsHeaderExt(strings.ToLower(filepath.Ext(p))) }
+	sib := map[string][]string{} // genrule source-output -> sibling header outputs
+	for _, t := range pkg.Targets {
+		if t.Kind != ir.KindGenrule {
+			continue
+		}
+		var hdrs []string
+		for _, o := range t.GenruleOuts {
+			if isHdr(o) {
+				hdrs = append(hdrs, o)
+			}
+		}
+		if len(hdrs) == 0 {
+			continue
+		}
+		for _, o := range t.GenruleOuts {
+			if !isHdr(o) {
+				sib[o] = hdrs
+			}
+		}
 	}
-	outs := append(append([]string{}, b.Outputs...), b.ImplicitOuts...)
-	for _, o := range outs {
-		sib, inside := relativeIfInside(cmakeSrc, o)
-		if !inside {
+	if len(sib) == 0 {
+		return
+	}
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		switch t.Kind {
+		case ir.KindCCLibrary, ir.KindCCBinary, ir.KindCCInterface, ir.KindCCTest:
+		default:
 			continue
 		}
-		sib = filepath.ToSlash(sib)
-		if sib == rel || have[sib] || !cclang.IsHeaderExt(strings.ToLower(filepath.Ext(sib))) {
-			continue
+		have := make(map[string]bool, len(t.Srcs))
+		for _, s := range t.Srcs {
+			have[s] = true
 		}
-		irt.Hdrs = append(irt.Hdrs, sib)
-		have[sib] = true
+		var add []string
+		consider := func(srcs []string) {
+			for _, s := range srcs {
+				for _, h := range sib[s] {
+					if !have[h] {
+						add = append(add, h)
+						have[h] = true
+					}
+				}
+			}
+		}
+		consider(t.Srcs)
+		// Multi-config targets carry per-config srcs in select() arms (the
+		// generated .c can be config-divergent — libevent's regress.gen.c); scan
+		// those too. The sibling header goes to flat srcs (a declared input is
+		// config-invariant), staged for every arm.
+		for _, arm := range t.PerPlatform["srcs"] {
+			consider(arm)
+		}
+		t.Srcs = append(t.Srcs, add...)
 	}
 }
 
@@ -1777,6 +1822,16 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		threadFileGlobs(stand, traceCtx.FileGlobs, hostSrc)
 		pkg.Targets = append(pkg.Targets, stand...)
 
+		// Stage sibling generated headers (path-independent post-pass). A genrule
+		// that emits a .c + .h pair (rpcgen: regress.gen.c + regress.gen.h) — any
+		// cc target listing only the .c must still see the .h, which the .c
+		// #includes by bare same-dir quote (cmake omits the generated header from
+		// the target's source list). Regardless of HOW the .c reached a target's
+		// srcs (per-source recovery, build-include consumer attribution, …),
+		// attach the producing genrule's sibling header outputs to that target's
+		// hdrs. Element-relative; split's hdrs relabel re-homes them cross-package.
+		stageSiblingGeneratedHeaders(pkg)
+
 		// Resolve each cc_library consumer's UTILITY (tablegen) dependencies
 		// to the generated `.inc` headers it #includes, now that the
 		// standalone genrules producing them have been recovered. The
@@ -2318,14 +2373,10 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					}
 					if b := g.BuildFor(abs); b != nil && b.Rule == "CUSTOM_COMMAND" {
 						attachGeneratedSource(irt, rel, inCompileGroup[i], true, cc.CcEmbedSourceToHeader[rel])
-						// The same custom command typically emits SIBLING outputs:
-						// rpcgen-style generators produce foo.gen.c AND foo.gen.h,
-						// and the generated .c #includes its .h by bare same-dir
-						// quote. cmake omits the generated header from the target's
-						// source list, so stage the genrule's sibling generated
-						// HEADERS as hdrs here — otherwise the .c's compile can't
-						// find them (libevent's regress.gen.c → regress.gen.h).
-						attachSiblingGeneratedHeaders(irt, b, rel, cmakeSrc)
+						// Sibling generated headers (the .c's foo.gen.h pair) are
+						// staged by the stageSiblingGeneratedHeaders post-pass, which
+						// is path-independent (covers consumers that get the .c via
+						// other attribution paths + multi-config select arms).
 						consumesCodegen = true
 						continue
 					}
