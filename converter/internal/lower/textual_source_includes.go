@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/buildstream-bazel/converter/internal/cclang"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/cclang"
 	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 

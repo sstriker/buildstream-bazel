@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/buildstream-bazel/converter/internal/cclang"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/cclang"
 )
 
 // stageGeneratedSourceRootIncludes handles the codegen idiom where a
