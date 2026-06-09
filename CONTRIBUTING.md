@@ -11,7 +11,7 @@ Decide based on what you touched:
 
 | You changed | Run |
 |---|---|
-| Anything `*.go` | `go build ./...` then `go vet ./...` then `gofmt -l .` (must be empty) then `go test ./...` |
+| Anything `*.go` | `go build ./...` then `go vet ./...` then `gofmt -l .` (must be empty) then `make staticcheck` then `make lint-complexity` then `go test ./...`. CI gates blocking on `make staticcheck` and `make lint-complexity`; its build job runs `make converter` (the converter binary only), not the full `go build ./...`, so run the whole sequence locally. |
 | `cmd/write-a/handler_*.go` (any handler) | the relevant `scripts/meta-*.sh` render gate (see [render gates](#render-gates)) |
 | `cmd/build-tracer/` | `go test ./cmd/build-tracer/...` plus a render gate that exercises the autotools native path (`scripts/meta-autotools-native.sh`) |
 | `cmd/convert-element-trace/` | `go test ./cmd/convert-element-trace/...` plus the autotools render gates |
@@ -29,13 +29,17 @@ Before committing or pushing:
 go build ./...
 go vet ./...
 gofmt -l .                 # must print nothing
+make staticcheck           # unused code (U1000), simplifications, etc. — the
+                           # axis `go vet` doesn't cover. BLOCKING in CI; a
+                           # green build/vet/test alone won't catch a U1000.
 
-# 1b. Complexity lens (advisory for now). Cyclomatic / cognitive / nesting /
-#     length / maintainability — the axis the above don't cover. SOFT-LAUNCH:
-#     the CI step is non-blocking until the tree is green against
-#     .golangci.yml's thresholds, then it flips to blocking. Run it when you
-#     touch a hot-spot file so you don't add to the backlog.
-make lint-complexity       # advisory (non-blocking in CI today)
+# 1b. Complexity lens (BLOCKING gate). Cyclomatic / cognitive / nesting /
+#     length / maintainability — the axis the above don't cover. The
+#     soft-launch burndown reached green, so the CI step now gates like the
+#     others. A handful of tracked complexity giants carry documented
+#     //nolint directives (see ROADMAP.md); every other function is held to
+#     .golangci.yml's thresholds, so a new complexity regression fails the build.
+make lint-complexity       # blocking in CI
 
 # 2. Unit tests pass.
 go test ./...

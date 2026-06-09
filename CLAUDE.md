@@ -33,11 +33,18 @@ tests + render gates that exercise it.
 
 The fast feedback loop in one paragraph: `go build ./...` then
 `go vet ./...` then `gofmt -l .` (must print nothing) then
-`go test ./...`. After that, run the render gate(s) under `scripts/`
+`make staticcheck` (catches what `vet` doesn't — unused code / U1000,
+simplifications) then `make lint-complexity` (the complexity lens — now a
+blocking gate) then `go test ./...`. `make staticcheck` and
+`make lint-complexity` are blocking CI gates; CI's build job runs
+`make converter` (the converter binary only), not the full `go build ./...`,
+so run the whole sequence locally. A green `go test` alone isn't enough: a
+stray U1000 or a new complexity regression still fails the build. After that, run the render gate(s) under `scripts/`
 matching what you touched (see `CONTRIBUTING.md`'s handler→gate table).
-Render gates skip their bazel-build half cleanly when bazel ≥7 isn't on
-`$PATH`, but the render half they always exercise is still the contract
-`cmd/write-a` owes its consumers.
+Render gates skip their bazel-build half cleanly when bazel/bazelisk isn't on
+`$PATH` at all, or is below the gate's version floor (most `meta-*` gates need
+bazel ≥9; a few, e.g. `meta-cmake-export-header.sh`, run on ≥7); the render
+half they always exercise is still the contract `cmd/write-a` owes its consumers.
 
 When something asks for the "correctness story" of a change — in a PR
 description, a commit message, or your own design notes — show that you
