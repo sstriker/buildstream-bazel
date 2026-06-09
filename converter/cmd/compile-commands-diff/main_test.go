@@ -9,6 +9,7 @@ func TestFactsFromArgv(t *testing.T) {
 	argv := []string{
 		"/usr/bin/gcc", "-DFOO", "-DBAR=1", "-D", "BAZ", "-std=c++17",
 		"-I/abs/inc", "-Irel/inc", "-isystem", "/sys/inc",
+		"-iquote", ".", "-iquote", "q/inc", // exec-root `.` dropped; real -iquote kept
 		"-D__DATE__=\"redacted\"", "-D__TIME__=\"redacted\"", // Bazel stamps — must be filtered
 		"-fvisibility=hidden", "-fno-rtti", // project copts (kept)
 		"-Wall", "-O2", "-g", "-fstack-protector", "-fPIC", // toolchain/build-mode (filtered)
@@ -36,10 +37,15 @@ func TestFactsFromArgv(t *testing.T) {
 	if f.Std != "c++17" {
 		t.Errorf("std = %q want c++17", f.Std)
 	}
-	for _, want := range []string{"/abs/inc", "rel/inc", "/sys/inc"} { // raw, normalized at diff time
+	for _, want := range []string{"/abs/inc", "rel/inc", "/sys/inc", "q/inc"} { // raw, normalized at diff time
 		if !f.IncludeDir[want] {
 			t.Errorf("missing raw include %q in %v", want, f.IncludeDir)
 		}
+	}
+	// Bazel's universal exec-root `-iquote .` is structural noise (cmake never
+	// emits -iquote) — it must NOT be recorded as a project include dir.
+	if f.IncludeDir["."] {
+		t.Errorf("exec-root -iquote . should be dropped; got %v", f.IncludeDir)
 	}
 }
 
@@ -132,12 +138,12 @@ func TestSplitCommand_QuotedDefine(t *testing.T) {
 }
 
 func TestDiff_ParamSkipAndGenRoot(t *testing.T) {
-	cmake := map[string]tuFacts{
-		"a/x.c": {IncludeDir: map[string]bool{"/b/build/gen": true}, Defines: map[string]bool{}}, // gen root, no src includes
-		"a/y.c": {IncludeDir: map[string]bool{}, Defines: map[string]bool{}},                     // param-skipped on bazel side
+	cmake := map[string][]tuFacts{
+		"a/x.c": {{IncludeDir: map[string]bool{"/b/build/gen": true}, Defines: map[string]bool{}}}, // gen root, no src includes
+		"a/y.c": {{IncludeDir: map[string]bool{}, Defines: map[string]bool{}}},                     // param-skipped on bazel side
 	}
-	bazel := map[string]tuFacts{
-		"a/x.c": {IncludeDir: map[string]bool{}, Defines: map[string]bool{}}, // no gen counterpart
+	bazel := map[string][]tuFacts{
+		"a/x.c": {{IncludeDir: map[string]bool{}, Defines: map[string]bool{}}}, // no gen counterpart
 	}
 	o := normOpts{cmakeBuild: "/b/build"}
 	r := diff(cmake, bazel, map[string]bool{"a/y.c": true}, o)
@@ -150,6 +156,46 @@ func TestDiff_ParamSkipAndGenRoot(t *testing.T) {
 	// x.c: cmake has a gen: root, bazel has none -> GenRootMissing.
 	if _, ok := r.GenRootMissing["a/x.c"]; !ok {
 		t.Errorf("expected gen-root-missing for a/x.c; got %v", r.GenRootMissing)
+	}
+}
+
+// TestDiff_MultiVariantUnion pins the variant-aware comparison: a source
+// compiled MORE THAN ONCE under different flags (fmt's gtest-extra.cc — plain in
+// test-main, with FMT_HEADER_ONLY in each header-only test) must NOT report a
+// define as missing/extra just because the two sides paired different variants.
+// The per-source UNION matches, so it's clean; a define in one side's union and
+// not the other's is still a real drift.
+func TestDiff_MultiVariantUnion(t *testing.T) {
+	cmake := map[string][]tuFacts{
+		"gtest-extra.cc": {
+			{Defines: map[string]bool{"GTEST": true}, IncludeDir: map[string]bool{}},                            // plain (test-main)
+			{Defines: map[string]bool{"GTEST": true, "FMT_HEADER_ONLY=1": true}, IncludeDir: map[string]bool{}}, // header-only test
+		},
+	}
+	bazel := map[string][]tuFacts{
+		"gtest-extra.cc": {
+			// Same two variants, encountered in the opposite order — the union is
+			// identical, so NO define mismatch despite the per-variant difference.
+			{Defines: map[string]bool{"GTEST": true, "FMT_HEADER_ONLY=1": true}, IncludeDir: map[string]bool{}},
+			{Defines: map[string]bool{"GTEST": true}, IncludeDir: map[string]bool{}},
+		},
+	}
+	r := diff(cmake, bazel, nil, normOpts{})
+	if d, ok := r.DefineMismatch["gtest-extra.cc"]; ok {
+		t.Errorf("multi-variant source falsely flagged: %+v", d)
+	}
+	// A define in bazel's union but NO cmake variant IS still a real drift.
+	bazel["gtest-extra.cc"][0].Defines["WRONG=1"] = true
+	r2 := diff(cmake, bazel, nil, normOpts{})
+	d, ok := r2.DefineMismatch["gtest-extra.cc"]
+	found := false
+	for _, x := range d.ExtraInBazel {
+		if x == "WRONG=1" {
+			found = true
+		}
+	}
+	if !ok || !found {
+		t.Errorf("a define only in bazel's union must still surface as extra; got %+v", r2.DefineMismatch)
 	}
 }
 
@@ -177,14 +223,14 @@ func TestSourceFromArgv(t *testing.T) {
 }
 
 func TestDiff_DefineDelta(t *testing.T) {
-	cmake := map[string]tuFacts{
-		"foo.cc": {Defines: map[string]bool{"A": true, "B": true}, Std: "c++17", IncludeDir: map[string]bool{}},
-		"bar.cc": {Defines: map[string]bool{"X": true}, IncludeDir: map[string]bool{}},
+	cmake := map[string][]tuFacts{
+		"foo.cc": {{Defines: map[string]bool{"A": true, "B": true}, Std: "c++17", IncludeDir: map[string]bool{}}},
+		"bar.cc": {{Defines: map[string]bool{"X": true}, IncludeDir: map[string]bool{}}},
 	}
-	bazel := map[string]tuFacts{
+	bazel := map[string][]tuFacts{
 		// foo: extra ZLIB_DLL, missing B, std mismatch
-		"foo.cc": {Defines: map[string]bool{"A": true, "ZLIB_DLL": true}, Std: "c++20", IncludeDir: map[string]bool{}},
-		"bar.cc": {Defines: map[string]bool{"X": true}, IncludeDir: map[string]bool{}},
+		"foo.cc": {{Defines: map[string]bool{"A": true, "ZLIB_DLL": true}, Std: "c++20", IncludeDir: map[string]bool{}}},
+		"bar.cc": {{Defines: map[string]bool{"X": true}, IncludeDir: map[string]bool{}}},
 	}
 	r := diff(cmake, bazel, nil, normOpts{})
 	if r.Matched != 2 {

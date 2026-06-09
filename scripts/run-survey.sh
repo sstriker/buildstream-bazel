@@ -414,6 +414,21 @@ EOF
         # shellcheck disable=SC2086
         if cmake -S "$_bb_src" -B "$_cc_cm" -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON $_cc_defs \
                 >> "$_bb_po/fidelity.log" 2>&1 && [ -f "$_cc_cm/compile_commands.json" ]; then
+            # Align the aquery's config with cmake's EFFECTIVE build type. cmake's
+            # single-config configure resolves a CMAKE_BUILD_TYPE — often the
+            # project's own default (fmt/spdlog default to Release) — so its
+            # compile_commands carry that config's flags (-DNDEBUG, -O3). The
+            # converted MULTI-config BUILD gates those behind //config:<type>
+            # select() arms whose driving flag (//config:build_type) DEFAULTS to
+            # debug. Aquery without selecting cmake's config and every Release-only
+            # define (NDEBUG …) reads as "missing in bazel" — a spurious per-TU
+            # diff (the fmt NDEBUG drift). Read the build type cmake chose, lower-
+            # case it, and select it when the //config package offers that value.
+            _cc_cfg=""
+            _cc_bt="$(sed -n 's/^CMAKE_BUILD_TYPE:[^=]*=//p' "$_cc_cm/CMakeCache.txt" 2>/dev/null | head -1 | tr 'A-Z' 'a-z')"
+            if [ -n "$_cc_bt" ] && [ -f "$_bb_ws/config/BUILD.bazel" ] && grep -q "\"$_cc_bt\"" "$_bb_ws/config/BUILD.bazel"; then
+                _cc_cfg="--//config:build_type=$_cc_bt"
+            fi
             # Thread the conf's BAZEL_FLAGS ($_bb_bzlflags, e.g.
             # --incompatible_autoload_externally) into the aquery: ANALYSIS still
             # loads the BCR deps' BUILD files, so a member whose deps need the
@@ -421,12 +436,12 @@ EOF
             # aquery without it — exactly as the build at the bottom does.
             # shellcheck disable=SC2086
             if ( cd "$_bb_ws" && $bzl_bin --output_user_root="$_bb_po/.bzcache" --noworkspace_rc \
-                    ${META_BAZEL_STARTUP_ARGS:-} aquery --repository_cache="$_bb_repocache" $_bb_bzlflags --output=jsonproto 'mnemonic("CppCompile", //...)' ) \
+                    ${META_BAZEL_STARTUP_ARGS:-} aquery --repository_cache="$_bb_repocache" $_bb_bzlflags $_cc_cfg --output=jsonproto 'mnemonic("CppCompile", //...)' ) \
                     > "$_bb_po/cc-aquery.json" 2>> "$_bb_po/fidelity.log"; then
                 # CppLink aquery for the link-order check (best-effort).
                 # shellcheck disable=SC2086
                 ( cd "$_bb_ws" && $bzl_bin --output_user_root="$_bb_po/.bzcache" --noworkspace_rc \
-                    ${META_BAZEL_STARTUP_ARGS:-} aquery --repository_cache="$_bb_repocache" $_bb_bzlflags --output=jsonproto 'mnemonic("CppLink", //...)' ) \
+                    ${META_BAZEL_STARTUP_ARGS:-} aquery --repository_cache="$_bb_repocache" $_bb_bzlflags $_cc_cfg --output=jsonproto 'mnemonic("CppLink", //...)' ) \
                     > "$_bb_po/cc-aquery-link.json" 2>> "$_bb_po/fidelity.log" || true
                 _cc_diff="$repo_root/build/bin/compile-commands-diff"
                 ( cd "$repo_root" && go build -o "$_cc_diff" ./converter/cmd/compile-commands-diff ) 2>>"$_bb_po/fidelity.log" || _cc_diff="go run $repo_root/converter/cmd/compile-commands-diff"
