@@ -86,7 +86,7 @@ func TestClassifyExportedDeltas_TemplateInstantiationPairing(t *testing.T) {
 		"_ZN3fmt3v106detail14format_decimalIclNS0_8appenderELi0EEENS1_21format_decimal_resultIT1_EES5_T0_i": true,
 	}
 	rep := &Report{}
-	classifyExportedDeltas(rep, cExported, bExported, Allowlist{})
+	classifyExportedDeltas(rep, cExported, bExported, nil, nil, Allowlist{})
 
 	for _, d := range rep.BenignDeltas {
 		if !strings.Contains(d.Kind, "template-instantiation") {
@@ -119,7 +119,7 @@ func TestClassifyDeltas_StdlibInternalUnpaired(t *testing.T) {
 		"_ZNSt8__detail15_BracketMatcherINSt7__cxx1112regex_traitsIcEELb0ELb0EE13_M_make_rangeEcc": true, // std::__detail regex
 	}
 	rep := &Report{}
-	classifyExportedDeltas(rep, cExported, bExported, Allowlist{})
+	classifyExportedDeltas(rep, cExported, bExported, nil, nil, Allowlist{})
 
 	if len(rep.ImpactfulDeltas) != 1 || rep.ImpactfulDeltas[0].Detail != "_ZN5Catch9SomethingRealDropEv" {
 		t.Errorf("expected only the project-own symbol impactful; got %v", rep.ImpactfulDeltas)
@@ -151,7 +151,7 @@ func TestClassifyExportedDeltas_AllowlistSuppression(t *testing.T) {
 	allowed := Allowlist{Symbols: map[string]bool{"cmake_only_known_benign": true}}
 
 	rep := &Report{}
-	classifyExportedDeltas(rep, c, b, allowed)
+	classifyExportedDeltas(rep, c, b, nil, nil, allowed)
 
 	if len(rep.ImpactfulDeltas) != 0 {
 		t.Errorf("allowlist should pre-empt impactful classification; got %v", rep.ImpactfulDeltas)
@@ -180,7 +180,7 @@ func TestClassifyExportedDeltas_AllowlistPrefixSuppression(t *testing.T) {
 	}
 
 	rep := &Report{}
-	classifyExportedDeltas(rep, c, b, allowed)
+	classifyExportedDeltas(rep, c, b, nil, nil, allowed)
 
 	// nlohmann-prefixed entries → benign (allowlist-suppressed)
 	// otherpkg-prefixed entry → still impactful
@@ -209,7 +209,7 @@ func TestClassifyExportedDeltas_UnexplainedDropIsImpactful(t *testing.T) {
 	b := map[string]bool{"shared": true}
 
 	rep := &Report{}
-	classifyExportedDeltas(rep, c, b, Allowlist{})
+	classifyExportedDeltas(rep, c, b, nil, nil, Allowlist{})
 
 	if len(rep.ImpactfulDeltas) != 1 {
 		t.Fatalf("expected 1 impactful delta; got %d (%v)", len(rep.ImpactfulDeltas), rep.ImpactfulDeltas)
@@ -386,5 +386,57 @@ func TestReport_HasImpactfulAndFormat(t *testing.T) {
 	}
 	if !strings.Contains(out, "exported symbols in both: 42") {
 		t.Errorf("expected exported-both count in output: %s", out)
+	}
+}
+
+// TestClassifyExportedDeltas_WeakSymbolBenign pins the weak-symbol rule: a
+// project-own symbol present in only one artifact is benign when it's WEAK on
+// that side (weak/vague-linkage emission is codegen-flag-dependent and deduped
+// at link — gtest's pthread Mutex/ThreadLocal/FilePath weak ctors), but stays
+// impactful when it's a STRONG symbol genuinely absent on the other side.
+func TestClassifyExportedDeltas_WeakSymbolBenign(t *testing.T) {
+	cExported := map[string]bool{
+		"_ZN7testing8internal5MutexC1Ev": true, // weak, only-in-cmake -> benign
+		"_ZN5Catch10StrongOnlyEv":        true, // strong, only-in-cmake -> impactful
+	}
+	bExported := map[string]bool{}
+	cWeak := map[string]bool{"_ZN7testing8internal5MutexC1Ev": true}
+	rep := &Report{}
+	classifyExportedDeltas(rep, cExported, bExported, cWeak, nil, Allowlist{})
+
+	if len(rep.ImpactfulDeltas) != 1 || rep.ImpactfulDeltas[0].Detail != "_ZN5Catch10StrongOnlyEv" {
+		t.Errorf("expected only the strong symbol impactful; got %v", rep.ImpactfulDeltas)
+	}
+	var weakBenign int
+	for _, d := range rep.BenignDeltas {
+		if d.Kind == "weak-symbol-only-in-cmake" {
+			weakBenign++
+		}
+	}
+	if weakBenign != 1 {
+		t.Errorf("expected 1 weak-symbol-only-in-cmake benign delta; got %d (%v)", weakBenign, rep.BenignDeltas)
+	}
+}
+
+// TestIsLibcRuntimeHelper covers the libc/libstdc++ runtime-helper undefined-ref
+// categories: str/mem + stdio builtins (printf-family folding), __cxa_* C++
+// runtime, and std vtable/typeinfo/VTT (direct + nested, e.g. ostringstream).
+func TestIsLibcRuntimeHelper(t *testing.T) {
+	for _, s := range []string{
+		"memcpy", "strlen", // str/mem builtins
+		"puts", "putchar", "fputs", "fwrite", // stdio builtins (printf folding)
+		"__cxa_guard_acquire", "__cxa_pure_virtual", // C++ runtime
+		"_ZTVSt13runtime_error", // std::runtime_error vtable (direct)
+		"_ZTVNSt7__cxx1119basic_ostringstreamIcSt11char_traitsIcESaIcEEE", // ostringstream vtable (nested)
+		"_ZTTNSt7__cxx1119basic_ostringstreamIcSt11char_traitsIcESaIcEEE", // ostringstream VTT (nested)
+	} {
+		if !isLibcRuntimeHelper(s) {
+			t.Errorf("expected %q to be a libc/runtime helper (benign undefined)", s)
+		}
+	}
+	for _, s := range []string{"_ZN5Catch7projectEv", "my_project_func", "_ZN3fLB16FLAGS_log_prefixE"} {
+		if isLibcRuntimeHelper(s) {
+			t.Errorf("project-own symbol %q must NOT be treated as a libc helper", s)
+		}
 	}
 }
