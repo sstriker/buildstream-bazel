@@ -250,13 +250,22 @@ transition cleanly.
   gets wrongly privatized and breaks a consumer, and it changes every member's
   include scoping — needs a full corpus build-validation cycle.
 
-- **Interface-driven linkopt scoping (`INTERFACE_LINK_OPTIONS`).** The fourth
-  usage-requirement axis: Bazel `linkopts` on a `cc_library` propagate
-  transitively to linkers, but cmake's `LINK_OPTIONS` (private) don't — only
-  `INTERFACE_LINK_OPTIONS` do. A private link option therefore over-propagates.
-  Mirror the define/dep-scope passes using the probe's `INTERFACE_LINK_OPTIONS`
-  whitelist. Lower priority than includes (rarer, and a stray linkopt is usually
-  benign), but completes the PRIVATE-scope coverage.
+- **Interface-driven linkopt scoping (`INTERFACE_LINK_OPTIONS`) — deferred to
+  the shared-lib work; masked under forced-static.** The fourth usage-
+  requirement axis: Bazel `linkopts` on a `cc_library` propagate transitively to
+  linkers, but cmake's `LINK_OPTIONS` (private) don't — only
+  `INTERFACE_LINK_OPTIONS` do, so a private link option over-propagates IN
+  PRINCIPLE. But two things make it a non-issue to fix right now: (1) the
+  converter populates `LinkOpts` from the codemodel's LINK command fragments,
+  which a STATIC_LIBRARY barely has (an archive is `ar`, no link step), and the
+  build lens forces `BUILD_SHARED_LIBS=OFF` — so there's no measurable
+  over-propagation to validate against; (2) Bazel has no "local linkopts" slot
+  (unlike `local_defines` / `implementation_deps`), so a private link option has
+  no clean non-propagating home on a static lib — the faithful move would be to
+  DROP a non-exported `LINK_OPTIONS` on a non-binary target, which risks losing a
+  genuinely-needed flag without a validation signal. Revisit alongside
+  `SURVEY_SHARED=1` / `cc_shared_library`, where private `.so` link options
+  actually matter and are measurable via the link-order lens.
 
 - **Symbol-fidelity lens — SHIPPED (v1, opt-in `SURVEY_SYMBOL_FIDELITY`).**
   Wired into `run-survey.sh` as the LAST lens — runs after the build, only when
