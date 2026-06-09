@@ -28,6 +28,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/rejection"
 	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/cclang"
 	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
@@ -445,34 +446,6 @@ const manifestPrefixAnchor = ManifestPrefixAnchor
 // hostPrefix→anchor rewrite.
 const ManifestPrefixAnchor = "/opt/prefix/"
 
-// Header file extensions we treat as `hdrs` candidates when walking include
-// directories. Lowercase comparison.
-//
-// `.def` and `.inc` cover the x-macro / textual-include idioms (a file of
-// `HANDLE_FOO(...)` macro calls #included multiple times with different macro
-// definitions, or a checked-in code fragment pulled in via quote-include)
-// that LLVM and many C/C++ projects use pervasively — e.g. Demangle's
-// `#include "ItaniumNodes.def"` and Support's regex engine
-// `#include "regengine.inc"`. These are never compiled directly (so they
-// belong in hdrs, not srcs) but must be staged as inputs or the quote-include
-// misses in Bazel's sandbox. discoverHeaders only walks source-tree include
-// roots, so the *generated* `.def`/`.inc` files (tablegen / write_file output
-// into the build dir, e.g. Config/config.def or IR/Attributes.inc) aren't
-// double-claimed here — their producing genrule/write_file owns them, and
-// checked-in vs generated paths are disjoint in practice.
-var headerExts = map[string]bool{
-	".h":   true,
-	".hh":  true,
-	".hpp": true,
-	".hxx": true,
-	".inl": true,
-	".def": true,
-	".inc": true,
-	".txx": true, // template-impl headers (VTK's vtkImageProgressIterator.txx)
-	".tcc": true,
-	".ipp": true,
-}
-
 // ccLinkableSrcExts are non-header extensions that are still valid `srcs`
 // entries for a cc_library/cc_binary — precompiled objects/archives and
 // assembly that Bazel links or assembles. A GENERATED output with one of these
@@ -504,7 +477,7 @@ var compilableSrcExts = map[string]bool{
 // Bazel fails analysis with "does not produce any cc_library srcs files".
 func isCcSrcEntry(p string) bool {
 	ext := strings.ToLower(filepath.Ext(p))
-	return headerExts[ext] || compilableSrcExts[ext] || ccLinkableSrcExts[ext]
+	return cclang.IsHeaderExt(ext) || compilableSrcExts[ext] || ccLinkableSrcExts[ext]
 }
 
 // classifyAndAttach routes a generated / consumer-attributed output PATH into
@@ -540,7 +513,7 @@ func classifyAndAttach(irt *ir.Target, path string, seen map[string]bool, dropNo
 	seen[path] = true
 	ext := strings.ToLower(filepath.Ext(path))
 	switch {
-	case headerExts[ext]:
+	case cclang.IsHeaderExt(ext):
 		irt.Hdrs = append(irt.Hdrs, path)
 	case !isCcSrcEntry(path):
 		if dropNonCc {
@@ -600,12 +573,12 @@ func attachGeneratedSource(irt *ir.Target, path string, inCG, dropNonCc bool, em
 	switch {
 	case dropNonCc && !isCcSrcEntry(path):
 		return
-	case inCG && !headerExts[ext]:
+	case inCG && !cclang.IsHeaderExt(ext):
 		irt.Srcs = append(irt.Srcs, path)
 		if embedHdr != "" {
 			irt.Hdrs = append(irt.Hdrs, embedHdr)
 		}
-	case headerExts[ext]:
+	case cclang.IsHeaderExt(ext):
 		irt.Hdrs = append(irt.Hdrs, path)
 	default:
 		irt.Srcs = append(irt.Srcs, path)
@@ -2394,7 +2367,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				continue
 			}
 			ext := strings.ToLower(filepath.Ext(srcPath))
-			if headerExts[ext] {
+			if cclang.IsHeaderExt(ext) {
 				irt.Hdrs = append(irt.Hdrs, reanchor(srcPath))
 			}
 			continue
@@ -3178,7 +3151,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		}
 		var extra []string
 		for _, cfgOut := range configureFiles {
-			if !headerExts[strings.ToLower(filepath.Ext(cfgOut.RelOutput))] || have[cfgOut.RelOutput] {
+			if !cclang.IsHeader(cfgOut.RelOutput) || have[cfgOut.RelOutput] {
 				continue
 			}
 			if srcDirs[filepath.ToSlash(filepath.Dir(cfgOut.RelOutput))] {
@@ -5583,7 +5556,7 @@ func retagCudaTargets(pkg *ir.Package) {
 			if dot := strings.LastIndex(s, "."); dot >= 0 {
 				ext = strings.ToLower(s[dot:])
 			}
-			if headerExts[ext] || ext == ".cuh" {
+			if cclang.IsHeaderExt(ext) || ext == ".cuh" {
 				continue // a header in srcs (incl. CUDA `.cuh`) — not a compiled TU
 			}
 			if isCudaSrc(s) {
@@ -7514,7 +7487,7 @@ func collectDirHeaders(sourceRoot, absDir string) ([]string, error) {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(p))
-		if !headerExts[ext] {
+		if !cclang.IsHeaderExt(ext) {
 			if ext != "" || !looksLikeCxxHeader(p) {
 				return nil
 			}

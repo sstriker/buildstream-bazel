@@ -3,12 +3,13 @@
 // header-scan / module-name dep resolution:
 //
 //   - cc_index.json: header path → Bazel label, sourced from every
-//     emitted cc_library's hdrs (and the .h/.hpp/.hxx subset of
-//     its srcs — the codemodel sometimes lists private headers
-//     in srcs, and gazelle's header-scan resolver consults the
-//     index for ANY #include line regardless of public/private
-//     intent, so widening the index entries from srcs-side
-//     captures pre-existing under-reporting cheaply). The
+//     emitted cc_library's hdrs (and the header-extension subset of
+//     its srcs — cclang.IsHeader, shared with lowering's classifier;
+//     the codemodel sometimes lists private headers in srcs, and
+//     gazelle's header-scan resolver consults the index for ANY
+//     #include line regardless of public/private intent, so widening
+//     the index entries from srcs-side captures pre-existing
+//     under-reporting cheaply). The
 //     emitted label is `//<package>:<target_name>` where
 //     <package> is the BUILD file's path relative to --root.
 //
@@ -49,9 +50,9 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
 
 	"github.com/bazelbuild/buildtools/build"
+	"github.com/sstriker/buildstream-bazel/internal/cclang"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
@@ -193,7 +194,7 @@ func harvestPackage(f *build.File, pkg string, ccIndex, pyMods map[string]string
 				rec(ccIndex, path.Join(pkg, h), label)
 			}
 			for _, s := range stringListArg(call, "srcs") {
-				if isHeaderPath(s) {
+				if cclang.IsHeader(s) {
 					rec(ccIndex, path.Join(pkg, s), label)
 				}
 			}
@@ -258,18 +259,6 @@ func canonicalLabel(pkg, target string) string {
 		return "//" + pkg
 	}
 	return "//" + pkg + ":" + target
-}
-
-// isHeaderPath reports whether s is a C/C++ header by
-// extension. Mirrors the conventional .h / .hpp / .hxx / .hh
-// / .h++ / .H set; cmake codemodel surfaces these in
-// target.sources for include-only files.
-func isHeaderPath(s string) bool {
-	switch strings.ToLower(filepath.Ext(s)) {
-	case ".h", ".hpp", ".hxx", ".hh", ".h++":
-		return true
-	}
-	return false
 }
 
 // rec inserts k→v into m on first-write. Later writes are
