@@ -900,3 +900,55 @@ func TestEmit_Split_InstallExportImportSubpackage(t *testing.T) {
 		t.Errorf("SourceKey: cc_import kept the invalid same-package subpackage path; got:\n%s", skRoot)
 	}
 }
+
+// TestEmit_Split_InSourceWorkdirGenrule_CrossPackageRefs pins the split-side
+// support for in-source-generation genrules (libevent's regress.gen.c shape):
+// a genrule whose output lands in a sub-package re-homes there, and its
+// scratch-dir cmd references a CROSS-PACKAGE source (the generator script in the
+// element root) plus an in-package input. On re-home, relocateGenruleSrcs must
+// rewrite the cmd's $(execpath <src>) refs to match the relabeled srcs field
+// (root script → //pkg:script cross-package label; in-package input → bare
+// name), and the root package — which has no targets of its own — must still be
+// emitted to host the exports_files() for the script.
+func TestEmit_Split_InSourceWorkdirGenrule_CrossPackageRefs(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{
+			{
+				Name:        "gen_foo",
+				Kind:        ir.KindGenrule,
+				Srcs:        []string{"gen.py", "sub/foo.def"},
+				GenruleOuts: []string{"sub/foo.gen.c"},
+				GenruleCmd: `tmp="$$(mktemp -d)" && cp "$(execpath gen.py)" "$$tmp/gen.py"` +
+					` && cp "$(execpath sub/foo.def)" "$$tmp/sub/foo.def"` +
+					` && cp "$$tmp/sub/foo.gen.c" "$(RULEDIR)/sub/foo.gen.c"`,
+			},
+			{Name: "app", Kind: ir.KindCCBinary, Srcs: []string{"sub/foo.gen.c", "sub/main.c"}},
+		},
+		SubPackages: map[string]string{"app": "sub"},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/insrc"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	sub := string(tree["sub"])
+	if sub == "" {
+		t.Fatalf("no sub/ package emitted; packages = %v", keysOf(tree))
+	}
+	// The genrule re-homed to sub/: its cmd refs are relabeled to match the
+	// relabeled srcs field (root script → cross-package label; in-package input
+	// → bare; output → shrunk $(RULEDIR)).
+	if !strings.Contains(sub, "$(execpath //elements/insrc:gen.py)") {
+		t.Errorf("cross-package script ref not relabeled in cmd; got sub/BUILD:\n%s", sub)
+	}
+	if !strings.Contains(sub, "$(execpath foo.def)") || strings.Contains(sub, "$(execpath sub/foo.def)") {
+		t.Errorf("in-package input ref not shrunk to package-relative; got:\n%s", sub)
+	}
+	if !strings.Contains(sub, "$(RULEDIR)/foo.gen.c") {
+		t.Errorf("output ref not shrunk to the re-homed $(RULEDIR); got:\n%s", sub)
+	}
+	// The target-less root package is emitted to host exports_files(gen.py).
+	root := string(tree[""])
+	if !strings.Contains(root, `exports_files(["gen.py"])`) {
+		t.Errorf("root package must export gen.py for the cross-package genrule ref; got root BUILD:\n%s", root)
+	}
+}

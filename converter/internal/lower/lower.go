@@ -196,17 +196,6 @@ type Options struct {
 	// rationale + cache-key analysis.
 	LiftConfigureFile bool
 
-	// SplitPackages mirrors the emit-time --split-packages flag. lower is
-	// normally emit-agnostic, but in-source-generation genrule recovery (a
-	// source-tree WORKING_DIRECTORY custom command, e.g. libevent's
-	// event_rpcgen.py) currently only produces a correct genrule under the
-	// monolithic emit; the split emit's genrule re-home doesn't yet relabel
-	// the genrule's cross-package source cmd-refs ($(execpath <src>)) or emit
-	// the owning source package's exports_files. So the in-source recovery is
-	// gated to the monolithic emit; under split it stays a clean refusal until
-	// the split-side support lands. (See the in-source-workdir handling.)
-	SplitPackages bool
-
 	// CMakeVars is the full cmake variable namespace captured
 	// at end of configure (cmakerun.Reply.Vars). Used by the
 	// configure_file lift as the values map for the lifted
@@ -1113,7 +1102,6 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	cc.CMakeScriptRunner = opts.CMakeScriptRunner
 	cc.CMakeScriptTrace = opts.CMakeScriptTrace
 	cc.CMakeScriptBake = opts.CMakeScriptBake
-	cc.SplitPackages = opts.SplitPackages
 	cc.LiftCCEmbed = opts.LiftCCEmbed
 	cc.LiftCCHash = opts.LiftCCHash
 	cc.CMakeBinary = lookupCmakeBinary()
@@ -2293,7 +2281,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				// to that output here instead of refusing. Gated on the producing
 				// ninja edge being a CUSTOM_COMMAND so a genuinely-missing source
 				// still refuses.
-				if rel != "" && g != nil && !cc.SplitPackages {
+				if rel != "" && g != nil {
 					// ninja keys an in-source output by its ABSOLUTE path; src.Path
 					// here is cmakeSrc-relative, so look up the absolute form.
 					abs := src.Path

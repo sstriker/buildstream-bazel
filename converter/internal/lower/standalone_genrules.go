@@ -494,14 +494,14 @@ func inSourceOutputs(outs []string, cmakeSrc string) (rel []string, ok bool) {
 
 // tryInSourceWorkdirGenrule emits the genrule for an in-source WORKING_DIRECTORY
 // custom command when the shape applies: every output is in the source tree
-// (inSourceOutputs), the command has a recoverable `cd <srcdir>` working dir,
-// and the emit is monolithic (cc.SplitPackages off — the split genrule re-home
-// doesn't yet relabel cross-package source cmd-refs). It registers the outputs
-// in cc.OutToGenrule and returns the genrule. ok=false leaves the caller's
-// normal build-dir-output path. See buildInSourceWorkdirGenrule for the
-// scratch-dir mechanism.
+// (inSourceOutputs) and the command has a recoverable `cd <srcdir>` working dir.
+// It registers the outputs in cc.OutToGenrule and returns the genrule; ok=false
+// leaves the caller's normal build-dir-output path. See buildInSourceWorkdirGenrule
+// for the scratch-dir mechanism. Works under both the monolithic and split emits
+// — the cmd's $(execpath <src>) / $(RULEDIR)/<out> refs are re-relativized by
+// split's relocateGenruleSrcs / relocateGenruleOuts on a package re-home.
 func tryInSourceWorkdirGenrule(b *ninja.Build, cmd string, srcs, outs []string, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath string, cc *codegenContext) (ir.Target, bool) {
-	if cc == nil || cc.SplitPackages {
+	if cc == nil {
 		return ir.Target{}, false
 	}
 	relOuts, inSrc := inSourceOutputs(outs, cmakeSrc)
