@@ -517,7 +517,15 @@ func tryInSourceWorkdirGenrule(b *ninja.Build, cmd string, srcs, outs []string, 
 		return ir.Target{}, false
 	}
 	body := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath)
-	name := genruleNameFor(b, buildDir)
+	// Name from the SOURCE-relative output, not genruleNameFor(b, buildDir):
+	// genruleNameFor relativizes against the BUILD dir, but an in-source output
+	// lives under cmakeSrc, so it would fall through verbatim and bake the
+	// absolute SOURCE path into the rule name (`gen__tmp_libevent_test_…`) —
+	// non-deterministic across checkout locations (caught by the source-narrowing
+	// lens: the name differed between the real tree and a relocated copy). relOuts
+	// is already source-root-relative and deterministically ordered (outs is
+	// dedup-sorted upstream), so it yields a stable `gen_test_regress_gen_c`.
+	name := "gen_" + sanitizePathToNameStem(relOuts[0])
 	for _, o := range relOuts {
 		cc.OutToGenrule[o] = name
 	}
