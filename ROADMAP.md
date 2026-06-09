@@ -230,6 +230,34 @@ transition cleanly.
   sources never align under basename keying), and config alignment (cmake db is
   single-config).
 
+- **Interface-driven include scoping (`INTERFACE_INCLUDE_DIRECTORIES`) — the
+  broad/principled version (B1; B2 narrow shipped).** The define-scope (#535,
+  `INTERFACE_COMPILE_DEFINITIONS`) and link-dep-scope (#536,
+  `INTERFACE_LINK_LIBRARIES` `$<LINK_ONLY:>`) passes make propagation faithful by
+  using cmake's own usage-requirement signal. Includes are the third axis: the
+  codemodel hands each target its fully-resolved `INCLUDE_DIRECTORIES` (own
+  private + public + inherited), and an include NOT in the target's
+  `INTERFACE_INCLUDE_DIRECTORIES` must be PRIVATE (a `-I` copt → split routes it
+  to `implementation_deps`), not the propagating `includes`. **B2 (shipped, the
+  narrow slice)** captures directory-scoped `include_directories()` from the
+  trace and routes those to private — fixing OpenBLAS's
+  `lapack-netlib/LAPACKE/include` leak to ~1700 consumer TUs cmake never gave it
+  to. **B1 (PARKED, the broad slice):** use the probe's
+  `INTERFACE_INCLUDE_DIRECTORIES` as the public whitelist corpus-wide, covering
+  every private-include mechanism (not just `include_directories()`). Deferred
+  because it's high-blast-radius + build-risky like dep-scope: the
+  `$<BUILD_INTERFACE:…>` genex path-resolution must be exact or a public include
+  gets wrongly privatized and breaks a consumer, and it changes every member's
+  include scoping — needs a full corpus build-validation cycle.
+
+- **Interface-driven linkopt scoping (`INTERFACE_LINK_OPTIONS`).** The fourth
+  usage-requirement axis: Bazel `linkopts` on a `cc_library` propagate
+  transitively to linkers, but cmake's `LINK_OPTIONS` (private) don't — only
+  `INTERFACE_LINK_OPTIONS` do. A private link option therefore over-propagates.
+  Mirror the define/dep-scope passes using the probe's `INTERFACE_LINK_OPTIONS`
+  whitelist. Lower priority than includes (rarer, and a stray linkopt is usually
+  benign), but completes the PRIVATE-scope coverage.
+
 - **Symbol-fidelity lens — SHIPPED (v1, opt-in `SURVEY_SYMBOL_FIDELITY`).**
   Wired into `run-survey.sh` as the LAST lens — runs after the build, only when
   the build lens passed (the pipeline ordering: structural → build →

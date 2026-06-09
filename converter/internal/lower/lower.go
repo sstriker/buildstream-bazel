@@ -813,6 +813,54 @@ func buildPrivateIncludeDirs(includes []shadow.TargetIncludeCall) map[string]map
 	return out
 }
 
+// buildPublicIncludeDirs collects the PUBLIC/INTERFACE include directories per
+// target from the decoded target_include_directories trace calls — the dirs a
+// target genuinely re-exports to consumers. Used to GUARD the directory-scoped
+// include_directories() privatization (buildIncludeDirsGlobal): a dir a target
+// also declares PUBLIC propagates, so it must stay on the transitive `includes`
+// even if the same path appears in an include_directories() elsewhere.
+func buildPublicIncludeDirs(includes []shadow.TargetIncludeCall) map[string]map[string]bool {
+	out := map[string]map[string]bool{}
+	for _, call := range includes {
+		for _, grp := range call.Groups {
+			if grp.Visibility != "PUBLIC" && grp.Visibility != "INTERFACE" {
+				continue
+			}
+			if _, ok := out[call.Target]; !ok {
+				out[call.Target] = map[string]bool{}
+			}
+			for _, dir := range grp.Dirs {
+				out[call.Target][dir] = true
+			}
+		}
+	}
+	return out
+}
+
+// buildIncludeDirsGlobal collects the directory-scoped include_directories()
+// dirs as a GLOBAL set of absolute paths, resolving a relative arg against the
+// calling CMakeLists' directory (CMAKE_CURRENT_SOURCE_DIR). These dirs are
+// PRIVATE (cmake never exports them via INTERFACE_INCLUDE_DIRECTORIES). The set
+// is global, but it only privatizes an include on a target that ACTUALLY has
+// that path in its codemodel include list (include_directories applied to it) —
+// a target in an unrelated directory never carries the path, so the global set
+// can't reach it. A target that re-exports the same dir PUBLIC is excluded at
+// the use site via buildPublicIncludeDirs.
+func buildIncludeDirsGlobal(calls []shadow.IncludeDirectoriesCall) map[string]bool {
+	out := map[string]bool{}
+	for _, call := range calls {
+		base := filepath.Dir(call.File)
+		for _, dir := range call.Dirs {
+			d := dir
+			if !filepath.IsAbs(d) {
+				d = filepath.Join(base, d)
+			}
+			out[filepath.Clean(d)] = true
+		}
+	}
+	return out
+}
+
 // buildTraceLinkInfo collects, per target, the ordered link libraries and each
 // library's link-scope keyword from the decoded target_link_libraries trace
 // calls. Libraries are deduped WITHIN each call (the `seen` set is per
@@ -927,6 +975,8 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 
 	var privateIncludeDirs map[string]map[string]bool // target → set of absolute private dir paths
+	var publicIncludeDirs map[string]map[string]bool  // target → PUBLIC/INTERFACE target_include dirs (guard for the include_directories privatization)
+	var includeDirsGlobal map[string]bool             // directory-scoped include_directories() dirs (absolute) — PRIVATE
 	var defineSymbols map[string]string               // target → cmake DEFINE_SYMBOL export macro (trace set_target_properties)
 	var traceLinkLibs map[string][]string             // target → ordered list of cmake lib names from target_link_libraries (all visibility arms, dedup-preserved)
 	// traceLinkScope maps target → libName → cmake keyword
@@ -1071,6 +1121,8 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		decodedTrace = decoded
 		traceDecoded = true
 		privateIncludeDirs = buildPrivateIncludeDirs(decoded.Includes)
+		publicIncludeDirs = buildPublicIncludeDirs(decoded.Includes)
+		includeDirsGlobal = buildIncludeDirsGlobal(decoded.IncludeDirectories)
 		traceLinkLibs, traceLinkScope = buildTraceLinkInfo(decoded.Links)
 		defineSymbols = decoded.DefineSymbols
 		decodedConfigureFiles = decoded.ConfigFiles
@@ -1544,6 +1596,8 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		}
 		irt, err := lowerTarget(&t, targetTrace{
 			privateIncludeDirs:           privateIncludeDirs[tref.Name],
+			publicIncludeDirs:            publicIncludeDirs[tref.Name],
+			includeDirsGlobal:            includeDirsGlobal,
 			traceLinkLibs:                traceLinkLibs[tref.Name],
 			traceLinkScope:               traceLinkScope[tref.Name],
 			platformConditionalSrcs:      platformConditionalSrcs[tref.Name],
@@ -2217,6 +2271,8 @@ type targetLowerCtx struct {
 // lowerTarget, looked up by target name at the call site.
 type targetTrace struct {
 	privateIncludeDirs           map[string]bool
+	publicIncludeDirs            map[string]bool
+	includeDirsGlobal            map[string]bool
 	traceLinkLibs                []string
 	traceLinkScope               map[string]string
 	platformConditionalSrcs      map[string]string
@@ -2269,6 +2325,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	bazelPackagePath := lc.bazelPackagePath
 	generatedSources, rejections := lc.generatedSources, lc.rejections
 	privateIncludeDirs, traceLinkLibs, traceLinkScope := tt.privateIncludeDirs, tt.traceLinkLibs, tt.traceLinkScope
+	publicIncludeDirs, includeDirsGlobal := tt.publicIncludeDirs, tt.includeDirsGlobal
 	platformConditionalSrcs, platformConditionalSrcsToAdd := tt.platformConditionalSrcs, tt.platformConditionalSrcsToAdd
 
 	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
@@ -3101,7 +3158,15 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				walkPkgRootForHdrs = true
 				continue
 			}
-			if privateIncludeDirs[inc.Path] {
+			// A directory-scoped include_directories() dir is PRIVATE (cmake
+			// never exports it via INTERFACE_INCLUDE_DIRECTORIES), so route it to a
+			// `-I` copt like a PRIVATE target_include_directories — UNLESS this
+			// target re-exports the same dir PUBLIC, which genuinely propagates.
+			// Without this, OpenBLAS's `include_directories(include …)` LAPACKE dir
+			// defaults to the transitive `includes` and over-propagates to ~1700
+			// consumer TUs cmake never gave it to.
+			dirScopedPrivate := includeDirsGlobal[inc.Path] && !publicIncludeDirs[inc.Path]
+			if privateIncludeDirs[inc.Path] || dirScopedPrivate {
 				// Compile-only — don't propagate to consumers.
 				// target_include_directories(... SYSTEM PRIVATE ...)
 				// keeps its system flavour as -isystem so header
