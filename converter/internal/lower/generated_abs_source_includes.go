@@ -144,18 +144,34 @@ func rewriteGeneratedWrapperIncludes(pkg *ir.Package, hostSrc, bazelPackagePath 
 				continue
 			}
 			inc := m[1]
-			if !filepath.IsAbs(inc) {
-				// A relative include in generated content already resolves
-				// against the includer / its -I path — not our concern.
-				continue
+			var rel string
+			if filepath.IsAbs(inc) {
+				r, inside := relativeIfInside(hostSrc, filepath.Clean(inc))
+				if !inside {
+					// Absolute but outside the source tree (e.g. /usr/include) —
+					// leave it for the toolchain.
+					continue
+				}
+				rel = filepath.ToSlash(r)
+			} else {
+				// Source-root-RELATIVE include. cmake 4.x bakes OpenBLAS's
+				// GenerateNamedObjects wrappers with a source-root-relative path
+				// (`lapack/getf2/zgetf2_k.c`) where older cmake baked the absolute
+				// one; the includer (a generated CMakeFiles/*.c) compiles with the
+				// source root on its -I, so the path resolves from THERE, not the
+				// includer's own dir. The IsCompiledSource + on-disk Stat gates
+				// below distinguish this from a genuinely includer-relative include
+				// (which won't name a real compiled source at the source root), so
+				// only a real source-root source is rewritten + staged. Without
+				// this the kernel source is never declared an input and the bare
+				// include misses under Bazel's sandbox (the cmake-4.x OpenBLAS
+				// build regression).
+				rel = filepath.ToSlash(filepath.Clean(inc))
+				if strings.HasPrefix(rel, "../") || rel == ".." {
+					// Escapes the source root — not a source-root-relative path.
+					continue
+				}
 			}
-			rel, inside := relativeIfInside(hostSrc, filepath.Clean(inc))
-			if !inside {
-				// Absolute but outside the source tree (e.g. /usr/include) —
-				// leave it for the toolchain.
-				continue
-			}
-			rel = filepath.ToSlash(rel)
 			if !cclang.IsCompiledSource(rel) {
 				// Only the "textually include a compiled source" idiom; an
 				// absolute header include is a different (rarer) shape.

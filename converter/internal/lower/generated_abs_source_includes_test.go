@@ -32,6 +32,7 @@ func TestStageGeneratedSourceRootIncludes(t *testing.T) {
 	// NOT on disk (it's a write_file output).
 	write("lapack/potrf/potrf_U_single.c", "int potrf(){return 0;}\n")
 	write("kernel/arm/foo.c", "int foo(){return 0;}\n")
+	write("lapack/getf2/zgetf2_k.c", "int zgetf2(){return 0;}\n")
 
 	absKernel := filepath.Join(hostSrc, "lapack/potrf/potrf_U_single.c")
 	// A `..`-laden absolute include (OpenBLAS bakes kernel/x86_64/../arm/...).
@@ -42,7 +43,20 @@ func TestStageGeneratedSourceRootIncludes(t *testing.T) {
 			{
 				Name: "lapack",
 				Kind: ir.KindCCLibrary,
-				Srcs: []string{"lapack/CMakeFiles/spotrf_U_single.c", "kernel/CMakeFiles/foo_wrap.c"},
+				Srcs: []string{"lapack/CMakeFiles/spotrf_U_single.c", "kernel/CMakeFiles/foo_wrap.c", "lapack/CMakeFiles/zgetf2_k.c"},
+			},
+			{
+				// cmake 4.x bakes the include SOURCE-ROOT-RELATIVE (not absolute);
+				// it names a real in-tree compiled source, so it must be rewritten
+				// to workspace-relative + staged exactly like the absolute form.
+				Name:             "gen_zgetf2",
+				Kind:             ir.KindWriteFile,
+				WriteFileOut:     "lapack/CMakeFiles/zgetf2_k.c",
+				WriteFileNewline: "unix",
+				WriteFileContent: []string{
+					`#include "lapack/getf2/zgetf2_k.c"`,
+				},
+				Tags: []string{"cmake-codegen-configure-file"},
 			},
 			{
 				Name:             "gen_spotrf",
@@ -66,7 +80,7 @@ func TestStageGeneratedSourceRootIncludes(t *testing.T) {
 				Tags: []string{"cmake-codegen-configure-file"},
 			},
 		},
-		SubPackages: map[string]string{"lapack": "lapack", "gen_spotrf": "lapack", "gen_foo": "kernel"},
+		SubPackages: map[string]string{"lapack": "lapack", "gen_spotrf": "lapack", "gen_foo": "kernel", "gen_zgetf2": "lapack"},
 	}
 
 	var warn bytes.Buffer
@@ -81,10 +95,15 @@ func TestStageGeneratedSourceRootIncludes(t *testing.T) {
 	if got := genF.WriteFileContent[0]; got != `#include "elements/openblas/kernel/arm/foo.c"` {
 		t.Errorf("foo include not rewritten/normalized: %q", got)
 	}
+	// Source-root-relative include (cmake 4.x) rewritten the same as absolute.
+	genZ := findTarget(pkg, "gen_zgetf2")
+	if got := genZ.WriteFileContent[0]; got != `#include "elements/openblas/lapack/getf2/zgetf2_k.c"` {
+		t.Errorf("zgetf2 source-root-relative include not rewritten: %q", got)
+	}
 
-	// (2) Both kernels staged as textual_hdrs on the compiling library.
+	// (2) All three kernels staged as textual_hdrs on the compiling library.
 	lib := findTarget(pkg, "lapack")
-	want := []string{"kernel/arm/foo.c", "lapack/potrf/potrf_U_single.c"}
+	want := []string{"kernel/arm/foo.c", "lapack/getf2/zgetf2_k.c", "lapack/potrf/potrf_U_single.c"}
 	if !reflect.DeepEqual(lib.TextualHdrs, want) {
 		t.Errorf("lapack textual_hdrs = %v, want %v", lib.TextualHdrs, want)
 	}
