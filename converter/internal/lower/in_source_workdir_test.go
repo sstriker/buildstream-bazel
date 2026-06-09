@@ -1,8 +1,10 @@
 package lower
 
 import (
+	"strings"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
@@ -54,6 +56,38 @@ func TestBuildInSourceWorkdirGenrule(t *testing.T) {
 		` && mkdir -p "$(RULEDIR)/sub" && cp "$$tmp/sub/foo.gen.c" "$(RULEDIR)/sub/foo.gen.c"`
 	if got != want {
 		t.Errorf("cmd mismatch:\n got  %q\n want %q", got, want)
+	}
+}
+
+// TestTryInSourceWorkdirGenrule_NameIsSourceRelative pins that the in-source
+// genrule's NAME derives from the source-relative output, not the absolute
+// source path. genruleNameFor relativizes against the BUILD dir, but an
+// in-source output lives under cmakeSrc — so the old code baked the absolute
+// source root into the name (`gen__tmp_libevent_test_…`), which differs across
+// checkout locations (the source-narrowing lens caught it: real tree vs a
+// relocated copy produced different names). The name must be stable regardless
+// of where the source tree lives.
+func TestTryInSourceWorkdirGenrule_NameIsSourceRelative(t *testing.T) {
+	const cmakeSrc = "/tmp/libevent"
+	cmd := "cd /tmp/libevent/test && python3 ../event_rpcgen.py --quiet regress.rpc"
+	outs := []string{"/tmp/libevent/test/regress.gen.c", "/tmp/libevent/test/regress.gen.h"}
+	b := &ninja.Build{Outputs: outs}
+	cc := &codegenContext{OutToGenrule: map[string]string{}}
+	tgt, ok := tryInSourceWorkdirGenrule(b, cmd, []string{"event_rpcgen.py", "test/regress.rpc"},
+		outs, cmakeSrc, "/tmp/convert-element-build-999", "", "", cc)
+	if !ok {
+		t.Fatal("tryInSourceWorkdirGenrule returned ok=false for an in-source workdir command")
+	}
+	if want := "gen_test_regress_gen_c"; tgt.Name != want {
+		t.Errorf("genrule name = %q, want %q", tgt.Name, want)
+	}
+	// The absolute source root must NOT leak into the name (no determinism leak).
+	if strings.Contains(tgt.Name, "tmp") || strings.Contains(tgt.Name, "libevent") {
+		t.Errorf("genrule name %q leaks the absolute source path", tgt.Name)
+	}
+	// OutToGenrule wires the source-relative outputs to that same name.
+	if cc.OutToGenrule["test/regress.gen.c"] != tgt.Name {
+		t.Errorf("OutToGenrule[test/regress.gen.c] = %q, want %q", cc.OutToGenrule["test/regress.gen.c"], tgt.Name)
 	}
 }
 
