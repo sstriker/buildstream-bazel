@@ -230,25 +230,36 @@ transition cleanly.
   sources never align under basename keying), and config alignment (cmake db is
   single-config).
 
-- **Interface-driven include scoping (`INTERFACE_INCLUDE_DIRECTORIES`) — the
-  broad/principled version (B1; B2 narrow shipped).** The define-scope (#535,
-  `INTERFACE_COMPILE_DEFINITIONS`) and link-dep-scope (#536,
-  `INTERFACE_LINK_LIBRARIES` `$<LINK_ONLY:>`) passes make propagation faithful by
-  using cmake's own usage-requirement signal. Includes are the third axis: the
-  codemodel hands each target its fully-resolved `INCLUDE_DIRECTORIES` (own
-  private + public + inherited), and an include NOT in the target's
-  `INTERFACE_INCLUDE_DIRECTORIES` must be PRIVATE (a `-I` copt → split routes it
-  to `implementation_deps`), not the propagating `includes`. **B2 (shipped, the
-  narrow slice)** captures directory-scoped `include_directories()` from the
-  trace and routes those to private — fixing OpenBLAS's
-  `lapack-netlib/LAPACKE/include` leak to ~1700 consumer TUs cmake never gave it
-  to. **B1 (PARKED, the broad slice):** use the probe's
-  `INTERFACE_INCLUDE_DIRECTORIES` as the public whitelist corpus-wide, covering
-  every private-include mechanism (not just `include_directories()`). Deferred
-  because it's high-blast-radius + build-risky like dep-scope: the
-  `$<BUILD_INTERFACE:…>` genex path-resolution must be exact or a public include
-  gets wrongly privatized and breaks a consumer, and it changes every member's
-  include scoping — needs a full corpus build-validation cycle.
+- **Include over-propagation is the `root_headers` element-root grant, NOT
+  per-target include scope (THE real include-fidelity item).** Define-scope
+  (#535) and link-dep-scope (#536) made those axes faithful via cmake's
+  usage-requirement signal; the include analog (B1/B2, #539 — directory-scoped
+  `include_directories()` + the `INTERFACE_INCLUDE_DIRECTORIES` whitelist →
+  private `-I` copt) shipped and is build-safe corpus-wide, but a compile-db
+  sweep with it active shows it moves **zero** of the include over-propagation:
+
+  | member | over-propagated include | consumer TUs cmake never gave it to |
+  |---|---|---:|
+  | OpenBLAS | `lapack-netlib/LAPACKE/include` | 1,724 |
+  | mbedtls | `3rdparty/everest/include/everest{,/kremlib}` | 108 |
+  | catch2 | `generated-includes` | 107 |
+  | libevent | `test` | 17 |
+
+  The cause is structural, not scope: under `--split-packages`, a public
+  include-root becomes a synthesized header lib (with `includes=["."]`), and the
+  **`root_headers` / `element_root_headers` element-root grant** publicly `deps`
+  those libs and is itself depped broadly (so any element-root-relative include
+  resolves anywhere). The header lib exists whenever *some* target exports the
+  dir PUBLIC (OpenBLAS's `LAPACKELIB` legitimately does), so B1/B2 can't suppress
+  it — and `root_headers` then grants its `includes` to every consumer, not just
+  the dir-owner's real consumers. **The fix is the root-grant breadth:** make a
+  target dep only the header libs it actually needs (precise per-target
+  header-lib wiring), or split the aggregate so it provides the element-root
+  `-I` + the headers-as-inputs WITHOUT re-propagating each member lib's own
+  `includes`. Bazel has no "deps for hdrs but not includes" slot, so the likely
+  shape is a hdrs-only filegroup the aggregate carries plus narrowed per-target
+  include deps. High-value (≥1,950 TUs across ≥4 members) but architectural —
+  needs a careful split redesign + full corpus build re-green.
 
 - **Interface-driven linkopt scoping (`INTERFACE_LINK_OPTIONS`) — deferred to
   the shared-lib work; masked under forced-static.** The fourth usage-
