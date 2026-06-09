@@ -62,7 +62,7 @@ type EmitInputs struct {
 // into IR targets the converter's emitter renders:
 //
 //   - One cc_import per exported target with TYPE in
-//     {STATIC_LIBRARY, SHARED_LIBRARY}. The cc_import's
+//     {STATIC_LIBRARY, SHARED_LIBRARY, MODULE_LIBRARY}. The cc_import's
 //     static_library / shared_library points at the install-tree
 //     path of the artifact, resolved by matching the target's
 //     NameOnDisk against InstallFiles under the target's install

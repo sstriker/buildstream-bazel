@@ -1406,10 +1406,6 @@ func loadElement(bstPath, includeBase, sourceCache string, options map[string]bs
 	return elem, nil
 }
 
-// writeProjectA renders the meta workspace project A: top-level files
-// (MODULE.bazel, BUILD.bazel, rules/, tools/) shared across every
-// element, then a per-element package under elements/<name>/ rendered
-// by the element's kind handler.
 // resolveTraceBinOnce sets *dst to the absolute form of *flagVal when *dst is
 // still empty — so a binary already resolved by another round-2 path (the
 // trace-driven autotools path, or a sibling fallback flag) isn't re-resolved —
@@ -1425,6 +1421,10 @@ func resolveTraceBinOnce(dst *string, flagVal *string, name string) {
 	*dst = abs
 }
 
+// writeProjectA renders the meta workspace project A: top-level files
+// (MODULE.bazel, BUILD.bazel, rules/, tools/) shared across every
+// element, then a per-element package under elements/<name>/ rendered
+// by the element's kind handler.
 func writeProjectA(g *graph, outDir, convertBin string) error {
 	// Reset the per-invocation pyproject caches at the entrypoint.
 	// The CLI's flag-parse-time reset (see main()) only catches
@@ -1834,10 +1834,7 @@ func stagePyprojectConverter(outDir string) (string, error) {
 // //tools:build-tracer + //tools:convert-element-trace
 // regardless of which project hosts it.
 //
-// Used by both writeProjectA and writeProjectB so the
-// install genrule can resolve //tools:build-tracer +
-// //tools:convert-element-trace regardless of which
-// project hosts it. The trailing "AutotoolsTools" name is
+// The trailing "AutotoolsTools" name is
 // historical (this used to be autotools-only); kind:cmake
 // fallback now reuses the same staging primitive.
 // Foundation for the architectural move of the install
