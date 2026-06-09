@@ -1015,3 +1015,26 @@ func TestExtractAddLibrary_DeclFileFromFrameStack(t *testing.T) {
 		t.Errorf("toplib DeclFile = %q, want its own CMakeLists.txt (top-level call)", got["toplib"])
 	}
 }
+
+// TestDecode_IncludeDirectories records directory-scoped include_directories()
+// calls (the private-include signal), dropping the AFTER/BEFORE/SYSTEM keywords
+// and skipping calls outside the source tree.
+func TestDecode_IncludeDirectories(t *testing.T) {
+	trace := strings.Join([]string{
+		`{"args":["include","/build/gen/include"],"cmd":"include_directories","file":"/src/lapacke/CMakeLists.txt","line":19}`,
+		`{"args":["SYSTEM","AFTER","thirdparty/inc"],"cmd":"include_directories","file":"/src/CMakeLists.txt","line":3}`,
+		// Outside the source tree — must be ignored.
+		`{"args":["x"],"cmd":"include_directories","file":"/usr/share/cmake/Modules/Foo.cmake","line":5}`,
+	}, "\n") + "\n"
+	d := Decode([]byte(trace), "/src", nil)
+	if len(d.IncludeDirectories) != 2 {
+		t.Fatalf("want 2 include_directories calls, got %d (%+v)", len(d.IncludeDirectories), d.IncludeDirectories)
+	}
+	if got := d.IncludeDirectories[0]; got.File != "/src/lapacke/CMakeLists.txt" ||
+		len(got.Dirs) != 2 || got.Dirs[0] != "include" || got.Dirs[1] != "/build/gen/include" {
+		t.Errorf("call[0] = %+v; want File=/src/lapacke/CMakeLists.txt Dirs=[include /build/gen/include]", got)
+	}
+	if got := d.IncludeDirectories[1]; len(got.Dirs) != 1 || got.Dirs[0] != "thirdparty/inc" {
+		t.Errorf("call[1] Dirs = %v; want [thirdparty/inc] (AFTER/SYSTEM dropped)", got.Dirs)
+	}
+}

@@ -48,6 +48,7 @@ type Decoded struct {
 	InstallExports             []InstallExportCall
 	FileGlobs                  []FileGlobCall
 	AddDefinitions             []AddDefinitionsCall
+	IncludeDirectories         []IncludeDirectoriesCall
 
 	// DefineSymbols maps a target name to its cmake DEFINE_SYMBOL property
 	// value, recovered from `set_target_properties(<t> PROPERTIES DEFINE_SYMBOL
@@ -152,6 +153,9 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 		}
 		if call, ok := classifyAddDefinitions(ev, traceSourceRoot); ok {
 			d.AddDefinitions = append(d.AddDefinitions, call)
+		}
+		if call, ok := classifyIncludeDirectories(ev, traceSourceRoot); ok {
+			d.IncludeDirectories = append(d.IncludeDirectories, call)
 		}
 		for tgt, macro := range classifyDefineSymbols(ev) {
 			if d.DefineSymbols == nil {
@@ -573,6 +577,56 @@ func classifyAddDefinitions(ev TraceEvent, sourceRoot string) (AddDefinitionsCal
 		return AddDefinitionsCall{}, false
 	}
 	return AddDefinitionsCall{File: ev.File, Items: items}, true
+}
+
+// IncludeDirectoriesCall records a directory-scoped include_directories() call
+// in the source tree. include_directories is DIRECTORY-scoped: it adds to the
+// INCLUDE_DIRECTORIES directory property, applying to every target created in
+// that directory (and subdirectories added afterwards). Those include dirs are
+// PRIVATE — cmake never exposes them through INTERFACE_INCLUDE_DIRECTORIES, so
+// they do NOT propagate to consumers (only a target's own
+// target_include_directories(... PUBLIC/INTERFACE ...) does). The codemodel
+// folds them into each in-directory target's CompileGroups include list with no
+// origin tag, so — like add_definitions for defines, and like PRIVATE
+// target_include_directories — the trace is the only signal that they should
+// ride as a private `-I` copt (split routes that to implementation_deps) rather
+// than the transitive `includes` attribute. OpenBLAS leaks
+// `lapack-netlib/LAPACKE/include` (added via `include_directories(include …)`)
+// to ~1700 consumer TUs cmake never gave it to without this.
+//
+// Dirs holds the directory arguments verbatim — a relative arg resolves against
+// the calling file's directory (CMAKE_CURRENT_SOURCE_DIR); --trace-expand has
+// already expanded any ${VAR}, so an absolute arg is final. The optional leading
+// AFTER/BEFORE and the SYSTEM keyword are dropped.
+type IncludeDirectoriesCall struct {
+	File string // absolute path of the CMakeLists that made the call
+	Dirs []string
+}
+
+// classifyIncludeDirectories is the per-event arm of Decode for
+// include_directories. Like add_definitions it's a directory command (no target
+// argument), scoped by the calling file being inside the source tree.
+func classifyIncludeDirectories(ev TraceEvent, sourceRoot string) (IncludeDirectoriesCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "include_directories") {
+		return IncludeDirectoriesCall{}, false
+	}
+	if len(ev.Args) == 0 || !inSourceTree(ev.File, sourceRoot) {
+		return IncludeDirectoriesCall{}, false
+	}
+	var dirs []string
+	for _, a := range ev.Args {
+		switch strings.ToUpper(a) {
+		case "AFTER", "BEFORE", "SYSTEM":
+			continue
+		}
+		if a != "" {
+			dirs = append(dirs, a)
+		}
+	}
+	if len(dirs) == 0 {
+		return IncludeDirectoriesCall{}, false
+	}
+	return IncludeDirectoriesCall{File: ev.File, Dirs: dirs}, true
 }
 
 // classifyDefineSymbols extracts target -> DEFINE_SYMBOL macro pairs from a

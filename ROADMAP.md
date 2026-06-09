@@ -230,6 +230,63 @@ transition cleanly.
   sources never align under basename keying), and config alignment (cmake db is
   single-config).
 
+- **Include over-propagation is the `root_headers` element-root grant, NOT
+  per-target include scope (THE real include-fidelity item).** Define-scope
+  (#535) and link-dep-scope (#536) made those axes faithful via cmake's
+  usage-requirement signal; the include analog (B1/B2, #539 — directory-scoped
+  `include_directories()` + the `INTERFACE_INCLUDE_DIRECTORIES` whitelist →
+  private `-I` copt) shipped and is build-safe corpus-wide, but a compile-db
+  sweep with it active shows it moves **zero** of the include over-propagation:
+
+  | member | over-propagated include | consumer TUs cmake never gave it to |
+  |---|---|---:|
+  | OpenBLAS | `lapack-netlib/LAPACKE/include` | 1,724 |
+  | mbedtls | `3rdparty/everest/include/everest{,/kremlib}` | 108 |
+  | catch2 | `generated-includes` | 107 |
+  | libevent | `test` | 17 |
+
+  The cause is structural, not scope: under `--split-packages`, a public
+  include-root becomes a synthesized header lib (with `includes=["."]`), and the
+  **`root_headers` / `element_root_headers` element-root grant** publicly `deps`
+  those libs and is itself depped broadly (so any element-root-relative include
+  resolves anywhere). The header lib exists whenever *some* target exports the
+  dir PUBLIC (OpenBLAS's `LAPACKELIB` legitimately does), so B1/B2 can't suppress
+  it — and `root_headers` then grants its `includes` to every consumer, not just
+  the dir-owner's real consumers. **The fix is the root-grant breadth:** make a
+  target dep only the header libs it actually needs (precise per-target
+  header-lib wiring), or split the aggregate so it provides the element-root
+  `-I` + the headers-as-inputs WITHOUT re-propagating each member lib's own
+  `includes`. **Precise mechanism:** `headerLibTarget`
+  (`converter/emit/bazel/split.go:404-432`) makes each include-root header lib
+  `deps` every STRICT-DESCENDANT include-root header lib for recursive
+  reachability — and that dep propagates each descendant's `includes=["."]` (its
+  bare `-I<dir>`). cmake only grants element-root-RELATIVE reachability (`#include
+  "lapack-netlib/LAPACKE/include/lapacke.h"`), NOT the bare path (`-I…/include`
+  for `<lapacke.h>`), so the forwarding over-grants; same shape in
+  `rootHdrAggTarget` (the `element_root_headers` aggregate). The fix exposes the
+  descendant's HEADERS as inputs (re-homed via `include_prefix`, or a hdrs-only
+  filegroup) WITHOUT its `includes`. Bazel has no "deps for hdrs but not
+  includes" slot, so this is a split redesign. High-value (≥1,950 TUs across ≥4
+  members: OpenBLAS/mbedtls/catch2/libevent) but architectural — full corpus
+  build re-green required.
+
+- **Interface-driven linkopt scoping (`INTERFACE_LINK_OPTIONS`) — deferred to
+  the shared-lib work; masked under forced-static.** The fourth usage-
+  requirement axis: Bazel `linkopts` on a `cc_library` propagate transitively to
+  linkers, but cmake's `LINK_OPTIONS` (private) don't — only
+  `INTERFACE_LINK_OPTIONS` do, so a private link option over-propagates IN
+  PRINCIPLE. But two things make it a non-issue to fix right now: (1) the
+  converter populates `LinkOpts` from the codemodel's LINK command fragments,
+  which a STATIC_LIBRARY barely has (an archive is `ar`, no link step), and the
+  build lens forces `BUILD_SHARED_LIBS=OFF` — so there's no measurable
+  over-propagation to validate against; (2) Bazel has no "local linkopts" slot
+  (unlike `local_defines` / `implementation_deps`), so a private link option has
+  no clean non-propagating home on a static lib — the faithful move would be to
+  DROP a non-exported `LINK_OPTIONS` on a non-binary target, which risks losing a
+  genuinely-needed flag without a validation signal. Revisit alongside
+  `SURVEY_SHARED=1` / `cc_shared_library`, where private `.so` link options
+  actually matter and are measurable via the link-order lens.
+
 - **Symbol-fidelity lens — SHIPPED (v1, opt-in `SURVEY_SYMBOL_FIDELITY`).**
   Wired into `run-survey.sh` as the LAST lens — runs after the build, only when
   the build lens passed (the pipeline ordering: structural → build →
