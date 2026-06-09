@@ -125,3 +125,28 @@ func TestSplitCompileFragments_DropsCudaArchFlags(t *testing.T) {
 		}
 	}
 }
+
+// TestSplitCompileFragments_ShellEscapedDefine pins the shell-tokenized
+// extraction of a string-valued define: OpenBLAS's CMAKE_C_FLAGS carries
+// `-DVERSION="\"0.3.28\""` (the macro value being the C string "0.3.28"). A
+// naive whitespace split leaves the embedded `\"` escapes, which Bazel then
+// passes verbatim to gcc ("missing terminating \" character"). Shell tokenizing
+// collapses them to the faithful argv token, so the emitted define is
+// `VERSION="0.3.28"` (the inner quotes preserved, the shell escaping gone).
+func TestSplitCompileFragments_ShellEscapedDefine(t *testing.T) {
+	frags := []fileapi.CommandFragment{
+		{Fragment: `-DVERSION="\"0.3.28\""`},
+		{Fragment: "-DNDEBUG"},
+		{Fragment: `-DMSG="hello world"`}, // quoted value with a space stays one define
+	}
+	_, defines := splitCompileFragments(frags)
+	want := []string{`VERSION="0.3.28"`, "NDEBUG", "MSG=hello world"}
+	if len(defines) != len(want) {
+		t.Fatalf("defines = %q; want %q", defines, want)
+	}
+	for i, d := range defines {
+		if d != want[i] {
+			t.Fatalf("defines[%d] = %q; want %q (full: %q)", i, d, want[i], defines)
+		}
+	}
+}

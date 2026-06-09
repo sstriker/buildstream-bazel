@@ -7114,18 +7114,19 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 			// Reserved for link fragments; ignore on the compile side.
 			continue
 		}
-		for _, p := range strings.Fields(f.Fragment) {
-			// Strip a balanced pair of surrounding double-quotes cmake added
-			// when it shell-quoted a fragment whose value carries shell-special
-			// chars (CUDA's `"--generate-code=arch=compute_80,code=[sm_80]"` —
-			// quoted for the `[`/`,`). Bazel passes copts as argv with NO shell,
-			// so a literal surrounding quote becomes part of the argument and
-			// breaks the tool (nvcc: "a single input file is required ..."). The
-			// File API fragment is meant to be shell-tokenized; for a no-shell
-			// argv the de-quoted token is the faithful flag. Only a whole-token
-			// "..." pair is stripped (a flag never legitimately needs surrounding
-			// shell quotes in argv form); embedded quotes are left untouched.
-			p = stripBalancedQuotes(p)
+		// Shell-tokenize the fragment (honoring quotes + \-escapes) rather than a
+		// bare whitespace split: the File API fragment is meant to be
+		// shell-tokenized, and a naive split mishandles BOTH a surrounding shell
+		// quote cmake added for shell-special chars (CUDA's
+		// `"--generate-code=arch=compute_80,code=[sm_80]"`) and an embedded
+		// ESCAPED quote in a string-valued define (OpenBLAS's CMAKE_C_FLAGS carries
+		// `-DVERSION="\"0.3.28\""`, the macro value being the C string "0.3.28").
+		// Bazel passes copts/defines as argv with NO shell, so the faithful token
+		// is the shell-PROCESSED one — `-DVERSION="0.3.28"`, not the raw
+		// backslash-laden bytes that make gcc choke on a "missing terminating \"".
+		// splitShellTokens collapses the surrounding-quote and escaped-quote cases
+		// alike, so the old whole-token stripBalancedQuotes step is subsumed.
+		for _, p := range splitShellTokens(f.Fragment) {
 			// Resolve a pending `-include` / `-include-pch` against this
 			// token (its argument). A cmake PCH artifact (cmake_pch.h /
 			// cmake_pch.hxx) drops the whole pair; any other forced-include
