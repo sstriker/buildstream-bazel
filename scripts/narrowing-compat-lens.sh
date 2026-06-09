@@ -3,23 +3,28 @@
 #
 # The converter's translation is meant to be a pure function of the codemodel +
 # trace + the build-system files (CMakeLists / *.cmake / configure_file *.in
-# templates) — NOT of the .c / .cpp / .h SOURCE BYTES. The orchestrated path
-# proves this by construction (it converts against zero-stub sources via the
-# narrowing/FUSE layer). This lens is the empirical proof for the survey:
+# templates) — NOT of the .c / .cpp / .h SOURCE BYTES. No-source-read is the
+# assumed RULE; the few legitimate exceptions (the fused-source textual-include
+# scan: a .c that `#include`s another .c; and the generated-source-root-include
+# rewrite) are PUBLISHED by the converter via --out-source-reads. This lens is
+# the empirical proof for the survey, AND the measure of the exception:
 #
-#   1. Convert the REAL source tree, capturing the converter's read-set
-#      (--out-read-paths: the trace's configure-read source-tree paths).
-#   2. Make a copy with every file truncated to 0 bytes EXCEPT the read-set and
-#      all CMakeLists.txt (always real / special-cased) — so cmake still
-#      configures, but every .c/.cpp/.h the converter must NOT depend on is
-#      zeroed.
+#   1. Convert the REAL source tree, capturing (a) the trace's configure-read
+#      source-tree paths (--out-read-paths) and (b) the converter's DECLARED
+#      source-byte reads (--out-source-reads).
+#   2. Make a copy with every .c/.cpp/.h truncated to 0 bytes EXCEPT the read-set,
+#      the declared source-byte reads, and all build-system files (CMakeLists /
+#      *.cmake / *.in — always kept real so cmake still configures).
 #   3. Re-run the SAME convert against the narrowed copy.
-#   4. Assert the emitted BUILD.bazel.out is byte-for-byte identical (modulo the
-#      source-root path prefix, which legitimately differs between the two trees).
+#   4. Assert the emitted BUILD is byte-identical (modulo the source-root prefix +
+#      ephemeral build dir, both normalized).
 #
-# A diff is a narrowing-soundness bug: the converter secretly read a zeroed
-# file's bytes. The diff itself names the affected srcs/hdrs. Report-only,
-# strict (zero tolerated diffs); writes <out>/narrowing-compat.json.
+# A diff means the converter read a zeroed file's bytes WITHOUT declaring it — an
+# UNDECLARED source-byte read (a narrowing-soundness bug); the diff names the
+# affected srcs/hdrs. A member with declared reads is NOT a failure — it's the
+# measured exception, surfaced as `source-reads: N` in the result so the
+# "exception, not the rule" assumption is auditable per member. Report-only;
+# writes <out>/narrowing-compat.json.
 #
 # Usage: narrowing-compat-lens.sh --src <abs cmake source root> --name <member>
 #          --out <per-project out dir> [--split 0|1] [--bazel-package-path P]
@@ -53,11 +58,12 @@ pkgflag=""; [ -n "$pkgpath" ] && pkgflag="--bazel-package-path $pkgpath"
 real_out="$out/narrow-real.BUILD"
 narrow_out="$out/narrow-zeroed.BUILD"
 reads="$out/narrow-reads.json"
+sreads="$out/narrow-source-reads.json"
 
-# 1. Real convert + read-set capture.
+# 1. Real convert + read-set capture (configure reads + declared source-byte reads).
 # shellcheck disable=SC2086
 if ! $cec --source-root "$src" $splitflag $pkgflag --emit-source-comments \
-        --out-build "$real_out" --out-read-paths "$reads" $extra_args \
+        --out-build "$real_out" --out-read-paths "$reads" --out-source-reads "$sreads" $extra_args \
         >>"$out/narrowing-compat.log" 2>&1; then
     echo "skip(real-convert-failed)"; exit 0
 fi
@@ -72,8 +78,20 @@ fi
 narrowed="$out/narrow-tree"
 rm -rf "$narrowed"; cp -a "$src" "$narrowed"
 keep="$out/.narrow-keep"
-# read-set: strip JSON quoting/punctuation to bare relative paths.
+# keep-set = configure reads ∪ DECLARED source-byte reads (--out-source-reads).
+# The declared source reads are the converter's published exceptions (fused-
+# source includers etc.); keeping them real means a member that legitimately
+# reads them does NOT spuriously diff — only an UNDECLARED read (a zeroed file
+# that wasn't published) can still change the BUILD and FAIL. Strip JSON
+# quoting/punctuation to bare relative paths.
 sed -n 's/^[[:space:]]*"\(.*\)"[,]\{0,1\}[[:space:]]*$/\1/p' "$reads" | sort -u > "$keep"
+src_reads=""
+if [ -f "$sreads" ]; then
+    src_reads="$(sed -n 's/^[[:space:]]*"\(.*\)"[,]\{0,1\}[[:space:]]*$/\1/p' "$sreads" | sort -u)"
+    printf '%s\n' "$src_reads" | sed '/^$/d' >> "$keep"
+    sort -u "$keep" -o "$keep"
+fi
+src_reads_n="$(printf '%s' "$src_reads" | sed '/^$/d' | grep -c . || true)"
 ( cd "$narrowed" && find . -type f \( \
     -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.c++' \
     -o -name '*.h' -o -name '*.hh' -o -name '*.hpp' -o -name '*.hxx' -o -name '*.h++' \
@@ -98,13 +116,23 @@ norm_real="$out/.narrow-real.norm"; norm_narrow="$out/.narrow-zeroed.norm"
 sed -e "s|$src|@SRC@|g" -e 's|/tmp/convert-element-build-[0-9]*|@BUILD@|g' "$real_out" > "$norm_real"
 sed -e "s|$narrowed|@SRC@|g" -e 's|/tmp/convert-element-build-[0-9]*|@BUILD@|g' "$narrow_out" > "$norm_narrow"
 
+# source_reads: the declared exception set, emitted as a JSON array so the
+# result records exactly which source files the converter's translation
+# depended on (empty confirms the no-source-read assumption for this member).
+src_reads_json="[]"
+if [ "$src_reads_n" -gt 0 ]; then
+    src_reads_json="$(printf '%s\n' "$src_reads" | sed '/^$/d' | sed 's/"/\\"/g;s/.*/"&"/' | paste -sd, -)"
+    src_reads_json="[$src_reads_json]"
+fi
+
 if diff -q "$norm_real" "$norm_narrow" >/dev/null 2>&1; then
-    printf '{"member":"%s","ok":true,"diffs":[]}\n' "$name" > "$out/narrowing-compat.json"
-    echo "ok"
+    printf '{"member":"%s","ok":true,"source_reads":%s,"diffs":[]}\n' "$name" "$src_reads_json" > "$out/narrowing-compat.json"
+    echo "ok (source-reads: $src_reads_n)"
 else
-    # Report the diverging lines (added/removed) — these name the srcs/hdrs the
-    # converter secretly read from a zeroed file.
+    # A diff after keeping the declared reads real = an UNDECLARED source-byte
+    # read. Report the diverging lines — they name the srcs/hdrs the converter
+    # read from a zeroed-and-undeclared file.
     d="$(diff "$norm_real" "$norm_narrow" | sed 's/"/\\"/g' | head -40 | tr '\n' '~')"
-    printf '{"member":"%s","ok":false,"diff":"%s"}\n' "$name" "$d" > "$out/narrowing-compat.json"
-    echo "FAIL"
+    printf '{"member":"%s","ok":false,"source_reads":%s,"diff":"%s"}\n' "$name" "$src_reads_json" "$d" > "$out/narrowing-compat.json"
+    echo "FAIL (undeclared source-byte read; declared source-reads: $src_reads_n)"
 fi

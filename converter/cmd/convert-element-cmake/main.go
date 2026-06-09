@@ -820,6 +820,28 @@ func run(a cli.Args) error {
 		auditBlobs = append(auditBlobs, out)
 	}
 
+	// --out-source-reads: publish the SOURCE files whose bytes the lowering
+	// passes read affecting the BUILD (pkg.SourceByteReads) — the declared
+	// exception to the no-source-read rule, consumed by the source-narrowing
+	// lens. Always emits (an empty array when none) so the lens can record
+	// "source-reads: 0" and confirm the assumption held for this member.
+	if a.OutSourceReads != "" {
+		reads := pkg.SourceByteReads
+		if reads == nil {
+			reads = []string{}
+		}
+		body, err := json.MarshalIndent(reads, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(a.OutSourceReads), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(a.OutSourceReads, append(body, '\n'), 0o644); err != nil {
+			return err
+		}
+	}
+
 	// Phase 7: post-emission Bazel-idiom audit. Runs
 	// unconditionally — the audit is read-only and FormatFindings
 	// returns "" when there are no findings, so silent on clean

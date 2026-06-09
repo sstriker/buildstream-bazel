@@ -87,10 +87,14 @@ func stageGeneratedSourceRootIncludes(pkg *ir.Package, hostSrc, bazelPackagePath
 		// kernels: an OpenBLAS kernel #includes sibling micro-kernel sources by
 		// relative path, which must also be declared inputs (they resolve
 		// against the kernel's own dir at compile time — no rewrite needed).
-		incs := textualIncludeClosure(hostSrc, seeds, compiled)
+		incs, readers := textualIncludeClosure(hostSrc, seeds, compiled)
 		if len(incs) == 0 {
 			continue
 		}
+		// Publish the closure files whose bytes drove the expansion as declared
+		// source-byte reads (the narrowing-lens exception). See
+		// ir.Package.SourceByteReads.
+		pkg.SourceByteReads = append(pkg.SourceByteReads, readers...)
 		lib := attachTextualSourceIncludes(pkg, t, incs, "cmake-codegen-generated-source-include", &synth, uniqueName)
 		if lib == "" {
 			inlineRecs = append(inlineRecs, rec{target: t.Name, srcs: incs})

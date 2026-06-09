@@ -292,6 +292,23 @@ type Package struct {
 	// transform that reads it). Empty when no consumer references a
 	// generated header.
 	CodegenHeaderConsumers map[string][]string `json:"-"`
+
+	// SourceByteReads is the element-root-relative set of SOURCE/HEADER files
+	// whose BYTES the lowering passes read in a way that AFFECTED the emitted
+	// BUILD — the fused-source textual-include scan (a `.c` that `#include`s
+	// another `.c`) and the generated-source-root-include rewrite. The
+	// converter's translation is otherwise a pure function of the build-system
+	// files (CMakeLists / *.cmake / *.in) + codemodel + trace, NOT of source
+	// bytes; this field PUBLISHES the few, declared exceptions so the
+	// source-narrowing lens can keep exactly these real (no false diff) and
+	// FAIL only on an UNDECLARED source-byte read — and report the exception
+	// set per member. The assumption is "source-byte reads are the exception,
+	// not the rule"; publishing them makes it measurable and enforceable.
+	// Sorted/deduped; element-root-relative (the shape of Target.Srcs).
+	// Emitted via --out-source-reads.
+	//
+	// Out-of-band (`json:"-"`): never serializes into --out-ir-json.
+	SourceByteReads []string `json:"-"`
 }
 
 // Provenance records the originating source location of a Target.

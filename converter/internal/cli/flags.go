@@ -150,6 +150,17 @@ type Args struct {
 	// per-package allowlist registries.
 	OutReadPaths string
 
+	// OutSourceReads, when non-empty, writes a JSON array of element-root-
+	// relative SOURCE/HEADER paths whose BYTES the lowering passes read in a
+	// way that affected the emitted BUILD (the fused-source textual-include
+	// scan + the generated-source-root-include rewrite) — ir.Package.
+	// SourceByteReads. DISTINCT from OutReadPaths (cmake configure-time
+	// reads): this publishes the converter's own, post-configure source-byte
+	// dependency, the declared exception to the "translation is a pure
+	// function of build-system files" rule. The source-narrowing lens keeps
+	// exactly these real and reports the set per member.
+	OutSourceReads string
+
 	// OutTimings, when non-empty, writes a JSON document with
 	// per-phase wall-clock timings: cmake configure, translation
 	// (lower + emit), and total. M3 aggregates these into a final
@@ -691,6 +702,7 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.StringVar(&a.OutFailure, "out-failure", "", "write Tier-1 failure JSON here on per-codebase errors (optional)")
 	fs.StringVar(&a.ImportsManifest, "imports-manifest", "", "path to JSON imports manifest mapping out-of-tree CMake targets to Bazel labels (optional)")
 	fs.StringVar(&a.OutReadPaths, "out-read-paths", "", "write JSON array of source-tree paths cmake read at configure time (requires --source-root, optional)")
+	fs.StringVar(&a.OutSourceReads, "out-source-reads", "", "write JSON array of element-root-relative SOURCE/HEADER paths the lowering passes byte-read affecting the BUILD (fused-source / generated-source-include scans); the declared narrowing exception (optional)")
 	fs.StringVar(&a.OutTimings, "out-timings", "", "write JSON with per-phase wall-clock timings (cmake configure, translation, total)")
 	fs.StringVar(&a.OutCMakeConfigureReads, "out-cmake-configure-reads", "", "write JSON array of source-relative paths from build.ninja's RERUN_CMAKE implicit-input list (configure-time oracle)")
 	fs.StringVar(&a.OutToolchainSignalDir, "out-toolchain-signal-dir", "", "directory; on success, copy the cmake File API reply contents here so the unifier can fold per-element toolchain signal into the platform's ResolvedToolchain.Base")
