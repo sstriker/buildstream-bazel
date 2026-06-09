@@ -8,8 +8,8 @@ cc_library(
     name = "thelib",
     srcs = ["src/lib.c"],
     copts = ["-O3"],  # keep
-    defines = ["NDEBUG"],  # keep
     linkstatic = True,  # keep
+    local_defines = ["NDEBUG"],
 )
 
 genrule(

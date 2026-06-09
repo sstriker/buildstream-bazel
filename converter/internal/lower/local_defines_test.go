@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/genexeval"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -210,4 +211,119 @@ func TestApplyAddDefinitionsScope_NoTraceNoOp(t *testing.T) {
 		t.Errorf("LocalDefines = %v; want empty", pkg.Targets[0].LocalDefines)
 	}
 	applyAddDefinitionsScope(nil, nil, nil) // must not panic
+}
+
+// TestApplyInterfaceScopeToDefines_KeepsExportedRoutesRest is the principled
+// pass: a define stays transitive iff the owning cmake target exports it via
+// INTERFACE_COMPILE_DEFINITIONS; everything else (private feature macros, the
+// auto <target>_EXPORTS macro, NDEBUG globals) moves to local_defines —
+// including for split sub-libraries mapped back to their owning target via
+// subParent.
+func TestApplyInterfaceScopeToDefines_KeepsExportedRoutesRest(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{
+			{
+				// A normal target exporting PUB_API; FOO_INTERNAL + NDEBUG private.
+				Name:    "vtksys",
+				Kind:    ir.KindCCLibrary,
+				Defines: []string{"PUB_API=1", "FOO_INTERNAL=2", "NDEBUG"},
+			},
+			{
+				// A split sub-library: keyed under <parent>_CXX_4, carries the
+				// real per-compile-group defines, owns nothing itself.
+				Name:    "vtksys_CXX_4",
+				Kind:    ir.KindCCLibrary,
+				Defines: []string{"KWSYS_CXX_HAS_GETLOADAVG=1", "vtksys_EXPORTS", "SIZEOF_VOID_P=8"},
+			},
+			{
+				// Absent from genexTargets (e.g. synthesized header lib) — left
+				// untouched.
+				Name:    "synth_headers",
+				Kind:    ir.KindCCLibrary,
+				Defines: []string{"NDEBUG"},
+			},
+		},
+	}
+	genexTargets := map[string]genexeval.TargetInfo{
+		// vtksys exports only PUB_API; the sub's owner (vtksys) exports nothing
+		// beyond that, so all the sub's feature/EXPORTS defines move local.
+		"vtksys": {InterfaceCompileDefinitions: "PUB_API=1"},
+	}
+	subParent := map[string]string{"vtksys_CXX_4": "vtksys"}
+
+	applyInterfaceScopeToDefines(pkg, genexTargets, subParent)
+
+	// Normal target: PUB_API stays transitive; the rest go local.
+	if want := []string{"PUB_API=1"}; !reflect.DeepEqual(pkg.Targets[0].Defines, want) {
+		t.Errorf("vtksys.Defines = %v; want %v", pkg.Targets[0].Defines, want)
+	}
+	if want := []string{"FOO_INTERNAL=2", "NDEBUG"}; !reflect.DeepEqual(pkg.Targets[0].LocalDefines, want) {
+		t.Errorf("vtksys.LocalDefines = %v; want %v", pkg.Targets[0].LocalDefines, want)
+	}
+	// Split sub: owner exports none of these → all move local (no leak).
+	if len(pkg.Targets[1].Defines) != 0 {
+		t.Errorf("vtksys_CXX_4.Defines = %v; want empty (no transitive leak)", pkg.Targets[1].Defines)
+	}
+	want := []string{"KWSYS_CXX_HAS_GETLOADAVG=1", "vtksys_EXPORTS", "SIZEOF_VOID_P=8"}
+	if !reflect.DeepEqual(pkg.Targets[1].LocalDefines, want) {
+		t.Errorf("vtksys_CXX_4.LocalDefines = %v; want %v", pkg.Targets[1].LocalDefines, want)
+	}
+	// Target absent from genexTargets: unchanged (conservative).
+	if want := []string{"NDEBUG"}; !reflect.DeepEqual(pkg.Targets[2].Defines, want) {
+		t.Errorf("synth_headers.Defines = %v; want %v (untouched)", pkg.Targets[2].Defines, want)
+	}
+	if len(pkg.Targets[2].LocalDefines) != 0 {
+		t.Errorf("synth_headers.LocalDefines = %v; want empty", pkg.Targets[2].LocalDefines)
+	}
+
+	// Empty genexTargets is a no-op (no interface signal).
+	pkg2 := &ir.Package{Targets: []ir.Target{{Name: "x", Defines: []string{"A"}}}}
+	applyInterfaceScopeToDefines(pkg2, nil, nil)
+	if want := []string{"A"}; !reflect.DeepEqual(pkg2.Targets[0].Defines, want) {
+		t.Errorf("no-op: Defines = %v; want %v", pkg2.Targets[0].Defines, want)
+	}
+	applyInterfaceScopeToDefines(nil, genexTargets, subParent) // must not panic
+}
+
+// TestApplyInterfaceScopeToDefines_PerConfigSelectArms covers the multi-config
+// case: a config-divergent define lands in a `defines = select({...})` arm
+// (VTK's KWSYS_SYSTEMINFORMATION_HAS_DEBUG_BUILD, Debug/RelWithDebInfo only),
+// and must move to the matching `local_defines` select arm — preserving the
+// config key — when the owning target doesn't export it. Emptied arms are
+// pruned, and the exported arm entry stays transitive.
+func TestApplyInterfaceScopeToDefines_PerConfigSelectArms(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "vtksys",
+			Kind: ir.KindCCLibrary,
+			PerPlatform: map[string]map[string][]string{
+				"defines": {
+					"//config:debug":          {"KWSYS_SYSTEMINFORMATION_HAS_DEBUG_BUILD=1", "PUB_API=1"},
+					"//config:relwithdebinfo": {"KWSYS_SYSTEMINFORMATION_HAS_DEBUG_BUILD=1"},
+				},
+			},
+		}},
+	}
+	genexTargets := map[string]genexeval.TargetInfo{
+		"vtksys": {InterfaceCompileDefinitions: "PUB_API=1"},
+	}
+	applyInterfaceScopeToDefines(pkg, genexTargets, nil)
+	tgt := pkg.Targets[0]
+
+	// The exported PUB_API stays in the debug `defines` arm; the relwithdebinfo
+	// arm emptied (only the private define) so it's pruned.
+	if want := []string{"PUB_API=1"}; !reflect.DeepEqual(tgt.PerPlatform["defines"]["//config:debug"], want) {
+		t.Errorf("defines[debug] = %v; want %v", tgt.PerPlatform["defines"]["//config:debug"], want)
+	}
+	if _, ok := tgt.PerPlatform["defines"]["//config:relwithdebinfo"]; ok {
+		t.Errorf("relwithdebinfo defines arm should be pruned (only a private define); got %v", tgt.PerPlatform["defines"]["//config:relwithdebinfo"])
+	}
+	// The private debug define moves to the local_defines select arm, per config.
+	ld := tgt.PerPlatform["local_defines"]
+	if want := []string{"KWSYS_SYSTEMINFORMATION_HAS_DEBUG_BUILD=1"}; !reflect.DeepEqual(ld["//config:debug"], want) {
+		t.Errorf("local_defines[debug] = %v; want %v", ld["//config:debug"], want)
+	}
+	if want := []string{"KWSYS_SYSTEMINFORMATION_HAS_DEBUG_BUILD=1"}; !reflect.DeepEqual(ld["//config:relwithdebinfo"], want) {
+		t.Errorf("local_defines[relwithdebinfo] = %v; want %v", ld["//config:relwithdebinfo"], want)
+	}
 }

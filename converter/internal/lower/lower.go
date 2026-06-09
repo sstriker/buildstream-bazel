@@ -1684,6 +1684,17 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		// local_defines so it doesn't leak to consumers (e.g. curl's
 		// BUILDING_LIBCURL on libcurl leaking to the curl tool).
 		applyAddDefinitionsScope(pkg, decodedTrace.AddDefinitions, decodedTrace.CompileDefinitions)
+		// Principled define-scope pass: keep a define transitive only when the
+		// owning cmake target EXPORTS it via INTERFACE_COMPILE_DEFINITIONS, else
+		// route it to local_defines. Generalizes the two trace passes above —
+		// which only classify target_compile_definitions PRIVATE + add_definitions
+		// — to every private mechanism (set_property COMPILE_DEFINITIONS, the auto
+		// <target>_EXPORTS macro, CMAKE_<LANG>_FLAGS globals). genexTargets carries
+		// cmake's resolved INTERFACE_COMPILE_DEFINITIONS; cc.SubParent maps split
+		// sub-libraries back to their owning cmake target. Gated with the trace
+		// (decodedTrace != nil) so the interface whitelist is populated; a no-op
+		// when genexTargets is empty.
+		applyInterfaceScopeToDefines(pkg, genexTargets, cc.SubParent)
 	}
 	// Probe-genex per-target Properties → Bazel attributes:
 	// BUILD_RPATH / INSTALL_RPATH lift to linkopts,
@@ -1912,6 +1923,16 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			configs = append(configs, cfg.Name)
 		}
 		lowerMultiConfigDeltas(pkg, r.TargetsByConfig, configs, cmakeSrc, cmakeBuild, idToName)
+		// The multi-config fold populates the per-config `defines` select() arms
+		// AFTER the flat-define scoping above, so a config-divergent PRIVATE
+		// define (VTK's KWSYS_SYSTEMINFORMATION_HAS_DEBUG_BUILD, set only under
+		// Debug/RelWithDebInfo via set_property(SOURCE … COMPILE_DEFINITIONS_DEBUG))
+		// lands transitive and bypasses that scoping. Re-run the interface-scope
+		// pass here to route the freshly-folded per-config arms (idempotent on the
+		// already-scoped flat defines). Gated with the trace like the flat pass.
+		if decodedTrace != nil {
+			applyInterfaceScopeToDefines(pkg, genexTargets, cc.SubParent)
+		}
 	}
 	// Surface missing-include-dir skips so the operator sees the
 	// cmake oddity instead of silently losing the dir. Per-dir

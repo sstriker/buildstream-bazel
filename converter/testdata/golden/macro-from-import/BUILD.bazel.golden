@@ -10,9 +10,9 @@ cc_library(
     srcs = ["src/mfi.c"],
     hdrs = ["include/mfi.h"],
     copts = ["-O3"],  # keep
-    defines = ["NDEBUG"],  # keep
     includes = ["include"],  # keep
     linkstatic = True,  # keep
+    local_defines = ["NDEBUG"],
     deps = ["//elements/zlib"],
 )
 

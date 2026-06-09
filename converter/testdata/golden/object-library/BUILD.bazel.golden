@@ -9,9 +9,9 @@ cc_library(
     name = "objlib_archive",
     srcs = ["src/main.c"],
     copts = ["-O3"],  # keep
-    defines = ["NDEBUG"],  # keep
     includes = ["include"],  # keep
     linkstatic = True,  # keep
+    local_defines = ["NDEBUG"],
     deps = [":objlib_obj"],
 )
 
@@ -23,8 +23,8 @@ cc_library(
     ],
     hdrs = ["include/objlib.h"],
     copts = ["-O3"],  # keep
-    defines = ["NDEBUG"],  # keep
     includes = ["include"],  # keep
+    local_defines = ["NDEBUG"],
     alwayslink = True,  # keep
 )
 
