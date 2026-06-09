@@ -1696,6 +1696,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		// when genexTargets is empty.
 		applyInterfaceScopeToDefines(pkg, genexTargets, cc.SubParent)
 	}
+	// PRIVATE link-dependency scope: route deps cmake marks `$<LINK_ONLY:Dep>`
+	// in INTERFACE_LINK_LIBRARIES (the probe captures it verbatim) from the
+	// transitive `deps` to `implementation_deps`, so a privately-linked dep's
+	// PUBLIC defines/includes don't over-propagate to consumers. Independent of
+	// the trace (driven by the probe's LINK_ONLY marker); a no-op when no marker
+	// is present (non-probe converts, or targets with no private links).
+	applyInterfaceLinkScopeToDeps(pkg, genexTargets, cc.SubParent)
 	// Probe-genex per-target Properties → Bazel attributes:
 	// BUILD_RPATH / INSTALL_RPATH lift to linkopts,
 	// POSITION_INDEPENDENT_CODE to features=["pic"] /
