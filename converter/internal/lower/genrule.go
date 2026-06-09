@@ -298,15 +298,6 @@ func newCodegenContext() *codegenContext {
 	}
 }
 
-// recoverGenrule looks up the ninja Build statement that produces the given
-// generated source path and lowers it to an ir.Target{Kind: KindGenrule}.
-// Returns the package-relative output path to use as the consuming target's
-// input, plus the genrule name. If recovery isn't possible (no ninja graph,
-// no producing build, refused command shape), returns a typed Tier-1 error.
-//
-// buildDir is the cmake-side build directory (r.Codemodel.Paths.Build);
-// generated source paths in the File API are absolute under it, and ninja's
-// build statements are relative to it.
 // recoverCmakeScriptGenrule handles the `cmake -P <script>` custom-command case
 // of recoverGenrule (selected by usesCmakeScriptMode). The operator can opt into
 // the cmake-P lift by staging the runner tool and passing
@@ -380,6 +371,15 @@ func (cc *codegenContext) recoverCmakeScriptGenrule(b *ninja.Build, cmd, cmakeSr
 	return "", "", failure.New(failure.UnsupportedCustomCommandScript, "%s", msg)
 }
 
+// recoverGenrule looks up the ninja Build statement that produces the given
+// generated source path and lowers it to an ir.Target{Kind: KindGenrule}.
+// Returns the package-relative output path to use as the consuming target's
+// input, plus the genrule name. If recovery isn't possible (no ninja graph,
+// no producing build, refused command shape), returns a typed Tier-1 error.
+//
+// buildDir is the cmake-side build directory (r.Codemodel.Paths.Build);
+// generated source paths in the File API are absolute under it, and ninja's
+// build statements are relative to it.
 func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *ninja.Graph) (relOut, name string, err error) {
 	relOut, ok := relativeIfInside(buildDir, srcPath)
 	if !ok {
