@@ -1658,6 +1658,17 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		// local_defines so it doesn't leak to consumers (e.g. curl's
 		// BUILDING_LIBCURL on libcurl leaking to the curl tool).
 		applyAddDefinitionsScope(pkg, decodedTrace.AddDefinitions, decodedTrace.CompileDefinitions)
+		// Principled define-scope pass: keep a define transitive only when the
+		// owning cmake target EXPORTS it via INTERFACE_COMPILE_DEFINITIONS, else
+		// route it to local_defines. Generalizes the two trace passes above —
+		// which only classify target_compile_definitions PRIVATE + add_definitions
+		// — to every private mechanism (set_property COMPILE_DEFINITIONS, the auto
+		// <target>_EXPORTS macro, CMAKE_<LANG>_FLAGS globals). genexTargets carries
+		// cmake's resolved INTERFACE_COMPILE_DEFINITIONS; cc.SubParent maps split
+		// sub-libraries back to their owning cmake target. Gated with the trace
+		// (decodedTrace != nil) so the interface whitelist is populated; a no-op
+		// when genexTargets is empty.
+		applyInterfaceScopeToDefines(pkg, genexTargets, cc.SubParent)
 	}
 	// Probe-genex per-target Properties → Bazel attributes:
 	// BUILD_RPATH / INSTALL_RPATH lift to linkopts,

@@ -16,9 +16,9 @@ cc_library(
         "-O3",
         "-Iinclude/private",
     ],  # keep
-    defines = ["NDEBUG"],  # keep
     includes = ["include"],  # keep
     linkstatic = True,  # keep
+    local_defines = ["NDEBUG"],
 )
 
 pkg_files(

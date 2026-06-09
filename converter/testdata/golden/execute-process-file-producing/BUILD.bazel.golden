@@ -9,8 +9,8 @@ cc_library(
     srcs = ["src/lib.c"],
     hdrs = ["generated.h"],
     copts = ["-O3"],  # keep
-    defines = ["NDEBUG"],  # keep
     linkstatic = True,  # keep
+    local_defines = ["NDEBUG"],
     tags = ["has-cmake-codegen"],  # keep
 )
 

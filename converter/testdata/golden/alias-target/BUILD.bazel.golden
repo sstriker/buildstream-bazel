@@ -10,9 +10,9 @@ cc_library(
     srcs = ["src/aliaslib.c"],
     hdrs = ["include/aliaslib.h"],
     copts = ["-O3"],  # keep
-    defines = ["NDEBUG"],  # keep
     includes = ["include"],  # keep
     linkstatic = True,  # keep
+    local_defines = ["NDEBUG"],
 )
 
 cc_binary(
@@ -22,9 +22,9 @@ cc_binary(
         "src/demo.c",
     ],
     copts = ["-O3"],  # keep
-    defines = ["NDEBUG"],  # keep
     includes = ["include"],  # keep
     linkopts = ["-O3"],  # keep
+    local_defines = ["NDEBUG"],
     deps = [":aliaslib"],
 )
 

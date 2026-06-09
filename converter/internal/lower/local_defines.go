@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/genexeval"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -105,6 +106,84 @@ func applyPrivateScopeToDefines(pkg *ir.Package, calls []shadow.TargetCompileCal
 				continue
 			}
 			kept = append(kept, d)
+		}
+		t.Defines = kept
+	}
+}
+
+// applyInterfaceScopeToDefines is the PRINCIPLED define-scope pass: it
+// keeps a target's define in the transitive `defines` ONLY when the owning
+// cmake target actually exports it via INTERFACE_COMPILE_DEFINITIONS, and
+// routes every other compile-group define to the non-transitive
+// `local_defines`.
+//
+// Why this is the faithful model. The codemodel's CompileGroups.Defines is
+// the FULLY-RESOLVED per-TU define set — a target's own private/public
+// definitions PLUS everything inherited from its deps' interfaces — with no
+// scope tag. cmake's scope rule is simple: only INTERFACE_COMPILE_DEFINITIONS
+// propagates to consumers; the per-target COMPILE_DEFINITIONS property (set
+// via target_compile_definitions PRIVATE, set_property(SOURCE|TARGET …
+// COMPILE_DEFINITIONS …), set_target_properties, add_definitions, the auto
+// <target>_EXPORTS macro, or CMAKE_<LANG>_FLAGS_<CONFIG> globals like NDEBUG)
+// is private to that target's own compilation. The trace-driven passes
+// (applyPrivateScopeToDefines / applyAddDefinitionsScope) only catch the
+// subset they can classify (target_compile_definitions PRIVATE +
+// add_definitions); anything set by another mechanism falls through to the
+// transitive `defines` and LEAKS to every consumer — VTK's KWSys feature
+// macros (set via set_property(SOURCE … COMPILE_DEFINITIONS …)) and the
+// vtksys_EXPORTS macro leaked onto ~2.6k consumer TUs that way.
+//
+// Using INTERFACE_COMPILE_DEFINITIONS as the propagation whitelist inverts
+// the default to the cmake-correct one: a define propagates iff cmake says it
+// does. Leaving non-exported defines in `local_defines` keeps them on the
+// owning target's OWN compile (matching cmake exactly) without re-exporting
+// them; defines genuinely inherited from a dep still reach the target via that
+// dep's own (correctly-kept) transitive `defines`, so nothing is lost.
+//
+// Split sub-libraries (splitCompileGroups' per-compile-group <name>_CXX_N
+// objects) carry the real defines but are keyed under a synthesized name;
+// subParent maps each back to its owning cmake target so the right interface
+// whitelist applies.
+//
+// Guarded on having an interface signal at all (genexTargets non-empty, which
+// the caller pairs with decodedTrace != nil): a target ABSENT from
+// genexTargets (synthesized header libs, genrules, imported-only entries) is
+// left untouched, and an empty INTERFACE_COMPILE_DEFINITIONS on a PRESENT
+// target legitimately means "exports nothing" → all its defines move local.
+func applyInterfaceScopeToDefines(pkg *ir.Package, genexTargets map[string]genexeval.TargetInfo, subParent map[string]string) {
+	if pkg == nil || len(genexTargets) == 0 {
+		return
+	}
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if len(t.Defines) == 0 {
+			continue
+		}
+		// Split subs are keyed under their synthesized name; the exported
+		// set belongs to the owning cmake target.
+		owner := t.Name
+		if p, ok := subParent[t.Name]; ok {
+			owner = p
+		}
+		ti, ok := genexTargets[owner]
+		if !ok {
+			// No codemodel/probe signal for this target — leave the emit
+			// unchanged (the conservative trace passes already ran).
+			continue
+		}
+		exported := map[string]bool{}
+		for _, d := range splitResolvedDefines(ti.InterfaceCompileDefinitions) {
+			exported[normalizeDefineItem(d)] = true
+		}
+		kept := t.Defines[:0]
+		for _, d := range t.Defines {
+			if exported[normalizeDefineItem(d)] {
+				kept = append(kept, d)
+				continue
+			}
+			if !stringSliceContains(t.LocalDefines, d) {
+				t.LocalDefines = append(t.LocalDefines, d)
+			}
 		}
 		t.Defines = kept
 	}

@@ -11,9 +11,9 @@ cc_library(
     srcs = ["src/cfglib.c"],
     hdrs = ["config.h"],
     copts = ["-O3"],  # keep
-    defines = ["NDEBUG"],  # keep
     includes = ["src"],  # keep
     linkstatic = True,  # keep
+    local_defines = ["NDEBUG"],
     tags = ["has-cmake-codegen"],  # keep
 )
 
