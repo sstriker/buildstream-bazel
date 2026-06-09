@@ -62,11 +62,31 @@ transition cleanly.
   regress `add_custom_command` OUTPUTs are absolute) walked down to `/` and
   spun there forever. Now the walk stops at the `path.Dir` fixed point; libevent
   `--diagnostics` (tests on) completes in seconds (guard:
-  `TestAnchorGenruleOutputsToRuledir_AbsoluteOutputTerminates`). **Remaining:**
-  `EVENT__DISABLE_TESTS=ON` still in libevent.conf because the regress tree's
-  generated `test/regress.gen.c` trips an outside-build-dir rejection — a
-  separate, narrower issue (a clean refusal, not a hang) to chase if the lens
-  wants libevent's tests in scope.
+  `TestAnchorGenruleOutputsToRuledir_AbsoluteOutputTerminates`).
+
+  **In-source generation (`regress.gen.c`) — monolithic SHIPPED; split is the
+  remaining piece.** libevent's `add_custom_command` writes `test/regress.gen.c`
+  into the SOURCE tree via `cd <src>/test && python3 ../event_rpcgen.py …`
+  (a `WORKING_DIRECTORY` shape). Bazel can't write into the source tree and a
+  genrule's outputs must live in its own package, so the standalone walk now
+  reconstructs the working dir in a `mktemp` scratch dir
+  (`buildInSourceWorkdirGenrule`): it materializes each declared input at its
+  element-relative position (via `$(execpath)`), runs the command verbatim from
+  the scratch wd, then copies outputs to their `$(RULEDIR)/<out>` anchored paths
+  (which `relocateGenruleOuts` re-relativizes on a split re-home). The consuming
+  target references the output instead of refusing. Validated end-to-end on a
+  fixture (`/tmp/insrc-fix`, tool in parent dir + output in subdir):
+  `SURVEY_SPLIT_PACKAGES=0 … → insrc 0 0 0 0 ok ok`. Guards:
+  `TestInSourceOutputs` + `TestBuildInSourceWorkdirGenrule`.
+  **Split (`--split-packages`, the lens default) is gated OFF** (`lower.Options.
+  SplitPackages` → clean refusal, unchanged) because the split genrule re-home
+  doesn't yet relabel the genrule's CROSS-PACKAGE source cmd-refs (`$(execpath
+  gen.py)` where `gen.py` is in an ancestor package) — `relocateGenruleOuts`
+  handles outs and `relocateGenruleTools` handles tools, but there's no
+  equivalent for srcs, and the ancestor source package needs an `exports_files`
+  (a root with only `add_subdirectory` emits no BUILD today). That split-side
+  relabel + source-export is the follow-on that lets `EVENT__DISABLE_TESTS` come
+  off under the split lens.
 
 - **Green the remaining heavyweight corpus members: vtk (tail), cuda-samples.**
   25/26 are green (protobuf + sdl + vtk + grpc landed). Remaining:

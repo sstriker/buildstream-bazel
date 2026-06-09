@@ -148,6 +148,12 @@ type codegenContext struct {
 	// closures of the cmake-P gap).
 	CMakeScriptBake bool
 
+	// SplitPackages mirrors the emit-time --split-packages flag (see
+	// lower.Options.SplitPackages). Gates in-source-generation genrule recovery
+	// to the monolithic emit until the split-side cross-package source handling
+	// lands.
+	SplitPackages bool
+
 	// LiftCCEmbed, when true, recognizes a custom command running a known
 	// file-embedding cmake -P encoder (VTK's vtkEncodeString) and lowers
 	// it to the native cc_embed rule (//tools:cc-embed) instead of the

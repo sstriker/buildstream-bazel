@@ -195,6 +195,17 @@ type Options struct {
 	// rationale + cache-key analysis.
 	LiftConfigureFile bool
 
+	// SplitPackages mirrors the emit-time --split-packages flag. lower is
+	// normally emit-agnostic, but in-source-generation genrule recovery (a
+	// source-tree WORKING_DIRECTORY custom command, e.g. libevent's
+	// event_rpcgen.py) currently only produces a correct genrule under the
+	// monolithic emit; the split emit's genrule re-home doesn't yet relabel
+	// the genrule's cross-package source cmd-refs ($(execpath <src>)) or emit
+	// the owning source package's exports_files. So the in-source recovery is
+	// gated to the monolithic emit; under split it stays a clean refusal until
+	// the split-side support lands. (See the in-source-workdir handling.)
+	SplitPackages bool
+
 	// CMakeVars is the full cmake variable namespace captured
 	// at end of configure (cmakerun.Reply.Vars). Used by the
 	// configure_file lift as the values map for the lifted
@@ -1129,6 +1140,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	cc.CMakeScriptRunner = opts.CMakeScriptRunner
 	cc.CMakeScriptTrace = opts.CMakeScriptTrace
 	cc.CMakeScriptBake = opts.CMakeScriptBake
+	cc.SplitPackages = opts.SplitPackages
 	cc.LiftCCEmbed = opts.LiftCCEmbed
 	cc.LiftCCHash = opts.LiftCCHash
 	cc.CMakeBinary = lookupCmakeBinary()
@@ -2295,6 +2307,29 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				if rel != "" && hostSrc != "" {
 					if _, err := os.Stat(filepath.Join(hostSrc, rel)); err == nil {
 						attachGeneratedSource(irt, rel, inCompileGroup[i], false, "")
+						continue
+					}
+				}
+				// Purely generated IN-SOURCE output not on disk: cmake's
+				// add_custom_command writes it into the SOURCE tree (libevent's
+				// test/regress.gen.c via event_rpcgen.py with a source-dir
+				// WORKING_DIRECTORY). recoverGenrule can't anchor a source-tree
+				// output (it's not under the build dir), but the standalone-
+				// custom-command walk emits a genrule producing it at this
+				// element-relative path (see buildInSourceWorkdirGenrule); refer
+				// to that output here instead of refusing. Gated on the producing
+				// ninja edge being a CUSTOM_COMMAND so a genuinely-missing source
+				// still refuses.
+				if rel != "" && g != nil && !cc.SplitPackages {
+					// ninja keys an in-source output by its ABSOLUTE path; src.Path
+					// here is cmakeSrc-relative, so look up the absolute form.
+					abs := src.Path
+					if !filepath.IsAbs(abs) {
+						abs = filepath.Join(cmakeSrc, rel)
+					}
+					if b := g.BuildFor(abs); b != nil && b.Rule == "CUSTOM_COMMAND" {
+						attachGeneratedSource(irt, rel, inCompileGroup[i], true, cc.CcEmbedSourceToHeader[rel])
+						consumesCodegen = true
 						continue
 					}
 				}

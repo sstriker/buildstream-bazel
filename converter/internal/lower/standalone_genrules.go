@@ -250,6 +250,38 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			continue
 		}
 
+		// IN-SOURCE generation: the declared OUTPUT lands in the SOURCE tree
+		// (under cmakeSrc) via a source-dir `cd <srcdir> && <tool>`
+		// WORKING_DIRECTORY shape (libevent's event_rpcgen.py →
+		// test/regress.gen.{c,h}). Bazel can't write into the source tree, and a
+		// genrule's outputs must live in its own package, so the normal
+		// build-dir-output path can't express it (it would emit absolute outs).
+		// Reconstruct the working dir in a mktemp scratch dir and copy outputs to
+		// their $(RULEDIR)/<out> anchored paths — see buildInSourceWorkdirGenrule.
+		if relOuts, inSrc := inSourceOutputs(outs, cmakeSrc); inSrc && cc != nil && !cc.SplitPackages {
+			body := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath)
+			wdAbs := extractCdDir(cmd)
+			wd, wdInside := relativeIfInside(cmakeSrc, wdAbs)
+			if wdAbs != "" && wdInside {
+				name := genruleNameFor(b, buildDir)
+				out = append(out, ir.Target{
+					Name:        name,
+					Kind:        ir.KindGenrule,
+					Srcs:        srcs,
+					GenruleOuts: relOuts,
+					GenruleCmd:  buildInSourceWorkdirGenrule(body, filepath.ToSlash(wd), srcs, relOuts),
+					Tags:        []string{"cmake-codegen-standalone-custom-command", "cmake-codegen-in-source-workdir"},
+					Visibility:  []string{"//visibility:private"},
+				})
+				for _, o := range relOuts {
+					cc.OutToGenrule[o] = name
+				}
+				continue
+			}
+			// No recoverable source-dir WORKING_DIRECTORY: fall through (the
+			// normal path will emit the historical shape / refuse downstream).
+		}
+
 		// A standalone `cmake -P <script>` custom command can't run under Bazel
 		// (no cmake on the executor), so emitting it as a raw genrule produces
 		// an unrunnable rule (LLVM's VCSRevision.h: `cmake -P
@@ -459,6 +491,61 @@ func dropLiftedToolSrcs(srcs, tools []string, artifactToName map[string]string) 
 		kept = append(kept, s)
 	}
 	return kept
+}
+
+// inSourceOutputs reports whether EVERY output is an absolute path under
+// cmakeSrc (i.e. the custom command writes into the SOURCE tree — in-source
+// generation), returning the element-root-relative forms. A mixed edge (some
+// outputs in the build dir, some in the source tree) or any non-source output
+// returns ok=false so the caller keeps the normal build-dir-output path.
+func inSourceOutputs(outs []string, cmakeSrc string) (rel []string, ok bool) {
+	if cmakeSrc == "" || len(outs) == 0 {
+		return nil, false
+	}
+	for _, o := range outs {
+		if !filepath.IsAbs(o) {
+			return nil, false
+		}
+		r, inside := relativeIfInside(cmakeSrc, o)
+		if !inside {
+			return nil, false
+		}
+		rel = append(rel, filepath.ToSlash(r))
+	}
+	return rel, true
+}
+
+// buildInSourceWorkdirGenrule builds the genrule cmd for an in-source
+// WORKING_DIRECTORY custom command (see the call site). It reconstructs the
+// command's working directory in a mktemp scratch dir — free of Bazel's
+// rule-writes-only-within-its-package constraint — by materializing every
+// declared input (srcs, referenced by $(execpath) so the labels survive a
+// split package move) at its element-root-relative position, running the
+// already-stripped command body verbatim from the scratch working dir (wd,
+// element-root-relative), then copying each output to its $(RULEDIR)/<out>
+// anchored path. The $(RULEDIR)/<out> form is exactly what split's
+// relocateGenruleOuts re-relativizes when the genrule re-homes into its
+// output's package, so the same cmd is correct under both the monolithic and
+// --split-packages emits. outs are element-root-relative; an output's path
+// under the scratch wd is its own element-relative path (the tool writes it at
+// the wd-relative position, which equals <out> since <out> is under wd).
+func buildInSourceWorkdirGenrule(body, wd string, srcs, outs []string) string {
+	var b strings.Builder
+	b.WriteString(`tmp="$$(mktemp -d)"`)
+	for _, s := range srcs {
+		if d := path.Dir(s); d != "." {
+			b.WriteString(` && mkdir -p "$$tmp/` + d + `"`)
+		}
+		b.WriteString(` && cp "$(execpath ` + s + `)" "$$tmp/` + s + `"`)
+	}
+	b.WriteString(` && ( cd "$$tmp/` + wd + `" && ` + body + ` )`)
+	for _, o := range outs {
+		if d := path.Dir(o); d != "." {
+			b.WriteString(` && mkdir -p "$(RULEDIR)/` + d + `"`)
+		}
+		b.WriteString(` && cp "$$tmp/` + o + `" "$(RULEDIR)/` + o + `"`)
+	}
+	return b.String()
 }
 
 // anchorGenruleOutputsToRuledir rewrites each build-dir-relative output
