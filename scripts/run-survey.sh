@@ -701,12 +701,17 @@ for entry in $projects; do
 
     # 7th lens — SYMBOL FIDELITY (SURVEY_SYMBOL_FIDELITY=1). Runs LAST, after the
     # build, and only when the build lens passed — per the pipeline ordering
-    # (structural → build → symbol-fidelity). Reuses scripts/run-fidelity.sh (a
-    # self-contained cmake build → convert → bazel build → cmd/fidelity-compare
-    # A-B-C with benign auto-classification) driven by the member's per-member
-    # config scripts/build-lens/<name>.symfidelity (SYMFID_TARGET +
-    # SYMFID_ARTIFACT or SYMFID_{CMAKE,BAZEL}_ARTIFACT [+ SYMFID_CMAKE_FLAGS]) and
-    # its testdata/fidelity/<name>.allowlist.txt. Report-only
+    # (structural → build → symbol-fidelity). SPLIT-consistent with the rest of
+    # the survey: it does NOT re-convert via run-fidelity (that's the CI/mono
+    # path). Instead it (1) reuses the bazel archive the build lens ABOVE already
+    # built split (so generated configure_file headers etc. are wired exactly as
+    # the corpus builds them — libxml2's <libxml/xmlversion.h> resolves via the
+    # synthesized root_headers, which mono never gets), (2) builds the cmake-side
+    # archive natively (cmake owns its configure_file generation), and (3) diffs
+    # the two exported-symbol sets with cmd/fidelity-compare. Driven by the
+    # member's scripts/build-lens/<name>.symfidelity (SYMFID_TARGET + SYMFID_
+    # ARTIFACT or SYMFID_{CMAKE,BAZEL}_ARTIFACT [+ SYMFID_CMAKE_FLAGS]) and its
+    # testdata/fidelity/<name>.allowlist.txt. Report-only
     # (<out>/<name>/symbol-fidelity.json); members without a config self-skip.
     if [ "${SURVEY_SYMBOL_FIDELITY:-0}" != "0" ] && [ "$build_status" = "ok" ]; then
         _sf_conf="$repo_root/scripts/build-lens/$name.symfidelity"
@@ -716,27 +721,66 @@ for entry in $projects; do
                 SYMFID_BAZEL_ARTIFACT=""; SYMFID_CMAKE_FLAGS=""; SYMFID_CONVERT_FLAGS=""
                 # shellcheck disable=SC1090
                 . "$_sf_conf"
-                _sf_pat=""
-                [ -n "$SYMFID_ARTIFACT" ] && _sf_pat="--artifact-pattern $SYMFID_ARTIFACT"
-                [ -n "$SYMFID_CMAKE_ARTIFACT" ] && _sf_pat="$_sf_pat --cmake-artifact-pattern $SYMFID_CMAKE_ARTIFACT"
-                [ -n "$SYMFID_BAZEL_ARTIFACT" ] && _sf_pat="$_sf_pat --bazel-artifact-pattern $SYMFID_BAZEL_ARTIFACT"
+                _sf_log="$proj_out/symbol-fidelity.log"; : > "$_sf_log"
+                _sf_cmke="${SYMFID_CMAKE_ARTIFACT:-$SYMFID_ARTIFACT}"
+                _sf_bzl="${SYMFID_BAZEL_ARTIFACT:-$SYMFID_ARTIFACT}"
+                [ -z "$_sf_bzl" ] && _sf_bzl="lib${SYMFID_TARGET}.a"
+
+                # (1) Bazel side: reuse the build lens's CONVERTED SPLIT workspace
+                # (so generated configure_file headers wire as the corpus builds
+                # them — libxml2's <libxml/xmlversion.h>), but rebuild //... at the
+                # RELEASE config arm. Exported-symbol sets are optimization-
+                # sensitive: a debug build emits weak template instantiations that
+                # an optimized build inlines away, so the bazel side must match the
+                # cmake Release build below. Deps are cached in the build lens's
+                # bzcache, so this is an incremental release recompile.
+                _sf_rc="${SURVEY_REPO_CACHE:-${HOME:-/tmp}/.cache/bsb-survey-repos}"
+                ( cd "$proj_out/build-ws" && $bzl_bin --output_user_root="$proj_out/.bzcache" \
+                    --noworkspace_rc ${META_BAZEL_STARTUP_ARGS:-} build --repository_cache="$_sf_rc" \
+                    --//config:build_type=release //... ) >>"$_sf_log" 2>&1 || true
+                _sf_bzlart="$(find -L "$proj_out/build-ws/bazel-bin" -name "$_sf_bzl" -type f 2>/dev/null | head -1)"
+
+                # (2) Cmake side: cmake configures+builds the target natively at
+                # Release (config-aligned with the bazel side above). Defines mirror
+                # the build-lens convert so the symbol set matches: BUILD_SHARED_LIBS
+                # =OFF + the .conf's --cmake-define pairs (sourced here; the loop
+                # sources confs only in subshells) + SYMFID_CMAKE_FLAGS.
+                _sf_defs="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 $SYMFID_CMAKE_FLAGS"
+                _sf_cflags="$(
+                    CONVERT_FLAGS=""
+                    [ -f "$repo_root/scripts/build-lens/$name.conf" ] && . "$repo_root/scripts/build-lens/$name.conf" >/dev/null 2>&1 || true
+                    printf '%s' "$CONVERT_FLAGS"
+                )"
+                # shellcheck disable=SC2086
+                set -- $_sf_cflags
+                while [ $# -gt 0 ]; do
+                    if [ "$1" = "--cmake-define" ] && [ $# -ge 2 ]; then _sf_defs="$_sf_defs -D$2"; shift 2; else shift; fi
+                done
+                _sf_cm="$proj_out/symfid-cmake"; rm -rf "$_sf_cm"
+                _sf_cmart=""
+                # shellcheck disable=SC2086
+                if cmake -S "$src" -B "$_sf_cm" -G Ninja $_sf_defs >>"$_sf_log" 2>&1 \
+                        && cmake --build "$_sf_cm" --target "$SYMFID_TARGET" >>"$_sf_log" 2>&1; then
+                    _sf_cmart="$(find "$_sf_cm" -name "$_sf_cmke" -type f 2>/dev/null | head -1)"
+                fi
+
+                # (3) Compare exported-symbol sets.
+                _sf_cmp="$repo_root/build/bin/fidelity-compare"
+                ( cd "$repo_root" && go build -o "$_sf_cmp" ./cmd/fidelity-compare ) 2>>"$_sf_log" || _sf_cmp="go run $repo_root/cmd/fidelity-compare"
                 _sf_al=""
                 [ -f "$repo_root/testdata/fidelity/$name.allowlist.txt" ] && _sf_al="--allowlist $repo_root/testdata/fidelity/$name.allowlist.txt"
-                _sf_cf=""
-                [ -n "$SYMFID_CMAKE_FLAGS" ] && _sf_cf="--cmake-flags $SYMFID_CMAKE_FLAGS"
-                # SYMFID_CONVERT_FLAGS: extra convert args some members need (e.g.
-                # Catch2's --lift-configure-file for its generated version header).
-                _sf_xf=""
-                [ -n "$SYMFID_CONVERT_FLAGS" ] && _sf_xf="--convert-flags $SYMFID_CONVERT_FLAGS"
-                # shellcheck disable=SC2086
-                if sh "$repo_root/scripts/run-fidelity.sh" --project-name "$name" \
-                        --source-root "$src" --target "$SYMFID_TARGET" $_sf_pat $_sf_al $_sf_cf $_sf_xf \
-                        > "$proj_out/symbol-fidelity.log" 2>&1; then
-                    printf '{"member":"%s","ok":true}\n' "$name" > "$proj_out/symbol-fidelity.json"
-                    echo "  $name: symbol-fidelity -> ok" >&2
+                if [ -n "$_sf_bzlart" ] && [ -n "$_sf_cmart" ]; then
+                    # shellcheck disable=SC2086
+                    if $_sf_cmp --cmake-artifact "$_sf_cmart" --bazel-artifact "$_sf_bzlart" \
+                            --report "$proj_out/symbol-fidelity.json" $_sf_al >>"$_sf_log" 2>&1; then
+                        echo "  $name: symbol-fidelity -> ok" >&2
+                    else
+                        echo "  $name: symbol-fidelity -> FAIL (see $_sf_log)" >&2
+                    fi
                 else
-                    printf '{"member":"%s","ok":false}\n' "$name" > "$proj_out/symbol-fidelity.json"
-                    echo "  $name: symbol-fidelity -> FAIL (see $proj_out/symbol-fidelity.log)" >&2
+                    printf '{"member":"%s","ok":false,"error":"missing-artifact","cmake":"%s","bazel":"%s"}\n' \
+                        "$name" "${_sf_cmart:-NONE}" "${_sf_bzlart:-NONE}" > "$proj_out/symbol-fidelity.json"
+                    echo "  $name: symbol-fidelity -> skip(no-artifact: cmake=$_sf_cmke bazel=$_sf_bzl)" >&2
                 fi
             )
         else

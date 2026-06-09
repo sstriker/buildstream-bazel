@@ -110,7 +110,10 @@ func TestClassifyDeltas_StdlibInternalUnpaired(t *testing.T) {
 	// symbol (no std prefix) stays impactful.
 	cExported := map[string]bool{
 		"_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9push_backEc": true, // std::string::push_back
-		"_ZN5Catch9SomethingRealDropEv":                                     true, // project-own → impactful
+		// std lambda in a LOCAL (function) scope — `_ZZNSt…` (Catch2's
+		// std::__detail::_Compiler::_M_expression_term<…>::{lambda(char)}).
+		"_ZZNSt8__detail9_CompilerINSt7__cxx1112regex_traitsIcEEE18_M_expression_termILb0ELb0EEEbRNS4_13_BracketStateERNS_15_BracketMatcherIS3_XT_EXT0_EEEENKUlcE_clEc": true,
+		"_ZN5Catch9SomethingRealDropEv": true, // project-own → impactful
 	}
 	bExported := map[string]bool{
 		"_ZNSt8__detail15_BracketMatcherINSt7__cxx1112regex_traitsIcEELb0ELb0EE13_M_make_rangeEcc": true, // std::__detail regex
@@ -127,8 +130,8 @@ func TestClassifyDeltas_StdlibInternalUnpaired(t *testing.T) {
 			stdBenign++
 		}
 	}
-	if stdBenign != 2 {
-		t.Errorf("expected 2 stdlib-template-instantiation benign deltas; got %d (%v)", stdBenign, rep.BenignDeltas)
+	if stdBenign != 3 {
+		t.Errorf("expected 3 stdlib-template-instantiation benign deltas; got %d (%v)", stdBenign, rep.BenignDeltas)
 	}
 
 	// Same for the undefined-set path (the Catch2 failure mode was
