@@ -1847,9 +1847,9 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	srcs := sortedCopy(t.Srcs)
 	hdrs := sortedCopy(t.Hdrs)
 	includes := sortedCopy(t.Includes)
-	copts := append([]string(nil), t.Copts...) // preserve order; flag order matters
-	defines := escapeDefinesForBazel(sortedCopy(t.Defines))
-	linkopts := append([]string(nil), t.LinkOpts...) // preserve order
+	copts := escapeTokenizedList(append([]string(nil), t.Copts...)) // preserve order; flag order matters
+	defines := escapeTokenizedList(sortedCopy(t.Defines))
+	linkopts := escapeTokenizedList(append([]string(nil), t.LinkOpts...)) // preserve order
 	deps := sortedCopy(t.Deps)
 	implementationDeps := sortedCopy(t.ImplementationDeps)
 
@@ -1911,10 +1911,10 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 		IncludesExpr:               attrExpr(includes, perPlatformAttr(t, "includes")),
 		IncludePrefix:              t.IncludePrefix,
 		StripIncludePrefix:         t.StripIncludePrefix,
-		CoptsExpr:                  attrExpr(copts, perPlatformAttr(t, "copts")),
-		DefinesExpr:                attrExpr(defines, escapeDefinesPerPlatform(perPlatformAttr(t, "defines"))),
-		LocalDefinesExpr:           attrExpr(escapeDefinesForBazel(sortedCopy(t.LocalDefines)), escapeDefinesPerPlatform(perPlatformAttr(t, "local_defines"))),
-		LinkoptsExpr:               attrExpr(linkopts, perPlatformAttr(t, "linkopts")),
+		CoptsExpr:                  attrExpr(copts, escapeTokenizedPerPlatform(perPlatformAttr(t, "copts"))),
+		DefinesExpr:                attrExpr(defines, escapeTokenizedPerPlatform(perPlatformAttr(t, "defines"))),
+		LocalDefinesExpr:           attrExpr(escapeTokenizedList(sortedCopy(t.LocalDefines)), escapeTokenizedPerPlatform(perPlatformAttr(t, "local_defines"))),
+		LinkoptsExpr:               attrExpr(linkopts, escapeTokenizedPerPlatform(perPlatformAttr(t, "linkopts"))),
 		AdditionalLinkerInputsExpr: attrExpr(t.AdditionalLinkerInputs, nil),
 		DepsExpr:                   attrExpr(deps, perPlatformAttr(t, "deps")),
 		DynamicDepsExpr:            attrExpr(sortedCopy(t.DynamicDeps), nil),
@@ -2060,50 +2060,77 @@ func scalarAttrExpr(flat string, sel map[string]string) string {
 	return b.String()
 }
 
+// escapeForBazelTokenization makes a shell-tokenized cc-rule attribute value
+// survive Bazel's Bourne-shell tokenization as a SINGLE literal token. Bazel
+// tokenizes every entry of `copts`, `defines`, `local_defines`, and `linkopts`
+// with a POSIX word-splitter (ShellUtils.tokenize): it splits on unquoted
+// whitespace and consumes unescaped quotes. So an entry that legitimately
+// contains a quote or an embedded space is corrupted:
+//
+//   - `FOO="9.4"` → quotes stripped → `-DFOO=9.4` (a bare token, not the C
+//     string `"9.4"`) — caught by the compile-commands fidelity lens on VTK
+//     (VTK_PARSE_VERSION, LZ4_VERSION, H5_ZLIB_HEADER), all via `defines`.
+//   - `GREETING="a b"` → split on the space into two `-D` tokens.
+//
+// Backslash-escaping each quote and whitespace byte makes the tokenizer
+// reproduce the entry verbatim as one argument. (The Starlark printer then
+// renders each added backslash as `\\` in the BUILD text.) Shell
+// metacharacters that are NOT word separators to this tokenizer — `;` `|` `&`
+// `(` `)` — are ordinary token bytes and need no escaping.
+//
+// No-op unless the entry contains a quote or whitespace — the common case,
+// since `copts`/`linkopts` arrive already whitespace-split from the codemodel
+// fragments (only `defines`/`local_defines` carry un-split quoted values).
+//
+// Out of scope: a LITERAL backslash in a value is left to the Starlark string
+// layer; round-tripping it through the tokenizer's own backslash-escape is a
+// separate, rarer corner the corpus doesn't exercise.
+func escapeForBazelTokenization(s string) string {
+	if !strings.ContainsAny(s, "\" \t") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '"', ' ', '\t':
+			b.WriteByte('\\')
+			b.WriteByte(c)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
+func escapeTokenizedList(ds []string) []string {
+	if len(ds) == 0 {
+		return ds
+	}
+	out := make([]string, len(ds))
+	for i, d := range ds {
+		out[i] = escapeForBazelTokenization(d)
+	}
+	return out
+}
+
+func escapeTokenizedPerPlatform(m map[string][]string) map[string][]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string][]string, len(m))
+	for k, v := range m {
+		out[k] = escapeTokenizedList(v)
+	}
+	return out
+}
+
 // perPlatformAttr returns the per-platform delta map for the
 // named attribute. Nil-safe: returns nil when the IR target has
 // no PerPlatform map at all or no entry for the requested name.
 // The returned map is a shallow copy so emit-time mutations
 // (the cc_binary hdrs→srcs fold) don't bleed back into the
 // caller's IR.
-// escapeDefineForBazel makes a C `-D` define survive Bazel's Bourne-shell
-// tokenization of the `defines`/`local_defines` attributes. Those attrs
-// tokenize each entry, which STRIPS unescaped quotes: a value like
-// `FOO="9.4"` reaches the compiler as `-DFOO=9.4` (a bare token, not the C
-// string `"9.4"`) — breaking any TU that uses the macro in string context
-// (caught by the compile-commands fidelity lens on VTK: VTK_PARSE_VERSION,
-// LZ4_VERSION, H5_ZLIB_HEADER). Backslash-escaping each `"` makes the shell
-// preserve it as a literal quote after tokenization. (The Starlark printer then
-// renders the backslash as `\\\"` in the BUILD text.)
-func escapeDefineForBazel(d string) string {
-	if !strings.Contains(d, `"`) {
-		return d
-	}
-	return strings.ReplaceAll(d, `"`, `\"`)
-}
-
-func escapeDefinesForBazel(ds []string) []string {
-	if len(ds) == 0 {
-		return ds
-	}
-	out := make([]string, len(ds))
-	for i, d := range ds {
-		out[i] = escapeDefineForBazel(d)
-	}
-	return out
-}
-
-func escapeDefinesPerPlatform(m map[string][]string) map[string][]string {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string][]string, len(m))
-	for k, v := range m {
-		out[k] = escapeDefinesForBazel(v)
-	}
-	return out
-}
-
 func perPlatformAttr(t ir.Target, name string) map[string][]string {
 	if len(t.PerPlatform) == 0 {
 		return nil
