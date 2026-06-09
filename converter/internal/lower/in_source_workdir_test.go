@@ -105,7 +105,27 @@ func TestStageSiblingGeneratedHeaders(t *testing.T) {
 	if has(other, "test/regress.gen.h") {
 		t.Errorf("unrelated target must not get the sibling header; got %v", other.Srcs)
 	}
-	// Idempotent.
+	// Each consumer also gets the header's directory on its include path so the
+	// .c's bare same-dir `#include "regress.gen.h"` resolves against the genfiles
+	// copy; an unrelated target gets none.
+	hasInc := func(tg *ir.Target, d string) bool {
+		for _, x := range tg.Includes {
+			if x == d {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasInc(regress, "test") {
+		t.Errorf("flat-srcs consumer missing generated-header include dir; got %v", regress.Includes)
+	}
+	if !hasInc(lib, "test") {
+		t.Errorf("select-arm consumer missing generated-header include dir; got %v", lib.Includes)
+	}
+	if len(other.Includes) != 0 {
+		t.Errorf("unrelated target must not get an include dir; got %v", other.Includes)
+	}
+	// Idempotent: neither srcs nor includes duplicate on a second pass.
 	stageSiblingGeneratedHeaders(pkg)
 	n := 0
 	for _, s := range pkg.Targets[1].Srcs {
@@ -115,5 +135,14 @@ func TestStageSiblingGeneratedHeaders(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("sibling header duplicated in srcs; got %v", pkg.Targets[1].Srcs)
+	}
+	ni := 0
+	for _, inc := range pkg.Targets[1].Includes {
+		if inc == "test" {
+			ni++
+		}
+	}
+	if ni != 1 {
+		t.Errorf("generated-header include dir duplicated; got %v", pkg.Targets[1].Includes)
 	}
 }

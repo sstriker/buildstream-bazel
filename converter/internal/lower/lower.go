@@ -588,6 +588,19 @@ func attachGeneratedSource(irt *ir.Target, path string, inCG, dropNonCc bool, em
 // attribute), and the generated header is genuinely an implementation detail of
 // the generated .c. Referenced by element-relative path (resolving to the
 // producing genrule's output); split's srcs relabel re-homes it as needed.
+//
+// Staging the header as an input is necessary but NOT sufficient: the .c
+// #includes it by BARE same-dir quote (`#include "regress.gen.h"`), which cmake
+// resolved because the custom command writes the header into the SOURCE dir
+// next to the .c. Under Bazel the genrule output lands in genfiles, so the
+// compiler's implicit same-dir search (which only walks the .c's SOURCE dir)
+// misses it. So we also add the header's directory to the consuming target's
+// Includes — Bazel's `includes` puts BOTH the source-tree and the genfiles
+// variant of that dir on the search path, and the genfiles one is where the
+// bare include now resolves. Under --split-packages this include dir becomes a
+// normal include root: planSplit synthesizes its header lib (which collects the
+// generated header and carries includes=["."]) and the consumer deps on it, so
+// the genfiles -I propagates without any special-casing in the split transform.
 func stageSiblingGeneratedHeaders(pkg *ir.Package) {
 	isHdr := func(p string) bool { return cclang.IsHeaderExt(strings.ToLower(filepath.Ext(p))) }
 	sib := map[string][]string{} // genrule source-output -> sibling header outputs
@@ -644,6 +657,24 @@ func stageSiblingGeneratedHeaders(pkg *ir.Package) {
 			consider(arm)
 		}
 		t.Srcs = append(t.Srcs, add...)
+		// Put each staged header's directory on the target's include path so the
+		// .c's bare same-dir `#include "<gen>.h"` resolves against the genfiles
+		// copy (the staged srcs entry alone doesn't add the -I). Dedup against
+		// the includes the target already carries.
+		haveInc := make(map[string]bool, len(t.Includes))
+		for _, inc := range t.Includes {
+			haveInc[inc] = true
+		}
+		for _, h := range add {
+			dir := filepath.Dir(h)
+			if dir == "" {
+				dir = "."
+			}
+			if !haveInc[dir] {
+				t.Includes = append(t.Includes, dir)
+				haveInc[dir] = true
+			}
+		}
 	}
 }
 
