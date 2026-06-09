@@ -83,22 +83,32 @@ transition cleanly.
   `TestInSourceOutputs`, `TestBuildInSourceWorkdirGenrule`,
   `TestEmit_Split_InSourceWorkdirGenrule_CrossPackageRefs`.
 
-  **Sibling generated headers — SHIPPED.** A code generator routinely emits a
-  `.c` PLUS a sibling `.h` the `.c` `#include`s by bare same-dir quote (libevent's
-  `regress.gen.c` → `regress.gen.h`), but cmake omits the generated header from
-  the consuming target's source list — so the `.c`'s compile couldn't find it.
-  When a target consumes a generated source, `attachSiblingGeneratedHeaders` now
-  also stages the producing custom-command edge's sibling generated HEADER
-  outputs onto the target's hdrs (guard `TestAttachSiblingGeneratedHeaders`).
-  General (any `.c`+`.h` codegen pair), not libevent-specific.
+  **Sibling generated headers — SHIPPED (path-independent post-pass).** A code
+  generator routinely emits a `.c` PLUS a sibling `.h` the `.c` `#include`s by
+  bare same-dir quote (libevent's `regress.gen.c` → `regress.gen.h`), but cmake
+  omits the generated header from the consuming target's source list — so the
+  `.c`'s compile couldn't find it. `stageSiblingGeneratedHeaders` (a post-pass
+  over the lowered package) maps each genrule SOURCE output to the genrule's
+  HEADER outputs, then adds the sibling header to the SRCS of every cc target
+  that compiles the `.c` — flat srcs OR multi-config `select()` arms, regardless
+  of which attribution path placed the `.c`. SRCS not hdrs: a header in srcs is a
+  valid private input for EVERY cc rule kind (cc_test / cc_binary have no hdrs
+  attribute — #516's earlier per-source hdrs-attach silently lost the header for
+  those, which is why libevent's regress cc_tests still failed). Guard
+  `TestStageSiblingGeneratedHeaders`; validated `insrc` (both modes) + libevent.
 
-  **libevent tests-on:** with the hang + in-source + sibling-header fixes,
-  `EVENT__DISABLE_TESTS=ON` libevent now converts **0-rejection** and builds past
-  the regress codegen (`regress.gen.{c,h}`) under the split lens. Un-scoping the
-  conf is the remaining step, gated on re-validating the FULL regress-tree build
-  (its many test binaries pull in openssl/zlib/threads host libs — the
-  host-system-library wiring), so it's tracked as its own validation rather than
-  flipped here.
+  **libevent tests-on — advances, one layer left (still scoped).** With the hang
+  + in-source + sibling-header fixes, libevent tests-on converts 0-rejection and
+  the generated `regress.gen.c` now COMPILES. One layer remains: a COMMITTED
+  source (`test/regress_rpc.c`) also `#include "regress.gen.h"` by bare same-dir
+  quote — and a source-tree file finding a BIN-tree generated header by bare
+  quote needs the dir on the include path (cmake's implicit
+  CMAKE_CURRENT_BINARY_DIR-on-include-path; the converter doesn't surface it as a
+  target `includes`/`-I`). Staging the header (done) isn't enough for committed
+  includers — they need `includes=["test"]` (spanning source+bin) too. So
+  `EVENT__DISABLE_TESTS=ON` stays until that include-path layer lands. (The chain
+  is deep — hang → in-source mono → in-source split → sibling-header → this — so
+  it's tracked rather than chased further in one pass.)
 
 - **Green the remaining heavyweight corpus members: vtk (tail), cuda-samples.**
   25/26 are green (protobuf + sdl + vtk + grpc landed). Remaining:
