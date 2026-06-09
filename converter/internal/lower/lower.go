@@ -30,6 +30,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/cclang"
 	"github.com/sstriker/buildstream-bazel/internal/convmode"
+	"github.com/sstriker/buildstream-bazel/internal/genexeval"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
@@ -861,6 +862,62 @@ func buildIncludeDirsGlobal(calls []shadow.IncludeDirectoriesCall) map[string]bo
 	return out
 }
 
+// parseInterfaceIncludeDirs extracts the absolute BUILD-tree include dirs a
+// target EXPORTS from its (genex-intact) INTERFACE_INCLUDE_DIRECTORIES — the
+// public whitelist for the interface-driven include scope (B1). cmake records
+// an exported include as `$<BUILD_INTERFACE:/abs/dir>` (the build-tree form;
+// `$<INSTALL_INTERFACE:relpath>` is the installed-tree form, irrelevant to the
+// in-tree compile and skipped) or, rarely, a bare absolute path. Entries with
+// any other unresolved genex are skipped defensively.
+func parseInterfaceIncludeDirs(joined string) map[string]bool {
+	out := map[string]bool{}
+	for _, raw := range strings.Split(joined, ";") {
+		e := strings.TrimSpace(raw)
+		if e == "" {
+			continue
+		}
+		const bi = "$<BUILD_INTERFACE:"
+		if strings.HasPrefix(e, bi) && strings.HasSuffix(e, ">") {
+			inner := e[len(bi) : len(e)-1]
+			if !strings.Contains(inner, "$<") && filepath.IsAbs(inner) {
+				out[filepath.Clean(inner)] = true
+			}
+			continue
+		}
+		if strings.Contains(e, "$<") {
+			continue
+		}
+		if filepath.IsAbs(e) {
+			out[filepath.Clean(e)] = true
+		}
+	}
+	return out
+}
+
+// interfaceIncludeScope is the per-target interface-driven include whitelist
+// (B1). public is the set of absolute BUILD-tree include dirs the target EXPORTS
+// (INTERFACE_INCLUDE_DIRECTORIES); active is true only when the genex PROBE ran
+// AND captured this target — only then is "in the target's resolved includes
+// but NOT exported ⇒ PRIVATE" a trustworthy signal. Without the probe (active
+// false) the include partition keeps its trace-only behavior, byte-identical.
+type interfaceIncludeScope struct {
+	public map[string]bool
+	active bool
+}
+
+// interfaceIncludeDirsFor builds the per-target interface-include whitelist from
+// the genex targets, gated on the probe having run.
+func interfaceIncludeDirsFor(genex map[string]genexeval.TargetInfo, name string, probed bool) interfaceIncludeScope {
+	if !probed {
+		return interfaceIncludeScope{}
+	}
+	ti, ok := genex[name]
+	if !ok {
+		return interfaceIncludeScope{}
+	}
+	return interfaceIncludeScope{public: parseInterfaceIncludeDirs(ti.InterfaceIncludeDirectories), active: true}
+}
+
 // buildTraceLinkInfo collects, per target, the ordered link libraries and each
 // library's link-scope keyword from the decoded target_link_libraries trace
 // calls. Libraries are deduped WITHIN each call (the `seen` set is per
@@ -1598,6 +1655,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			privateIncludeDirs:           privateIncludeDirs[tref.Name],
 			publicIncludeDirs:            publicIncludeDirs[tref.Name],
 			includeDirsGlobal:            includeDirsGlobal,
+			interfaceIncludeDirs:         interfaceIncludeDirsFor(genexTargets, tref.Name, len(opts.GenexProbes) > 0),
 			traceLinkLibs:                traceLinkLibs[tref.Name],
 			traceLinkScope:               traceLinkScope[tref.Name],
 			platformConditionalSrcs:      platformConditionalSrcs[tref.Name],
@@ -2273,6 +2331,7 @@ type targetTrace struct {
 	privateIncludeDirs           map[string]bool
 	publicIncludeDirs            map[string]bool
 	includeDirsGlobal            map[string]bool
+	interfaceIncludeDirs         interfaceIncludeScope
 	traceLinkLibs                []string
 	traceLinkScope               map[string]string
 	platformConditionalSrcs      map[string]string
@@ -2326,6 +2385,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	generatedSources, rejections := lc.generatedSources, lc.rejections
 	privateIncludeDirs, traceLinkLibs, traceLinkScope := tt.privateIncludeDirs, tt.traceLinkLibs, tt.traceLinkScope
 	publicIncludeDirs, includeDirsGlobal := tt.publicIncludeDirs, tt.includeDirsGlobal
+	interfaceIncludeDirs := tt.interfaceIncludeDirs
 	platformConditionalSrcs, platformConditionalSrcsToAdd := tt.platformConditionalSrcs, tt.platformConditionalSrcsToAdd
 
 	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
@@ -3166,7 +3226,16 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			// defaults to the transitive `includes` and over-propagates to ~1700
 			// consumer TUs cmake never gave it to.
 			dirScopedPrivate := includeDirsGlobal[inc.Path] && !publicIncludeDirs[inc.Path]
-			if privateIncludeDirs[inc.Path] || dirScopedPrivate {
+			// B1: interface-driven scope. When the probe captured this target, an
+			// include in its resolved set but NOT in its
+			// INTERFACE_INCLUDE_DIRECTORIES is PRIVATE — route it to a `-I` copt
+			// (split → implementation_deps) so it doesn't propagate. Only reaches
+			// here for source-tree includes (build-dir / generated-header dirs are
+			// handled by earlier branches that `continue`), and a dir the target
+			// re-exports stays in `public`. Generalizes the trace-only
+			// dirScopedPrivate to every private-include mechanism.
+			ifacePrivate := interfaceIncludeDirs.active && !interfaceIncludeDirs.public[inc.Path]
+			if privateIncludeDirs[inc.Path] || dirScopedPrivate || ifacePrivate {
 				// Compile-only — don't propagate to consumers.
 				// target_include_directories(... SYSTEM PRIVATE ...)
 				// keeps its system flavour as -isystem so header
