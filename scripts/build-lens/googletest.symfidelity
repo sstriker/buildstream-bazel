@@ -1,0 +1,10 @@
+# Symbol-fidelity lens config for googletest (7th survey lens, SURVEY_SYMBOL_FIDELITY).
+# Compares the converted Bazel libgtest.a against cmake's. The split lens reuses
+# the build lens's converted artifact (so the super-project subpackage target is
+# found by glob, not //:gtest). gtest declares C++17, which the converter pins as
+# -std=c++17; pin it on the cmake side too to align -std (reduces standard-version
+# symbol-emission noise). Residual gtest weak threading ctors (Mutex/ThreadLocal/
+# FilePath) classify benign via the weak-symbol rule.
+SYMFID_TARGET=gtest
+SYMFID_ARTIFACT=libgtest.a
+SYMFID_CMAKE_FLAGS=-DCMAKE_CXX_STANDARD=17

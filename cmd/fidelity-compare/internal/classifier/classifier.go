@@ -103,6 +103,14 @@ func Compare(cmakePath, bazelPath string, allowed Allowlist) (*Report, error) {
 	if err != nil {
 		return nil, fmt.Errorf("nm bazel exported: %w", err)
 	}
+	cWeak, err := weakExportedSymbols(cmakePath)
+	if err != nil {
+		return nil, fmt.Errorf("nm cmake weak: %w", err)
+	}
+	bWeak, err := weakExportedSymbols(bazelPath)
+	if err != nil {
+		return nil, fmt.Errorf("nm bazel weak: %w", err)
+	}
 	cUndef, err := undefinedSymbols(cmakePath)
 	if err != nil {
 		return nil, fmt.Errorf("nm cmake undefined: %w", err)
@@ -122,7 +130,7 @@ func Compare(cmakePath, bazelPath string, allowed Allowlist) (*Report, error) {
 
 	rep := &Report{CMakeArtifact: cmakePath, BazelArtifact: bazelPath}
 	rep.ExportedBoth = countCommon(cExported, bExported)
-	classifyExportedDeltas(rep, cExported, bExported, allowed)
+	classifyExportedDeltas(rep, cExported, bExported, cWeak, bWeak, allowed)
 	classifyUndefinedDeltas(rep, cUndef, bUndef, allowed)
 	classifyAbsolutePaths(rep, cAbsPaths, bAbsPaths)
 	return rep, nil
@@ -140,6 +148,49 @@ func exportedSymbols(path string) (map[string]bool, error) {
 		return nil, err
 	}
 	return parseNmOutput(out.Bytes()), nil
+}
+
+// weakExportedSymbols returns the set of WEAK defined-global symbols (nm type
+// `W` weak text / `V` weak data) in an artifact. A weak symbol present in only
+// ONE artifact is benign: weak symbols (inline functions, implicit template
+// instantiations, vague-linkage items) are emitted per-TU ON DEMAND and deduped
+// at link, so the optimizer's choice to emit vs elide one — which shifts with
+// codegen flags the cc TOOLCHAIN owns (-fPIC / -fstack-protector / frame-pointer
+// defaults Bazel adds and cmake doesn't), not anything the converter controls —
+// never affects a consumer, which re-emits its own copy. gtest's pthread Mutex /
+// ThreadLocal / FilePath weak ctors are exactly this.
+func weakExportedSymbols(path string) (map[string]bool, error) {
+	cmd := exec.Command("nm", "--defined-only", "-g", path)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &bytes.Buffer{}
+	if err := cmd.Run(); err != nil {
+		return nil, err
+	}
+	return parseNmWeak(out.Bytes()), nil
+}
+
+// parseNmWeak parses `nm` stdout, returning the names whose type letter marks a
+// weak binding (`W`/`V`, and the lowercase forms). nm format is
+// `[address] type symbol`, so the type is the second-to-last field.
+func parseNmWeak(buf []byte) map[string]bool {
+	out := map[string]bool{}
+	s := bufio.NewScanner(bytes.NewReader(buf))
+	for s.Scan() {
+		line := strings.TrimSpace(s.Text())
+		if line == "" || (strings.HasSuffix(line, ":") && !strings.Contains(line, " ")) {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch fields[len(fields)-2] {
+		case "W", "V", "w", "v":
+			out[fields[len(fields)-1]] = true
+		}
+	}
+	return out
 }
 
 // undefinedSymbols returns the set of undefined symbol references
@@ -238,7 +289,7 @@ func countCommon(a, b map[string]bool) int {
 // Same-name on both sides → ExportedBoth contribution. Only on one
 // side → check allowlist + template-instantiation heuristic +
 // fall-through to Impactful.
-func classifyExportedDeltas(rep *Report, c, b map[string]bool, allowed Allowlist) {
+func classifyExportedDeltas(rep *Report, c, b, cWeak, bWeak map[string]bool, allowed Allowlist) {
 	onlyCmake := setSub(c, b)
 	onlyBazel := setSub(b, c)
 	// Template-instantiation pairs: when both sides have unique
@@ -262,6 +313,10 @@ func classifyExportedDeltas(rep *Report, c, b map[string]bool, allowed Allowlist
 			rep.BenignDeltas = append(rep.BenignDeltas, Delta{Kind: "stdlib-template-instantiation-only-in-cmake", Detail: sym})
 			continue
 		}
+		if cWeak[sym] {
+			rep.BenignDeltas = append(rep.BenignDeltas, Delta{Kind: "weak-symbol-only-in-cmake", Detail: sym})
+			continue
+		}
 		rep.ImpactfulDeltas = append(rep.ImpactfulDeltas, Delta{Kind: "exported-symbol-only-in-cmake", Detail: sym})
 	}
 	for sym := range onlyBazel {
@@ -275,6 +330,10 @@ func classifyExportedDeltas(rep *Report, c, b map[string]bool, allowed Allowlist
 		}
 		if isStdlibInternalMangled(sym) {
 			rep.BenignDeltas = append(rep.BenignDeltas, Delta{Kind: "stdlib-template-instantiation-only-in-bazel", Detail: sym})
+			continue
+		}
+		if bWeak[sym] {
+			rep.BenignDeltas = append(rep.BenignDeltas, Delta{Kind: "weak-symbol-only-in-bazel", Detail: sym})
 			continue
 		}
 		rep.ImpactfulDeltas = append(rep.ImpactfulDeltas, Delta{Kind: "exported-symbol-only-in-bazel", Detail: sym})
@@ -402,6 +461,12 @@ func isLibcRuntimeHelper(sym string) bool {
 		"strlen", "strcmp", "strncmp", "strcpy", "strncpy",
 		"strcat", "strncat", "strchr", "strrchr", "strstr":
 		return true
+	// libc stdio builtins — the compiler folds printf-family calls into
+	// these (printf("…\n")→puts, printf("%c")→putchar, fprintf→fputs/fwrite)
+	// at -O2+, so the undefined reference lands on whichever side's builtin
+	// recognition fired. Same toolchain-noise class as the str/mem builtins.
+	case "puts", "putchar", "fputs", "fputc", "putc", "fwrite":
+		return true
 	// C++ runtime helpers — static-init guards, atexit,
 	// pure-virtual handler. All in libstdc++/libgcc; distro
 	// toolchains link these into the consumer when needed,
@@ -416,14 +481,18 @@ func isLibcRuntimeHelper(sym string) bool {
 		"__cxa_pure_virtual": // pure-virtual call handler
 		return true
 	}
-	// libstdc++ standard-exception vtables (std::exception,
-	// std::runtime_error, std::logic_error, std::bad_alloc,
-	// std::out_of_range, std::invalid_argument, ...). These
-	// are emitted by the toolchain runtime whenever the
-	// consumer references any standard exception type. Match
-	// the mangled-vtable prefix for std namespace.
-	if strings.HasPrefix(sym, "_ZTVSt") || strings.HasPrefix(sym, "_ZTISt") {
-		return true
+	// libstdc++ vtables / typeinfo / VTTs for std types — the std::exception
+	// family (std::runtime_error, std::bad_alloc, …) plus stream types like
+	// std::__cxx11::basic_ostringstream. _ZTV (vtable), _ZTI (typeinfo), _ZTT
+	// (VTT), for both direct-std (`St`) and nested-std (`NSt`) names. Emitted
+	// by the libstdc++ runtime whenever a consumer references the type; the
+	// toolchain provides them at link, so an undefined ref to one is benign.
+	for _, p := range []string{
+		"_ZTVSt", "_ZTVNSt", "_ZTISt", "_ZTINSt", "_ZTTSt", "_ZTTNSt",
+	} {
+		if strings.HasPrefix(sym, p) {
+			return true
+		}
 	}
 	return false
 }
