@@ -110,6 +110,29 @@ transition cleanly.
   corpus is green under it (so green + the fidelity lens run against the config
   cmake produces).
 
+- **Derive build-lens link mode from the project's static config (drop the
+  per-member `--dynamic_mode=off` knobs).** The build lens forces
+  `BUILD_SHARED_LIBS=OFF` (the forced-static alignment), so every surveyed
+  project's codemodel reports `STATIC_LIBRARY` targets and cmake links its test
+  executables against the static archives — pulling in ALL objects, including
+  `-fvisibility=hidden` internals the tests reference. Bazel's DEFAULT
+  `--dynamic_mode=default` instead builds those cc_libraries as `.so`s in
+  fastbuild/dbg, which don't export the hidden internals, so the cc_tests fail
+  to link. Today this is hand-patched per member via `.conf` `BAZEL_FLAGS=
+  --dynamic_mode=off` (glog, llvm) and re-threaded into the symbol-fidelity
+  lens's release rebuild. The faithful, DERIVED fix: when the surveyed config is
+  all-static (codemodel has `STATIC_LIBRARY` targets and no `SHARED_LIBRARY`/
+  `MODULE_LIBRARY`), the build lens should default `--dynamic_mode=off` — i.e.
+  build the link model the project actually uses — and the per-member knobs drop
+  out. Note this is a LINK-MODE change, not a fidelity one (it doesn't alter the
+  `.a`/`.lo` archives the symbol-fidelity lens compares — only whether
+  test/binary linking is static), so the payoff is robustness + dropping knobs,
+  not a fidelity number. It needs a build-lens corpus re-green first: forcing
+  static linking can surface ODR / duplicate-symbol issues a dynamic build
+  tolerated (cf. the curl shared/static SIGSEGV precedent above). Fold it in when
+  `SURVEY_SHARED`'s default flips (link mode gets re-validated corpus-wide
+  anyway), or as its own deliberate re-green pass.
+
 - **Test-target coverage — enable the scoped-out members' tests.** The build
   lens builds `//...`, which already INCLUDES test targets where the project's
   tests need no extra infra (fmt, libxml2, glog, glm, googletest, abseil
