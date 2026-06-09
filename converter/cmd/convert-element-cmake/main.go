@@ -569,6 +569,7 @@ func run(a cli.Args) error {
 			CTest:                             testRegistry,
 			TraceRaw:                          traceRaw,
 			LiftConfigureFile:                 a.LiftConfigureFile,
+			SplitPackages:                     a.SplitPackages,
 			CMakeVars:                         cmakeVars,
 			GenexProbes:                       genexProbes,
 			ConfigureLog:                      configureLogEvents,
