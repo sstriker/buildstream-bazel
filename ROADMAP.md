@@ -262,7 +262,23 @@ transition cleanly.
   sources never align under basename keying), and config alignment (cmake db is
   single-config).
 
-- **Symbol-fidelity lens for the corpus survey (opt-in, 6th lens).** The
+- **Symbol-fidelity lens — SHIPPED (v1, opt-in `SURVEY_SYMBOL_FIDELITY`).**
+  Wired into `run-survey.sh` as the LAST lens — runs after the build, only when
+  the build lens passed (the pipeline ordering: structural → build →
+  symbol-fidelity). For each selected member with a per-member config
+  `scripts/build-lens/<name>.symfidelity` (`SYMFID_TARGET` + `SYMFID_ARTIFACT`
+  or `SYMFID_{CMAKE,BAZEL}_ARTIFACT` [+ `SYMFID_CMAKE_FLAGS`]) it reuses
+  `scripts/run-fidelity.sh` (the self-contained cmake-build → convert → bazel
+  build → `cmd/fidelity-compare` A-B-C with benign auto-classification) and the
+  member's `testdata/fidelity/<name>.allowlist.txt`, writing
+  `<out>/<name>/symbol-fidelity.json` (`ok`/`FAIL`); members without a config
+  self-skip. Validated: `SURVEY_BAZEL_BUILD=zlib SURVEY_SYMBOL_FIDELITY=1` →
+  `zlib: symbol-fidelity -> ok` (seeded `zlib.symfidelity`). **v1 scope /
+  follow-ups:** seed `.symfidelity` for the other fidelity fixtures (spdlog /
+  fmt / catch2 / libpng / nlohmann-json — their Makefile params already exist)
+  and the broader corpus; reuse the build lens's `build-ws` bazel artifacts
+  instead of run-fidelity's own from-scratch bazel build (an optimization); a
+  survey summary column. Design rationale: the
   build lens (`SURVEY_BAZEL_BUILD`) proves the converted graph builds
   under `bazel build //...`; the compile-commands lens
   (`SURVEY_COMPILE_DB`) proves per-TU

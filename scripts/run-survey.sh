@@ -684,6 +684,47 @@ for entry in $projects; do
         fi
     fi
 
+    # 7th lens — SYMBOL FIDELITY (SURVEY_SYMBOL_FIDELITY=1). Runs LAST, after the
+    # build, and only when the build lens passed — per the pipeline ordering
+    # (structural → build → symbol-fidelity). Reuses scripts/run-fidelity.sh (a
+    # self-contained cmake build → convert → bazel build → cmd/fidelity-compare
+    # A-B-C with benign auto-classification) driven by the member's per-member
+    # config scripts/build-lens/<name>.symfidelity (SYMFID_TARGET +
+    # SYMFID_ARTIFACT or SYMFID_{CMAKE,BAZEL}_ARTIFACT [+ SYMFID_CMAKE_FLAGS]) and
+    # its testdata/fidelity/<name>.allowlist.txt. Report-only
+    # (<out>/<name>/symbol-fidelity.json); members without a config self-skip.
+    if [ "${SURVEY_SYMBOL_FIDELITY:-0}" != "0" ] && [ "$build_status" = "ok" ]; then
+        _sf_conf="$repo_root/scripts/build-lens/$name.symfidelity"
+        if [ -f "$_sf_conf" ]; then
+            (
+                SYMFID_TARGET=""; SYMFID_ARTIFACT=""; SYMFID_CMAKE_ARTIFACT=""
+                SYMFID_BAZEL_ARTIFACT=""; SYMFID_CMAKE_FLAGS=""
+                # shellcheck disable=SC1090
+                . "$_sf_conf"
+                _sf_pat=""
+                [ -n "$SYMFID_ARTIFACT" ] && _sf_pat="--artifact-pattern $SYMFID_ARTIFACT"
+                [ -n "$SYMFID_CMAKE_ARTIFACT" ] && _sf_pat="$_sf_pat --cmake-artifact-pattern $SYMFID_CMAKE_ARTIFACT"
+                [ -n "$SYMFID_BAZEL_ARTIFACT" ] && _sf_pat="$_sf_pat --bazel-artifact-pattern $SYMFID_BAZEL_ARTIFACT"
+                _sf_al=""
+                [ -f "$repo_root/testdata/fidelity/$name.allowlist.txt" ] && _sf_al="--allowlist $repo_root/testdata/fidelity/$name.allowlist.txt"
+                _sf_cf=""
+                [ -n "$SYMFID_CMAKE_FLAGS" ] && _sf_cf="--cmake-flags $SYMFID_CMAKE_FLAGS"
+                # shellcheck disable=SC2086
+                if sh "$repo_root/scripts/run-fidelity.sh" --project-name "$name" \
+                        --source-root "$src" --target "$SYMFID_TARGET" $_sf_pat $_sf_al $_sf_cf \
+                        > "$proj_out/symbol-fidelity.log" 2>&1; then
+                    printf '{"member":"%s","ok":true}\n' "$name" > "$proj_out/symbol-fidelity.json"
+                    echo "  $name: symbol-fidelity -> ok" >&2
+                else
+                    printf '{"member":"%s","ok":false}\n' "$name" > "$proj_out/symbol-fidelity.json"
+                    echo "  $name: symbol-fidelity -> FAIL (see $proj_out/symbol-fidelity.log)" >&2
+                fi
+            )
+        else
+            echo "  $name: symbol-fidelity -> skip(no-config)" >&2
+        fi
+    fi
+
     # 6th lens: intent-capture net-new count (written by try_bazel_build via
     # intent-capture-lens.sh when SURVEY_INTENT ran). "-" when the lens didn't
     # run. NON-DETERMINISTIC (LLM judge) — a triage pointer, not a comparable

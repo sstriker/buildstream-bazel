@@ -1,0 +1,7 @@
+# Symbol-fidelity lens config for zlib (7th survey lens, SURVEY_SYMBOL_FIDELITY).
+# Mirrors the Makefile e2e-fidelity-compare-zlib fixture: compare the converted
+# Bazel libzlibstatic.a against cmake's libz.a (allowlist auto-picked from
+# testdata/fidelity/zlib.allowlist.txt).
+SYMFID_TARGET=zlibstatic
+SYMFID_CMAKE_ARTIFACT=libz.a
+SYMFID_BAZEL_ARTIFACT=libzlibstatic.a
