@@ -259,6 +259,50 @@ transition cleanly.
   compile-db lenses already widen their fixed-fixture CI gates to the
   corpus).
 
+- **Source-narrowing-compatibility lens for the corpus survey (opt-in,
+  BwoB guarantee).** The orchestrated path (project A → project B) runs
+  `convert-element-cmake` against **zero-stub sources** — the narrowing /
+  FUSE source layer presents real bytes only for the declared read-set and
+  0-byte stubs for everything else (see `docs/design/sources.md`,
+  `docs/design/narrowing-audit.md`). The converter's translation is meant
+  to be a pure function of the codemodel + trace + the build-system files
+  (CMakeLists / `.cmake` / `configure_file` inputs), **not** of the `.c` /
+  `.cpp` / `.h` source content — so a BUILD that differs when those *bytes*
+  are zeroed is a hidden byte-dependency that would make the orchestrated
+  convert diverge from (or be wrong vs.) the survey-time one. Today the
+  `narrowing-audit` (`cmd/audit-narrowing`) guards this **statically** — it
+  compares the per-element narrowing patterns against cmake's
+  configure-reads oracle — but it is explicitly *"a high-signal lower bound
+  … not a proof"*: an empty undercoverage report is necessary-but-not-
+  sufficient for soundness. This lens is the **empirical proof** that
+  closes the gap: for each surveyed project, make a copy with every source/
+  header file truncated to 0 bytes **except** the element's declared
+  narrowing read-set (CMakeLists.txt is always real / special-cased;
+  `*.cmake` modules and `configure_file` `*.in` templates only insofar as
+  the element's read-set names them — where it doesn't and the convert
+  depends on one, that omission is exactly the narrowing gap this lens
+  catches), re-run the *same* convert (same flags,
+  including the now-default `--emit-source-comments`, which reads CMakeLists
+  comments, not source bytes — so it must stay byte-identical too), and
+  assert the emitted `BUILD.bazel.out` is **byte-for-byte identical** to the
+  real-source convert. A diff is a narrowing-soundness bug — and the diff
+  names exactly which zeroed file the converter secretly depended on, the
+  actionable signal the static audit can't give. Opt-in via a `SURVEY_*`
+  knob (e.g. `SURVEY_NARROWING_COMPAT`), gated/short-circuited like the
+  other lenses, `ok`/`FAIL`/`skip(...)` column, report-only
+  (`<out>/<name>/narrowing-compat.json` listing the diverging files). Needs
+  only cmake (the convert's own configure) — no Bazel build — so it's
+  cheaper than the build/symbol lenses and can run wherever the diagnostic
+  convert does. Boundaries: it surfaces real byte-dependencies as `FAIL`s,
+  which is the point; a member with a *known/accepted* dependency the
+  read-set deliberately keeps real (a `file(READ <src>)`-style configure
+  input) is handled by that file being in the read-set (kept real), not by
+  an allowlist — keeping the lens's contract strict (zero tolerated diffs).
+  Complements the static `narrowing-audit` gate (lower bound) with the
+  dynamic proof (does narrowing actually preserve convert output?), the
+  sibling of the build/compile-db/symbol lenses for the source-mount
+  dimension.
+
 - **Derive `target_libc` / target triple from the probed sysroot.**
   `builtin_sysroot` ships (the probe lifts `CMAKE_SYSROOT` into
   `toolchain.Model` and the emit sets `cc_toolchain_config`'s `builtin_sysroot`
