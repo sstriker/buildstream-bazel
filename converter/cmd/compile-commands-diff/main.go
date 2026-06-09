@@ -392,6 +392,20 @@ func unescapeShellQuotes(s string) string {
 	return strings.ReplaceAll(s, `\"`, `"`)
 }
 
+// recordQuoteInclude records a -iquote dir UNLESS it's Bazel's universal
+// exec-root entry (`.` / empty). Bazel adds `-iquote .` and `-iquote
+// <genfiles-bin>` to EVERY cc compile for quote-include resolution; cmake never
+// emits -iquote at all. The exec-root `.` would otherwise normalize to the
+// package-root "." and read as a spurious `extra_in_bazel` include on every TU
+// (the genfiles one already buckets to gen: and is filtered). It's a structural
+// build-system artifact, not a project include dir, so drop it.
+func recordQuoteInclude(f *tuFacts, d string) {
+	if d == "" || d == "." {
+		return
+	}
+	f.IncludeDir[d] = true
+}
+
 // factsFromArgv extracts the path-independent compile facts from a compile argv.
 func factsFromArgv(argv []string) tuFacts {
 	f := tuFacts{Defines: map[string]bool{}, IncludeDir: map[string]bool{}, Copts: map[string]bool{}}
@@ -419,19 +433,22 @@ func factsFromArgv(argv []string) tuFacts {
 			if d != "" {
 				f.IncludeDir[d] = true // raw; normalized at diff time
 			}
-		case a == "-isystem", a == "-iquote":
+		case a == "-isystem":
 			if i+1 < len(argv) {
 				i++
 				f.IncludeDir[argv[i]] = true
+			}
+		case a == "-iquote":
+			if i+1 < len(argv) {
+				i++
+				recordQuoteInclude(&f, argv[i])
 			}
 		case strings.HasPrefix(a, "-isystem"):
 			if d := strings.TrimPrefix(a, "-isystem"); d != "" {
 				f.IncludeDir[d] = true
 			}
 		case strings.HasPrefix(a, "-iquote"):
-			if d := strings.TrimPrefix(a, "-iquote"); d != "" {
-				f.IncludeDir[d] = true
-			}
+			recordQuoteInclude(&f, strings.TrimPrefix(a, "-iquote"))
 		default:
 			if interestingCopt(a) {
 				f.Copts[a] = true

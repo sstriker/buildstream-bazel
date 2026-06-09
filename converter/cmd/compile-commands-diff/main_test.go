@@ -9,6 +9,7 @@ func TestFactsFromArgv(t *testing.T) {
 	argv := []string{
 		"/usr/bin/gcc", "-DFOO", "-DBAR=1", "-D", "BAZ", "-std=c++17",
 		"-I/abs/inc", "-Irel/inc", "-isystem", "/sys/inc",
+		"-iquote", ".", "-iquote", "q/inc", // exec-root `.` dropped; real -iquote kept
 		"-D__DATE__=\"redacted\"", "-D__TIME__=\"redacted\"", // Bazel stamps — must be filtered
 		"-fvisibility=hidden", "-fno-rtti", // project copts (kept)
 		"-Wall", "-O2", "-g", "-fstack-protector", "-fPIC", // toolchain/build-mode (filtered)
@@ -36,10 +37,15 @@ func TestFactsFromArgv(t *testing.T) {
 	if f.Std != "c++17" {
 		t.Errorf("std = %q want c++17", f.Std)
 	}
-	for _, want := range []string{"/abs/inc", "rel/inc", "/sys/inc"} { // raw, normalized at diff time
+	for _, want := range []string{"/abs/inc", "rel/inc", "/sys/inc", "q/inc"} { // raw, normalized at diff time
 		if !f.IncludeDir[want] {
 			t.Errorf("missing raw include %q in %v", want, f.IncludeDir)
 		}
+	}
+	// Bazel's universal exec-root `-iquote .` is structural noise (cmake never
+	// emits -iquote) — it must NOT be recorded as a project include dir.
+	if f.IncludeDir["."] {
+		t.Errorf("exec-root -iquote . should be dropped; got %v", f.IncludeDir)
 	}
 }
 
