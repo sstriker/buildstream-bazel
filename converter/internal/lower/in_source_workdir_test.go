@@ -1,6 +1,11 @@
 package lower
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
+)
 
 // TestInSourceOutputs covers the detector: ALL outputs must be absolute and
 // under cmakeSrc (in-source generation) for ok; a build-dir or mixed output set
@@ -50,5 +55,48 @@ func TestBuildInSourceWorkdirGenrule(t *testing.T) {
 		` && mkdir -p "$(RULEDIR)/sub" && cp "$$tmp/sub/foo.gen.c" "$(RULEDIR)/sub/foo.gen.c"`
 	if got != want {
 		t.Errorf("cmd mismatch:\n got  %q\n want %q", got, want)
+	}
+}
+
+// TestAttachSiblingGeneratedHeaders pins the sibling-generated-header staging:
+// a custom command emitting a .c plus a sibling .h (rpcgen shape — libevent's
+// regress.gen.c / regress.gen.h) must stage the .h as a hdr on a consumer of
+// the .c, since cmake omits the generated header from the target's source list
+// and the .c #includes it by bare same-dir quote.
+func TestAttachSiblingGeneratedHeaders(t *testing.T) {
+	irt := &ir.Target{Srcs: []string{"test/regress.gen.c"}}
+	b := &ninja.Build{Outputs: []string{
+		"/src/test/regress.gen.c",
+		"/src/test/regress.gen.h",
+		"/src/test/notes.txt", // non-header sibling: ignored
+	}}
+	attachSiblingGeneratedHeaders(irt, b, "test/regress.gen.c", "/src")
+	has := func(s string) bool {
+		for _, h := range irt.Hdrs {
+			if h == s {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("test/regress.gen.h") {
+		t.Errorf("sibling generated header not staged; hdrs=%v", irt.Hdrs)
+	}
+	if has("test/regress.gen.c") {
+		t.Errorf("the just-attached source must not be re-added as a hdr; hdrs=%v", irt.Hdrs)
+	}
+	if has("test/notes.txt") {
+		t.Errorf("non-header sibling must not be staged as a hdr; hdrs=%v", irt.Hdrs)
+	}
+	// Idempotent: a second call doesn't duplicate.
+	attachSiblingGeneratedHeaders(irt, b, "test/regress.gen.c", "/src")
+	n := 0
+	for _, h := range irt.Hdrs {
+		if h == "test/regress.gen.h" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("sibling header duplicated; hdrs=%v", irt.Hdrs)
 	}
 }

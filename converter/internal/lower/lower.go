@@ -574,6 +574,34 @@ func attachGeneratedSource(irt *ir.Target, path string, inCG, dropNonCc bool, em
 	}
 }
 
+// attachSiblingGeneratedHeaders stages the in-source GENERATED HEADER outputs of
+// custom-command edge b (other than the just-attached source rel) onto irt.Hdrs.
+// A code generator routinely emits a .c plus a sibling .h the .c #includes by
+// bare same-dir quote (libevent's regress.gen.c → regress.gen.h); cmake omits
+// the generated header from the consuming target's source list, so without this
+// the .c's compile can't find it. Headers are referenced by their element-
+// relative path (which resolves to the producing genrule's output); split's hdrs
+// relabel re-homes them cross-package as needed. Deduped against existing hdrs.
+func attachSiblingGeneratedHeaders(irt *ir.Target, b *ninja.Build, rel, cmakeSrc string) {
+	have := map[string]bool{}
+	for _, h := range irt.Hdrs {
+		have[h] = true
+	}
+	outs := append(append([]string{}, b.Outputs...), b.ImplicitOuts...)
+	for _, o := range outs {
+		sib, inside := relativeIfInside(cmakeSrc, o)
+		if !inside {
+			continue
+		}
+		sib = filepath.ToSlash(sib)
+		if sib == rel || have[sib] || !cclang.IsHeaderExt(strings.ToLower(filepath.Ext(sib))) {
+			continue
+		}
+		irt.Hdrs = append(irt.Hdrs, sib)
+		have[sib] = true
+	}
+}
+
 // wireDefineDrivenGeneratedHeaders connects a target to a generated header it
 // pulls in via a compile DEFINE rather than a literal #include, which the
 // converter's include scan can't see. VTK's module machinery
@@ -2290,6 +2318,14 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					}
 					if b := g.BuildFor(abs); b != nil && b.Rule == "CUSTOM_COMMAND" {
 						attachGeneratedSource(irt, rel, inCompileGroup[i], true, cc.CcEmbedSourceToHeader[rel])
+						// The same custom command typically emits SIBLING outputs:
+						// rpcgen-style generators produce foo.gen.c AND foo.gen.h,
+						// and the generated .c #includes its .h by bare same-dir
+						// quote. cmake omits the generated header from the target's
+						// source list, so stage the genrule's sibling generated
+						// HEADERS as hdrs here — otherwise the .c's compile can't
+						// find them (libevent's regress.gen.c → regress.gen.h).
+						attachSiblingGeneratedHeaders(irt, b, rel, cmakeSrc)
 						consumesCodegen = true
 						continue
 					}
