@@ -1,4 +1,4 @@
-.PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace run-manifest test test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
+.PHONY: all converter diff history bst-translate derive-toolchain build-tracer convert-element-trace run-manifest test test-race cover test-e2e e2e-hello-world e2e-fmt e2e-meta-bst-wrapper \
         e2e-cmake-consumer e2e-toolchain-skip e2e-fidelity e2e-fidelity-fmt e2e-fidelity-compare-zlib e2e-fidelity-compare-catch2 e2e-fidelity-compare-libpng e2e-fidelity-compare-spdlog e2e-fidelity-compare-fmt e2e-fidelity-compare-zlib-consumer e2e-fidelity-compare-fmt-consumer e2e-fidelity-compare-spdlog-consumer e2e-fidelity-compare-nlohmann-json-consumer \
         e2e-meta-hello e2e-meta-stack e2e-meta-manual e2e-meta-make e2e-meta-make-round2 e2e-meta-trace-round2-fold e2e-meta-autotools-round2-multiplatform e2e-meta-cmake-round2-fallback-multiplatform e2e-meta-meson e2e-meta-meson-round2-fallback e2e-meta-meson-round2-fallback-multiplatform e2e-meta-converge e2e-meta-finalize-b e2e-meta-cross-kind e2e-meta-pyproject e2e-meta-pyproject-fallback e2e-meta-vars e2e-meta-gazelle-roundtrip e2e-meta-render-project-a e2e-meta-unify-toolchains e2e-meta-toolchain-build e2e-meta-kits-build \
         e2e-meta-compose e2e-meta-filter e2e-meta-import e2e-meta-autotools e2e-meta-cross-cmake e2e-meta-cmake-cross-package-target-file e2e-meta-cmake-split-build e2e-meta-cmake-split-multiconfig e2e-meta-cmake-split-gazelle e2e-meta-cmake-vcs-stamp e2e-meta-cmake-vcs-stamp-indirect e2e-meta-cmake-vcs-stamp-function e2e-meta-cmake-render-gates \
@@ -178,6 +178,28 @@ $(RUN_MANIFEST): $(GO_SRC)
 # Unit tests: pre-recorded File API fixtures, no cmake required.
 test:
 	$(GO) test ./...
+
+# Race-detector run of the unit suite. Not part of the fast `test` loop —
+# the detector roughly halves throughput and the converter is mostly
+# single-threaded (the only concurrency lives in internal/cas/fakecas) — so
+# run it before changes that touch goroutine/channel code or the fake CAS.
+test-race:
+	$(GO) test -race ./...
+
+# Coverage lens (measurement only — NOT a gate). Writes a per-statement
+# profile and prints the total plus an annotated HTML view, so under-tested
+# code is visible without a noisy threshold gate. Scoped to packages that
+# actually have tests: no-test packages would otherwise show as 0% clutter
+# (enumerate them with `go test ./...` instead) and, more practically, drive
+# `go test -coverprofile` down the covdata merge path that a stripped Go
+# toolchain (the web session's host SDK ships `cover` but not `covdata`) can't
+# satisfy. `make cover` for the total; open coverage.html for the line view.
+cover:
+	$(GO) test -coverprofile=coverage.out \
+		$$($(GO) list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./...)
+	@$(GO) tool cover -func=coverage.out | tail -1
+	@$(GO) tool cover -html=coverage.out -o coverage.html
+	@echo "wrote coverage.out (profile) and coverage.html (annotated source)"
 
 # End-to-end tests: real cmake invocation. Gated behind build tag.
 test-e2e: check-cmake-toolchain converter
