@@ -218,7 +218,7 @@ func main() {
 
 // loadCmake parses a cmake compile_commands.json into per-TU facts keyed by the
 // source file's basename (cmake records absolute host source paths).
-func loadCmake(path, root string) (map[string]tuFacts, int, error) {
+func loadCmake(path, root string) (map[string][]tuFacts, int, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, 0, err
@@ -227,8 +227,8 @@ func loadCmake(path, root string) (map[string]tuFacts, int, error) {
 	if err := json.Unmarshal(b, &entries); err != nil {
 		return nil, 0, fmt.Errorf("parse: %w", err)
 	}
-	out := map[string]tuFacts{}
-	collisions := 0
+	out := map[string][]tuFacts{}
+	multi := 0
 	for _, e := range entries {
 		argv := e.Arguments
 		if len(argv) == 0 {
@@ -238,12 +238,17 @@ func loadCmake(path, root string) (map[string]tuFacts, int, error) {
 		if key == "" {
 			continue
 		}
-		if _, dup := out[key]; dup {
-			collisions++
+		// A source compiled MORE THAN ONCE (different targets/flags — fmt's
+		// gtest-extra.cc compiles plain in test-main and with FMT_HEADER_ONLY in
+		// each header-only test) keeps ALL variants; diff unions them per source
+		// so a define present in SOME variant isn't a false "missing/extra" when
+		// the two sides just paired different variants. multi counts such sources.
+		if len(out[key]) == 1 {
+			multi++
 		}
-		out[key] = factsFromArgv(argv)
+		out[key] = append(out[key], factsFromArgv(argv))
 	}
-	return out, collisions, nil
+	return out, multi, nil
 }
 
 // hasParamFileArg reports whether a compile argv routes its flags through a
@@ -262,7 +267,7 @@ func hasParamFileArg(argv []string) bool {
 
 // loadAquery parses a bazel aquery jsonproto and recovers per-TU facts keyed by
 // the compiled source's basename. Only CppCompile actions are considered.
-func loadAquery(path, root string) (facts map[string]tuFacts, paramSkipped map[string]bool, collisions int, err error) {
+func loadAquery(path, root string) (facts map[string][]tuFacts, paramSkipped map[string]bool, collisions int, err error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, 0, err
@@ -271,8 +276,9 @@ func loadAquery(path, root string) (facts map[string]tuFacts, paramSkipped map[s
 	if err := json.Unmarshal(b, &doc); err != nil {
 		return nil, nil, 0, fmt.Errorf("parse: %w", err)
 	}
-	out := map[string]tuFacts{}
+	out := map[string][]tuFacts{}
 	skipped := map[string]bool{}
+	multi := 0
 	for _, a := range doc.Actions {
 		if a.Mnemonic != "CppCompile" {
 			continue
@@ -289,12 +295,14 @@ func loadAquery(path, root string) (facts map[string]tuFacts, paramSkipped map[s
 			skipped[key] = true
 			continue
 		}
-		if _, dup := out[key]; dup {
-			collisions++
+		// Keep every compile variant of a source (see loadCmake) — diff unions
+		// them per source. multi counts sources with >1 variant.
+		if len(out[key]) == 1 {
+			multi++
 		}
-		out[key] = factsFromArgv(a.Arguments)
+		out[key] = append(out[key], factsFromArgv(a.Arguments))
 	}
-	return out, skipped, collisions, nil
+	return out, skipped, multi, nil
 }
 
 // tuKey is the cross-toolchain match key for a translation unit: the source
@@ -506,7 +514,7 @@ type report struct {
 	IncludeMismatch  map[string]diffSet   `json:"include_mismatch"`   // TU → source-include delta
 	CoptMismatch     map[string]diffSet   `json:"copt_mismatch"`      // TU → project-copt delta
 	GenRootMissing   map[string][]string  `json:"gen_root_missing"`   // TU → gen: roots cmake has with NO bazel gen: counterpart
-	TUKeyCollisions  int                  `json:"tu_key_collisions"`  // same-key TUs that overwrote (should be 0 with relative keys)
+	TUKeyCollisions  int                  `json:"tu_key_collisions"`  // sources compiled in >1 variant (now union-merged per source, not lossy)
 	ParamFileSkipped int                  `json:"param_file_skipped"` // bazel CppCompile TUs routed via @param-file, excluded from the diff
 }
 
@@ -515,7 +523,48 @@ type diffSet struct {
 	ExtraInBazel   []string `json:"extra_in_bazel"`   // bazel has, cmake lacks
 }
 
-func diff(cmake, bazel map[string]tuFacts, paramSkipped map[string]bool, o normOpts) *report {
+// unionFacts collapses a source's compile VARIANTS into one tuFacts by UNION:
+// the set-valued facts (Defines / IncludeDir / Copts) become the union across
+// variants, and Std the sorted-unique join of the variants' non-empty stds. A
+// source compiled many ways (fmt's gtest-extra.cc: plain in test-main, with
+// FMT_HEADER_ONLY in each header-only test) thus contributes the SET of flags it
+// sees ANYWHERE, on both sides — so a define present in some variant is a real
+// drift only when it's in one side's union and not the other's, never merely
+// because the per-source pairing picked different variants. (Variant→target
+// alignment would be finer, but the toolchains don't share target identity; the
+// union answers the faithful question "does bazel use the same flag set across
+// this source's compiles as cmake?" without false positives.)
+func unionFacts(variants []tuFacts) tuFacts {
+	u := tuFacts{Defines: map[string]bool{}, IncludeDir: map[string]bool{}, Copts: map[string]bool{}}
+	stds := map[string]bool{}
+	for _, v := range variants {
+		for d := range v.Defines {
+			u.Defines[d] = true
+		}
+		for i := range v.IncludeDir {
+			u.IncludeDir[i] = true
+		}
+		for c := range v.Copts {
+			u.Copts[c] = true
+		}
+		if v.Std != "" {
+			stds[v.Std] = true
+		}
+	}
+	u.Std = strings.Join(sliceutil.SortedKeys(stds), ",")
+	return u
+}
+
+func diff(cmakeV, bazelV map[string][]tuFacts, paramSkipped map[string]bool, o normOpts) *report {
+	// Collapse each source's variants to a per-source union (see unionFacts).
+	cmake := make(map[string]tuFacts, len(cmakeV))
+	for k, vs := range cmakeV {
+		cmake[k] = unionFacts(vs)
+	}
+	bazel := make(map[string]tuFacts, len(bazelV))
+	for k, vs := range bazelV {
+		bazel[k] = unionFacts(vs)
+	}
 	r := &report{
 		DefineMismatch:  map[string]diffSet{},
 		StdMismatch:     map[string][2]string{},
@@ -634,7 +683,7 @@ func (r *report) print(w *os.File) {
 	fmt.Fprintf(w, "  DEFINE mismatches: %d   -std mismatches: %d   include-dir mismatches: %d   copt mismatches: %d   gen-root-missing: %d\n",
 		len(r.DefineMismatch), len(r.StdMismatch), len(r.IncludeMismatch), len(r.CoptMismatch), len(r.GenRootMissing))
 	if r.TUKeyCollisions > 0 {
-		fmt.Fprintf(w, "  WARNING: %d TU-key collisions (same source-relative key) — results undercount\n", r.TUKeyCollisions)
+		fmt.Fprintf(w, "  note: %d source(s) compiled in multiple variants (union-merged per source)\n", r.TUKeyCollisions)
 	}
 	if r.ParamFileSkipped > 0 {
 		fmt.Fprintf(w, "  note: %d bazel TUs routed via @param-file — excluded from the diff (not counted as misses)\n", r.ParamFileSkipped)
