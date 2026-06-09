@@ -156,7 +156,8 @@ func applyInterfaceScopeToDefines(pkg *ir.Package, genexTargets map[string]genex
 	}
 	for i := range pkg.Targets {
 		t := &pkg.Targets[i]
-		if len(t.Defines) == 0 {
+		ppDefines := t.PerPlatform["defines"]
+		if len(t.Defines) == 0 && len(ppDefines) == 0 {
 			continue
 		}
 		// Split subs are keyed under their synthesized name; the exported
@@ -175,17 +176,62 @@ func applyInterfaceScopeToDefines(pkg *ir.Package, genexTargets map[string]genex
 		for _, d := range splitResolvedDefines(ti.InterfaceCompileDefinitions) {
 			exported[normalizeDefineItem(d)] = true
 		}
-		kept := t.Defines[:0]
-		for _, d := range t.Defines {
+		// Flat (config-invariant) defines.
+		if len(t.Defines) > 0 {
+			kept := t.Defines[:0]
+			for _, d := range t.Defines {
+				if exported[normalizeDefineItem(d)] {
+					kept = append(kept, d)
+					continue
+				}
+				if !stringSliceContains(t.LocalDefines, d) {
+					t.LocalDefines = append(t.LocalDefines, d)
+				}
+			}
+			t.Defines = kept
+		}
+		// Per-config select() defines (the multi-config build puts a
+		// config-divergent define — VTK's KWSYS_SYSTEMINFORMATION_HAS_DEBUG_BUILD,
+		// set only under Debug/RelWithDebInfo — into a `defines = select({...})`
+		// arm, not the flat list).
+		routePerConfigDefinesToLocal(t, ppDefines, exported)
+	}
+}
+
+// routePerConfigDefinesToLocal applies the interface-scope partition to a
+// target's per-config `defines` select() arms: each non-exported arm entry
+// moves into the matching `local_defines` select arm (preserving the config
+// key), and arms that empty out are pruned (PerPlatform stores deltas only, so
+// an empty arm is no delta). Split out of applyInterfaceScopeToDefines to keep
+// it under the cognitive-complexity gate.
+func routePerConfigDefinesToLocal(t *ir.Target, ppDefines map[string][]string, exported map[string]bool) {
+	if len(ppDefines) == 0 {
+		return
+	}
+	localPP := t.PerPlatform["local_defines"]
+	for cond, defs := range ppDefines {
+		var kept []string
+		for _, d := range defs {
 			if exported[normalizeDefineItem(d)] {
 				kept = append(kept, d)
 				continue
 			}
-			if !stringSliceContains(t.LocalDefines, d) {
-				t.LocalDefines = append(t.LocalDefines, d)
+			if localPP == nil {
+				localPP = map[string][]string{}
+				t.PerPlatform["local_defines"] = localPP
+			}
+			if !stringSliceContains(localPP[cond], d) {
+				localPP[cond] = append(localPP[cond], d)
 			}
 		}
-		t.Defines = kept
+		if len(kept) == 0 {
+			delete(ppDefines, cond)
+		} else {
+			ppDefines[cond] = kept
+		}
+	}
+	if len(ppDefines) == 0 {
+		delete(t.PerPlatform, "defines")
 	}
 }
 

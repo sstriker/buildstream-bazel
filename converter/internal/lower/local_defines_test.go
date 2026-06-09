@@ -284,3 +284,46 @@ func TestApplyInterfaceScopeToDefines_KeepsExportedRoutesRest(t *testing.T) {
 	}
 	applyInterfaceScopeToDefines(nil, genexTargets, subParent) // must not panic
 }
+
+// TestApplyInterfaceScopeToDefines_PerConfigSelectArms covers the multi-config
+// case: a config-divergent define lands in a `defines = select({...})` arm
+// (VTK's KWSYS_SYSTEMINFORMATION_HAS_DEBUG_BUILD, Debug/RelWithDebInfo only),
+// and must move to the matching `local_defines` select arm — preserving the
+// config key — when the owning target doesn't export it. Emptied arms are
+// pruned, and the exported arm entry stays transitive.
+func TestApplyInterfaceScopeToDefines_PerConfigSelectArms(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "vtksys",
+			Kind: ir.KindCCLibrary,
+			PerPlatform: map[string]map[string][]string{
+				"defines": {
+					"//config:debug":          {"KWSYS_SYSTEMINFORMATION_HAS_DEBUG_BUILD=1", "PUB_API=1"},
+					"//config:relwithdebinfo": {"KWSYS_SYSTEMINFORMATION_HAS_DEBUG_BUILD=1"},
+				},
+			},
+		}},
+	}
+	genexTargets := map[string]genexeval.TargetInfo{
+		"vtksys": {InterfaceCompileDefinitions: "PUB_API=1"},
+	}
+	applyInterfaceScopeToDefines(pkg, genexTargets, nil)
+	tgt := pkg.Targets[0]
+
+	// The exported PUB_API stays in the debug `defines` arm; the relwithdebinfo
+	// arm emptied (only the private define) so it's pruned.
+	if want := []string{"PUB_API=1"}; !reflect.DeepEqual(tgt.PerPlatform["defines"]["//config:debug"], want) {
+		t.Errorf("defines[debug] = %v; want %v", tgt.PerPlatform["defines"]["//config:debug"], want)
+	}
+	if _, ok := tgt.PerPlatform["defines"]["//config:relwithdebinfo"]; ok {
+		t.Errorf("relwithdebinfo defines arm should be pruned (only a private define); got %v", tgt.PerPlatform["defines"]["//config:relwithdebinfo"])
+	}
+	// The private debug define moves to the local_defines select arm, per config.
+	ld := tgt.PerPlatform["local_defines"]
+	if want := []string{"KWSYS_SYSTEMINFORMATION_HAS_DEBUG_BUILD=1"}; !reflect.DeepEqual(ld["//config:debug"], want) {
+		t.Errorf("local_defines[debug] = %v; want %v", ld["//config:debug"], want)
+	}
+	if want := []string{"KWSYS_SYSTEMINFORMATION_HAS_DEBUG_BUILD=1"}; !reflect.DeepEqual(ld["//config:relwithdebinfo"], want) {
+		t.Errorf("local_defines[relwithdebinfo] = %v; want %v", ld["//config:relwithdebinfo"], want)
+	}
+}
