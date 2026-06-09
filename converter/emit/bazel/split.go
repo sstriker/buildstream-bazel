@@ -179,6 +179,15 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		groups[d] = append(groups[d], ws...)
 	}
 
+	// A package that owes ONLY exports_files() — no targets of its own, e.g. a
+	// root with just add_subdirectory() whose committed source (gen.py) feeds a
+	// re-homed in-source-workdir genrule in a sub-package — still needs a
+	// BUILD.bazel to host the exports_files() and mark the directory a package
+	// (else the cross-package label //pkg:gen.py hits "no such package").
+	for d := range exportsByDir {
+		ensure(d)
+	}
+
 	// 3. Render each package group via the shared EmitWithOptions.
 	base := strings.Trim(opts.BazelPackagePath, "/")
 	out := map[string][]byte{}
@@ -1163,6 +1172,39 @@ func relocateGenruleOuts(rt *ir.Target, t ir.Target, dir string) {
 	rt.GenruleCmd = cmd
 }
 
+// relocateGenruleSrcs rewrites a moved genrule's $(execpath <src>) /
+// $(location <src>) cmd references to match the relabeled srcs field
+// (rewriteSrcList): a src in THIS package shrinks to its package-relative form,
+// one in another package becomes the cross-package label. Mirrors
+// relocateGenruleTools, but for the SRCS an in-source-workdir genrule
+// references positionally (`cp $(execpath gen.py) …`). Without it the cmd keeps
+// the element-root path (`$(execpath gen.py)`), which Bazel resolves against the
+// genrule's moved package and fails to find. Uses the same deepestPkg / relUnder
+// / crossPkgLabel logic as rewriteSrcList so the cmd ref and the srcs label
+// always agree.
+func relocateGenruleSrcs(rt *ir.Target, t ir.Target, dir string, plan *splitPlan) {
+	cmd := rt.GenruleCmd
+	for _, s := range t.Srcs {
+		d := plan.deepestPkg(s)
+		var newRef string
+		if d == dir {
+			newRef, _ = relUnder(dir, s)
+		} else {
+			file, _ := relUnder(d, s)
+			if file == "" {
+				continue
+			}
+			newRef = crossPkgLabel(plan, d, file)
+		}
+		if newRef == "" || newRef == s {
+			continue
+		}
+		cmd = strings.ReplaceAll(cmd, "$(execpath "+s+")", "$(execpath "+newRef+")")
+		cmd = strings.ReplaceAll(cmd, "$(location "+s+")", "$(location "+newRef+")")
+	}
+	rt.GenruleCmd = cmd
+}
+
 // relocateGenruleTools rewrites a moved genrule's intra-element tool labels to
 // cross-package form, updating the matching $(location)/$(execpath) cmd
 // references — e.g. a tablegen genrule placed in //include whose generator
@@ -1479,6 +1521,9 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 		}
 		if len(t.GenruleTools) > 0 {
 			relocateGenruleTools(&rt, t, plan)
+		}
+		if local && len(t.Srcs) > 0 {
+			relocateGenruleSrcs(&rt, t, dir, plan)
 		}
 	}
 
