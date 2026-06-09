@@ -115,6 +115,12 @@ func TestStageSiblingGeneratedHeaders(t *testing.T) {
 				},
 			},
 			{Name: "other", Kind: ir.KindCCBinary, Srcs: []string{"main.c"}},
+			// A consumer that ALREADY lists the generated sibling header in srcs
+			// (a project that names its generated header in add_library sources
+			// for IDE/moc visibility). The dir-surfacing must NOT be gated on the
+			// header being newly staged — it still needs the genfiles -I, else the
+			// .c's bare same-dir include misses (the kwsysPrivate.h pre-emption).
+			{Name: "preStaged", Kind: ir.KindCCLibrary, Srcs: []string{"test/regress.gen.c", "test/regress.gen.h"}},
 		},
 	}
 	stageSiblingGeneratedHeaders(pkg)
@@ -158,6 +164,22 @@ func TestStageSiblingGeneratedHeaders(t *testing.T) {
 	}
 	if len(other.Includes) != 0 {
 		t.Errorf("unrelated target must not get an include dir; got %v", other.Includes)
+	}
+	// A consumer that already had the sibling header in srcs still gets the
+	// genfiles dir on its include path (dir-surfacing decoupled from staging),
+	// and the header is not duplicated in srcs.
+	preStaged := &pkg.Targets[4]
+	if !hasInc(preStaged, "test") {
+		t.Errorf("pre-staged consumer missing generated-header include dir; got %v", preStaged.Includes)
+	}
+	npre := 0
+	for _, s := range preStaged.Srcs {
+		if s == "test/regress.gen.h" {
+			npre++
+		}
+	}
+	if npre != 1 {
+		t.Errorf("pre-staged sibling header must not duplicate in srcs; got %v", preStaged.Srcs)
 	}
 	// Idempotent: neither srcs nor includes duplicate on a second pass.
 	stageSiblingGeneratedHeaders(pkg)
