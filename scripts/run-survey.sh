@@ -88,13 +88,17 @@ case "$split_packages" in 0|no|off|false) split_packages="" ;; esac
 # explicitly (e.g. `SURVEY_BAZEL_BUILD=auto scripts/run-survey.sh fmt=$FMT_DIR
 # libxml2=$LIBXML2_DIR brotli=$BROTLI_DIR`) to exercise it.
 # SURVEY_COMPILE_DB=1 turns on the fifth lens — compile-commands FIDELITY. For
-# each build-lens-selected project it diffs cmake's CMAKE_EXPORT_COMPILE_COMMANDS
+# each surveyed project it diffs cmake's CMAKE_EXPORT_COMPILE_COMMANDS
 # db against Bazel's `aquery 'mnemonic("CppCompile",//...)'` per translation unit
 # (defines, -std, source includes), writing <out>/<name>/fidelity.json. Runs
 # after the convert but BEFORE the build's compile (aquery needs only analysis),
-# so it catches per-TU flag drift cheaply. Report-only; see cmd/compile-commands-diff.
+# so it catches per-TU flag drift cheaply. It does NOT require SURVEY_BAZEL_BUILD:
+# the lens triggers the converted-workspace setup on its own and skips the build
+# (build-status column shows "skip" when only a workspace-lens selected the
+# member). Report-only; see cmd/compile-commands-diff.
 # SURVEY_INTENT=1 turns on the sixth lens — intent-capture, the agent-as-oracle
-# "what did we miss?" pass. For each build-lens-selected project it hands the
+# "what did we miss?" pass. For each surveyed project (build lens not required —
+# same workspace-only trigger as the compile-db lens) it hands the
 # converted bundle (workspace BUILD/MODULE + the cmake sources) to a PLUGGABLE
 # judge ($INTENT_LENS_JUDGE, e.g. 'claude -p'), then triages the findings against
 # the element's own conversion-todos / rejections, writing <out>/<name>/
@@ -183,6 +187,23 @@ build_lens_for() {
     for _bl_p in $_bl_set; do
         [ "$_bl_p" = "$1" ] && return 0
     done
+    return 1
+}
+
+# ws_lens_wanted — true if any WORKSPACE-only lens is requested: the
+# compile-db fidelity lens (SURVEY_COMPILE_DB), the intent-capture lens
+# (SURVEY_INTENT + a judge), or the narrowing-compat lens
+# (SURVEY_NARROWING_COMPAT). These all ride INSIDE try_bazel_build (they need
+# the converted workspace / a clean convert) but DON'T need the bazel build —
+# the compile-db lens runs `aquery` (analysis only), and the other two re-use
+# the convert. They must therefore trigger try_bazel_build even when
+# SURVEY_BAZEL_BUILD didn't select this member; the build step itself stays
+# gated on build_lens_for (see try_bazel_build). Without this, SURVEY_COMPILE_DB=1
+# on its own was a silent no-op — try_bazel_build was never entered.
+ws_lens_wanted() {
+    [ "${SURVEY_COMPILE_DB:-0}" != "0" ] && return 0
+    [ "${SURVEY_NARROWING_COMPAT:-0}" != "0" ] && return 0
+    [ "${SURVEY_INTENT:-0}" != "0" ] && [ -n "${INTENT_LENS_JUDGE:-}" ] && return 0
     return 1
 }
 
@@ -488,11 +509,15 @@ EOF
     # scripts, and is belt-and-suspenders with the .bazelrc strip above). Thread
     # both startup-arg and build-arg passthrough too (META_BAZEL_STARTUP_ARGS
     # goes before the subcommand — registry tweaks for sandboxed/offline runs).
-    # SURVEY_SKIP_BUILD=1 runs the convert + the opt-in fidelity/intent lenses
-    # above but SKIPS the final `bazel build //...` — for refreshing the
+    # Run the actual `bazel build //...` only when the build lens selected THIS
+    # member. try_bazel_build is also entered purely for the workspace-only
+    # lenses above (compile-db / intent / narrowing — see ws_lens_wanted) when
+    # SURVEY_BAZEL_BUILD did NOT select this member; in that case the convert +
+    # those lenses have run and we skip the (unrequested) build. SURVEY_SKIP_BUILD=1
+    # forces the same skip even for a selected member — for refreshing the
     # compile-db + intent rows across an already-green corpus without paying for
-    # the (redundant) full rebuild. The build-status column shows "skip".
-    if [ "${SURVEY_SKIP_BUILD:-0}" != "0" ]; then
+    # the (redundant) full rebuild. Either way the build-status column shows "skip".
+    if [ "${SURVEY_SKIP_BUILD:-0}" != "0" ] || ! build_lens_for "$_bb_name"; then
         echo "skip"
         return
     fi
@@ -681,14 +706,18 @@ for entry in $projects; do
     fi
 
     # 4th lens: `bazel build //...` of the faithful (project-B-shaped) output,
-    # only when this project is selected by SURVEY_BAZEL_BUILD. Short-circuit
-    # the cases that can't (or shouldn't) build before paying for a clean
-    # convert: a hard-failed diagnostic convert (configure must work first),
-    # and a project that surveys with rejections (the lens contract is to skip
-    # refusals — the clean convert would just abort on the first one), unless
-    # the project opted out of the rejection gate (BUILD_LENS_IGNORE_REJ, above).
+    # when this project is selected by SURVEY_BAZEL_BUILD — OR when a
+    # workspace-only lens (compile-db / intent / narrowing, see ws_lens_wanted)
+    # needs try_bazel_build's converted workspace WITHOUT the build (the build
+    # step inside is gated on build_lens_for, so a lens-only entry skips it).
+    # Short-circuit the cases that can't (or shouldn't) proceed before paying
+    # for a clean convert: a hard-failed diagnostic convert (configure must work
+    # first), and a project that surveys with rejections (the lens contract is to
+    # skip refusals — the clean convert would just abort on the first one, and
+    # the aquery/intent lenses need that clean convert too), unless the project
+    # opted out of the rejection gate (BUILD_LENS_IGNORE_REJ, above).
     build_status="-"
-    if build_lens_for "$name"; then
+    if build_lens_for "$name" || ws_lens_wanted; then
         if [ "$status" != "ok" ]; then
             build_status="skip(convert)"
         elif [ "$bl_ignore_rej" != "1" ] && [ -n "$rej_blocking" ] && [ "$rej_blocking" != "0" ] && [ "$rej_blocking" != "-" ]; then
