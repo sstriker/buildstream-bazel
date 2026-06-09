@@ -453,6 +453,21 @@ EOF
             echo "  $_bb_name: intent-capture lens failed (see $_bb_po/intent.log)" >&2
         fi
     fi
+    # Source-narrowing-compatibility lens (SURVEY_NARROWING_COMPAT=1). STRUCTURAL
+    # (cmake-only, no Bazel build) — runs here, BEFORE the build, with the other
+    # structural lenses, per the pipeline ordering (structural → build → symbol-
+    # fidelity). Proves the convert is a pure function of build-system files +
+    # codemodel + trace, not source/header BYTES, by re-converting a copy with
+    # every non-read-set source/header zeroed and asserting a byte-identical
+    # BUILD. Report-only (writes narrowing-compat.json). See the lens script.
+    if [ "${SURVEY_NARROWING_COMPAT:-0}" != "0" ]; then
+        _nc_split=0; [ -n "$_bb_sp" ] && _nc_split=1
+        # shellcheck disable=SC2086
+        _nc_res="$(sh "$repo_root/scripts/narrowing-compat-lens.sh" \
+            --src "$_bb_src" --name "$_bb_name" --out "$_bb_po" --split "$_nc_split" \
+            --bazel-package-path "$_bb_pkg" -- $CONVERT_FLAGS 2>>"$_bb_po/narrowing-compat.log" || echo "skip(error)")"
+        echo "  $_bb_name: narrowing-compat -> $_nc_res ($_bb_po/narrowing-compat.json)" >&2
+    fi
     # --noworkspace_rc: the lens measures whether OUR emitted module/build graph
     # builds, so ignore any workspace .bazelrc (matches the repo's other survey
     # scripts, and is belt-and-suspenders with the .bazelrc strip above). Thread
