@@ -1897,6 +1897,16 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			configs = append(configs, cfg.Name)
 		}
 		lowerMultiConfigDeltas(pkg, r.TargetsByConfig, configs, cmakeSrc, cmakeBuild, idToName)
+		// The multi-config fold populates the per-config `defines` select() arms
+		// AFTER the flat-define scoping above, so a config-divergent PRIVATE
+		// define (VTK's KWSYS_SYSTEMINFORMATION_HAS_DEBUG_BUILD, set only under
+		// Debug/RelWithDebInfo via set_property(SOURCE … COMPILE_DEFINITIONS_DEBUG))
+		// lands transitive and bypasses that scoping. Re-run the interface-scope
+		// pass here to route the freshly-folded per-config arms (idempotent on the
+		// already-scoped flat defines). Gated with the trace like the flat pass.
+		if decodedTrace != nil {
+			applyInterfaceScopeToDefines(pkg, genexTargets, cc.SubParent)
+		}
 	}
 	// Surface missing-include-dir skips so the operator sees the
 	// cmake oddity instead of silently losing the dir. Per-dir
