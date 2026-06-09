@@ -250,36 +250,13 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			continue
 		}
 
-		// IN-SOURCE generation: the declared OUTPUT lands in the SOURCE tree
-		// (under cmakeSrc) via a source-dir `cd <srcdir> && <tool>`
-		// WORKING_DIRECTORY shape (libevent's event_rpcgen.py →
-		// test/regress.gen.{c,h}). Bazel can't write into the source tree, and a
-		// genrule's outputs must live in its own package, so the normal
-		// build-dir-output path can't express it (it would emit absolute outs).
-		// Reconstruct the working dir in a mktemp scratch dir and copy outputs to
-		// their $(RULEDIR)/<out> anchored paths — see buildInSourceWorkdirGenrule.
-		if relOuts, inSrc := inSourceOutputs(outs, cmakeSrc); inSrc && cc != nil && !cc.SplitPackages {
-			body := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath)
-			wdAbs := extractCdDir(cmd)
-			wd, wdInside := relativeIfInside(cmakeSrc, wdAbs)
-			if wdAbs != "" && wdInside {
-				name := genruleNameFor(b, buildDir)
-				out = append(out, ir.Target{
-					Name:        name,
-					Kind:        ir.KindGenrule,
-					Srcs:        srcs,
-					GenruleOuts: relOuts,
-					GenruleCmd:  buildInSourceWorkdirGenrule(body, filepath.ToSlash(wd), srcs, relOuts),
-					Tags:        []string{"cmake-codegen-standalone-custom-command", "cmake-codegen-in-source-workdir"},
-					Visibility:  []string{"//visibility:private"},
-				})
-				for _, o := range relOuts {
-					cc.OutToGenrule[o] = name
-				}
-				continue
-			}
-			// No recoverable source-dir WORKING_DIRECTORY: fall through (the
-			// normal path will emit the historical shape / refuse downstream).
+		// IN-SOURCE generation: the declared OUTPUT lands in the SOURCE tree via a
+		// source-dir `cd <srcdir> && <tool>` WORKING_DIRECTORY shape (libevent's
+		// event_rpcgen.py → test/regress.gen.{c,h}). Handled by reconstructing the
+		// working dir in a mktemp scratch dir — see tryInSourceWorkdirGenrule.
+		if t, ok := tryInSourceWorkdirGenrule(b, cmd, srcs, outs, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath, cc); ok {
+			out = append(out, t)
+			continue
 		}
 
 		// A standalone `cmake -P <script>` custom command can't run under Bazel
@@ -513,6 +490,46 @@ func inSourceOutputs(outs []string, cmakeSrc string) (rel []string, ok bool) {
 		rel = append(rel, filepath.ToSlash(r))
 	}
 	return rel, true
+}
+
+// tryInSourceWorkdirGenrule emits the genrule for an in-source WORKING_DIRECTORY
+// custom command when the shape applies: every output is in the source tree
+// (inSourceOutputs), the command has a recoverable `cd <srcdir>` working dir,
+// and the emit is monolithic (cc.SplitPackages off — the split genrule re-home
+// doesn't yet relabel cross-package source cmd-refs). It registers the outputs
+// in cc.OutToGenrule and returns the genrule. ok=false leaves the caller's
+// normal build-dir-output path. See buildInSourceWorkdirGenrule for the
+// scratch-dir mechanism.
+func tryInSourceWorkdirGenrule(b *ninja.Build, cmd string, srcs, outs []string, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath string, cc *codegenContext) (ir.Target, bool) {
+	if cc == nil || cc.SplitPackages {
+		return ir.Target{}, false
+	}
+	relOuts, inSrc := inSourceOutputs(outs, cmakeSrc)
+	if !inSrc {
+		return ir.Target{}, false
+	}
+	wdAbs := extractCdDir(cmd)
+	if wdAbs == "" {
+		return ir.Target{}, false
+	}
+	wd, inside := relativeIfInside(cmakeSrc, wdAbs)
+	if !inside {
+		return ir.Target{}, false
+	}
+	body := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath)
+	name := genruleNameFor(b, buildDir)
+	for _, o := range relOuts {
+		cc.OutToGenrule[o] = name
+	}
+	return ir.Target{
+		Name:        name,
+		Kind:        ir.KindGenrule,
+		Srcs:        srcs,
+		GenruleOuts: relOuts,
+		GenruleCmd:  buildInSourceWorkdirGenrule(body, filepath.ToSlash(wd), srcs, relOuts),
+		Tags:        []string{"cmake-codegen-standalone-custom-command", "cmake-codegen-in-source-workdir"},
+		Visibility:  []string{"//visibility:private"},
+	}, true
 }
 
 // buildInSourceWorkdirGenrule builds the genrule cmd for an in-source
