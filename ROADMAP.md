@@ -256,10 +256,19 @@ transition cleanly.
   target dep only the header libs it actually needs (precise per-target
   header-lib wiring), or split the aggregate so it provides the element-root
   `-I` + the headers-as-inputs WITHOUT re-propagating each member lib's own
-  `includes`. Bazel has no "deps for hdrs but not includes" slot, so the likely
-  shape is a hdrs-only filegroup the aggregate carries plus narrowed per-target
-  include deps. High-value (≥1,950 TUs across ≥4 members) but architectural —
-  needs a careful split redesign + full corpus build re-green.
+  `includes`. **Precise mechanism:** `headerLibTarget`
+  (`converter/emit/bazel/split.go:404-432`) makes each include-root header lib
+  `deps` every STRICT-DESCENDANT include-root header lib for recursive
+  reachability — and that dep propagates each descendant's `includes=["."]` (its
+  bare `-I<dir>`). cmake only grants element-root-RELATIVE reachability (`#include
+  "lapack-netlib/LAPACKE/include/lapacke.h"`), NOT the bare path (`-I…/include`
+  for `<lapacke.h>`), so the forwarding over-grants; same shape in
+  `rootHdrAggTarget` (the `element_root_headers` aggregate). The fix exposes the
+  descendant's HEADERS as inputs (re-homed via `include_prefix`, or a hdrs-only
+  filegroup) WITHOUT its `includes`. Bazel has no "deps for hdrs but not
+  includes" slot, so this is a split redesign. High-value (≥1,950 TUs across ≥4
+  members: OpenBLAS/mbedtls/catch2/libevent) but architectural — full corpus
+  build re-green required.
 
 - **Interface-driven linkopt scoping (`INTERFACE_LINK_OPTIONS`) — deferred to
   the shared-lib work; masked under forced-static.** The fourth usage-
