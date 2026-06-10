@@ -222,6 +222,17 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			}
 			collect(rels)
 		default:
+			// Argv-declared codegen rescue before the probe/stamp/refusal
+			// dispatch: `tool <in…> <out…>` with the files in the argv lifts
+			// to a multi-output genrule (see liftArgvFileProducing) — the
+			// add_custom_command-equivalent contract recovered from the
+			// configure's own on-disk evidence, no convert-time execution.
+			if v.Bucket == BucketRefuse {
+				if rels, lifted := liftArgvFileProducing(call, anc, cc); lifted {
+					collect(rels)
+					continue
+				}
+			}
 			if ref := recoverProbeOrStampCall(call, v, cc, cmakeVars, forwardedStampVars, seenProbeFlags); ref != nil {
 				unsupported = append(unsupported, *ref)
 			}
