@@ -81,7 +81,9 @@ type Todo struct {
 	ID string `json:"id"`
 	// Kind is the producer category: "cmake-p-test" |
 	// "cmake-internal-drop" | "install-script" | "install-code" |
-	// "rejection:<code>" | "bake" | "genex-unresolved".
+	// "rejection:<code>" | "bake" | "genex-unresolved" |
+	// "execute-process-refusal" (the structured per-call mirror that
+	// supersedes rejection:unsupported-execute-process).
 	Kind string `json:"kind"`
 	// Disposition is the best-guess qualifier (actionable | improvement |
 	// informational); see Disposition. Always set by the producer.

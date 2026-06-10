@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -176,6 +177,7 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 		return nil, nil
 	}
 	anc := execAnchors{hostSrcDir: hostSrcDir, recordedSrcDir: recordedSrcDir, hostBuildDir: hostBuildDir, recordedBuildDir: recordedBuildDir}
+	prescanStampVars(calls, cc)
 	// seenProbeFlags maps a lifted build-setting name to the cmake
 	// variable that produced it. The same feature probe can recur in the
 	// trace (configure re-evaluation) — the same variable lifts once.
@@ -358,6 +360,27 @@ func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, c
 		Bucket: v.Bucket,
 		Reason: v.Reason,
 		Argv:   formatExecuteProcessArgv(call),
+	}
+}
+
+// prescanStampVars records every BucketStamp OUTPUT_VARIABLE into
+// cc.StampVars BEFORE the main lift loop, so a `cmake -E configure_file`
+// appearing EARLIER in the trace than its stamp call still wires
+// stamp_values (the configure_file recovery gets trace-order independence
+// for free by running after the whole execute_process walk; the -E lift
+// runs inside it). The later in-loop write (recoverProbeOrStampCall) is
+// idempotent — same key, same value. Classify runs twice per call;
+// execute_process call counts are tiny. Known v1 limitation, shared with
+// the in-loop recording: stamps reached only through a recovered set()
+// copy (propagateStampVars, which runs after this recovery) don't wire
+// into -E configure_file lifts.
+func prescanStampVars(calls []shadow.ExecuteProcessCall, cc *codegenContext) {
+	for _, call := range calls {
+		v := Classify(call)
+		if v.Bucket == BucketStamp && call.OutputVariable != "" && len(call.Commands) > 0 && len(call.Commands[0]) > 0 {
+			driver := executeProcessDriverBasename(call.Commands[0][0])
+			cc.StampVars[call.OutputVariable] = stampStatusKey(call.OutputVariable, driver)
+		}
 	}
 }
 
@@ -1531,8 +1554,26 @@ func liftCMakeEConfigureFile(args []string, anc execAnchors, liftEnabled bool, c
 		return nil, "", true
 	}
 
+	// Same-path mirror — parity with configure_file's copyOnlySourceMirror.
+	// srcRel (source-relative) == dstRel (build-relative): with identical
+	// bytes the committed source IS the output, so emit NO rule at all (the
+	// consumer attribution attaches the rel path, which resolves to the
+	// source file; Bazel's includes attr covers the source root and its
+	// genfiles mirror alike). No COPYONLY gate, unlike configure_file: byte
+	// equality is the entire (and strictly sound) condition since cmake -E
+	// configure_file always substitutes. With DIFFERING bytes a lifted spec
+	// would carry Template == Out — an input/output collision Bazel rejects
+	// at analysis time — so force the bake shape, which deliberately
+	// references no template input.
+	if srcRel == dstRel {
+		if bytes.Equal(template, rendered) {
+			return []string{dstRel}, "", true
+		}
+		liftEnabled = false
+	}
+
 	name := executeProcessGenruleName(dstRel)
-	target := buildCMakeEConfigureFileGenrule(name, srcRel, dstRel, template, rendered, liftEnabled, cmakeVars)
+	target := buildCMakeEConfigureFileGenrule(name, srcRel, dstRel, template, rendered, liftEnabled, cmakeVars, cc.StampVars)
 	cc.Genrules = append(cc.Genrules, target)
 	cc.OutToGenrule[dstRel] = name
 	return []string{dstRel}, "", true
@@ -1544,7 +1585,7 @@ func liftCMakeEConfigureFile(args []string, anc execAnchors, liftEnabled bool, c
 // fixtures can lift those restrictions). Genex in the template
 // short-circuits to legacy — same exit shape as the
 // file(GENERATE) lifter.
-func buildCMakeEConfigureFileGenrule(name, srcRel, dstRel string, template, rendered []byte, liftEnabled bool, cmakeVars map[string]string) ir.Target {
+func buildCMakeEConfigureFileGenrule(name, srcRel, dstRel string, template, rendered []byte, liftEnabled bool, cmakeVars, stampVars map[string]string) ir.Target {
 	opts := configurefile.Options{}
 	// Bake the resolved bytes via the shared bakeFileTarget chooser:
 	// readable skylib write_file for \n-only text, byte-exact base64
@@ -1571,6 +1612,13 @@ func buildCMakeEConfigureFileGenrule(name, srcRel, dstRel string, template, rend
 	spec := newConfigureFileSpec(dstRel, opts)
 	spec.Template = srcRel
 	spec.Values = values
+	// VCS-stamp lift parity with the configure_file recovery: a template
+	// var written by a stamp execute_process re-reads its value from the
+	// Bazel workspace status at build time; the baked value stays in
+	// `values` as the non-stamped fallback. Limitation (documented at the
+	// prescan): set()-copy-forwarded stamps (propagateStampVars runs after
+	// this recovery) don't wire here.
+	spec.StampValues = stampValuesForTemplate(template, opts, stampVars)
 	return cmakeConfigureFileTarget(name, spec, cmakeEConfigureFileTags(true))
 }
 

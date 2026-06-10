@@ -1461,6 +1461,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		}
 	}
 	if len(executeProcessRefusals) > 0 {
+		// Structured per-call mirror into conversion-todos.json (the
+		// agent-actionable channel) — fires in every disposition mode below;
+		// the coarse rejection:unsupported-execute-process mirror is skipped
+		// in emitRejectionTodos in favor of this producer.
+		emitExecuteProcessRefusalTodos(opts.Todos, executeProcessRefusals, hostSrc, opts.BuildDir)
 		if opts.Rejections != nil {
 			// Diagnostic mode: record the refusal and fall
 			// through to the rich lift below. The rich lift

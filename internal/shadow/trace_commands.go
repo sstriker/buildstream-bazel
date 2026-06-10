@@ -134,6 +134,7 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 			d.FileGlobs = append(d.FileGlobs, call)
 		}
 		if call, ok := classifyExecuteProcess(ev, traceSourceRoot); ok {
+			call.DeferDir = deferDirFor(ev, deferDirs)
 			d.ExecuteProcesses = append(d.ExecuteProcesses, call)
 		}
 		if call, ok := classifySourceFileProperties(ev, traceSourceRoot); ok {
@@ -1131,6 +1132,18 @@ type ExecuteProcessCall struct {
 	ErrorFile        string
 	Environment      []string
 	RawArgs          []string
+	// DeferDir is the cmake_language(DEFER DIRECTORY <dir> CALL
+	// execute_process …) target directory (expanded), empty for ordinary
+	// calls — same contract as ConfigureFileCall.DeferDir. NOTE the
+	// execute_process lifts deliberately do NOT consume it today: cmake -E
+	// argv operands resolve against the CHILD process cwd
+	// (WORKING_DIRECTORY or cmake's own cwd), never
+	// CMAKE_CURRENT_SOURCE_DIR, so the directory-scope anchoring DeferDir
+	// corrects for configure_file is structurally N/A here — and the
+	// anchors refuse relative operands outright. The field exists for
+	// forward parity (a future WORKING_DIRECTORY lift where a
+	// scope-relative WD could matter).
+	DeferDir string
 }
 
 // FileGlobCall records one user-written file(GLOB <var> ...) or
@@ -1227,9 +1240,12 @@ func classifyFileGlob(ev TraceEvent, sourceRoot string) (FileGlobCall, bool) {
 // of the user's project intent and the converter isn't trying
 // to "lift" them.
 func ExtractExecuteProcess(traceRaw []byte, sourceRoot string) []ExecuteProcessCall {
+	events := ParseTrace(traceRaw)
+	deferDirs := deferDirectoryIndex(events)
 	var out []ExecuteProcessCall
-	for _, ev := range ParseTrace(traceRaw) {
+	for _, ev := range events {
 		if call, ok := classifyExecuteProcess(ev, sourceRoot); ok {
+			call.DeferDir = deferDirFor(ev, deferDirs)
 			out = append(out, call)
 		}
 	}

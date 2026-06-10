@@ -646,6 +646,24 @@ trees, optional-feature deps, codegen instances). Each member's
 
 ## Later (research / open questions)
 
+- **execute_process file-producing lift — keyword expansion (fixture-driven).**
+  `liftFileProducing` conservatively refuses WORKING_DIRECTORY / ENVIRONMENT /
+  TIMEOUT / INPUT_FILE / ERROR_FILE (execute_process.go ~1620-1630); every
+  such refusal now surfaces in `conversion-todos.json` as a structured
+  `execute-process-refusal` todo with file:line + argv, which is the demand
+  signal to lift on. Assessed mechanical cost ordering when a fixture lands:
+  ENVIRONMENT (`env 'A=B'` prefix; guard values embedding convert-time abs
+  paths) → INPUT_FILE (`< "$(location <rel>)"` + srcs when source-anchored;
+  refuse build-dir stdin chaining) → ERROR_FILE (a SECOND output: the shared
+  single-out `"$@"` cmd template must switch to per-output `$(location)`) →
+  WORKING_DIRECTORY (`cd` breaks execroot-relative `$(location)`/`$@` — every
+  reference needs `$$PWD`-absolutizing and the anchor contract changes) →
+  TIMEOUT (keep refusing absent evidence; silently ignoring changes failure
+  semantics). Sibling gap, same demand channel: side-effect WRITERS (a tool
+  writing files with NO OUTPUT_FILE) are refused loudly but undetectable
+  without write tracing — a `--cmake-script-trace`-style strace/fsmonitor
+  capture for arbitrary tools is the research item.
+
 - **PCH forced-include lift — fidelity residue.** The lift (shipped: cmake's
   `target_precompile_headers` forced-include semantics expand into ordered
   `-include` copts, incl. REUSE_FROM; gate `scripts/meta-cmake-pch.sh`;
