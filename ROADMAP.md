@@ -698,17 +698,19 @@ trees, optional-feature deps, codegen instances). Each member's
   depends on the other's macros).
 
 - **Comment carrying — remaining macro-expansion sites.** Codemodel targets
-  now carry the author comment above their macro/function INVOCATION
-  (`ir.Target.CallSite`, the backtrace's outermost user frame; comment
-  recovery prefers it over the body-line Provenance). Two sibling paths still
-  read only the body line: synthesized codegen genrules (the shadow-trace
-  `add_custom_command` File/Line is the macro body for macro-wrapped codegen;
-  the trace frame stack / `declaringScopeFile` mechanism could recover the
-  invocation) and trace-synthesized INTERFACE libraries (abseil's
-  `absl_cc_library` — Provenance is the helper-module line, shared across
-  targets, so recovery skips them). Also open: a deliberate policy for one
+  and trace-synthesized INTERFACE libraries now carry the author comment
+  above their macro/function INVOCATION (`ir.Target.CallSite` — backtrace's
+  outermost user invocation frame on the codemodel side,
+  `AddLibraryCall.CallFile/CallLine/CallCmd` from the trace frame stack on
+  the trace side; comment recovery prefers it over the body-line
+  Provenance). One sibling path still reads only the body line: synthesized
+  codegen genrules (the shadow-trace `add_custom_command` File/Line is the
+  macro body for macro-wrapped codegen; the same `invocationCallSite` frame
+  walk could recover the invocation). Also open: a deliberate policy for one
   invocation declaring several targets (currently skipped as ambiguous;
-  could instead attach the same call-site comment to each).
+  could instead attach the same call-site comment to each — abseil's
+  lib+alias pair from one `absl_cc_library` call is why aliases get no
+  CallSite today).
 
 - **Genrule command-rewrite token-replace consolidation (deferred from the
   2026-06-08 refactoring audit).** `replaceBareToken` (genrule.go) and

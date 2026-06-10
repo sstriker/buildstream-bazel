@@ -99,12 +99,13 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 	traceHasEndif := hasEndifEvent(events)
 	tier1Stack := newPlatformIfStack()
 	tier1Idx := newCmakeFileIfIndex()
-	// Most-recent event file at each frame depth, maintained in trace order so
-	// add_library can recover its declaring CMakeLists scope (see DeclFile).
-	lastFileAtFrame := map[int]string{}
+	// Most-recent event at each frame depth, maintained in trace order so
+	// add_library can recover its declaring CMakeLists scope (DeclFile) and
+	// its user-level invocation (CallFile/CallLine/CallCmd).
+	lastEventAtFrame := map[int]TraceEvent{}
 	for _, ev := range events {
 		if ev.Frame > 0 {
-			lastFileAtFrame[ev.Frame] = ev.File
+			lastEventAtFrame[ev.Frame] = ev
 		}
 		collectReadPath(ev, traceSourceRoot, reads)
 		if call, ok := classifyTargetIncludes(ev, traceSourceRoot, knownTargets); ok {
@@ -150,7 +151,8 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 			d.AddDependencies = append(d.AddDependencies, call)
 		}
 		if call, ok := classifyAddLibrary(ev, traceSourceRoot); ok {
-			call.DeclFile = declaringScopeFile(ev, lastFileAtFrame)
+			call.DeclFile = declaringScopeFile(ev, lastEventAtFrame)
+			call.CallFile, call.CallLine, call.CallCmd = invocationCallSite(ev, lastEventAtFrame, traceSourceRoot)
 			d.AddLibraries = append(d.AddLibraries, call)
 		}
 		if call, ok := classifyInstallExport(ev); ok {
@@ -2084,26 +2086,88 @@ type AddLibraryCall struct {
 	// to File when no enclosing CMakeLists frame is recoverable (cmake without
 	// the trace `frame` field).
 	DeclFile string
+
+	// CallFile/CallLine/CallCmd are the user-level INVOCATION that
+	// (transitively) executed this add_library, recovered from the trace
+	// frame stack: the outermost enclosing function/macro call in source-tree
+	// code (abseil's `absl_cc_library(...)` line in absl/<m>/CMakeLists.txt —
+	// where the author's comment sits). Empty/zero when the add_library is
+	// user-authored where it stands: a direct call, or one at the top level
+	// of an include()d file — inclusion frames (include / find_package /
+	// add_subdirectory) are scope changes, not invocations, and terminate
+	// the walk (mirrors lower's callSiteFrame policy for codemodel
+	// backtraces). The trace-side twin of ir.Target.CallSite.
+	CallFile string
+	CallLine int
+	CallCmd  string
 }
 
 // declaringScopeFile recovers the directory-scope CMakeLists.txt that
-// (transitively) invoked the command in ev, using the running frame→file map
-// (lastFileAtFrame must hold the most recent event file at each frame depth seen
+// (transitively) invoked the command in ev, using the running frame→event map
+// (lastEventAtFrame must hold the most recent event at each frame depth seen
 // so far, including ev's own frame). When ev itself is in a CMakeLists.txt that
 // IS the scope; otherwise it's the nearest shallower frame whose file is a
 // CMakeLists.txt (the call site that entered the function/macro chain). Returns
 // ev.File when none is found (older cmake omits `frame`, or a module called
 // outside any CMakeLists).
-func declaringScopeFile(ev TraceEvent, lastFileAtFrame map[int]string) string {
+func declaringScopeFile(ev TraceEvent, lastEventAtFrame map[int]TraceEvent) string {
 	if filepath.Base(ev.File) == "CMakeLists.txt" {
 		return ev.File
 	}
 	for d := ev.Frame - 1; d >= 1; d-- {
-		if f, ok := lastFileAtFrame[d]; ok && filepath.Base(f) == "CMakeLists.txt" {
-			return f
+		if p, ok := lastEventAtFrame[d]; ok && filepath.Base(p.File) == "CMakeLists.txt" {
+			return p.File
 		}
 	}
 	return ev.File
+}
+
+// invocationCallSite recovers the user-level call that (transitively)
+// executed ev: the outermost enclosing function/macro invocation in
+// source-tree code, walking the running frame→event map from ev's caller
+// downward. The walk ascends only through invocation frames — an inclusion
+// frame (include / find_package / add_subdirectory: a scope change whose
+// children are authored at the included file's own top scope) terminates it,
+// so a command at an included file's top level recovers no call site rather
+// than misattributing the include() line. Out-of-tree invocation frames (a
+// bundled module's wrapper) are ascended through but never returned.
+// Returns zeros for direct top-level calls and deferred events
+// (cmake_language(DEFER) replays with the registration site's file/line, so
+// the frame chain at execution time isn't the author's call chain).
+func invocationCallSite(ev TraceEvent, lastEventAtFrame map[int]TraceEvent, sourceRoot string) (file string, line int, cmd string) {
+	if ev.Defer != "" {
+		return "", 0, ""
+	}
+	var best TraceEvent
+	found := false
+	for d := ev.Frame - 1; d >= 1; d-- {
+		p, ok := lastEventAtFrame[d]
+		if !ok {
+			break
+		}
+		if isInclusionCmd(p.Cmd) {
+			break
+		}
+		if p.Line > 0 && inSourceTree(p.File, sourceRoot) {
+			best = p
+			found = true
+		}
+	}
+	if !found {
+		return "", 0, ""
+	}
+	return best.File, best.Line, best.Cmd
+}
+
+// isInclusionCmd identifies commands that pull another file/directory into
+// the configure without expanding a callable body — their trace children sit
+// one frame deeper but are authored at the included file's own top scope.
+func isInclusionCmd(cmd string) bool {
+	switch strings.ToLower(cmd) {
+	case "include", "find_package", "add_subdirectory", "subdirs":
+		return true
+	}
+	return false
 }
 
 // ExtractAddLibrary walks the cmake trace for user-written
@@ -2111,13 +2175,14 @@ func declaringScopeFile(ev TraceEvent, lastFileAtFrame map[int]string) string {
 // cmake's own internal libraries don't pollute the result.
 func ExtractAddLibrary(traceRaw []byte, sourceRoot string) []AddLibraryCall {
 	var out []AddLibraryCall
-	lastFileAtFrame := map[int]string{}
+	lastEventAtFrame := map[int]TraceEvent{}
 	for _, ev := range ParseTrace(traceRaw) {
 		if ev.Frame > 0 {
-			lastFileAtFrame[ev.Frame] = ev.File
+			lastEventAtFrame[ev.Frame] = ev
 		}
 		if call, ok := classifyAddLibrary(ev, sourceRoot); ok {
-			call.DeclFile = declaringScopeFile(ev, lastFileAtFrame)
+			call.DeclFile = declaringScopeFile(ev, lastEventAtFrame)
+			call.CallFile, call.CallLine, call.CallCmd = invocationCallSite(ev, lastEventAtFrame, sourceRoot)
 			out = append(out, call)
 		}
 	}

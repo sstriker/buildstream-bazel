@@ -86,6 +86,21 @@ assert_breadcrumb '^# Declared: CMakeLists\.txt:[0-9]+ \(add_library\)' "the mac
 # shared-site guard must NOT fire), and no breadcrumb names the include() line.
 assert_present "The alpha lib — declared at the top of an included file." "the first included-file leading comment"
 assert_present "The beta lib — second target in the same included file." "the second included-file leading comment"
+# (4c) Trace-synthesized INTERFACE lib via a helper FUNCTION (the abseil
+# absl_cc_library shape — codemodel drops INTERFACE libs, so this rides the
+# trace-synth lift): the invocation's leading + trailing comments carry, the
+# helper body's internal comment does not, and the breadcrumb leads with the
+# invocation while keeping the helper-internal add_library on # Declared:.
+assert_present "The gizmo interface lib — declared via the helper function." "the trace-synth interface lib leading comment"
+assert_present "trace-synth gizmo" "the trace-synth interface lib trailing comment"
+assert_breadcrumb '^# Source: CMakeLists\.txt:[0-9]+ \(add_iface_lib\)' "the interface lib call-site # Source: breadcrumb"
+assert_breadcrumb '^# Declared: cmake/iface_helpers\.cmake:[0-9]+ \(add_library\)' "the interface lib helper-internal # Declared: breadcrumb"
+if grep -qF -- "inside the helper body" "$ws/BUILD.bazel"; then
+  echo "FAIL: helper BODY comment misattributed to a target: inside the helper body"
+  echo "   --- generated BUILD ---"
+  sed 's/^/   /' "$ws/BUILD.bazel"
+  exit 1
+fi
 if grep -qE -- '^# Source: [^ ]+ \(include\)' "$ws/BUILD.bazel"; then
   echo "FAIL: an include() line leads a # Source: breadcrumb (inclusions are not call sites)"
   echo "   --- generated BUILD ---"
@@ -125,7 +140,9 @@ for marker in \
   "The gadget lib — declared via the helper macro." \
   "macro-made gadget" \
   "The alpha lib — declared at the top of an included file." \
-  "The beta lib — second target in the same included file."; do
+  "The beta lib — second target in the same included file." \
+  "The gizmo interface lib — declared via the helper function." \
+  "trace-synth gizmo"; do
   if grep -qF "$marker" "$ws/BUILD.nocomments"; then
     echo "FAIL: author comment present with --emit-source-comments=false: $marker"
     exit 1

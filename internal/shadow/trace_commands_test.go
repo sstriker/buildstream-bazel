@@ -1016,6 +1016,41 @@ func TestExtractAddLibrary_DeclFileFromFrameStack(t *testing.T) {
 	}
 }
 
+// TestExtractAddLibrary_InvocationCallSiteFromFrameStack pins the frame-stack
+// recovery of the user-level invocation (CallFile/CallLine/CallCmd): a
+// function-wrapped add_library recovers the caller's file:line+command; a
+// direct top-level add_library and one at the top level of an include()d file
+// recover NOTHING — inclusion frames are scope changes, not invocations, so
+// the include() line must not be misattributed as a call site.
+func TestExtractAddLibrary_InvocationCallSiteFromFrameStack(t *testing.T) {
+	trace := []byte(
+		// include() pushes a frame: the included file's top-level add_library
+		// runs at frame 2 with the include() event as its frame-1 parent.
+		`{"args":["cmake/extra.cmake"],"cmd":"include","file":"/src/CMakeLists.txt","frame":1,"line":3}` + "\n" +
+			`{"args":["inclib","INTERFACE"],"cmd":"add_library","file":"/src/cmake/extra.cmake","frame":2,"line":2}` + "\n" +
+			// Function-wrapped (abseil shape): invocation at frame 1, body at frame 2.
+			`{"args":["mylib"],"cmd":"my_cc_library","file":"/src/absl/base/CMakeLists.txt","frame":1,"line":20}` + "\n" +
+			`{"args":["mylib","INTERFACE"],"cmd":"add_library","file":"/src/CMake/AbseilHelpers.cmake","frame":2,"line":321}` + "\n" +
+			// Direct top-level call: no caller frame.
+			`{"args":["toplib","INTERFACE"],"cmd":"add_library","file":"/src/other/CMakeLists.txt","frame":1,"line":5}` + "\n",
+	)
+	calls := ExtractAddLibrary(trace, "/src")
+	got := map[string]AddLibraryCall{}
+	for _, c := range calls {
+		got[c.Name] = c
+	}
+	if c := got["mylib"]; c.CallFile != "/src/absl/base/CMakeLists.txt" || c.CallLine != 20 || c.CallCmd != "my_cc_library" {
+		t.Errorf("mylib call site = %q:%d (%q), want /src/absl/base/CMakeLists.txt:20 (my_cc_library)",
+			c.CallFile, c.CallLine, c.CallCmd)
+	}
+	if c := got["inclib"]; c.CallFile != "" || c.CallLine != 0 {
+		t.Errorf("inclib call site = %q:%d, want none — include() is not an invocation", c.CallFile, c.CallLine)
+	}
+	if c := got["toplib"]; c.CallFile != "" || c.CallLine != 0 {
+		t.Errorf("toplib call site = %q:%d, want none for a direct declaration", c.CallFile, c.CallLine)
+	}
+}
+
 // TestDecode_IncludeDirectories records directory-scoped include_directories()
 // calls (the private-include signal), dropping the AFTER/BEFORE/SYSTEM keywords
 // and skipping calls outside the source tree.
