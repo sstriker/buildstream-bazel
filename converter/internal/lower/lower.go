@@ -559,20 +559,27 @@ func isGeneratedOutputRoot(dir string, outToGenrule map[string]string) bool {
 // is `inCG && !header`: a compile group only ever holds compiled sources, so the
 // header guard is defensive (an inCG header still routes to Hdrs). embedHdr ""
 // means no cc_embed pairing.
-func attachGeneratedSource(irt *ir.Target, path string, inCG, dropNonCc bool, embedHdr string) {
+// Returns the path appended to irt.Srcs (so the caller can record the
+// codemodel-source-index → emitted-src-path mapping splitCompileGroups
+// needs to partition generated sources by compile group), or "" when the
+// input went to Hdrs or was dropped.
+func attachGeneratedSource(irt *ir.Target, path string, inCG, dropNonCc bool, embedHdr string) string {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch {
 	case dropNonCc && !isCcSrcEntry(path):
-		return
+		return ""
 	case inCG && !cclang.IsHeaderExt(ext):
 		irt.Srcs = append(irt.Srcs, path)
 		if embedHdr != "" {
 			irt.Hdrs = append(irt.Hdrs, embedHdr)
 		}
+		return path
 	case cclang.IsHeaderExt(ext):
 		irt.Hdrs = append(irt.Hdrs, path)
+		return ""
 	default:
 		irt.Srcs = append(irt.Srcs, path)
+		return path
 	}
 }
 
@@ -2497,6 +2504,14 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	elidedCompilerArtifact := false
 	declaredGeneratedSrc := false
 	droppedNonCcSrc := false
+	// codemodel source-index → the path actually stored in irt.Srcs. The
+	// codemodel records generated sources with absolute build-dir paths
+	// while the walk below relativizes them (CMakeFiles/foo.S), so the two
+	// can't be matched by string equality. splitCompileGroups uses this
+	// map to partition the wrapper's srcs back into per-compile-group
+	// sub-libraries by the codemodel's SourceIndexes (OpenBLAS's kernel:
+	// 65 generated .S in an ASM group, the rest .c in a C group).
+	srcEmitPath := make(map[int]string, len(t.Sources))
 	for i, src := range t.Sources {
 		// CMake's bookkeeping `<build>/version.h.rule` files are internal
 		// re-run markers; skip them silently.
@@ -2563,7 +2578,9 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				}
 				if rel != "" && hostSrc != "" {
 					if _, err := os.Stat(filepath.Join(hostSrc, rel)); err == nil {
-						attachGeneratedSource(irt, rel, inCompileGroup[i], false, "")
+						if sp := attachGeneratedSource(irt, rel, inCompileGroup[i], false, ""); sp != "" {
+							srcEmitPath[i] = sp
+						}
 						continue
 					}
 				}
@@ -2585,7 +2602,9 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 						abs = filepath.Join(cmakeSrc, rel)
 					}
 					if b := g.BuildFor(abs); b != nil && b.Rule == "CUSTOM_COMMAND" {
-						attachGeneratedSource(irt, rel, inCompileGroup[i], true, cc.CcEmbedSourceToHeader[rel])
+						if sp := attachGeneratedSource(irt, rel, inCompileGroup[i], true, cc.CcEmbedSourceToHeader[rel]); sp != "" {
+							srcEmitPath[i] = sp
+						}
 						// Sibling generated headers (the .c's foo.gen.h pair) are
 						// staged by the stageSiblingGeneratedHeaders post-pass, which
 						// is path-independent (covers consumers that get the .c via
@@ -2622,7 +2641,9 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			// .args/.data), route a compile-group source to srcs (+ its cc_embed
 			// sibling header), a header to hdrs, else to srcs. See
 			// attachGeneratedSource.
-			attachGeneratedSource(irt, relOut, inCompileGroup[i], true, cc.CcEmbedSourceToHeader[relOut])
+			if sp := attachGeneratedSource(irt, relOut, inCompileGroup[i], true, cc.CcEmbedSourceToHeader[relOut]); sp != "" {
+				srcEmitPath[i] = sp
+			}
 			continue
 		}
 
@@ -2695,7 +2716,9 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 				// dir; see recoverConfigureFiles' recordedBuildDir).
 				if _, produced := cc.OutToGenrule[rel]; produced {
 					consumesCodegen = true
-					attachGeneratedSource(irt, rel, inCompileGroup[i], false, cc.CcEmbedSourceToHeader[rel])
+					if sp := attachGeneratedSource(irt, rel, inCompileGroup[i], false, cc.CcEmbedSourceToHeader[rel]); sp != "" {
+						srcEmitPath[i] = sp
+					}
 					continue
 				}
 				elidedBuildDirSrc = true
@@ -2880,6 +2903,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 						continue
 					}
 					irt.Srcs = append(irt.Srcs, src.Path)
+					srcEmitPath[i] = src.Path
 					continue
 				}
 				elidedMissingSrc = true
@@ -2887,6 +2911,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			}
 		}
 		irt.Srcs = append(irt.Srcs, src.Path)
+		srcEmitPath[i] = src.Path
 	}
 
 	// Catch-all over every src-append path above: a cc/cuda rule rejects a srcs
@@ -4361,7 +4386,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// codemodel partitions sources via CompileGroupIndex).
 	subsBefore := len(cc.Subs)
 	if shouldSplitCompileGroups(t) {
-		if err := splitCompileGroups(t, irt, cc, cmakeSrc, cmakeBuild); err != nil {
+		if err := splitCompileGroups(t, irt, cc, cmakeSrc, cmakeBuild, srcEmitPath); err != nil {
 			return nil, err
 		}
 	}
@@ -4635,7 +4660,7 @@ func intSuffix(n int) string {
 // The wrapper drops Srcs / Copts / Defines, retains the
 // public surface (hdrs, includes, visibility, install
 // metadata), and adds a Deps edge to each sub-library.
-func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, cmakeSrc, cmakeBuild string) error {
+func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, cmakeSrc, cmakeBuild string, srcEmitPath map[int]string) error {
 	// Sort CompileGroups by language for deterministic sub-
 	// library ordering across runs (the codemodel records them
 	// in source-declaration order, which is stable but harder
@@ -4711,15 +4736,23 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 			srcIndex[idx] = true
 		}
 		var subSrcs []string
-		for i, s := range t.Sources {
+		for i := range t.Sources {
 			if !srcIndex[i] {
 				continue
 			}
+			// Use the exact path the source walk stored in irt.Srcs
+			// for this codemodel source index. The walk relativizes
+			// generated sources (absolute build-dir path →
+			// CMakeFiles/foo.S) and re-anchors umbrella paths, so the
+			// raw codemodel path can't be matched by string equality;
+			// srcEmitPath records the post-relativization form.
+			rel, ok := srcEmitPath[i]
+			if !ok {
+				continue
+			}
 			// Only keep srcs that landed on the wrapper's Srcs
-			// slice — the existing source-walk filtering
-			// (.rule files, generated sources we couldn't
-			// recover, etc.) already trimmed them.
-			rel := relForSource(s.Path, t)
+			// slice — the catch-all non-cc drop after the walk can
+			// trim an entry srcEmitPath still records.
 			if !stringSliceContains(wrapperSrcs, rel) {
 				continue
 			}
@@ -6595,16 +6628,6 @@ func sourceCLanguage(path string) string {
 		return "CXX"
 	}
 	return ""
-}
-
-// relForSource returns the package-relative path the wrapper
-// stored for this codemodel source. Sources are mostly
-// relative paths the codemodel records verbatim; absolute
-// paths are uncommon but possible. Mirrors how the source
-// walk in lowerTarget computes the path used in irt.Srcs.
-func relForSource(p string, t *fileapi.Target) string {
-	_ = t
-	return p
 }
 
 // stringSliceContains is a tiny linear-search helper. The
