@@ -977,51 +977,43 @@ func buildPlatformConditionalSrcs(pcsList []shadow.PlatformConditionalSource) ma
 	return out
 }
 
-// ToIR is a tracked complexity giant (cognitive 194 / cyclomatic 110): the
-// reply→IR entrypoint. Breaking it down into focused sub-pass extractions is its
-// own ROADMAP "complexity lens" burndown pass — grandfathered so the lens gates
-// as blocking on all other code. Remove the directive below as the function
-// comes back under threshold. See ROADMAP.md.
-//
-//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
-func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
-	if got := len(r.Codemodel.Configurations); got != 1 {
-		// The multi-config fold (lowerMultiConfigDeltas, at the
-		// end of this function) projects every non-primary
-		// configuration's flag / src / dep deltas onto cfg[0]'s
-		// targets as //config:<name> select() arms when
-		// r.TargetsByConfig is populated — so multi-config
-		// *intent* is captured, not surveyed-first-only. The one
-		// thing that fold can't recover is a target built only in
-		// a non-primary configuration: cfg[0]'s walk never sees
-		// it, and lowerMultiConfigDeltas only augments targets
-		// cfg[0] emitted, so it's silently dropped.
-		dropped := configOnlyTargetNames(r.Codemodel.Configurations)
-		if opts.Rejections != nil {
-			// Diagnostic mode: flag exactly the config-only
-			// targets (the genuine residual); stay silent when
-			// cfg[0] covers the whole target set (the common
-			// "same targets, differing per-config flags" case the
-			// fold handles end-to-end).
-			for _, name := range dropped {
-				opts.Rejections.AddWithContext(failure.UnsupportedTargetType,
-					"target built only in a non-primary configuration; the multi-config fold projects per-config deltas onto the primary configuration's targets, so a config-only target is dropped",
-					name, "")
-			}
-		} else if len(dropped) > 0 {
-			// Strict mode: the fold captures every config's
-			// flag/src/dep intent as //config:<name> select() arms
-			// (and convert-element-cmake --out-config-settings
-			// emits the backing config_settings), so multi-config
-			// is a supported path now. The lone thing the
-			// first-config-primary fold can't recover is a target
-			// built only in a non-primary configuration — that's
-			// genuine intent loss, so strict mode still refuses it.
-			return nil, failure.New(failure.UnsupportedTargetType,
-				"target %q is built only in a non-primary configuration; the multi-config fold projects per-config deltas onto the primary configuration's targets, so a config-only target would be dropped (pass --diagnostics to convert the rest anyway)", dropped[0])
-		}
+// traceFacts bundles the per-target maps the single trace pre-parse
+// produces for the target-lowering loop and the post-passes. Fields keep
+// ToIR's original local names; ToIR destructures them back into
+// same-named locals so the consuming code reads exactly as before.
+type traceFacts struct {
+	knownTargets                 map[string]bool
+	privateIncludeDirs           map[string]map[string]bool
+	publicIncludeDirs            map[string]map[string]bool
+	includeDirsGlobal            map[string]bool
+	defineSymbols                map[string]string
+	traceLinkLibs                map[string][]string
+	traceLinkScope               map[string]map[string]string
+	platformConditionalSrcs      map[string]map[string]string
+	platformConditionalSrcsToAdd map[string]map[string][]string
+	traceDecoded                 bool
+	decodedTrace                 *shadow.Decoded
+	decodedConfigureFiles        []shadow.ConfigureFileCall
+	decodedFileGenerates         []shadow.FileGenerateCall
+	decodedExecuteProcesses      []shadow.ExecuteProcessCall
+	decodedAddCustomCommands     []shadow.AddCustomCommandCall
+	decodedAddCustomTargets      []shadow.AddCustomTargetCall
+	decodedAddDependencies       []shadow.AddDependenciesCall
+	headerOnlySources            map[string]bool
+	objectDependsBySrc           map[string][]string
+	languageOverrideBySrc        map[string]string
+	generatedSources             map[string]bool
+	perSourceDefinesBySrc        map[string][]string
+}
+
+// parseTraceFacts runs the one-shot trace pre-parse (plus the
+// backtrace-first link-keyword recovery) for ToIR. Body and rationale
+// comments are verbatim from ToIR's original inline section.
+func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) traceFacts {
+	knownTargets := map[string]bool{}
+	for _, tref := range cfg.Targets {
+		knownTargets[tref.Name] = true
 	}
-	cfg := r.Codemodel.Configurations[0]
 
 	// Pre-parse trace records once so lowerTarget can consult
 	// per-target maps without re-walking the trace bytes per
@@ -1034,11 +1026,6 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// inSourceTree alone would drop those calls and lower
 	// would lose visibility/link-libs information they
 	// contribute.
-	knownTargets := map[string]bool{}
-	for _, tref := range cfg.Targets {
-		knownTargets[tref.Name] = true
-	}
-
 	var privateIncludeDirs map[string]map[string]bool // target → set of absolute private dir paths
 	var publicIncludeDirs map[string]map[string]bool  // target → PUBLIC/INTERFACE target_include dirs (guard for the include_directories privatization)
 	var includeDirsGlobal map[string]bool             // directory-scoped include_directories() dirs (absolute) — PRIVATE
@@ -1251,8 +1238,36 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		}
 	}
 
-	cmakeSrc := r.Codemodel.Paths.Source
-	cmakeBuild := r.Codemodel.Paths.Build
+	return traceFacts{
+		knownTargets:                 knownTargets,
+		privateIncludeDirs:           privateIncludeDirs,
+		publicIncludeDirs:            publicIncludeDirs,
+		includeDirsGlobal:            includeDirsGlobal,
+		defineSymbols:                defineSymbols,
+		traceLinkLibs:                traceLinkLibs,
+		traceLinkScope:               traceLinkScope,
+		platformConditionalSrcs:      platformConditionalSrcs,
+		platformConditionalSrcsToAdd: platformConditionalSrcsToAdd,
+		traceDecoded:                 traceDecoded,
+		decodedTrace:                 decodedTrace,
+		decodedConfigureFiles:        decodedConfigureFiles,
+		decodedFileGenerates:         decodedFileGenerates,
+		decodedExecuteProcesses:      decodedExecuteProcesses,
+		decodedAddCustomCommands:     decodedAddCustomCommands,
+		decodedAddCustomTargets:      decodedAddCustomTargets,
+		decodedAddDependencies:       decodedAddDependencies,
+		headerOnlySources:            headerOnlySources,
+		objectDependsBySrc:           objectDependsBySrc,
+		languageOverrideBySrc:        languageOverrideBySrc,
+		generatedSources:             generatedSources,
+		perSourceDefinesBySrc:        perSourceDefinesBySrc,
+	}
+}
+
+// resolveSourceRoots performs the workspace-root auto-detection and the
+// hostSrc promotion/existence gating. Body and rationale comments are
+// verbatim from ToIR's original inline section.
+func resolveSourceRoots(r *fileapi.Reply, opts Options, cmakeSrc string) (workspaceRoot, hostSrc string, hostSrcOnDisk bool, err error) {
 	// Workspace-root auto-detection. Projects whose CMakeLists.txt
 	// sits below the repo root (zstd's `build/cmake/CMakeLists.txt`
 	// is the canonical example) reference sources via paths that
@@ -1278,7 +1293,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	if detectAnchor == "" {
 		detectAnchor = cmakeSrc
 	}
-	workspaceRoot := detectWorkspaceRoot(detectAnchor)
+	workspaceRoot = detectWorkspaceRoot(detectAnchor)
 	// Only PROMOTE to the detected workspace root if the project actually
 	// references sources OUTSIDE cmakeSrc (zstd's sibling-dir file(GLOB), which
 	// the File API records as absolute paths). A self-contained subproject of a
@@ -1298,13 +1313,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// own sources don't escape cmakeSrc (cuda-samples: per-sample configure +
 	// whole-repo overlay so the repo-root Common/ headers resolve).
 	if opts.ElementSourceRoot != "" {
-		root, err := resolveElementSourceRoot(opts.ElementSourceRoot, cmakeSrc)
-		if err != nil {
-			return nil, err
+		root, rootErr := resolveElementSourceRoot(opts.ElementSourceRoot, cmakeSrc)
+		if rootErr != nil {
+			return "", "", false, rootErr
 		}
 		workspaceRoot = root
 	}
-	hostSrc := opts.HostSourceRoot
+	hostSrc = opts.HostSourceRoot
 	if hostSrc == "" {
 		hostSrc = cmakeSrc
 	}
@@ -1329,42 +1344,159 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// recording machine had but this host doesn't, and the elision
 	// against an absent root would drop every source. Stat once
 	// here; the loop reads the bool.
-	hostSrcOnDisk := false
+	hostSrcOnDisk = false
 	if info, statErr := os.Stat(hostSrc); statErr == nil && info.IsDir() {
 		hostSrcOnDisk = true
 	}
 
-	pkg := &ir.Package{
-		Name:       projectName(r),
-		SourceRoot: hostSrc,
-		HeaderComments: append(append(
-			findPackageHeaderComments(opts.ConfigureLog),
-			optionsHeaderComments(r.Cache)...),
-			deprecationHeaderComments(opts.ConfigureLog)...,
-		),
+	return workspaceRoot, hostSrc, hostSrcOnDisk, nil
+}
+
+// targetIndexes bundles the codemodel index maps ToIR builds before the
+// target loop. Fields keep ToIR's original local names; ToIR destructures
+// them back into same-named locals.
+type targetIndexes struct {
+	idToName            map[string]string
+	utilityIDs          map[string]bool
+	utilityIDToName     map[string]string
+	artifactToName      map[string]string
+	isTargetName        map[string]bool
+	codegenConsumerDeps map[string][]fileapi.TargetDependency
+	pchResolve          func(targetName, language string) []fileapi.CompilePCH
+}
+
+// buildTargetIndexes builds the id→name / artifact / PCH index maps the
+// target loop and post-passes consult. Body and rationale comments are
+// verbatim from ToIR's original inline section.
+func buildTargetIndexes(r *fileapi.Reply, cfg fileapi.Configuration, cmakeBuild string, cc *codegenContext) targetIndexes {
+	idToName := map[string]string{}
+	utilityIDs := map[string]bool{}
+	// utilityIDToName records the name of each UTILITY (add_custom_target)
+	// target — excluded from idToName because depending on one is a Bazel
+	// no-op, but the consumer-side codegen-header wiring needs the name to
+	// resolve the target's ninja phony to the generated `.inc` outputs it
+	// wraps (a tablegen `*TableGen` target).
+	utilityIDToName := map[string]string{}
+	// artifactToName maps each codemodel target's artifact paths
+	// (build-dir-relative, e.g. `bin/llvm-min-tblgen`) to the
+	// target's name. Used by rewriteToolFromTarget to lift bare
+	// artifact-path tool references in genrule cmds into
+	// `$(location :<name>)` form plus a tools attr entry.
+	artifactToName := map[string]string{}
+	execArtifacts := map[string]bool{}
+	for _, tref := range cfg.Targets {
+		if t, ok := r.Targets[tref.Id]; ok && t.Type == "UTILITY" {
+			utilityIDs[tref.Id] = true
+			utilityIDToName[tref.Id] = tref.Name
+			continue
+		}
+		idToName[tref.Id] = tref.Name
+		if t, ok := r.Targets[tref.Id]; ok {
+			for _, art := range t.Artifacts {
+				if art.Path != "" {
+					artifactToName[art.Path] = tref.Name
+					if t.Type == "EXECUTABLE" {
+						execArtifacts[art.Path] = true
+					}
+				}
+			}
+		}
+	}
+	// Thread the artifact-path map into the codegenContext so
+	// recoverGenrule's tool-from-target rewrite can lift bare
+	// `bin/<tool>` references in per-target generated-source
+	// genrule cmds — same shape lowerStandaloneCustomCommands
+	// receives the map as a parameter.
+	cc.ArtifactToName = artifactToName
+	cc.ExecArtifacts = execArtifacts
+
+	// isTargetName is the set of every codemodel target name (real +
+	// UTILITY). The codegen-header walk uses it to stop at sibling-target
+	// boundaries when tracing a UTILITY tablegen target's ninja phony to
+	// the `.inc` outputs it wraps — so it collects that target's own
+	// generated headers without pulling a depended-on tool's or library's
+	// outputs.
+	isTargetName := make(map[string]bool, len(idToName)+len(utilityIDToName))
+	for _, n := range idToName {
+		isTargetName[n] = true
+	}
+	for _, n := range utilityIDToName {
+		isTargetName[n] = true
+	}
+	// codegenConsumerDeps maps a cc_library target Name → its codemodel
+	// dependencies, captured in the target loop and resolved to consumed
+	// generated `.inc` headers after standalone-genrule recovery completes.
+	codegenConsumerDeps := map[string][]fileapi.TargetDependency{}
+
+	// PCH owner index for the forced-include lift: target name + language →
+	// that target's ordered PrecompileHeaders. A REUSE_FROM consumer's
+	// codemodel carries a null PrecompileHeaders — only the `-include
+	// <owner>.dir/cmake_pch.*` fragment names the owner — so lowerTarget
+	// resolves the owner's declared list through this. Keyed on the primary
+	// configuration's view (the same view the rest of the lower walks); the
+	// name-only fallback covers a language-mismatch edge (e.g. a C consumer
+	// reusing a CXX owner's PCH) better than dropping the include outright.
+	pchByNameLang := map[string][]fileapi.CompilePCH{}
+	pchByName := map[string][]fileapi.CompilePCH{}
+	for _, tref := range cfg.Targets {
+		t, ok := r.Targets[tref.Id]
+		if !ok {
+			continue
+		}
+		for _, cg := range t.CompileGroups {
+			if len(cg.PrecompileHeaders) == 0 {
+				continue
+			}
+			k := tref.Name + "\x00" + cg.Language
+			if _, dup := pchByNameLang[k]; !dup {
+				pchByNameLang[k] = cg.PrecompileHeaders
+			}
+			if _, dup := pchByName[tref.Name]; !dup {
+				pchByName[tref.Name] = cg.PrecompileHeaders
+			}
+		}
+	}
+	pchResolve := func(targetName, language string) []fileapi.CompilePCH {
+		if entries := pchByNameLang[targetName+"\x00"+language]; len(entries) > 0 {
+			return entries
+		}
+		return pchByName[targetName]
 	}
 
-	cc := newCodegenContext()
-	cc.BazelPackagePath = opts.BazelPackagePath
-	cc.CMakeScriptRunner = opts.CMakeScriptRunner
-	cc.CMakeScriptTrace = opts.CMakeScriptTrace
-	cc.CMakeScriptBake = opts.CMakeScriptBake
-	cc.LiftCCEmbed = opts.LiftCCEmbed
-	cc.LiftCCHash = opts.LiftCCHash
-	cc.CMakeBinary = lookupCmakeBinary()
-	cc.Warnings = opts.Warnings
-	cc.LiteralProbeSink = opts.LiteralProbeSink
-	cc.LiteralResolutions = opts.LiteralResolutions
-	// Parallel pre-warm of the cmake -P script bakes: with the bake opted
-	// in, run every bakeable script up front in dependency waves with a
-	// bounded pool (see cmake_script_prewarm.go) — the serial recovery path
-	// then consumes the cached results instead of paying one subprocess
-	// wait at a time (the dominant translation cost on script-heavy
-	// projects; VTK: 238 runs ≈ 95s serial).
-	if cc.CMakeScriptBake {
-		prewarmScriptBakes(cc, g, opts.BuildDir)
+	return targetIndexes{
+		idToName:            idToName,
+		utilityIDs:          utilityIDs,
+		utilityIDToName:     utilityIDToName,
+		artifactToName:      artifactToName,
+		isTargetName:        isTargetName,
+		codegenConsumerDeps: codegenConsumerDeps,
+		pchResolve:          pchResolve,
 	}
+}
 
+// recoveredArtifacts bundles the configure-time recovery results
+// (execute_process / configure_file / file(GENERATE) lifts, the genex
+// target facts, and the find_package attribution) ToIR threads into the
+// target loop. Fields keep ToIR's original local names.
+type recoveredArtifacts struct {
+	executeProcesses []executeProcessOut
+	configureFiles   []configureFileOut
+	fileGenerates    []fileGenerateOut
+	genexTargets     map[string]genexeval.TargetInfo
+	findPkgAttrib    *findPackageAttrib
+}
+
+// recoverConfigureTimeArtifacts runs the configure-time recovery family —
+// execute_process (with stamp propagation + structured refusals),
+// configure_file, file(GENERATE) — and builds the genex target facts and
+// find_package attribution. Body and rationale comments are verbatim from
+// ToIR's original inline section.
+// The second return is the Phase-B fallback-placeholder package: non-nil
+// when execute_process refusals routed to emitFallbackPlaceholder, in
+// which case ToIR returns it directly (the original inline early-exit).
+func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Options, cfg fileapi.Configuration, tf traceFacts, cmakeSrc, cmakeBuild, hostSrc string, cc *codegenContext) (*recoveredArtifacts, *ir.Package, error) {
+	traceDecoded, decodedTrace := tf.traceDecoded, tf.decodedTrace
+	decodedConfigureFiles, decodedFileGenerates, decodedExecuteProcesses := tf.decodedConfigureFiles, tf.decodedFileGenerates, tf.decodedExecuteProcesses
 	// execute_process recovery. Configure-time subprocess
 	// invocations are a hermeticity violation by Bazel's
 	// analysis-then-action model. Some calls are liftable
@@ -1494,7 +1626,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			// behaviour; the rejection record carries the
 			// per-call diagnosis.
 		} else if !opts.UnsupportedExecuteProcessFallback {
-			return nil, formatExecuteProcessFailure(executeProcessRefusals)
+			return nil, nil, formatExecuteProcessFailure(executeProcessRefusals)
 		} else {
 			// Phase B fallback (strict mode, fallback opt-in):
 			// emit a placeholder ir.Package rather than
@@ -1505,7 +1637,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			// cut, and it lets downstream consumers see
 			// per-target labels at analysis time even when
 			// the element itself can't be fine-converted.
-			return emitFallbackPlaceholder(r, hostSrc, opts.FallbackInstallTarget)
+			fallbackPkg, fbErr := emitFallbackPlaceholder(r, hostSrc, opts.FallbackInstallTarget)
+			if fbErr != nil {
+				return nil, nil, fbErr
+			}
+			return nil, fallbackPkg, nil
 		}
 	}
 
@@ -1542,13 +1678,13 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		var err error
 		configureFiles, err = recoverConfigureFilesFromCalls(decodedConfigureFiles, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, configureDirScopes, opts.LiftConfigureFile, opts.CMakeVars, cc)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	} else {
 		var err error
 		configureFiles, err = recoverConfigureFiles(opts.TraceRaw, hostSrc, opts.BuildDir, cmakeSrc, cmakeBuild, configureDirScopes, opts.LiftConfigureFile, opts.CMakeVars, cc)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -1580,200 +1716,106 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		var err error
 		fileGenerates, err = recoverFileGenerate(decodedFileGenerates, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, configureDirScopes, opts.LiftConfigureFile, opts.CMakeVars, genexTargets, opts.Imports, cc)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
-	// Build the in-codebase id -> Bazel-rule-name map up front so dep
-	// lowering can map t.Dependencies[].Id to a label without re-walking
-	// configurations. UTILITY targets (add_custom_target nodes) are
-	// excluded — they have no Bazel equivalent, so depending on them is a
-	// no-op; the underlying add_custom_command's outputs are referenced
-	// via srcs/hdrs instead. utilityIDs records them separately so dep
-	// resolution can distinguish "skip utility" from "unresolved".
-	idToName := map[string]string{}
-	utilityIDs := map[string]bool{}
-	// utilityIDToName records the name of each UTILITY (add_custom_target)
-	// target — excluded from idToName because depending on one is a Bazel
-	// no-op, but the consumer-side codegen-header wiring needs the name to
-	// resolve the target's ninja phony to the generated `.inc` outputs it
-	// wraps (a tablegen `*TableGen` target).
-	utilityIDToName := map[string]string{}
-	// artifactToName maps each codemodel target's artifact paths
-	// (build-dir-relative, e.g. `bin/llvm-min-tblgen`) to the
-	// target's name. Used by rewriteToolFromTarget to lift bare
-	// artifact-path tool references in genrule cmds into
-	// `$(location :<name>)` form plus a tools attr entry.
-	artifactToName := map[string]string{}
-	execArtifacts := map[string]bool{}
-	for _, tref := range cfg.Targets {
-		if t, ok := r.Targets[tref.Id]; ok && t.Type == "UTILITY" {
-			utilityIDs[tref.Id] = true
-			utilityIDToName[tref.Id] = tref.Name
-			continue
+	return &recoveredArtifacts{
+		executeProcesses: executeProcesses,
+		configureFiles:   configureFiles,
+		fileGenerates:    fileGenerates,
+		genexTargets:     genexTargets,
+		findPkgAttrib:    findPkgAttrib,
+	}, nil, nil
+}
+
+// assembleLoweredPackage appends the recovered/synthesized target families
+// to the lowered package and runs the structural post-passes (retags,
+// reclassifications, lifts, interface/alias synthesis, standalone
+// custom-command emission, and the multi-config fold). Bodies and
+// rationale comments are verbatim from ToIR's original inline tail.
+// emitStandaloneCustomCommands runs the Phase 4 standalone
+// custom-command emission family for assembleLoweredPackage. Body and
+// rationale comments are verbatim from the original inline block.
+func emitStandaloneCustomCommands(pkg *ir.Package, g *ninja.Graph, opts Options, tf traceFacts, ti targetIndexes, cc *codegenContext, cmakeSrc, cmakeBuild, hostSrc string) {
+	decodedTrace := tf.decodedTrace
+	decodedAddCustomCommands, decodedAddCustomTargets, decodedAddDependencies := tf.decodedAddCustomCommands, tf.decodedAddCustomTargets, tf.decodedAddDependencies
+	artifactToName, codegenConsumerDeps := ti.artifactToName, ti.codegenConsumerDeps
+	utilityIDs, utilityIDToName, isTargetName := ti.utilityIDs, ti.utilityIDToName, ti.isTargetName
+	// Phase 4 standalone custom-command emission. Opt-in via
+	// Options.EmitStandaloneCustomCommands; the dedup against
+	// existing genrules keeps the recoverGenrule path's output
+	// intact even when this fires.
+	if opts.EmitStandaloneCustomCommands {
+		var aliasLibs []shadow.AddLibraryCall
+		if decodedTrace != nil {
+			aliasLibs = decodedTrace.AddLibraries
 		}
-		idToName[tref.Id] = tref.Name
-		if t, ok := r.Targets[tref.Id]; ok {
-			for _, art := range t.Artifacts {
-				if art.Path != "" {
-					artifactToName[art.Path] = tref.Name
-					if t.Type == "EXECUTABLE" {
-						execArtifacts[art.Path] = true
-					}
-				}
+		var fileGlobs []shadow.FileGlobCall
+		if decodedTrace != nil {
+			fileGlobs = decodedTrace.FileGlobs
+		}
+		traceCtx := standaloneTraceContext{
+			CustomCommands:  decodedAddCustomCommands,
+			CustomTargets:   decodedAddCustomTargets,
+			AddDependencies: decodedAddDependencies,
+			AliasToActual:   buildAliasToActual(aliasLibs),
+			FileGlobs:       fileGlobs,
+		}
+		// umbrellaPrefix is cmakeSrc-relative-to-labelRoot when the
+		// workspace-root umbrella promoted labelRoot above cmakeSrc
+		// (LLVM: hostSrc=llvm-project/, cmakeSrc=llvm-project/llvm/ →
+		// "llvm"). Standalone genrules anchor their source-tree srcs
+		// and cmd paths with it, consistent with the cc_library
+		// re-anchor; empty in the common non-promoted case.
+		umbrellaPrefix := ""
+		if hostSrc != "" && hostSrc != cmakeSrc {
+			if rel, inside := relativeIfInside(hostSrc, cmakeSrc); inside && rel != "" && rel != "." {
+				umbrellaPrefix = rel
 			}
 		}
-	}
-	// Thread the artifact-path map into the codegenContext so
-	// recoverGenrule's tool-from-target rewrite can lift bare
-	// `bin/<tool>` references in per-target generated-source
-	// genrule cmds — same shape lowerStandaloneCustomCommands
-	// receives the map as a parameter.
-	cc.ArtifactToName = artifactToName
-	cc.ExecArtifacts = execArtifacts
+		stand := lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, umbrellaPrefix, opts.BazelPackagePath, artifactToName, traceCtx, cc.FilteredInternalCmds, cc)
+		// Add the transitive `include "..."` closure of tablegen-shaped
+		// codegen genrules to their srcs (their `.td` deps live only in
+		// cmake's dynamic DEPFILE, not the static reply). hostSrc is the
+		// labelRoot the genrules' anchored `-I` paths resolve against.
+		recordCodegenIncludeClosure(stand, hostSrc, opts.BazelPackagePath)
+		// Fold cmake file(GLOB)/file(GLOB_RECURSE)-sourced genrule inputs
+		// back into build-time glob() filegroups (split-synthesized), so a
+		// globbing genrule's deps re-evaluate in project B. No-op when the
+		// project uses no file(GLOB) (e.g. tablegen under Ninja).
+		threadFileGlobs(stand, traceCtx.FileGlobs, hostSrc)
+		pkg.Targets = append(pkg.Targets, stand...)
 
-	// isTargetName is the set of every codemodel target name (real +
-	// UTILITY). The codegen-header walk uses it to stop at sibling-target
-	// boundaries when tracing a UTILITY tablegen target's ninja phony to
-	// the `.inc` outputs it wraps — so it collects that target's own
-	// generated headers without pulling a depended-on tool's or library's
-	// outputs.
-	isTargetName := make(map[string]bool, len(idToName)+len(utilityIDToName))
-	for _, n := range idToName {
-		isTargetName[n] = true
-	}
-	for _, n := range utilityIDToName {
-		isTargetName[n] = true
-	}
-	// codegenConsumerDeps maps a cc_library target Name → its codemodel
-	// dependencies, captured in the target loop and resolved to consumed
-	// generated `.inc` headers after standalone-genrule recovery completes.
-	codegenConsumerDeps := map[string][]fileapi.TargetDependency{}
+		// Stage sibling generated headers (path-independent post-pass). A genrule
+		// that emits a .c + .h pair (rpcgen: regress.gen.c + regress.gen.h) — any
+		// cc target listing only the .c must still see the .h, which the .c
+		// #includes by bare same-dir quote (cmake omits the generated header from
+		// the target's source list). Regardless of HOW the .c reached a target's
+		// srcs (per-source recovery, build-include consumer attribution, …),
+		// attach the producing genrule's sibling header outputs to that target's
+		// hdrs. Element-relative; split's hdrs relabel re-homes them cross-package.
+		stageSiblingGeneratedHeaders(pkg)
 
-	// PCH owner index for the forced-include lift: target name + language →
-	// that target's ordered PrecompileHeaders. A REUSE_FROM consumer's
-	// codemodel carries a null PrecompileHeaders — only the `-include
-	// <owner>.dir/cmake_pch.*` fragment names the owner — so lowerTarget
-	// resolves the owner's declared list through this. Keyed on the primary
-	// configuration's view (the same view the rest of the lower walks); the
-	// name-only fallback covers a language-mismatch edge (e.g. a C consumer
-	// reusing a CXX owner's PCH) better than dropping the include outright.
-	pchByNameLang := map[string][]fileapi.CompilePCH{}
-	pchByName := map[string][]fileapi.CompilePCH{}
-	for _, tref := range cfg.Targets {
-		t, ok := r.Targets[tref.Id]
-		if !ok {
-			continue
-		}
-		for _, cg := range t.CompileGroups {
-			if len(cg.PrecompileHeaders) == 0 {
-				continue
-			}
-			k := tref.Name + "\x00" + cg.Language
-			if _, dup := pchByNameLang[k]; !dup {
-				pchByNameLang[k] = cg.PrecompileHeaders
-			}
-			if _, dup := pchByName[tref.Name]; !dup {
-				pchByName[tref.Name] = cg.PrecompileHeaders
-			}
+		// Resolve each cc_library consumer's UTILITY (tablegen) dependencies
+		// to the generated `.inc` headers it #includes, now that the
+		// standalone genrules producing them have been recovered. The
+		// combined output set — per-target codegen outputs (cc.OutToGenrule)
+		// plus this standalone recovery — is what the ninja walk filters on;
+		// matches land on pkg.CodegenHeaderConsumers for the split transform
+		// to synthesize the wrapper library and wire the consumer's dep.
+		if len(codegenConsumerDeps) > 0 {
+			resolveCodegenHeaderConsumers(pkg, g, stand, cc, codegenConsumerDeps, utilityIDs, utilityIDToName, isTargetName)
 		}
 	}
-	pchResolve := func(targetName, language string) []fileapi.CompilePCH {
-		if entries := pchByNameLang[targetName+"\x00"+language]; len(entries) > 0 {
-			return entries
-		}
-		return pchByName[targetName]
-	}
+}
 
-	lc := targetLowerCtx{
-		cmakeSrc:            cmakeSrc,
-		cmakeBuild:          cmakeBuild,
-		hostSrc:             hostSrc,
-		hostPrefix:          opts.HostPrefixDir,
-		hostSrcOnDisk:       hostSrcOnDisk,
-		g:                   g,
-		cc:                  cc,
-		idToName:            idToName,
-		utilityIDs:          utilityIDs,
-		imports:             opts.Imports,
-		tests:               opts.CTest,
-		configureFiles:      configureFiles,
-		fileGenerates:       fileGenerates,
-		executeProcesses:    executeProcesses,
-		findPkgAttrib:       findPkgAttrib,
-		workspaceRoot:       workspaceRoot,
-		bazelPackagePath:    opts.BazelPackagePath,
-		generatedSources:    generatedSources,
-		rejections:          opts.Rejections,
-		emitSharedLibraries: opts.EmitSharedLibraries,
-		pchResolve:          pchResolve,
-	}
-
-	for _, tref := range cfg.Targets {
-		t, ok := r.Targets[tref.Id]
-		if !ok {
-			if opts.Rejections != nil {
-				opts.Rejections.AddWithContext(failure.FileAPIMalformed,
-					fmt.Sprintf("target id %q in codemodel but not loaded", tref.Id),
-					tref.Name, "")
-				continue
-			}
-			return nil, failure.New(failure.FileAPIMalformed,
-				"target id %q in codemodel but not loaded", tref.Id)
-		}
-		irt, err := lowerTarget(&t, targetTrace{
-			privateIncludeDirs:           privateIncludeDirs[tref.Name],
-			publicIncludeDirs:            publicIncludeDirs[tref.Name],
-			includeDirsGlobal:            includeDirsGlobal,
-			interfaceIncludeDirs:         interfaceIncludeDirsFor(genexTargets, tref.Name, len(opts.GenexProbes) > 0),
-			traceLinkLibs:                traceLinkLibs[tref.Name],
-			traceLinkScope:               traceLinkScope[tref.Name],
-			platformConditionalSrcs:      platformConditionalSrcs[tref.Name],
-			platformConditionalSrcsToAdd: platformConditionalSrcsToAdd[tref.Name],
-			defineSymbol:                 defineSymbols[tref.Name],
-		}, lc)
-		if err != nil {
-			return nil, err
-		}
-		if irt == nil {
-			// lowerTarget returned (nil, nil) to skip — UTILITY targets
-			// (add_custom_target nodes) and similar that have no Bazel
-			// equivalent. Also fires when an EXECUTABLE was rewritten
-			// into one or more cc_test entries on cc.Tests.
-			continue
-		}
-		pkg.Targets = append(pkg.Targets, *irt)
-
-		// Record the element-root-relative declaring directory for the
-		// --split-packages emit transform (out-of-band; never
-		// serialized, see ir.Package.SubPackages). The codemodel's
-		// ConfigDirectory.Source is cmakeSrc-relative; reconcile it
-		// with the same labelRoot base srcs are relativized against so
-		// dirs and srcs agree (see the labelRoot pick in lowerTarget,
-		// ~1328). When workspaceRoot is a strict ancestor of cmakeSrc
-		// (the umbrella / zstd shape), prepend the cmakeSrc-under-
-		// workspaceRoot prefix so the recorded dir is workspace-root-
-		// relative like the srcs.
-		if pkg.SubPackages == nil {
-			pkg.SubPackages = map[string]string{}
-		}
-		pkg.SubPackages[irt.Name] = subPackageDir(cfg, tref.DirectoryIndex, cmakeSrc, workspaceRoot)
-
-		// Record this target's codemodel UTILITY dependencies so a pass
-		// AFTER standalone-genrule recovery (which is what fills the genrule
-		// output set the walk filters on) can resolve them to the generated
-		// `.inc` headers it consumes. cc_binary/cc_test are included alongside
-		// cc_library: LLVM's tools are cc_binary that `#include "Opts.inc"`
-		// (the `-gen-opt-parser-defs` tablegen output from each tool's Opts.td,
-		// wired via add_public_tablegen_target), so they need the same
-		// generated-header wrapper dep + genfiles include the libraries get.
-		// The split transform's wrapper synthesis keys on consumer NAME, not
-		// kind, so a cc_binary consumer flows through unchanged.
-		if (irt.Kind == ir.KindCCLibrary || irt.Kind == ir.KindCCBinary || irt.Kind == ir.KindCCTest) && len(t.Dependencies) > 0 {
-			codegenConsumerDeps[irt.Name] = t.Dependencies
-		}
-	}
-
+func assembleLoweredPackage(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts Options, tf traceFacts, ti targetIndexes, cc *codegenContext, ra *recoveredArtifacts, cmakeSrc, cmakeBuild, hostSrc, workspaceRoot string) error {
+	knownTargets, decodedTrace := tf.knownTargets, tf.decodedTrace
+	headerOnlySources, objectDependsBySrc, languageOverrideBySrc := tf.headerOnlySources, tf.objectDependsBySrc, tf.languageOverrideBySrc
+	perSourceDefinesBySrc := tf.perSourceDefinesBySrc
+	idToName := ti.idToName
+	genexTargets := ra.genexTargets
 	// Append recovered genrules then per-language sub-libraries
 	// then cc_test rules in deterministic order; each slot is
 	// appended in target-walk order during lowerTarget, which is
@@ -1923,7 +1965,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// field. Per-tag taxonomy in
 	// converter/internal/lower/baking_warnings.go.
 	if err := applyBakeInPolicy(pkg, opts.Warnings, opts.BakeIn); err != nil {
-		return nil, err
+		return err
 	}
 	// OBJECT_DEPENDS post-pass adds declared header dependencies
 	// to the target's hdrs so incremental rebuilds trip on
@@ -2035,72 +2077,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// emitted-target/alias set is final (no forward-ref false positives).
 	// See pruneDanglingTraceInterfaceDeps for the abseil case it fixes.
 	pruneDanglingTraceInterfaceDeps(pkg)
-	// Phase 4 standalone custom-command emission. Opt-in via
-	// Options.EmitStandaloneCustomCommands; the dedup against
-	// existing genrules keeps the recoverGenrule path's output
-	// intact even when this fires.
-	if opts.EmitStandaloneCustomCommands {
-		var aliasLibs []shadow.AddLibraryCall
-		if decodedTrace != nil {
-			aliasLibs = decodedTrace.AddLibraries
-		}
-		var fileGlobs []shadow.FileGlobCall
-		if decodedTrace != nil {
-			fileGlobs = decodedTrace.FileGlobs
-		}
-		traceCtx := standaloneTraceContext{
-			CustomCommands:  decodedAddCustomCommands,
-			CustomTargets:   decodedAddCustomTargets,
-			AddDependencies: decodedAddDependencies,
-			AliasToActual:   buildAliasToActual(aliasLibs),
-			FileGlobs:       fileGlobs,
-		}
-		// umbrellaPrefix is cmakeSrc-relative-to-labelRoot when the
-		// workspace-root umbrella promoted labelRoot above cmakeSrc
-		// (LLVM: hostSrc=llvm-project/, cmakeSrc=llvm-project/llvm/ →
-		// "llvm"). Standalone genrules anchor their source-tree srcs
-		// and cmd paths with it, consistent with the cc_library
-		// re-anchor; empty in the common non-promoted case.
-		umbrellaPrefix := ""
-		if hostSrc != "" && hostSrc != cmakeSrc {
-			if rel, inside := relativeIfInside(hostSrc, cmakeSrc); inside && rel != "" && rel != "." {
-				umbrellaPrefix = rel
-			}
-		}
-		stand := lowerStandaloneCustomCommands(g, pkg.Targets, cmakeSrc, cmakeBuild, umbrellaPrefix, opts.BazelPackagePath, artifactToName, traceCtx, cc.FilteredInternalCmds, cc)
-		// Add the transitive `include "..."` closure of tablegen-shaped
-		// codegen genrules to their srcs (their `.td` deps live only in
-		// cmake's dynamic DEPFILE, not the static reply). hostSrc is the
-		// labelRoot the genrules' anchored `-I` paths resolve against.
-		recordCodegenIncludeClosure(stand, hostSrc, opts.BazelPackagePath)
-		// Fold cmake file(GLOB)/file(GLOB_RECURSE)-sourced genrule inputs
-		// back into build-time glob() filegroups (split-synthesized), so a
-		// globbing genrule's deps re-evaluate in project B. No-op when the
-		// project uses no file(GLOB) (e.g. tablegen under Ninja).
-		threadFileGlobs(stand, traceCtx.FileGlobs, hostSrc)
-		pkg.Targets = append(pkg.Targets, stand...)
-
-		// Stage sibling generated headers (path-independent post-pass). A genrule
-		// that emits a .c + .h pair (rpcgen: regress.gen.c + regress.gen.h) — any
-		// cc target listing only the .c must still see the .h, which the .c
-		// #includes by bare same-dir quote (cmake omits the generated header from
-		// the target's source list). Regardless of HOW the .c reached a target's
-		// srcs (per-source recovery, build-include consumer attribution, …),
-		// attach the producing genrule's sibling header outputs to that target's
-		// hdrs. Element-relative; split's hdrs relabel re-homes them cross-package.
-		stageSiblingGeneratedHeaders(pkg)
-
-		// Resolve each cc_library consumer's UTILITY (tablegen) dependencies
-		// to the generated `.inc` headers it #includes, now that the
-		// standalone genrules producing them have been recovered. The
-		// combined output set — per-target codegen outputs (cc.OutToGenrule)
-		// plus this standalone recovery — is what the ninja walk filters on;
-		// matches land on pkg.CodegenHeaderConsumers for the split transform
-		// to synthesize the wrapper library and wire the consumer's dep.
-		if len(codegenConsumerDeps) > 0 {
-			resolveCodegenHeaderConsumers(pkg, g, stand, cc, codegenConsumerDeps, utilityIDs, utilityIDToName, isTargetName)
-		}
-	}
+	emitStandaloneCustomCommands(pkg, g, opts, tf, ti, cc, cmakeSrc, cmakeBuild, hostSrc)
 	// Phase 5 multi-config delta fold. When the reply carries
 	// per-config target data (BuildTypes-driven multi-config),
 	// project the cross-config Partition into PerPlatform-shaped
@@ -2124,6 +2101,82 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 			applyInterfaceScopeToDefines(pkg, genexTargets, cc.SubParent)
 		}
 	}
+	return nil
+}
+
+// emitToIRDiagnostics runs the reporting tail: operator breadcrumbs,
+// structured conversion-todos, the coverage audit, and the final
+// shaping/sanitization passes that precede emission. Bodies and rationale
+// comments are verbatim from ToIR's original inline tail.
+// warnUnconvertedTests surfaces add_test registrations that produced no
+// cc_test, grouped by COMMAND runner. Body and rationale comments are
+// verbatim from emitToIRDiagnostics' original inline block.
+func warnUnconvertedTests(opts Options, cc *codegenContext) {
+	// add_test registrations for which no cc_test was emitted — breadcrumb
+	// so the drop isn't silent (mirrors the cmake-internal filter above). An
+	// add_test becomes a cc_test only when its COMMAND is a converted
+	// executable; entries whose COMMAND is a script runner (e.g. brotli's
+	// `cmake -P` roundtrip/compatibility harness) — or whose executable the
+	// converter didn't emit — have no Bazel test target, so they're left
+	// unconverted. Surfacing them keeps "not all of this project's tests are
+	// buildable" auditable instead of silent.
+	//
+	// The "emitted" set comes from the synthesized cc.Tests, which preserve
+	// the original add_test NAME — NOT pkg.Targets, whose cc_test names have
+	// by now been through sanitizeTestNames / disambiguateTestNameCollisions
+	// and so would no longer match the registry's original names (false-
+	// positiving renamed-but-converted tests as dropped).
+	if opts.CTest != nil && opts.Warnings != nil {
+		emitted := map[string]bool{}
+		for _, t := range cc.Tests {
+			emitted[t.Name] = true
+		}
+		byCmd := map[string][]string{}
+		var cmds []string
+		for _, tst := range opts.CTest.All() {
+			if emitted[tst.Name] {
+				continue
+			}
+			if _, seen := byCmd[tst.Target]; !seen {
+				cmds = append(cmds, tst.Target)
+			}
+			byCmd[tst.Target] = append(byCmd[tst.Target], tst.Name)
+		}
+		if len(cmds) > 0 {
+			total := 0
+			for _, n := range byCmd {
+				total += len(n)
+			}
+			sort.Strings(cmds)
+			fmt.Fprintf(opts.Warnings,
+				"lower: %d add_test registration(s) not converted to cc_test — no Bazel test target emitted (COMMAND is a script runner like cmake -P, or its executable wasn't converted):\n",
+				total)
+			for _, c := range cmds {
+				names := byCmd[c]
+				sort.Strings(names)
+				shown, more := names, ""
+				if len(shown) > 12 {
+					more = fmt.Sprintf(", … +%d more", len(shown)-12)
+					shown = shown[:12]
+				}
+				label := c
+				if label == "" {
+					label = "(unknown)"
+				}
+				fmt.Fprintf(opts.Warnings, "  COMMAND %s (%d): %s%s\n", label, len(names), strings.Join(shown, ", "), more)
+			}
+		}
+	}
+}
+
+func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts Options, tf traceFacts, ti targetIndexes, cc *codegenContext, cmakeSrc, cmakeBuild, hostSrc string, hostSrcOnDisk bool) error {
+	decodedTrace := tf.decodedTrace
+	decodedExecuteProcesses := tf.decodedExecuteProcesses
+	decodedAddCustomCommands, decodedAddCustomTargets := tf.decodedAddCustomCommands, tf.decodedAddCustomTargets
+	knownTargets := tf.knownTargets
+	traceLinkLibs, traceLinkScope := tf.traceLinkLibs, tf.traceLinkScope
+	isTargetName := ti.isTargetName
+	_, _, _, _ = decodedTrace, decodedAddCustomTargets, knownTargets, isTargetName
 	// Surface missing-include-dir skips so the operator sees the
 	// cmake oddity instead of silently losing the dir. Per-dir
 	// dedup happens via the map; we render a deterministic
@@ -2183,61 +2236,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// stderr breadcrumb above so the JSON is produced even when
 	// Warnings is nil.
 	emitInternalDropTodos(opts.Todos, cc.FilteredInternalCmds)
-	// add_test registrations for which no cc_test was emitted — breadcrumb
-	// so the drop isn't silent (mirrors the cmake-internal filter above). An
-	// add_test becomes a cc_test only when its COMMAND is a converted
-	// executable; entries whose COMMAND is a script runner (e.g. brotli's
-	// `cmake -P` roundtrip/compatibility harness) — or whose executable the
-	// converter didn't emit — have no Bazel test target, so they're left
-	// unconverted. Surfacing them keeps "not all of this project's tests are
-	// buildable" auditable instead of silent.
-	//
-	// The "emitted" set comes from the synthesized cc.Tests, which preserve
-	// the original add_test NAME — NOT pkg.Targets, whose cc_test names have
-	// by now been through sanitizeTestNames / disambiguateTestNameCollisions
-	// and so would no longer match the registry's original names (false-
-	// positiving renamed-but-converted tests as dropped).
-	if opts.CTest != nil && opts.Warnings != nil {
-		emitted := map[string]bool{}
-		for _, t := range cc.Tests {
-			emitted[t.Name] = true
-		}
-		byCmd := map[string][]string{}
-		var cmds []string
-		for _, tst := range opts.CTest.All() {
-			if emitted[tst.Name] {
-				continue
-			}
-			if _, seen := byCmd[tst.Target]; !seen {
-				cmds = append(cmds, tst.Target)
-			}
-			byCmd[tst.Target] = append(byCmd[tst.Target], tst.Name)
-		}
-		if len(cmds) > 0 {
-			total := 0
-			for _, n := range byCmd {
-				total += len(n)
-			}
-			sort.Strings(cmds)
-			fmt.Fprintf(opts.Warnings,
-				"lower: %d add_test registration(s) not converted to cc_test — no Bazel test target emitted (COMMAND is a script runner like cmake -P, or its executable wasn't converted):\n",
-				total)
-			for _, c := range cmds {
-				names := byCmd[c]
-				sort.Strings(names)
-				shown, more := names, ""
-				if len(shown) > 12 {
-					more = fmt.Sprintf(", … +%d more", len(shown)-12)
-					shown = shown[:12]
-				}
-				label := c
-				if label == "" {
-					label = "(unknown)"
-				}
-				fmt.Fprintf(opts.Warnings, "  COMMAND %s (%d): %s%s\n", label, len(names), strings.Join(shown, ", "), more)
-			}
-		}
-	}
+	warnUnconvertedTests(opts, cc)
 	// Same unconverted add_test registrations, as structured
 	// conversion-todos (one per COMMAND runner). No-op on a nil
 	// collector; independent of the stderr breadcrumb above.
@@ -2356,6 +2355,208 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		pkg.SourceByteReads = sliceutil.SortedUnique(pkg.SourceByteReads)
 	}
 
+	return nil
+}
+
+func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
+	if got := len(r.Codemodel.Configurations); got != 1 {
+		// The multi-config fold (lowerMultiConfigDeltas, at the
+		// end of this function) projects every non-primary
+		// configuration's flag / src / dep deltas onto cfg[0]'s
+		// targets as //config:<name> select() arms when
+		// r.TargetsByConfig is populated — so multi-config
+		// *intent* is captured, not surveyed-first-only. The one
+		// thing that fold can't recover is a target built only in
+		// a non-primary configuration: cfg[0]'s walk never sees
+		// it, and lowerMultiConfigDeltas only augments targets
+		// cfg[0] emitted, so it's silently dropped.
+		dropped := configOnlyTargetNames(r.Codemodel.Configurations)
+		if opts.Rejections != nil {
+			// Diagnostic mode: flag exactly the config-only
+			// targets (the genuine residual); stay silent when
+			// cfg[0] covers the whole target set (the common
+			// "same targets, differing per-config flags" case the
+			// fold handles end-to-end).
+			for _, name := range dropped {
+				opts.Rejections.AddWithContext(failure.UnsupportedTargetType,
+					"target built only in a non-primary configuration; the multi-config fold projects per-config deltas onto the primary configuration's targets, so a config-only target is dropped",
+					name, "")
+			}
+		} else if len(dropped) > 0 {
+			// Strict mode: the fold captures every config's
+			// flag/src/dep intent as //config:<name> select() arms
+			// (and convert-element-cmake --out-config-settings
+			// emits the backing config_settings), so multi-config
+			// is a supported path now. The lone thing the
+			// first-config-primary fold can't recover is a target
+			// built only in a non-primary configuration — that's
+			// genuine intent loss, so strict mode still refuses it.
+			return nil, failure.New(failure.UnsupportedTargetType,
+				"target %q is built only in a non-primary configuration; the multi-config fold projects per-config deltas onto the primary configuration's targets, so a config-only target would be dropped (pass --diagnostics to convert the rest anyway)", dropped[0])
+		}
+	}
+	cfg := r.Codemodel.Configurations[0]
+
+	tf := parseTraceFacts(r, cfg, opts)
+	privateIncludeDirs, publicIncludeDirs, includeDirsGlobal := tf.privateIncludeDirs, tf.publicIncludeDirs, tf.includeDirsGlobal
+	defineSymbols, traceLinkLibs, traceLinkScope := tf.defineSymbols, tf.traceLinkLibs, tf.traceLinkScope
+	platformConditionalSrcs, platformConditionalSrcsToAdd := tf.platformConditionalSrcs, tf.platformConditionalSrcsToAdd
+	generatedSources := tf.generatedSources
+
+	cmakeSrc := r.Codemodel.Paths.Source
+	cmakeBuild := r.Codemodel.Paths.Build
+	workspaceRoot, hostSrc, hostSrcOnDisk, err := resolveSourceRoots(r, opts, cmakeSrc)
+	if err != nil {
+		return nil, err
+	}
+
+	pkg := &ir.Package{
+		Name:       projectName(r),
+		SourceRoot: hostSrc,
+		HeaderComments: append(append(
+			findPackageHeaderComments(opts.ConfigureLog),
+			optionsHeaderComments(r.Cache)...),
+			deprecationHeaderComments(opts.ConfigureLog)...,
+		),
+	}
+
+	cc := newCodegenContext()
+	cc.BazelPackagePath = opts.BazelPackagePath
+	cc.CMakeScriptRunner = opts.CMakeScriptRunner
+	cc.CMakeScriptTrace = opts.CMakeScriptTrace
+	cc.CMakeScriptBake = opts.CMakeScriptBake
+	cc.LiftCCEmbed = opts.LiftCCEmbed
+	cc.LiftCCHash = opts.LiftCCHash
+	cc.CMakeBinary = lookupCmakeBinary()
+	cc.Warnings = opts.Warnings
+	cc.LiteralProbeSink = opts.LiteralProbeSink
+	cc.LiteralResolutions = opts.LiteralResolutions
+	// Parallel pre-warm of the cmake -P script bakes: with the bake opted
+	// in, run every bakeable script up front in dependency waves with a
+	// bounded pool (see cmake_script_prewarm.go) — the serial recovery path
+	// then consumes the cached results instead of paying one subprocess
+	// wait at a time (the dominant translation cost on script-heavy
+	// projects; VTK: 238 runs ≈ 95s serial).
+	if cc.CMakeScriptBake {
+		prewarmScriptBakes(cc, g, opts.BuildDir)
+	}
+
+	ra, fallbackPkg, err := recoverConfigureTimeArtifacts(r, g, opts, cfg, tf, cmakeSrc, cmakeBuild, hostSrc, cc)
+	if err != nil {
+		return nil, err
+	}
+	if fallbackPkg != nil {
+		return fallbackPkg, nil
+	}
+	executeProcesses, configureFiles, fileGenerates := ra.executeProcesses, ra.configureFiles, ra.fileGenerates
+	genexTargets, findPkgAttrib := ra.genexTargets, ra.findPkgAttrib
+
+	// Build the in-codebase id -> Bazel-rule-name map up front so dep
+	// lowering can map t.Dependencies[].Id to a label without re-walking
+	// configurations. UTILITY targets (add_custom_target nodes) are
+	// excluded — they have no Bazel equivalent, so depending on them is a
+	// no-op; the underlying add_custom_command's outputs are referenced
+	// via srcs/hdrs instead. utilityIDs records them separately so dep
+	// resolution can distinguish "skip utility" from "unresolved".
+	ti := buildTargetIndexes(r, cfg, cmakeBuild, cc)
+	idToName, utilityIDs := ti.idToName, ti.utilityIDs
+	codegenConsumerDeps, pchResolve := ti.codegenConsumerDeps, ti.pchResolve
+
+	lc := targetLowerCtx{
+		cmakeSrc:            cmakeSrc,
+		cmakeBuild:          cmakeBuild,
+		hostSrc:             hostSrc,
+		hostPrefix:          opts.HostPrefixDir,
+		hostSrcOnDisk:       hostSrcOnDisk,
+		g:                   g,
+		cc:                  cc,
+		idToName:            idToName,
+		utilityIDs:          utilityIDs,
+		imports:             opts.Imports,
+		tests:               opts.CTest,
+		configureFiles:      configureFiles,
+		fileGenerates:       fileGenerates,
+		executeProcesses:    executeProcesses,
+		findPkgAttrib:       findPkgAttrib,
+		workspaceRoot:       workspaceRoot,
+		bazelPackagePath:    opts.BazelPackagePath,
+		generatedSources:    generatedSources,
+		rejections:          opts.Rejections,
+		emitSharedLibraries: opts.EmitSharedLibraries,
+		pchResolve:          pchResolve,
+	}
+
+	for _, tref := range cfg.Targets {
+		t, ok := r.Targets[tref.Id]
+		if !ok {
+			if opts.Rejections != nil {
+				opts.Rejections.AddWithContext(failure.FileAPIMalformed,
+					fmt.Sprintf("target id %q in codemodel but not loaded", tref.Id),
+					tref.Name, "")
+				continue
+			}
+			return nil, failure.New(failure.FileAPIMalformed,
+				"target id %q in codemodel but not loaded", tref.Id)
+		}
+		irt, err := lowerTarget(&t, targetTrace{
+			privateIncludeDirs:           privateIncludeDirs[tref.Name],
+			publicIncludeDirs:            publicIncludeDirs[tref.Name],
+			includeDirsGlobal:            includeDirsGlobal,
+			interfaceIncludeDirs:         interfaceIncludeDirsFor(genexTargets, tref.Name, len(opts.GenexProbes) > 0),
+			traceLinkLibs:                traceLinkLibs[tref.Name],
+			traceLinkScope:               traceLinkScope[tref.Name],
+			platformConditionalSrcs:      platformConditionalSrcs[tref.Name],
+			platformConditionalSrcsToAdd: platformConditionalSrcsToAdd[tref.Name],
+			defineSymbol:                 defineSymbols[tref.Name],
+		}, lc)
+		if err != nil {
+			return nil, err
+		}
+		if irt == nil {
+			// lowerTarget returned (nil, nil) to skip — UTILITY targets
+			// (add_custom_target nodes) and similar that have no Bazel
+			// equivalent. Also fires when an EXECUTABLE was rewritten
+			// into one or more cc_test entries on cc.Tests.
+			continue
+		}
+		pkg.Targets = append(pkg.Targets, *irt)
+
+		// Record the element-root-relative declaring directory for the
+		// --split-packages emit transform (out-of-band; never
+		// serialized, see ir.Package.SubPackages). The codemodel's
+		// ConfigDirectory.Source is cmakeSrc-relative; reconcile it
+		// with the same labelRoot base srcs are relativized against so
+		// dirs and srcs agree (see the labelRoot pick in lowerTarget,
+		// ~1328). When workspaceRoot is a strict ancestor of cmakeSrc
+		// (the umbrella / zstd shape), prepend the cmakeSrc-under-
+		// workspaceRoot prefix so the recorded dir is workspace-root-
+		// relative like the srcs.
+		if pkg.SubPackages == nil {
+			pkg.SubPackages = map[string]string{}
+		}
+		pkg.SubPackages[irt.Name] = subPackageDir(cfg, tref.DirectoryIndex, cmakeSrc, workspaceRoot)
+
+		// Record this target's codemodel UTILITY dependencies so a pass
+		// AFTER standalone-genrule recovery (which is what fills the genrule
+		// output set the walk filters on) can resolve them to the generated
+		// `.inc` headers it consumes. cc_binary/cc_test are included alongside
+		// cc_library: LLVM's tools are cc_binary that `#include "Opts.inc"`
+		// (the `-gen-opt-parser-defs` tablegen output from each tool's Opts.td,
+		// wired via add_public_tablegen_target), so they need the same
+		// generated-header wrapper dep + genfiles include the libraries get.
+		// The split transform's wrapper synthesis keys on consumer NAME, not
+		// kind, so a cc_binary consumer flows through unchanged.
+		if (irt.Kind == ir.KindCCLibrary || irt.Kind == ir.KindCCBinary || irt.Kind == ir.KindCCTest) && len(t.Dependencies) > 0 {
+			codegenConsumerDeps[irt.Name] = t.Dependencies
+		}
+	}
+
+	if err := assembleLoweredPackage(pkg, r, g, opts, tf, ti, cc, ra, cmakeSrc, cmakeBuild, hostSrc, workspaceRoot); err != nil {
+		return nil, err
+	}
+	if err := emitToIRDiagnostics(pkg, r, g, opts, tf, ti, cc, cmakeSrc, cmakeBuild, hostSrc, hostSrcOnDisk); err != nil {
+		return nil, err
+	}
 	return pkg, nil
 }
 
