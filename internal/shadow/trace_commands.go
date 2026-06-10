@@ -712,6 +712,16 @@ func ExtractConfigureFiles(traceRaw []byte, sourceRoot string) []ConfigureFileCa
 // recoveries' CallFile anchoring is already right. Returns nil when the
 // trace has no DEFER DIRECTORY registrations (the overwhelmingly common
 // case), keeping the lookup free.
+//
+// Known limitation: the key is the registration site, last writer wins — a
+// single site registering DEFER DIRECTORY for SEVERAL directories (a
+// foreach(subdir) loop around cmake_language(DEFER DIRECTORY ${subdir} …))
+// collapses to the last-traced dir, and the executions can't be
+// disambiguated because registration events carry no defer id to pair
+// against ev.Defer. All executions at such a site anchor to one directory;
+// the failure degrades to the pre-index mis-anchor (a silently-dropped
+// relative output), not worse. No corpus member registers multi-directory
+// DEFERs today.
 func deferDirectoryIndex(events []TraceEvent) map[string]string {
 	var idx map[string]string
 	for _, ev := range events {

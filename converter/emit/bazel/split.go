@@ -1841,6 +1841,13 @@ func (p *splitPlan) setBase(b string) { p.base = b }
 // from relUnder, so it may include subdirectories) must be reachable
 // cross-package, so the owning package emits it in exports_files(). Single
 // chokepoint for the per-package collection the rewrite paths feed.
+func recordExportedFile(exportsByDir map[string]map[string]struct{}, dir, file string) {
+	if exportsByDir[dir] == nil {
+		exportsByDir[dir] = map[string]struct{}{}
+	}
+	exportsByDir[dir][file] = struct{}{}
+}
+
 // rewriteDataEntries routes a target's data list to the post-split shape.
 // Two entry shapes coexist (see the rewriteTarget call site): intra-element
 // TARGET refs (":x") relabel like deps; element-root-relative FILE paths
@@ -1890,13 +1897,6 @@ func rewriteDataEntries(data []string, plan *splitPlan, dir string, local bool, 
 	}
 	sort.Strings(out)
 	return out
-}
-
-func recordExportedFile(exportsByDir map[string]map[string]struct{}, dir, file string) {
-	if exportsByDir[dir] == nil {
-		exportsByDir[dir] = map[string]struct{}{}
-	}
-	exportsByDir[dir][file] = struct{}{}
 }
 
 // appendExportsFiles renders an exports_files([...]) block for the
