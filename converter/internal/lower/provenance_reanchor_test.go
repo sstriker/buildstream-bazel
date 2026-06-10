@@ -60,6 +60,62 @@ func TestTargetProvenance_DirectDeclarationHasNoCallSite(t *testing.T) {
 	}
 }
 
+// TestTargetProvenance_IncludedFileDeclarationHasNoCallSite: a target
+// declared DIRECTLY at the top level of an include()d project .cmake file
+// is user-authored where it stands — the include() line is a scope change,
+// not an invocation, so no CallSite. (Otherwise several targets declared in
+// one included file would collapse onto the shared include() site and the
+// ambiguity guard would drop comments each carries from its own line.)
+func TestTargetProvenance_IncludedFileDeclarationHasNoCallSite(t *testing.T) {
+	parent0, parent1 := 0, 1
+	tgt := &fileapi.Target{
+		Backtrace: 2,
+		BacktraceGraph: fileapi.BacktraceGraph{
+			Commands: []string{"include", "add_library"},
+			Files:    []string{"CMakeLists.txt", "cmake/extra.cmake"},
+			Nodes: []fileapi.BacktraceNode{
+				{File: 0},
+				{File: 0, Line: 3, Command: 0, Parent: &parent0},
+				{File: 1, Line: 5, Command: 1, Parent: &parent1},
+			},
+		},
+	}
+	decl, call := targetProvenance(tgt, "", "")
+	if decl.File != "cmake/extra.cmake" || decl.Line != 5 {
+		t.Errorf("decl = %+v; want cmake/extra.cmake:5", decl)
+	}
+	if !call.IsZero() {
+		t.Errorf("call site = %+v; want zero — include() is not an invocation", call)
+	}
+}
+
+// TestTargetProvenance_MacroInsideIncludedFile: a macro INVOKED at the top
+// level of an include()d file — the call site is that invocation (inside
+// the included file), not the include() line above it.
+func TestTargetProvenance_MacroInsideIncludedFile(t *testing.T) {
+	parent0, parent1, parent2 := 0, 1, 2
+	tgt := &fileapi.Target{
+		Backtrace: 3,
+		BacktraceGraph: fileapi.BacktraceGraph{
+			Commands: []string{"include", "add_widget", "add_library"},
+			Files:    []string{"CMakeLists.txt", "cmake/extra.cmake", "cmake/helpers.cmake"},
+			Nodes: []fileapi.BacktraceNode{
+				{File: 0},
+				{File: 0, Line: 3, Command: 0, Parent: &parent0},  // include()
+				{File: 1, Line: 8, Command: 1, Parent: &parent1},  // add_widget() call
+				{File: 2, Line: 21, Command: 2, Parent: &parent2}, // macro body add_library
+			},
+		},
+	}
+	decl, call := targetProvenance(tgt, "", "")
+	if decl.File != "cmake/helpers.cmake" || decl.Line != 21 {
+		t.Errorf("decl = %+v; want cmake/helpers.cmake:21", decl)
+	}
+	if call.File != "cmake/extra.cmake" || call.Line != 8 || call.Command != "add_widget" {
+		t.Errorf("call site = %+v; want cmake/extra.cmake:8 add_widget (stop below the include)", call)
+	}
+}
+
 // TestTargetProvenance_NoBacktrace: no backtrace (cmake < 3.21 replies)
 // yields zero Provenance and zero CallSite — nothing to recover from.
 func TestTargetProvenance_NoBacktrace(t *testing.T) {

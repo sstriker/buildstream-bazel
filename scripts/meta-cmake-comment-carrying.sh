@@ -9,7 +9,9 @@
 #   2. a target's leading comment lands above its cc_library;
 #   3. a codegen genrule's originating add_custom_command comment lands above it;
 #   4. a macro-declared target carries the comment above the macro INVOCATION
-#      (its user-level call site), not the macro body's internal comment;
+#      (its user-level call site), not the macro body's internal comment —
+#      while targets declared directly in an include()d file keep their own
+#      comments (an inclusion is a scope change, not a call site);
 #   5. buildifier -mode=diff is a no-op over the emitted BUILD (the comments sit
 #      in canonical positions — the gazelle-roundtrip contract holds).
 #
@@ -78,6 +80,18 @@ assert_breadcrumb() { # regex description
 }
 assert_breadcrumb '^# Source: CMakeLists\.txt:[0-9]+ \(add_gadget_lib\)' "the call-site # Source: breadcrumb"
 assert_breadcrumb '^# Declared: CMakeLists\.txt:[0-9]+ \(add_library\)' "the macro-internal # Declared: breadcrumb"
+# (4b) include()d-file declarations: an inclusion is a scope change, not an
+# invocation — each target declared at the included file's top level keeps the
+# comment above its OWN add_library (two targets, one included file: the
+# shared-site guard must NOT fire), and no breadcrumb names the include() line.
+assert_present "The alpha lib — declared at the top of an included file." "the first included-file leading comment"
+assert_present "The beta lib — second target in the same included file." "the second included-file leading comment"
+if grep -qE -- '^# Source: [^ ]+ \(include\)' "$ws/BUILD.bazel"; then
+  echo "FAIL: an include() line leads a # Source: breadcrumb (inclusions are not call sites)"
+  echo "   --- generated BUILD ---"
+  sed 's/^/   /' "$ws/BUILD.bazel"
+  exit 1
+fi
 if grep -qF -- "inside the macro body" "$ws/BUILD.bazel"; then
   echo "FAIL: macro BODY comment misattributed to a target: inside the macro body"
   echo "   --- generated BUILD ---"
@@ -109,7 +123,9 @@ for marker in \
   "Generate the lookup table from the spec" \
   "the widget core lib" \
   "The gadget lib — declared via the helper macro." \
-  "macro-made gadget"; do
+  "macro-made gadget" \
+  "The alpha lib — declared at the top of an included file." \
+  "The beta lib — second target in the same included file."; do
   if grep -qF "$marker" "$ws/BUILD.nocomments"; then
     echo "FAIL: author comment present with --emit-source-comments=false: $marker"
     exit 1

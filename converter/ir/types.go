@@ -363,11 +363,14 @@ type Target struct {
 
 	// CallSite is the user-level invocation that produced this target
 	// when the declaring command ran inside a macro/function expansion:
-	// the outermost user-source frame of the declaration backtrace
-	// (e.g. the `add_widget_lib(foo)` call in the user's CMakeLists,
-	// where Provenance is the helper body's add_library line). Zero
-	// when the target was declared directly — Provenance already IS
-	// the user's call — or when no backtrace is available.
+	// the outermost user-source INVOCATION frame of the declaration
+	// backtrace (e.g. the `add_widget_lib(foo)` call in the user's
+	// CMakeLists, where Provenance is the helper body's add_library
+	// line). Zero when the target was declared directly — Provenance
+	// already IS the user's call — or when no backtrace is available.
+	// Inclusion frames (include() / find_package() / add_subdirectory())
+	// are scope changes, not invocations: a target declared at an
+	// included file's top level also gets no CallSite.
 	//
 	// Comment recovery (lower.Options.RecoverSourceComments) prefers
 	// this site over Provenance, so an author comment above a

@@ -11,10 +11,13 @@ import (
 // targetProvenance projects a codemodel target's Backtrace into its
 // declaration-site Provenance (the immediate add_library/add_executable/…
 // frame) plus, when that command ran inside a macro/function expansion,
-// the user-level CallSite: the outermost user-source frame of the same
-// backtrace (the invocation the author actually wrote, where their
+// the user-level CallSite: the outermost user-source INVOCATION frame of
+// the same backtrace (the call the author actually wrote, where their
 // comment sits). callSite is zero for directly-declared targets — the
-// declaration IS the user's call — and when no backtrace is available.
+// declaration IS the user's call — including declarations at the top
+// level of an include()d project .cmake file (an inclusion is a scope
+// change, not an invocation; see callSiteFrame), and when no backtrace
+// is available.
 func targetProvenance(t *fileapi.Target, cmakeSrc, cmakeBuild string) (decl, callSite ir.Provenance) {
 	if t.Backtrace <= 0 || t.Backtrace >= len(t.BacktraceGraph.Nodes) {
 		return decl, callSite
@@ -35,7 +38,7 @@ func targetProvenance(t *fileapi.Target, cmakeSrc, cmakeBuild string) (decl, cal
 		Line:    node.Line,
 		Command: cmd,
 	}
-	cfile, cline, ccmd := outermostUserFrame(t.BacktraceGraph, t.Backtrace)
+	cfile, cline, ccmd := callSiteFrame(t.BacktraceGraph, t.Backtrace)
 	if cfile != "" && (cfile != file || cline != node.Line) {
 		callSite = ir.Provenance{
 			File:    reanchorProvenanceFile(cfile, cmakeSrc, cmakeBuild),
@@ -44,6 +47,75 @@ func targetProvenance(t *fileapi.Target, cmakeSrc, cmakeBuild string) (decl, cal
 		}
 	}
 	return decl, callSite
+}
+
+// callSiteFrame walks the backtrace's parent chain from the declaring node
+// up through macro/function INVOCATION frames only, returning the outermost
+// user-source invocation — the call the author wrote. Returns zeros when the
+// declaring node has no invocation above it (a directly-declared target).
+//
+// Unlike outermostUserFrame (link-scope recovery's walk), inclusion frames —
+// include() / find_package() / add_subdirectory() — terminate the walk: they
+// change scope but don't expand a body, so a command at an included file's
+// top level is user-authored where it stands. Treating the include() line as
+// the call site would misattribute the file's comments (and one included
+// file declaring several targets would collapse them all onto one ambiguous
+// shared site). cmake-internal frames (a bundled module's macro body) are
+// ascended through but never returned as the call site.
+func callSiteFrame(g fileapi.BacktraceGraph, start int) (file string, line int, command string) {
+	if start <= 0 || start >= len(g.Nodes) {
+		return "", 0, ""
+	}
+	cur := start
+	best := -1 // outermost user-source invocation frame above start
+	for {
+		parent := g.Nodes[cur].Parent
+		if parent == nil || *parent <= 0 || *parent >= len(g.Nodes) {
+			break
+		}
+		p := *parent
+		pnode := g.Nodes[p]
+		if pnode.Line <= 0 {
+			break // file-root frame, not a call
+		}
+		var pcmd string
+		if pnode.Command >= 0 && pnode.Command < len(g.Commands) {
+			pcmd = g.Commands[pnode.Command]
+		}
+		if isInclusionCommand(pcmd) {
+			break // scope change: cur's location is authored at top scope
+		}
+		cur = p
+		var pfile string
+		if pnode.File >= 0 && pnode.File < len(g.Files) {
+			pfile = g.Files[pnode.File]
+		}
+		if pfile != "" && !isCMakeInternalPath(pfile) {
+			best = p
+		}
+	}
+	if best < 0 {
+		return "", 0, ""
+	}
+	n := g.Nodes[best]
+	if n.File >= 0 && n.File < len(g.Files) {
+		file = g.Files[n.File]
+	}
+	if n.Command >= 0 && n.Command < len(g.Commands) {
+		command = g.Commands[n.Command]
+	}
+	return file, n.Line, command
+}
+
+// isInclusionCommand identifies frames that pull another file/directory into
+// the configure without expanding a callable body: their children are
+// authored at the included file's own top scope, not at the caller's line.
+func isInclusionCommand(cmd string) bool {
+	switch strings.ToLower(cmd) {
+	case "include", "find_package", "add_subdirectory", "subdirs":
+		return true
+	}
+	return false
 }
 
 // reanchorProvenanceFile re-anchors an absolute file path from
