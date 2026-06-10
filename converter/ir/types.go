@@ -187,6 +187,14 @@ const (
 	// KindCudaTest renders as rules_cuda's `cuda_test(...)` — the CUDA
 	// analogue of cc_test for a `.cu`-only test executable.
 	KindCudaTest
+	// KindFortranLibrary renders as rules_buildstream_bazel's
+	// `fortran_library(...)` — the converter's self-contained lowering for a
+	// cmake Fortran target (a cc_* rule has no Fortran compile action). It
+	// compiles `.f`/`.f90`/... via the cc toolchain's own driver (gfortran)
+	// and exposes a CcInfo, so a consuming cc_* target deps on it like any
+	// library. The Fortran analogue of KindCudaLibrary; see
+	// //rules:fortran.bzl and lower's retagFortranTargets.
+	KindFortranLibrary
 )
 
 func (k Kind) String() string {
@@ -227,6 +235,8 @@ func (k Kind) String() string {
 		return "cuda_binary"
 	case KindCudaTest:
 		return "cuda_test"
+	case KindFortranLibrary:
+		return "fortran_library"
 	case KindBoolFlag:
 		return "bool_flag"
 	case KindConfigSetting:

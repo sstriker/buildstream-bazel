@@ -438,6 +438,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	emitCMakeConfigureFileLoad(&buf, pkg)
 	emitCCEmbedLoad(&buf, pkg)
 	emitCCHashLoad(&buf, pkg)
+	emitFortranLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
 
 	for i, t := range pkg.Targets {
@@ -688,7 +689,7 @@ func addKeepMarkers(f *build.File) {
 		}
 		kind := callRuleKind(call)
 		switch kind {
-		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files", "write_file", "cmake_configure_file":
+		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files", "write_file", "cmake_configure_file", "fortran_library":
 			markCallKeep(call)
 		case "cc_library", "cc_binary", "cc_test", "cuda_library", "cuda_binary", "cuda_test":
 			if kind == "cc_library" && callHasTag(call, generatedIncludesTag) {
@@ -1606,6 +1607,19 @@ func emitCCHashLoad(buf *bytes.Buffer, pkg *ir.Package) {
 	}
 }
 
+// emitFortranLoad writes the
+// `load("@rules_buildstream_bazel//rules:fortran.bzl", "fortran_library")` line
+// when pkg has any KindFortranLibrary target, else nothing — a non-Fortran
+// BUILD stays byte-identical and needs no extra load.
+func emitFortranLoad(buf *bytes.Buffer, pkg *ir.Package) {
+	for _, t := range pkg.Targets {
+		if t.Kind == ir.KindFortranLibrary {
+			buf.WriteString(`load("@rules_buildstream_bazel//rules:fortran.bzl", "fortran_library")` + "\n\n")
+			return
+		}
+	}
+}
+
 // cudaRuleLoads maps each CUDA Kind to its @rules_cuda//cuda:defs.bzl symbol.
 // Separate from ccRuleLoads (which is the @rules_cc load set) so the two loads
 // stay distinct — a BUILD with `.cu` targets loads cuda_library/cuda_binary/
@@ -1968,7 +1982,35 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	if isCudaKind(t.Kind) {
 		adaptCudaView(&v)
 	}
+	if t.Kind == ir.KindFortranLibrary {
+		adaptFortranView(&v)
+	}
 	return ccRuleTmpl.Execute(w, v)
+}
+
+// adaptFortranView rewrites a ccView assembled for a Fortran target so it only
+// carries the attributes //rules:fortran.bzl's fortran_library accepts: name,
+// srcs, deps, copts, linkopts, includes (plus the implicit tags / visibility).
+// The lowering (retagFortranTargets) already folds defines into copts (-D…) and
+// implementation_deps into deps, so those exprs are normally empty here; this
+// clears every cc-only attribute defensively so a stray value can never render
+// an attribute fortran_library would reject at analysis. Headers have no
+// fortran_library analogue (Fortran sources don't declare a public header
+// surface the rule consumes) and are dropped.
+func adaptFortranView(v *ccView) {
+	v.HdrsExpr = ""
+	v.TextualHdrsExpr = ""
+	v.DefinesExpr = ""
+	v.LocalDefinesExpr = ""
+	v.ImplementationDepsExpr = ""
+	v.AdditionalLinkerInputsExpr = ""
+	v.DynamicDepsExpr = ""
+	v.IncludePrefix = ""
+	v.StripIncludePrefix = ""
+	v.Linkstatic = false
+	v.Alwayslink = false
+	v.Features = nil
+	v.Data = nil
 }
 
 // isCudaKind reports whether k is one of the rules_cuda rule kinds.

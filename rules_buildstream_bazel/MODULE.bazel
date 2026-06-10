@@ -4,6 +4,11 @@ module(
     compatibility_level = 0,
 )
 
+# rules_cc supplies find_cc_toolchain (//rules:fortran.bzl drives the cc
+# toolchain's own compiler on Fortran sources). Pinned to the version the
+# converter emits into rendered workspaces' MODULE.bazel.
+bazel_dep(name = "rules_cc", version = "0.0.17")
+
 # rules_buildstream_bazel is the buildstream-bazel converter's
 # in-repo Bazel ruleset. It's referenced by every project that
 # write-a renders (project A + project B) via bazel_dep +

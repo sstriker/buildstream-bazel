@@ -1760,11 +1760,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// test target, so the rename is safe; the authoritative
 	// codemodel-derived target keeps its name.
 	disambiguateTestNameCollisions(pkg)
-	// Fortran partition — move Fortran (.f / .f90 / ...) sources out of
-	// cc_* targets (which can't compile them) into a sibling filegroup,
-	// keeping the cc_* target buildable and the Fortran intent labeled +
-	// operator-routable. See partitionFortranSources.
-	partitionFortranSources(pkg)
+	// Fortran retag — lower a cmake Fortran target (.f / .f90 / ... sources a
+	// cc_* rule can't compile) to a buildable fortran_library that drives the
+	// cc toolchain's own gfortran driver and exposes CcInfo. Fortran-only
+	// targets retag in place; mixed C+Fortran targets gain a private sibling
+	// fortran_library the cc_* target deps on. See retagFortranTargets.
+	retagFortranTargets(pkg)
 	// CUDA retag — a cc_* target whose compiled srcs are entirely `.cu`
 	// CUDA device code renders as the matching rules_cuda rule (cuda_library
 	// / cuda_binary / cuda_test) so nvcc compiles it; a plain cc_library
@@ -5756,48 +5757,44 @@ func isFortranSrc(p string) bool {
 	return false
 }
 
-// partitionFortranSources moves Fortran sources OUT of each cc_*
-// target's srcs into a sibling `filegroup` named `<target>_fortran_srcs`.
+// retagFortranTargets lowers each cmake Fortran target to a buildable
+// fortran_library (//rules:fortran.bzl) instead of an unbuildable cc_* rule.
 //
-// Why: cmake routes a target's Fortran (.f / .f90 / ...) sources into
-// the same add_library/add_executable as its C/C++ sources, but Bazel's
-// cc rules dispatch by file extension and have NO Fortran compile action
-// — so a cc_library carrying `.f` srcs is unbuildable as emitted (the
-// non-cc-language-source idiom). There's no canonical Bazel Fortran
-// ruleset (rules_fortran is experimental + not in the BCR) and no
-// gazelle Fortran extension to hand off to, so the converter can't emit
-// a buildable Fortran rule. The honest, plain-Bazel increment:
+// cmake routes a target's Fortran (.f / .f90 / ...) sources into the same
+// add_library/add_executable as its C/C++ sources, but Bazel's cc rules
+// dispatch by file extension and have NO Fortran compile action. fortran_library
+// compiles them via the cc toolchain's OWN driver (gfortran) and exposes CcInfo,
+// so a consuming cc_* target links them transparently. Two shapes:
 //
-//   - pull the Fortran sources out so the cc_* target keeps only its
-//     C/C++/ASM sources and BUILDS;
-//   - park them in a `filegroup` (global Bazel namespace, no MODULE
-//     deps) that's clearly labeled, so the intent is preserved and an
-//     operator can point a Fortran ruleset (rules_fortran / foreign_cc /
-//     hand-rolled) at `:<target>_fortran_srcs` when they wire one;
-//   - tag both the cc_* target and the filegroup
-//     `cmake-codegen-fortran-target` so the gap is grep-able and the
-//     bazelidiom audit's non-cc-language-source finding has a concrete
-//     home (the filegroup), not a broken cc_library.
+//   - a Fortran-only target is retagged IN PLACE to KindFortranLibrary, keeping
+//     its name (so existing deps edges still resolve) and usage requirements
+//     (deps / copts / includes), with cc-only attributes normalized onto the
+//     fortran_library surface (defines / local_defines → -D copts,
+//     implementation_deps → deps; see normalizeFortranTarget);
 //
-// A cc_* target whose srcs become EMPTY after partitioning (a
-// Fortran-only library, e.g. OpenBLAS's reference-LAPACK targets) is
-// dropped — an srcs-less cc_library/cc_binary is Bazel-invalid, and the
-// filegroup carries the real content. The target's deps still resolve
-// via the filegroup label if needed; the all-sources-elided refusal
-// path (lowerTarget) doesn't fire here because partitioning runs as a
-// post-pass after emit-time target assembly.
-func partitionFortranSources(pkg *ir.Package) {
+//   - a MIXED target (C/C++/ASM + Fortran) keeps its cc_* rule for the
+//     non-Fortran srcs and gains a private sibling `<name>_fortran`
+//     fortran_library carrying the Fortran srcs; the cc_* target deps on it, so
+//     its own objects and its consumers link the Fortran symbols (cmake compiled
+//     them into one archive — the dep edge reunites them).
+//
+// The Fortran analogue of retagCudaTargets, and like it a post-emit pass after
+// the per-language compile-group split, so it sees WHOLE-target language
+// composition. Targets are tagged cmake-codegen-fortran-target so the gap's
+// provenance stays grep-able. A Fortran-only cc_binary / cc_test degrades to a
+// (non-runnable) fortran_library — the executable wrapper is lost, but that's
+// strictly better than the prior behavior (which dropped Fortran-only targets
+// entirely) and OpenBLAS's reference LAPACK is libraries.
+func retagFortranTargets(pkg *ir.Package) {
 	if pkg == nil {
 		return
 	}
 	var added []ir.Target
-	kept := pkg.Targets[:0]
 	for i := range pkg.Targets {
-		t := pkg.Targets[i]
+		t := &pkg.Targets[i]
 		isCC := t.Kind == ir.KindCCLibrary || t.Kind == ir.KindCCBinary ||
 			t.Kind == ir.KindCCInterface || t.Kind == ir.KindCCTest
 		if !isCC || len(t.Srcs) == 0 {
-			kept = append(kept, t)
 			continue
 		}
 		var ftn, rest []string
@@ -5809,31 +5806,66 @@ func partitionFortranSources(pkg *ir.Package) {
 			}
 		}
 		if len(ftn) == 0 {
-			kept = append(kept, t)
 			continue
 		}
-		// Build the sibling filegroup carrying the Fortran sources.
-		fg := ir.Target{
-			Name:       t.Name + "_fortran_srcs",
-			Kind:       ir.KindFilegroup,
-			Srcs:       ftn,
-			Visibility: publicVisibility(),
-			Tags:       []string{"cmake-codegen-fortran-target"},
-		}
-		added = append(added, fg)
-
 		if len(rest) == 0 {
-			// Fortran-only target: the cc_* rule would be srcs-less
-			// (Bazel-invalid). Drop it; the filegroup holds the content.
+			// Fortran-only: retag in place, keep the name + dep edges.
+			t.Kind = ir.KindFortranLibrary
+			normalizeFortranTarget(t)
+			if !stringSliceContains(t.Tags, "cmake-codegen-fortran-target") {
+				t.Tags = append(t.Tags, "cmake-codegen-fortran-target")
+			}
 			continue
 		}
+		// Mixed: keep the cc_* target with the non-Fortran srcs; split the
+		// Fortran srcs into a private sibling fortran_library and dep on it.
+		sub := ir.Target{
+			Name:               t.Name + "_fortran",
+			Kind:               ir.KindFortranLibrary,
+			Srcs:               ftn,
+			Deps:               append([]string(nil), t.Deps...),
+			ImplementationDeps: append([]string(nil), t.ImplementationDeps...),
+			Copts:              append([]string(nil), t.Copts...),
+			Includes:           append([]string(nil), t.Includes...),
+			LinkOpts:           append([]string(nil), t.LinkOpts...),
+			Defines:            append([]string(nil), t.Defines...),
+			LocalDefines:       append([]string(nil), t.LocalDefines...),
+			Visibility:         []string{"//visibility:private"},
+			Tags:               []string{"cmake-codegen-fortran-target"},
+		}
+		normalizeFortranTarget(&sub)
+		added = append(added, sub)
 		t.Srcs = rest
+		t.Deps = appendUnique(t.Deps, ":"+sub.Name)
 		if !stringSliceContains(t.Tags, "cmake-codegen-fortran-target") {
 			t.Tags = append(t.Tags, "cmake-codegen-fortran-target")
 		}
-		kept = append(kept, t)
 	}
-	pkg.Targets = append(kept, added...)
+	pkg.Targets = append(pkg.Targets, added...)
+}
+
+// normalizeFortranTarget folds a (former) cc target's attributes onto the
+// narrow fortran_library surface: defines / local_defines become -D copts (the
+// GNU driver passes -D through to the Fortran frontend; ignored on fixed-form
+// .f, honored on preprocessed .F), implementation_deps merge into deps
+// (fortran_library exposes only deps), and the cc-only header / link-shape
+// fields are cleared so emit's adaptFortranView never has to.
+func normalizeFortranTarget(t *ir.Target) {
+	for _, d := range t.Defines {
+		t.Copts = append(t.Copts, "-D"+d)
+	}
+	for _, d := range t.LocalDefines {
+		t.Copts = append(t.Copts, "-D"+d)
+	}
+	t.Defines = nil
+	t.LocalDefines = nil
+	t.Deps = appendUnique(t.Deps, t.ImplementationDeps...)
+	t.ImplementationDeps = nil
+	t.Hdrs = nil
+	t.TextualHdrs = nil
+	t.Alwayslink = false
+	t.Linkstatic = false
+	t.Features = nil
 }
 
 // isCudaSrc reports whether p is a CUDA device-code source (`.cu`). `.cuh`
@@ -5850,7 +5882,8 @@ func isCudaSrc(p string) bool {
 // `.cu` CUDA device code as the matching rules_cuda rule (cuda_library /
 // cuda_binary / cuda_test), so it renders with nvcc-driving rules instead of
 // a cc_library that Bazel can't compile (`.cu` has no cc compile action — the
-// same gap partitionFortranSources handles for Fortran, but unlike Fortran,
+// same gap retagFortranTargets handles for Fortran, now also with a real
+// buildable rule rather than a parked filegroup, but unlike Fortran,
 // CUDA HAS a canonical Bazel ruleset (rules_cuda in the BCR), so the honest
 // lowering is a real buildable rule, not a parked filegroup).
 //
