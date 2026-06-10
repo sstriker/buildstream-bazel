@@ -1295,3 +1295,158 @@ func TestRecoverExecuteProcess_RescueViaFindPackage(t *testing.T) {
 		t.Errorf("expected find_package rescue; got refusals: %v", refusals)
 	}
 }
+
+// epcfTestTree writes a template under hostSrc and a rendered output under
+// hostBuild and returns a call invoking cmake -E configure_file on them —
+// the shared setup of the stamp/mirror lift tests below.
+func epcfTestTree(t *testing.T, hostSrc, hostBuild, srcRel, dstRel, template, rendered string) shadow.ExecuteProcessCall {
+	t.Helper()
+	for _, w := range []struct{ root, rel, body string }{
+		{hostSrc, srcRel, template},
+		{hostBuild, dstRel, rendered},
+	} {
+		p := filepath.Join(w.root, filepath.FromSlash(w.rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(w.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return shadow.ExecuteProcessCall{
+		File: filepath.Join(hostSrc, "CMakeLists.txt"),
+		Line: 8,
+		Commands: [][]string{{
+			"/usr/bin/cmake", "-E", "configure_file",
+			filepath.Join(hostSrc, filepath.FromSlash(srcRel)),
+			filepath.Join(hostBuild, filepath.FromSlash(dstRel)),
+		}},
+	}
+}
+
+// GAP A: a template var written by a stamp execute_process wires
+// stamp_values on the -E configure_file lift (the configure_file recovery's
+// parity), with the baked value retained as the non-stamped fallback.
+func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_StampValues(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	cfCall := epcfTestTree(t, hostSrc, hostBuild, "inc/v.h.in", "gen.h", "sha=@GIT_SHA@\n", "sha=abc123\n")
+	stampCall := shadow.ExecuteProcessCall{
+		File:           filepath.Join(hostSrc, "CMakeLists.txt"),
+		Line:           3,
+		Commands:       [][]string{{"git", "rev-parse", "HEAD"}},
+		OutputVariable: "GIT_SHA",
+	}
+	cc := newCodegenContext()
+	_, _ = recoverExecuteProcess([]shadow.ExecuteProcessCall{stampCall, cfCall}, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"GIT_SHA": "abc123"}, nil, cc)
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules: %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v; want lifted cmake_configure_file", g.Kind)
+	}
+	if got := g.CMakeConfigureFile.StampValues["GIT_SHA"]; got != "STABLE_GIT_SHA" {
+		t.Errorf("StampValues[GIT_SHA] = %q, want STABLE_GIT_SHA (map: %v)", got, g.CMakeConfigureFile.StampValues)
+	}
+	if got := g.CMakeConfigureFile.Values["GIT_SHA"]; got != "abc123" {
+		t.Errorf("baked fallback Values[GIT_SHA] = %q, want abc123", got)
+	}
+}
+
+// GAP A trace-order independence: the stamp call appearing AFTER the
+// -E configure_file in the trace still wires (prescanStampVars).
+func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_StampValues_TraceOrderIndependent(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	cfCall := epcfTestTree(t, hostSrc, hostBuild, "inc/v.h.in", "gen.h", "sha=@GIT_SHA@\n", "sha=abc123\n")
+	stampCall := shadow.ExecuteProcessCall{
+		File:           filepath.Join(hostSrc, "CMakeLists.txt"),
+		Line:           20,
+		Commands:       [][]string{{"git", "rev-parse", "HEAD"}},
+		OutputVariable: "GIT_SHA",
+	}
+	cc := newCodegenContext()
+	_, _ = recoverExecuteProcess([]shadow.ExecuteProcessCall{cfCall, stampCall}, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"GIT_SHA": "abc123"}, nil, cc)
+	if len(cc.Genrules) != 1 || cc.Genrules[0].CMakeConfigureFile == nil {
+		t.Fatalf("Genrules: %+v", cc.Genrules)
+	}
+	if got := cc.Genrules[0].CMakeConfigureFile.StampValues["GIT_SHA"]; got != "STABLE_GIT_SHA" {
+		t.Errorf("stamp AFTER the -E call in trace order should still wire; StampValues = %v", cc.Genrules[0].CMakeConfigureFile.StampValues)
+	}
+}
+
+// GAP A: a stamp var the template never references must NOT wire (no
+// spurious workspace-status dependency).
+func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_UnreferencedStampNotWired(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	cfCall := epcfTestTree(t, hostSrc, hostBuild, "inc/v.h.in", "gen.h", "ver=@VER@\n", "ver=2.0\n")
+	stampCall := shadow.ExecuteProcessCall{
+		File:           filepath.Join(hostSrc, "CMakeLists.txt"),
+		Line:           3,
+		Commands:       [][]string{{"git", "rev-parse", "HEAD"}},
+		OutputVariable: "GIT_SHA",
+	}
+	cc := newCodegenContext()
+	_, _ = recoverExecuteProcess([]shadow.ExecuteProcessCall{stampCall, cfCall}, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"VER": "2.0"}, nil, cc)
+	if len(cc.Genrules) != 1 || cc.Genrules[0].CMakeConfigureFile == nil {
+		t.Fatalf("Genrules: %+v", cc.Genrules)
+	}
+	if sv := cc.Genrules[0].CMakeConfigureFile.StampValues; len(sv) != 0 {
+		t.Errorf("unreferenced stamp var wired: %v", sv)
+	}
+}
+
+// GAP B: same-path byte-identical mirror emits NO rule; the rel path flows
+// for consumer attribution and resolves to the committed source.
+func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_SamePathMirrorNoRule(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	call := epcfTestTree(t, hostSrc, hostBuild, "inc/hdr.h", "inc/hdr.h", "#define H 1\n", "#define H 1\n")
+	cc := newCodegenContext()
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("refusals: %+v", refusals)
+	}
+	if len(outs) != 1 || outs[0].RelOutput != "inc/hdr.h" {
+		t.Fatalf("outs = %+v; want the rel flowing for attribution", outs)
+	}
+	if len(cc.Genrules) != 0 {
+		t.Errorf("same-path mirror must emit no rule; got %+v", cc.Genrules)
+	}
+	if len(cc.OutToGenrule) != 0 {
+		t.Errorf("no producer must be registered; got %v", cc.OutToGenrule)
+	}
+}
+
+// GAP B: same path but DIFFERING bytes — the lifted spec would carry
+// Template == Out (a Bazel input/output collision), so the bake shape (no
+// template input) must land instead.
+func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_SamePathDifferentBytesBakes(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	call := epcfTestTree(t, hostSrc, hostBuild, "inc/hdr.h", "inc/hdr.h", "v=@V@\n", "v=1\n")
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, map[string]string{"V": "1"}, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("refusals: %+v", refusals)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules: %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	if g.Kind == ir.KindCMakeConfigureFile {
+		t.Fatalf("lifted spec with Template == Out would collide; want the bake shape, got %+v", g.CMakeConfigureFile)
+	}
+	if len(g.Srcs) != 0 {
+		t.Errorf("bake shape must reference no template input; srcs = %v", g.Srcs)
+	}
+}
+
+// GAP B control: different paths with identical bytes still emit a rule —
+// the mirror is path-gated, not just byte-gated.
+func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_DifferentPathIdenticalBytesStillEmits(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	call := epcfTestTree(t, hostSrc, hostBuild, "inc/a.h.in", "inc/a.h", "#define A 1\n", "#define A 1\n")
+	cc := newCodegenContext()
+	_, _ = recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("renamed copy must still emit a rule; Genrules: %+v", cc.Genrules)
+	}
+}

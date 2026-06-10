@@ -5,7 +5,7 @@
 # The fixture's execute_process(date … OUTPUT_FILE) is a Tier-1 refusal (a
 # non-hermetic stamp driver writing a file). Converted in diagnostic mode
 # (--ignore-rejections-for-diagnostics), the generic rejection producer mirrors
-# it into conversion-todos.json as a `rejection:unsupported-execute-process`
+# it into conversion-todos.json as a structured `execute-process-refusal`
 # entry tagged `disposition: actionable` — proving the refusal surface is
 # covered and dispositions flow end to end. (The bake/genex producers and the
 # per-site disposition override are covered by the Go unit tests in
@@ -66,13 +66,25 @@ python3 - "$work_dir/todos.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 todos = d.get("todos", [])
-# (1) the refusal is mirrored with the right kind + disposition.
+# (1) the refusal is mirrored as the STRUCTURED per-call kind (which
+# superseded the coarse rejection:unsupported-execute-process mirror):
+# right disposition, a real file:line anchor, and bucket evidence.
 match = [t for t in todos
-         if t["kind"] == "rejection:unsupported-execute-process"
+         if t["kind"] == "execute-process-refusal"
          and t["disposition"] == "actionable"]
 if not match:
-    print("FAIL: no rejection:unsupported-execute-process todo with disposition=actionable")
+    print("FAIL: no execute-process-refusal todo with disposition=actionable")
     print(json.dumps(todos, indent=2))
+    sys.exit(1)
+t0 = match[0]
+if not t0.get("anchors") or not t0["anchors"][0].get("file") or "execute_process(" not in t0["anchors"][0].get("construct", ""):
+    print("FAIL: execute-process-refusal anchor missing file/construct:", json.dumps(t0, indent=2))
+    sys.exit(1)
+if "bucket" not in t0.get("evidence", {}):
+    print("FAIL: execute-process-refusal evidence missing bucket:", json.dumps(t0, indent=2))
+    sys.exit(1)
+if any(t["kind"] == "rejection:unsupported-execute-process" for t in todos):
+    print("FAIL: coarse rejection:unsupported-execute-process mirror should be superseded")
     sys.exit(1)
 # (2) every todo carries a disposition from the known set.
 ok = {"actionable", "improvement", "informational"}

@@ -71,6 +71,13 @@ func emitRejectionTodos(c *todos.Collector, rej *rejection.Collector, buildDir s
 	}
 	byCode := map[failure.Code][]rejection.Rejection{}
 	for _, r := range items {
+		// unsupported-execute-process has a dedicated STRUCTURED producer
+		// (emitExecuteProcessRefusalTodos: per-call file:line anchors,
+		// bucket + reasons + argv evidence); the coarse mirror here would
+		// duplicate it with a single whole-blob anchor.
+		if r.Code == failure.UnsupportedExecuteProcess {
+			continue
+		}
 		byCode[r.Code] = append(byCode[r.Code], r)
 	}
 	for code, rs := range byCode {

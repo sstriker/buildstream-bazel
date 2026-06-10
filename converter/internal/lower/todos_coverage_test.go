@@ -21,23 +21,17 @@ func findTodo(rep todos.Report, kind string) *todos.Todo {
 
 func TestEmitRejectionTodos_DispositionByCode(t *testing.T) {
 	rej := rejection.New()
+	// unsupported-execute-process is deliberately SKIPPED here — its
+	// structured per-call mirror is emitExecuteProcessRefusalTodos.
 	rej.AddWithContext(failure.UnsupportedExecuteProcess, "execute_process refused", "tgtA", "CMakeLists.txt")
-	rej.AddWithContext(failure.UnsupportedExecuteProcess, "another refusal", "tgtB", "sub/CMakeLists.txt")
 	rej.AddWithContext(failure.FileAPIMalformed, "target id mismatch", "", "")
 
 	c := todos.New()
 	emitRejectionTodos(c, rej, "")
 	rep := c.Report(todos.Preamble{}, "")
 
-	ep := findTodo(rep, "rejection:unsupported-execute-process")
-	if ep == nil {
-		t.Fatal("missing execute_process rejection todo")
-	}
-	if ep.Disposition != todos.Actionable {
-		t.Errorf("execute_process disposition = %q, want actionable", ep.Disposition)
-	}
-	if len(ep.Anchors) != 2 {
-		t.Errorf("execute_process todo should fold 2 anchors, got %d", len(ep.Anchors))
+	if ep := findTodo(rep, "rejection:unsupported-execute-process"); ep != nil {
+		t.Errorf("coarse execute_process mirror should be skipped (superseded by execute-process-refusal); got %+v", ep)
 	}
 	fa := findTodo(rep, "rejection:fileapi-malformed")
 	if fa == nil || fa.Disposition != todos.Informational {

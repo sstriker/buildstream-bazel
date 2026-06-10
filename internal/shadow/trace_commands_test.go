@@ -1104,3 +1104,49 @@ func TestReadsBuildType(t *testing.T) {
 		t.Errorf("empty trace must not trigger")
 	}
 }
+
+// traceDeferExecuteProcess: a cmake_language(DEFER DIRECTORY <dir> CALL
+// execute_process …) registration + its deferred execution, plus an
+// ordinary execute_process — the field-stamping parity check for
+// ExecuteProcessCall.DeferDir (the lifts deliberately don't consume it; see
+// the field's doc).
+const traceDeferExecuteProcess = `{"args":["DEFER","DIRECTORY","/src","CALL","execute_process","COMMAND","/usr/bin/cmake","-E","copy","/src/a","/b/a"],"cmd":"cmake_language","file":"/src/sub/CMakeLists.txt","line":3,"frame":1}
+{"args":["COMMAND","/usr/bin/cmake","-E","copy","/src/a","/b/a"],"cmd":"execute_process","file":"/src/sub/CMakeLists.txt","line":3,"frame":1,"defer":"__0"}
+{"args":["COMMAND","/usr/bin/cmake","-E","copy","/src/b","/b/b"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":9,"frame":1}
+`
+
+func TestExtractExecuteProcess_DeferDirectory(t *testing.T) {
+	got := ExtractExecuteProcess([]byte(traceDeferExecuteProcess), "/src")
+	if len(got) != 2 {
+		t.Fatalf("want 2 execute_process calls; got %d (%+v)", len(got), got)
+	}
+	byLine := map[int]ExecuteProcessCall{}
+	for _, c := range got {
+		byLine[c.Line] = c
+	}
+	if c := byLine[3]; c.DeferDir != "/src" {
+		t.Errorf("deferred call DeferDir = %q, want /src", c.DeferDir)
+	}
+	if c := byLine[9]; c.DeferDir != "" {
+		t.Errorf("ordinary call DeferDir = %q, want empty", c.DeferDir)
+	}
+}
+
+func TestDecode_DeferDirectoryOnExecuteProcesses(t *testing.T) {
+	d := Decode([]byte(traceDeferExecuteProcess), "/src", nil)
+	if len(d.ExecuteProcesses) != 2 {
+		t.Fatalf("want 2 ExecuteProcesses; got %d", len(d.ExecuteProcesses))
+	}
+	var sawDeferred bool
+	for _, c := range d.ExecuteProcesses {
+		if c.Line == 3 {
+			sawDeferred = true
+			if c.DeferDir != "/src" {
+				t.Errorf("Decode ExecuteProcesses DeferDir = %q, want /src", c.DeferDir)
+			}
+		}
+	}
+	if !sawDeferred {
+		t.Errorf("deferred execute_process missing from Decode output")
+	}
+}
