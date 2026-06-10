@@ -227,108 +227,32 @@ func loadOfflineReplyArtifacts(replyDir string) (ninjaPath string, cmakeVars map
 	return ninjaPath, cmakeVars, nil
 }
 
-// run is a tracked complexity giant (cognitive 247 / cyclomatic 152): the
-// convert-element-cmake pipeline driver. Breaking it down into focused sub-pass
-// extractions is its own ROADMAP "complexity lens" burndown pass — grandfathered
-// so the lens gates as blocking on all other code. Remove the directive below as
-// it comes back under threshold. See ROADMAP.md.
-//
-//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
-func run(a cli.Args) error {
-	t0 := time.Now()
-	var configureElapsed time.Duration
+// convertInputs carries the loaded conversion inputs (graph, manifests,
+// trace, hooks, collectors) from the load/setup helpers into the lower
+// passes and the downstream report writers. Fields keep the names of
+// run()'s original locals; helpers destructure them into same-named
+// locals so each extracted body reads exactly as it did inline.
+type convertInputs struct {
+	g                  *ninja.Graph
+	imports            *manifest.Resolver
+	prefixAbs          string
+	testRegistry       *ctest.Registry
+	traceRaw           []byte
+	hostBuildOrReply   string
+	genexProbes        []cmakerun.GenexProbe
+	configureLogEvents []fileapi.Event
+	rejections         *rejection.Collector
+	execFallback       bool
+	coverageCollector  *coverage.Collector
+	todosCollector     *todos.Collector
+	stampSink          map[string]string
+	backedFeatures     []string
+}
 
-	// Dev lens: CPU-profile the whole run (--cpuprofile). cmake
-	// subprocess time appears as wait, so the profile cleanly separates
-	// the converter's own Go work from cmake's.
-	if a.CPUProfile != "" {
-		f, perr := os.Create(a.CPUProfile)
-		if perr != nil {
-			return perr
-		}
-		defer f.Close()
-		if perr := pprof.StartCPUProfile(f); perr != nil {
-			return perr
-		}
-		defer pprof.StopCPUProfile()
-	}
-
-	// --split-packages is mutually exclusive with --out-ir-json: the
-	// latter round-trips IR through JSON for the multi-platform fold,
-	// and the per-directory split is a v1 single-platform-only emit
-	// transform. Refuse loudly rather than silently splitting an IR the
-	// fold path will re-merge from JSON that omits SubPackages.
-	if a.SplitPackages && a.OutIRJSON != "" {
-		return failure.New(failure.UnsupportedTargetType,
-			"--split-packages is mutually exclusive with --out-ir-json (the multi-platform fold path); pick one")
-	}
-
-	if a.ProbeDistroHardening {
-		// Probe the convert host's cc for distro-default
-		// hardening flags. Diagnostic-only — we don't change
-		// any BUILD.bazel emit decisions; the goal is to
-		// surface the expected symbol-set delta between cmake
-		// and Bazel rebuilds so operators don't chase ghost
-		// regressions.
-		r := hardeningprobe.Probe("")
-		if r.Err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: --probe-distro-hardening skipped: %v\n", r.Err)
-		} else if !r.Empty() {
-			fmt.Fprint(os.Stderr, r.FormatForOperator())
-		}
-	}
-
-	replyDir := a.ReplyDir
-	var ninjaPath string
-	var hostBuildDir string
-	var cmakeVars map[string]string
-	ctx := context.Background()
-	// When the operator passes --cmake-build-dir, the CLI Parse
-	// step derives a.ReplyDir but leaves hostBuildDir empty —
-	// which silently disables CTest classification, the direct
-	// trace-path lookup (`<build>/trace.jsonl`), and the
-	// compile_commands.json lookup downstream. All three care
-	// about the build dir, not the reply dir. Populate
-	// hostBuildDir from a.CMakeBuildDir so the --cmake-build-dir
-	// path gets the same treatment as the real-cmake-run path.
-	//
-	// Pure offline --reply-dir runs (no --cmake-build-dir, no
-	// --source-root) intentionally leave hostBuildDir empty —
-	// fixture replay paths typically don't have a live build dir
-	// the converter can poke at, and historical behavior is to
-	// skip the build-dir-dependent passes silently.
-	if a.CMakeBuildDir != "" {
-		hostBuildDir = a.CMakeBuildDir
-	}
-	if replyDir == "" {
-		bd, rd, vars, np, elapsed, cerr := configureCmakeFresh(ctx, a)
-		// buildDir is returned (and cleaned up) even on Configure error,
-		// matching the original defer-right-after-MkdirTemp placement.
-		if bd != "" {
-			defer os.RemoveAll(bd)
-		}
-		if cerr != nil {
-			return cerr
-		}
-		hostBuildDir = bd
-		replyDir = rd
-		cmakeVars = vars
-		ninjaPath = np
-		configureElapsed = elapsed
-	} else {
-		np, vars, oerr := loadOfflineReplyArtifacts(replyDir)
-		if oerr != nil {
-			return oerr
-		}
-		ninjaPath = np
-		cmakeVars = vars
-	}
-
-	r, err := fileapi.Load(replyDir)
-	if err != nil {
-		return failure.New(failure.FileAPIMissing, "load reply: %v", err)
-	}
-
+// emitReplyArtifacts writes the pure-read-on-reply side artifacts
+// (sanitizer-features .bzl, //config settings, toolchain-signal copy)
+// before lowering begins.
+func emitReplyArtifacts(a cli.Args, r *fileapi.Reply, replyDir string) error {
 	// Phase 5 sanitizer-as-feature emit: when the operator
 	// requested a .bzl sidecar AND --build-types includes one or
 	// more sanitizer-shaped configs, extract cmake's per-config
@@ -390,11 +314,20 @@ func run(a cli.Args) error {
 		}
 	}
 
+	return nil
+}
+
+// loadConversionInputs loads everything lowering consumes beyond the
+// reply itself — the ninja graph, the imports manifest, CTest registry,
+// trace bytes (with the loud missing-trace degradation), the probe-genex
+// hook output, and configureLog events — and sets up the run collectors.
+func loadConversionInputs(a cli.Args, r *fileapi.Reply, ninjaPath, hostBuildDir string) (*convertInputs, error) {
+	var err error
 	var g *ninja.Graph
 	if ninjaPath != "" {
 		g, err = ninja.ParseFile(ninjaPath)
 		if err != nil {
-			return failure.New(failure.NinjaParseFailed, "parse %s: %v", ninjaPath, err)
+			return nil, failure.New(failure.NinjaParseFailed, "parse %s: %v", ninjaPath, err)
 		}
 	}
 
@@ -409,14 +342,14 @@ func run(a cli.Args) error {
 		imports, err = manifest.Load(a.ImportsManifest)
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	prefixAbs := ""
 	if a.PrefixDir != "" {
 		prefixAbs, err = filepath.Abs(a.PrefixDir)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -428,7 +361,7 @@ func run(a cli.Args) error {
 	if hostBuildDir != "" {
 		testRegistry, err = ctest.Parse(hostBuildDir)
 		if err != nil {
-			return failure.New(failure.CTestParseFailed, "%v", err)
+			return nil, failure.New(failure.CTestParseFailed, "%v", err)
 		}
 	}
 
@@ -480,7 +413,7 @@ func run(a cli.Args) error {
 			"    --trace-expand --trace-format=json-v1 --trace-redirect=<build>/trace.jsonl\n" +
 			"  --source-root mode does this automatically; --reply-dir / --cmake-build-dir mode requires the trace file to exist on disk."
 		if a.StrictTrace {
-			return failure.New(failure.MissingTraceData, "%s", msg)
+			return nil, failure.New(failure.MissingTraceData, "%s", msg)
 		}
 		fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: %s\n", msg)
 	}
@@ -501,7 +434,7 @@ func run(a cli.Args) error {
 	// paths.
 	genexProbes, err := cmakerun.ReadGenexProbe(hostBuildOrReply)
 	if err != nil {
-		return failure.New(failure.FileAPIMalformed, "read probe-genex output: %v", err)
+		return nil, failure.New(failure.FileAPIMalformed, "read probe-genex output: %v", err)
 	}
 
 	// configureLog-v1 events (Phase 2 of the generator-parity
@@ -515,7 +448,7 @@ func run(a cli.Args) error {
 	if r.ConfigureLog != nil {
 		configureLogEvents, err = fileapi.LoadConfigureLogYAML(r.ConfigureLog.Path)
 		if err != nil {
-			return failure.New(failure.FileAPIMalformed, "read configure log: %v", err)
+			return nil, failure.New(failure.FileAPIMalformed, "read configure log: %v", err)
 		}
 	}
 
@@ -555,7 +488,7 @@ func run(a cli.Args) error {
 	if a.ToolchainFeaturesFrom != "" {
 		backedFeatures, err = toolchainscan.ParseDeclared(a.ToolchainFeaturesFrom)
 		if err != nil {
-			return fmt.Errorf("--toolchain-features-from %s: %w", a.ToolchainFeaturesFrom, err)
+			return nil, fmt.Errorf("--toolchain-features-from %s: %w", a.ToolchainFeaturesFrom, err)
 		}
 		// Non-nil (operator opted in) gates the lift even when empty — but an
 		// empty scan usually means the parser couldn't read the toolchain's
@@ -565,6 +498,35 @@ func run(a cli.Args) error {
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --toolchain-features-from %s declared no literal feature() names; only the built-in `pic` will lift (the toolchain may build features via wrappers/computed names the parser can't read — see docs/operator-toolchain-features.md)\n", a.ToolchainFeaturesFrom)
 		}
 	}
+	return &convertInputs{
+		g:                  g,
+		imports:            imports,
+		prefixAbs:          prefixAbs,
+		testRegistry:       testRegistry,
+		traceRaw:           traceRaw,
+		hostBuildOrReply:   hostBuildOrReply,
+		genexProbes:        genexProbes,
+		configureLogEvents: configureLogEvents,
+		rejections:         rejections,
+		execFallback:       execFallback,
+		coverageCollector:  coverageCollector,
+		todosCollector:     todosCollector,
+		stampSink:          stampSink,
+		backedFeatures:     backedFeatures,
+	}, nil
+}
+
+// runLowerPasses runs the lowering pipeline: pass 1, the conditional warm
+// genex and stamp-indirection second passes, and the per-config bake fold.
+// The in fields destructure into run()'s original local names so the pass
+// bodies read exactly as they did inline.
+func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *convertInputs, hostBuildDir string, cmakeVars map[string]string) (*ir.Package, error) {
+	g, imports, prefixAbs := in.g, in.imports, in.prefixAbs
+	testRegistry, traceRaw, hostBuildOrReply := in.testRegistry, in.traceRaw, in.hostBuildOrReply
+	genexProbes, configureLogEvents := in.genexProbes, in.configureLogEvents
+	rejections, execFallback := in.rejections, in.execFallback
+	coverageCollector, todosCollector := in.coverageCollector, in.todosCollector
+	stampSink, backedFeatures := in.stampSink, in.backedFeatures
 	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment, parentScopeForwards []shadow.ParentScopeForward) (*ir.Package, error) {
 		// Reset the todos collector each pass: ToIR can run more than once
 		// (two-pass genex / stamp recovery) against the same collector, and
@@ -641,7 +603,7 @@ func run(a cli.Args) error {
 			}
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	// genexResolutions carries the genex two-pass result forward to the
@@ -688,7 +650,7 @@ func run(a cli.Args) error {
 			genexResolutions = resolutions
 			pkg2, err2 := runToIR(nil, resolutions, recoveredStampSets, recoveredStampForwards)
 			if err2 != nil {
-				return err2
+				return nil, err2
 			}
 			pkg = pkg2
 		}
@@ -737,7 +699,7 @@ func run(a cli.Args) error {
 			if len(sets) > 0 || len(forwards) > 0 {
 				pkg3, err3 := runToIR(nil, genexResolutions, sets, forwards)
 				if err3 != nil {
-					return err3
+					return nil, err3
 				}
 				pkg = pkg3
 			}
@@ -757,6 +719,12 @@ func run(a cli.Args) error {
 	// body, exactly as without the feature.
 	runPerConfigBakes(ctx, a, hostBuildDir, traceRaw, pkg)
 
+	return pkg, nil
+}
+
+// writeRejectionsAndVerify materializes the rejections report and runs the
+// optional --verify pass.
+func writeRejectionsAndVerify(a cli.Args, rejections *rejection.Collector, hostBuildDir string, pkg *ir.Package) error {
 	// Always materialize the rejections report when its path is
 	// set so consumers (CI gates, downstream scripts) can rely on
 	// the file existing. Empty array when no rejections fired or
@@ -791,6 +759,13 @@ func run(a cli.Args) error {
 	// Phase 7 idiom audit can run over each (single-BUILD: one blob;
 	// --split-packages: one per emitted package). Keeps the audit
 	// running over the full output regardless of layout.
+	return nil
+}
+
+// emitBuildOutputs renders the BUILD output (per-directory split tree or
+// the single BUILD.bazel) and returns every emitted blob for the
+// post-emission idiom audit.
+func emitBuildOutputs(a cli.Args, pkg *ir.Package) ([][]byte, error) {
 	var auditBlobs [][]byte
 
 	if a.SplitPackages {
@@ -805,7 +780,7 @@ func run(a cli.Args) error {
 			Warn:               os.Stderr,
 		})
 		if err != nil {
-			return err
+			return nil, err
 		}
 		rootDir := filepath.Dir(a.OutBuild)
 		// Deterministic write order (sorted dirs) for stable logs.
@@ -818,10 +793,10 @@ func run(a cli.Args) error {
 				dst = filepath.Join(rootDir, filepath.FromSlash(d), "BUILD.bazel")
 			}
 			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-				return err
+				return nil, err
 			}
 			if err := os.WriteFile(dst, tree[d], 0o644); err != nil {
-				return err
+				return nil, err
 			}
 			auditBlobs = append(auditBlobs, tree[d])
 		}
@@ -840,17 +815,24 @@ func run(a cli.Args) error {
 			// classes as Tier-2 (the orchestrator collects them by
 			// exit code, not by stable dedup key). handleError
 			// routes both correctly.
-			return err
+			return nil, err
 		}
 		if err := os.MkdirAll(filepath.Dir(a.OutBuild), 0o755); err != nil {
-			return err
+			return nil, err
 		}
 		if err := os.WriteFile(a.OutBuild, out, 0o644); err != nil {
-			return err
+			return nil, err
 		}
 		auditBlobs = append(auditBlobs, out)
 	}
 
+	return auditBlobs, nil
+}
+
+// writeRunReports writes the post-emission report family: source reads,
+// the Bazel-idiom audit, the lens-3 coverage findings, and the
+// conversion-todos report.
+func writeRunReports(a cli.Args, pkg *ir.Package, auditBlobs [][]byte, coverageCollector *coverage.Collector, todosCollector *todos.Collector) error {
 	// --out-source-reads: publish the SOURCE files whose bytes the lowering
 	// passes read affecting the BUILD (pkg.SourceByteReads) — the declared
 	// exception to the no-source-read rule, consumed by the source-narrowing
@@ -965,25 +947,13 @@ func run(a cli.Args) error {
 		}
 	}
 
-	// Stage 6 of the per-element multi-platform plan: ship the
-	// lowered ir.Package as JSON alongside the rendered
-	// BUILD.bazel so the orchestrator's fold can compose
-	// per-platform IRs without re-parsing Bazel rules. Only the
-	// orchestrator's multi-platform path sets this; single-
-	// platform conversions ignore it.
-	if a.OutIRJSON != "" {
-		body, err := json.MarshalIndent(pkg, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal ir.Package: %w", err)
-		}
-		if err := os.MkdirAll(filepath.Dir(a.OutIRJSON), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(a.OutIRJSON, body, 0o644); err != nil {
-			return err
-		}
-	}
+	return nil
+}
 
+// emitProducerChannels writes the producer self-description channels —
+// the cmake-config bundle and exports.json — sharing the trace-recovered
+// export namespace.
+func emitProducerChannels(a cli.Args, r *fileapi.Reply, pkg *ir.Package, traceRaw []byte) error {
 	// Producer self-description channels (bundle + exports.json) share
 	// the export namespace recovered from the trace — the codemodel
 	// drops the install(EXPORT ... NAMESPACE ...) prefix, so without
@@ -1085,6 +1055,32 @@ func run(a cli.Args) error {
 			return err
 		}
 		if err := os.WriteFile(a.OutExports, append(body, '\n'), 0o644); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// writeRunTailReports writes the remaining per-run artifacts: the IR JSON
+// (multi-platform fold input), timings, the build.ninja reconfigure-input
+// oracle, and the trace read-paths report.
+func writeRunTailReports(a cli.Args, r *fileapi.Reply, g *ninja.Graph, pkg *ir.Package, hostBuildDir string, t0 time.Time, configureElapsed time.Duration) error {
+	// Stage 6 of the per-element multi-platform plan: ship the
+	// lowered ir.Package as JSON alongside the rendered
+	// BUILD.bazel so the orchestrator's fold can compose
+	// per-platform IRs without re-parsing Bazel rules. Only the
+	// orchestrator's multi-platform path sets this; single-
+	// platform conversions ignore it.
+	if a.OutIRJSON != "" {
+		body, err := json.MarshalIndent(pkg, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal ir.Package: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(a.OutIRJSON), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(a.OutIRJSON, body, 0o644); err != nil {
 			return err
 		}
 	}
@@ -1197,6 +1193,132 @@ func run(a cli.Args) error {
 		}
 	}
 	return nil
+}
+
+// run drives one conversion: acquire the reply (fresh configure or
+// offline replay), load the conversion inputs, run the lower passes, and
+// write the BUILD output plus the report/artifact tails. Each stage's
+// rationale lives on its helper.
+func run(a cli.Args) error {
+	t0 := time.Now()
+	var configureElapsed time.Duration
+
+	// Dev lens: CPU-profile the whole run (--cpuprofile). cmake
+	// subprocess time appears as wait, so the profile cleanly separates
+	// the converter's own Go work from cmake's.
+	if a.CPUProfile != "" {
+		f, perr := os.Create(a.CPUProfile)
+		if perr != nil {
+			return perr
+		}
+		defer f.Close()
+		if perr := pprof.StartCPUProfile(f); perr != nil {
+			return perr
+		}
+		defer pprof.StopCPUProfile()
+	}
+
+	// --split-packages is mutually exclusive with --out-ir-json: the
+	// latter round-trips IR through JSON for the multi-platform fold,
+	// and the per-directory split is a v1 single-platform-only emit
+	// transform. Refuse loudly rather than silently splitting an IR the
+	// fold path will re-merge from JSON that omits SubPackages.
+	if a.SplitPackages && a.OutIRJSON != "" {
+		return failure.New(failure.UnsupportedTargetType,
+			"--split-packages is mutually exclusive with --out-ir-json (the multi-platform fold path); pick one")
+	}
+
+	if a.ProbeDistroHardening {
+		// Probe the convert host's cc for distro-default
+		// hardening flags. Diagnostic-only — we don't change
+		// any BUILD.bazel emit decisions; the goal is to
+		// surface the expected symbol-set delta between cmake
+		// and Bazel rebuilds so operators don't chase ghost
+		// regressions.
+		r := hardeningprobe.Probe("")
+		if r.Err != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: --probe-distro-hardening skipped: %v\n", r.Err)
+		} else if !r.Empty() {
+			fmt.Fprint(os.Stderr, r.FormatForOperator())
+		}
+	}
+
+	replyDir := a.ReplyDir
+	var ninjaPath string
+	var hostBuildDir string
+	var cmakeVars map[string]string
+	ctx := context.Background()
+	// When the operator passes --cmake-build-dir, the CLI Parse
+	// step derives a.ReplyDir but leaves hostBuildDir empty —
+	// which silently disables CTest classification, the direct
+	// trace-path lookup (`<build>/trace.jsonl`), and the
+	// compile_commands.json lookup downstream. All three care
+	// about the build dir, not the reply dir. Populate
+	// hostBuildDir from a.CMakeBuildDir so the --cmake-build-dir
+	// path gets the same treatment as the real-cmake-run path.
+	//
+	// Pure offline --reply-dir runs (no --cmake-build-dir, no
+	// --source-root) intentionally leave hostBuildDir empty —
+	// fixture replay paths typically don't have a live build dir
+	// the converter can poke at, and historical behavior is to
+	// skip the build-dir-dependent passes silently.
+	if a.CMakeBuildDir != "" {
+		hostBuildDir = a.CMakeBuildDir
+	}
+	if replyDir == "" {
+		bd, rd, vars, np, elapsed, cerr := configureCmakeFresh(ctx, a)
+		// buildDir is returned (and cleaned up) even on Configure error,
+		// matching the original defer-right-after-MkdirTemp placement.
+		if bd != "" {
+			defer os.RemoveAll(bd)
+		}
+		if cerr != nil {
+			return cerr
+		}
+		hostBuildDir = bd
+		replyDir = rd
+		cmakeVars = vars
+		ninjaPath = np
+		configureElapsed = elapsed
+	} else {
+		np, vars, oerr := loadOfflineReplyArtifacts(replyDir)
+		if oerr != nil {
+			return oerr
+		}
+		ninjaPath = np
+		cmakeVars = vars
+	}
+
+	r, err := fileapi.Load(replyDir)
+	if err != nil {
+		return failure.New(failure.FileAPIMissing, "load reply: %v", err)
+	}
+
+	if err := emitReplyArtifacts(a, r, replyDir); err != nil {
+		return err
+	}
+	in, err := loadConversionInputs(a, r, ninjaPath, hostBuildDir)
+	if err != nil {
+		return err
+	}
+	pkg, err := runLowerPasses(ctx, a, r, in, hostBuildDir, cmakeVars)
+	if err != nil {
+		return err
+	}
+	if err := writeRejectionsAndVerify(a, in.rejections, hostBuildDir, pkg); err != nil {
+		return err
+	}
+	auditBlobs, err := emitBuildOutputs(a, pkg)
+	if err != nil {
+		return err
+	}
+	if err := writeRunReports(a, pkg, auditBlobs, in.coverageCollector, in.todosCollector); err != nil {
+		return err
+	}
+	if err := emitProducerChannels(a, r, pkg, in.traceRaw); err != nil {
+		return err
+	}
+	return writeRunTailReports(a, r, in.g, pkg, hostBuildDir, t0, configureElapsed)
 }
 
 // compileCommandsPath returns the path to the compile_commands.json
