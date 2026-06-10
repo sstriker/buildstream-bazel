@@ -30,14 +30,16 @@ func provenanceHostPath(file, hostSrc string) string {
 // Options.RecoverSourceComments; the emitter renders the result under
 // EmitSourceComments.
 //
-// Association: a target's innermost declaration site is its Backtrace node
-// (the add_library/add_executable/… file:line). We read the contiguous `#`
-// leading-comment block there. To avoid misattributing a helper's body comment
-// to the many targets a function/macro produces, **sites shared by more than
-// one target are skipped** — a function invoked N times yields N targets at one
-// body line, the egregious misattribution case. cmake-internal and unreadable
-// files are skipped (best-effort; offline --reply-dir runs whose recorded paths
-// don't exist locally simply recover nothing).
+// Association: a target's comment site is its user-level CallSite when the
+// declaring command ran inside a macro/function (the invocation the author
+// wrote, where their comment sits), else its Provenance declaration site (the
+// add_library/add_executable/… file:line). We read the contiguous `#`
+// leading-comment block there. To avoid misattributing one comment to many
+// targets, **sites shared by more than one target are skipped** — e.g. a
+// single macro invocation that declares several targets, or a helper body
+// line with no recoverable call site. cmake-internal and unreadable files are
+// skipped (best-effort; offline --reply-dir runs whose recorded paths don't
+// exist locally simply recover nothing).
 func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string,
 	execProcs []shadow.ExecuteProcessCall,
 	customCmds []shadow.AddCustomCommandCall,
@@ -79,11 +81,22 @@ func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string
 	recoverCodegenGenruleComments(pkg, cmakeSrc, cmakeBuild, fileLines, execProcs, customCmds, customTgts)
 }
 
+// commentSite is the source location whose comments describe the target from
+// the author's point of view: the user-level macro/function invocation when
+// the target was macro-declared (CallSite), else the declaration itself.
+func commentSite(t *ir.Target) ir.Provenance {
+	if !t.CallSite.IsZero() {
+		return t.CallSite
+	}
+	return t.Provenance
+}
+
 // recoverTargetComments recovers each codemodel target's leading/trailing
-// source comment from its Provenance declaration site (populated from the
-// codemodel backtrace). Sites shared by >1 target (a helper invoked N times)
-// are skipped to avoid misattributing one body comment to many targets.
-// fileLines reads + caches source files.
+// source comment from its comment site (the user-level call site for
+// macro-declared targets, else the Provenance declaration site). Sites shared
+// by >1 target — one macro invocation declaring several targets, or a helper
+// body line with no call site recovered — are skipped to avoid misattributing
+// one comment to many targets. fileLines reads + caches source files.
 func recoverTargetComments(pkg *ir.Package, hostSrc string, fileLines func(string) []string) {
 	type site struct {
 		file string
@@ -91,7 +104,7 @@ func recoverTargetComments(pkg *ir.Package, hostSrc string, fileLines func(strin
 	}
 	count := map[site]int{}
 	for i := range pkg.Targets {
-		p := pkg.Targets[i].Provenance
+		p := commentSite(&pkg.Targets[i])
 		if p.File == "" || p.Line <= 0 {
 			continue
 		}
@@ -99,14 +112,15 @@ func recoverTargetComments(pkg *ir.Package, hostSrc string, fileLines func(strin
 	}
 	for i := range pkg.Targets {
 		t := &pkg.Targets[i]
-		if len(t.LeadingComment) > 0 || t.Provenance.File == "" || t.Provenance.Line <= 0 {
+		p := commentSite(t)
+		if len(t.LeadingComment) > 0 || p.File == "" || p.Line <= 0 {
 			continue
 		}
-		key := site{t.Provenance.File, t.Provenance.Line}
+		key := site{p.File, p.Line}
 		if count[key] != 1 {
-			continue // shared site: helper-invoked, ambiguous — skip
+			continue // shared site: multi-target declaration, ambiguous — skip
 		}
-		host := provenanceHostPath(t.Provenance.File, hostSrc)
+		host := provenanceHostPath(p.File, hostSrc)
 		// isCMakeInternalPath matches forward-slash substrings; host comes from
 		// filepath.Join (OS separators), so normalize for the check only — the
 		// original host path is still used for reading.
@@ -114,10 +128,10 @@ func recoverTargetComments(pkg *ir.Package, hostSrc string, fileLines func(strin
 			continue
 		}
 		ls := fileLines(host)
-		if lc := cmakeargv.LeadingCommentLines(ls, t.Provenance.Line); len(lc) > 0 {
+		if lc := cmakeargv.LeadingCommentLines(ls, p.Line); len(lc) > 0 {
 			t.LeadingComment = lc
 		}
-		if tc := cmakeargv.TrailingCommentLines(ls, t.Provenance.Line); tc != "" {
+		if tc := cmakeargv.TrailingCommentLines(ls, p.Line); tc != "" {
 			t.TrailingComment = tc
 		}
 	}

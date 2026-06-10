@@ -358,6 +358,21 @@ type Target struct {
 	// pre-date this field.
 	Provenance Provenance
 
+	// CallSite is the user-level invocation that produced this target
+	// when the declaring command ran inside a macro/function expansion:
+	// the outermost user-source frame of the declaration backtrace
+	// (e.g. the `add_widget_lib(foo)` call in the user's CMakeLists,
+	// where Provenance is the helper body's add_library line). Zero
+	// when the target was declared directly — Provenance already IS
+	// the user's call — or when no backtrace is available.
+	//
+	// Comment recovery (lower.Options.RecoverSourceComments) prefers
+	// this site over Provenance, so an author comment above a
+	// target-generating macro call carries to the target. The
+	// `# Source:` provenance breadcrumb keeps using Provenance (the
+	// precise declaring command).
+	CallSite Provenance
+
 	// LeadingComment is the author's source comment block recovered from
 	// the originating CMakeLists (the contiguous `#` line-comment block
 	// immediately above the declaring command, as raw `# ...` tokens).

@@ -8,7 +8,9 @@
 #   1. the file-header block lands at the top of the BUILD;
 #   2. a target's leading comment lands above its cc_library;
 #   3. a codegen genrule's originating add_custom_command comment lands above it;
-#   4. buildifier -mode=diff is a no-op over the emitted BUILD (the comments sit
+#   4. a macro-declared target carries the comment above the macro INVOCATION
+#      (its user-level call site), not the macro body's internal comment;
+#   5. buildifier -mode=diff is a no-op over the emitted BUILD (the comments sit
 #      in canonical positions — the gazelle-roundtrip contract holds).
 #
 # Suppression check: comment-carrying is default-ON, so --emit-source-comments=false
@@ -37,7 +39,7 @@ bin_dir="$repo_root/build/bin"
 mkdir -p "$bin_dir"
 make converter >/dev/null
 
-# (1)-(3) Convert WITH comment-carrying.
+# (1)-(4) Convert WITH comment-carrying.
 "$bin_dir/convert-element-cmake" \
   --source-root "$ws" \
   --emit-source-comments \
@@ -60,7 +62,17 @@ assert_present "Copyright 2026 the comment-carrying authors." "the file-header b
 assert_present "wraps the vendored widget code" "the cc_library leading comment"
 assert_present "Generate the lookup table from the spec" "the codegen genrule leading comment"
 assert_present "the widget core lib" "the cc_library trailing comment"
-echo "ok  meta-cmake-comment-carrying: file header + target (leading+trailing) + codegen comments carried"
+# (4) Macro-declared target: the comment above the INVOCATION carries (leading
+# + trailing), the macro body's internal comment does not.
+assert_present "The gadget lib — declared via the helper macro." "the macro call-site leading comment"
+assert_present "macro-made gadget" "the macro call-site trailing comment"
+if grep -qF -- "inside the macro body" "$ws/BUILD.bazel"; then
+  echo "FAIL: macro BODY comment misattributed to a target: inside the macro body"
+  echo "   --- generated BUILD ---"
+  sed 's/^/   /' "$ws/BUILD.bazel"
+  exit 1
+fi
+echo "ok  meta-cmake-comment-carrying: file header + target (leading+trailing) + codegen + macro call-site comments carried"
 
 # (suppression) Comment-carrying is default-ON (since the "Default-on
 # comment-carrying" flip); --emit-source-comments=false is the opt-out. Convert
@@ -83,7 +95,9 @@ for marker in \
   "Copyright 2026 the comment-carrying authors." \
   "wraps the vendored widget code" \
   "Generate the lookup table from the spec" \
-  "the widget core lib"; do
+  "the widget core lib" \
+  "The gadget lib — declared via the helper macro." \
+  "macro-made gadget"; do
   if grep -qF "$marker" "$ws/BUILD.nocomments"; then
     echo "FAIL: author comment present with --emit-source-comments=false: $marker"
     exit 1
@@ -91,7 +105,7 @@ for marker in \
 done
 echo "ok  meta-cmake-comment-carrying: --emit-source-comments=false suppresses all author comments"
 
-# (4) buildifier -mode=diff must be a no-op (canonical comment placement).
+# (5) buildifier -mode=diff must be a no-op (canonical comment placement).
 if ! command -v buildifier >/dev/null 2>&1; then
   echo "ok  meta-cmake-comment-carrying: buildifier not on PATH, skipping no-op check"
   exit 0

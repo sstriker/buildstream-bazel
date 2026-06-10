@@ -3,7 +3,48 @@ package lower
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
+
+// targetProvenance projects a codemodel target's Backtrace into its
+// declaration-site Provenance (the immediate add_library/add_executable/…
+// frame) plus, when that command ran inside a macro/function expansion,
+// the user-level CallSite: the outermost user-source frame of the same
+// backtrace (the invocation the author actually wrote, where their
+// comment sits). callSite is zero for directly-declared targets — the
+// declaration IS the user's call — and when no backtrace is available.
+func targetProvenance(t *fileapi.Target, cmakeSrc, cmakeBuild string) (decl, callSite ir.Provenance) {
+	if t.Backtrace <= 0 || t.Backtrace >= len(t.BacktraceGraph.Nodes) {
+		return decl, callSite
+	}
+	node := t.BacktraceGraph.Nodes[t.Backtrace]
+	var file, cmd string
+	if node.File >= 0 && node.File < len(t.BacktraceGraph.Files) {
+		file = t.BacktraceGraph.Files[node.File]
+	}
+	if node.Command >= 0 && node.Command < len(t.BacktraceGraph.Commands) {
+		cmd = t.BacktraceGraph.Commands[node.Command]
+	}
+	if file == "" {
+		return decl, callSite
+	}
+	decl = ir.Provenance{
+		File:    reanchorProvenanceFile(file, cmakeSrc, cmakeBuild),
+		Line:    node.Line,
+		Command: cmd,
+	}
+	cfile, cline, ccmd := outermostUserFrame(t.BacktraceGraph, t.Backtrace)
+	if cfile != "" && (cfile != file || cline != node.Line) {
+		callSite = ir.Provenance{
+			File:    reanchorProvenanceFile(cfile, cmakeSrc, cmakeBuild),
+			Line:    cline,
+			Command: ccmd,
+		}
+	}
+	return decl, callSite
+}
 
 // reanchorProvenanceFile re-anchors an absolute file path from
 // the cmake BacktraceGraph to workspace-relative form, matching
