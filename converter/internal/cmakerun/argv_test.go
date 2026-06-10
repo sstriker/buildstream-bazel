@@ -531,3 +531,29 @@ func TestBuildCmakeArgv_OperatorTopLevelIncludesAlone(t *testing.T) {
 		t.Errorf("operator-only TOP_LEVEL_INCLUDES lost: %v", got)
 	}
 }
+
+// The type-suffixed -D spelling (KEY:FILEPATH=…) reaches the same cache
+// variable and must chain identically — same bug class as the bare key.
+func TestBuildCmakeArgv_OperatorTopLevelIncludesTypeSuffixChains(t *testing.T) {
+	got, err := buildCmakeArgv(Options{
+		SourceRoot: "/src",
+		BuildDir:   "/build",
+		BuildType:  "Release",
+		ExtraCacheVars: map[string]string{
+			"CMAKE_PROJECT_TOP_LEVEL_INCLUDES:FILEPATH": "/ops/provider.cmake",
+		},
+	}, "/build/dump-vars.cmake", "", "", "")
+	if err != nil {
+		t.Fatalf("buildCmakeArgv: %v", err)
+	}
+	var tliArgs []string
+	for _, a := range got {
+		if strings.Contains(a, "TOP_LEVEL_INCLUDES") {
+			tliArgs = append(tliArgs, a)
+		}
+	}
+	want := "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=/ops/provider.cmake;/build/dump-vars.cmake"
+	if len(tliArgs) != 1 || tliArgs[0] != want {
+		t.Errorf("type-suffixed operator value should chain: got %v, want [%s]", tliArgs, want)
+	}
+}

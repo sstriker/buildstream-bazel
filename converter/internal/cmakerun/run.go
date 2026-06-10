@@ -524,7 +524,12 @@ func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath, probeGenexPath,
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			if k == "CMAKE_PROJECT_TOP_LEVEL_INCLUDES" {
+			// Match the bare key AND the type-suffixed -D spelling
+			// (`CMAKE_PROJECT_TOP_LEVEL_INCLUDES:FILEPATH=…`) — both reach
+			// the same cache variable, so both must chain rather than be
+			// clobbered by the hooks' -D.
+			if k == "CMAKE_PROJECT_TOP_LEVEL_INCLUDES" ||
+				strings.HasPrefix(k, "CMAKE_PROJECT_TOP_LEVEL_INCLUDES:") {
 				for _, e := range strings.Split(opts.ExtraCacheVars[k], ";") {
 					if e != "" {
 						operatorTopLevelIncludes = append(operatorTopLevelIncludes, e)
