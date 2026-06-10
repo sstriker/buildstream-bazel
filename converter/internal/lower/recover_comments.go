@@ -141,8 +141,12 @@ func recoverTargetComments(pkg *ir.Package, hostSrc string, fileLines func(strin
 // synthesized codegen genrules (which carry no codemodel backtrace) by matching
 // each genrule output basename to its originating trace call (execute_process /
 // add_custom_command / add_custom_target — all carry File/Line + outputs), then
-// stamping Provenance. Best-effort: an unmatched or ambiguous-basename genrule
-// simply gets no comment.
+// stamping Provenance. When the trace recovered the call's user-level
+// invocation (a codegen-wrapping macro/function call — callFile/callLine), the
+// comment scan reads THAT site, so the comment above the wrapper invocation
+// carries instead of the macro body's, and CallSite is stamped alongside
+// Provenance (the breadcrumb then leads with the invocation). Best-effort: an
+// unmatched or ambiguous-basename genrule simply gets no comment.
 func recoverCodegenGenruleComments(pkg *ir.Package, cmakeSrc, cmakeBuild string, fileLines func(string) []string, execProcs []shadow.ExecuteProcessCall, customCmds []shadow.AddCustomCommandCall, customTgts []shadow.AddCustomTargetCall) {
 	siteByBase := buildCodegenSiteIndex(execProcs, customCmds, customTgts)
 	if len(siteByBase) == 0 {
@@ -158,11 +162,15 @@ func recoverCodegenGenruleComments(pkg *ir.Package, cmakeSrc, cmakeBuild string,
 			if !ok || s.file == "" || isCMakeInternalPath(filepath.ToSlash(s.file)) {
 				continue
 			}
-			gls := fileLines(s.file)
-			if lc := cmakeargv.LeadingCommentLines(gls, s.line); len(lc) > 0 {
+			scanFile, scanLine := s.file, s.line
+			if s.callFile != "" && s.callLine > 0 && !isCMakeInternalPath(filepath.ToSlash(s.callFile)) {
+				scanFile, scanLine = s.callFile, s.callLine
+			}
+			gls := fileLines(scanFile)
+			if lc := cmakeargv.LeadingCommentLines(gls, scanLine); len(lc) > 0 {
 				t.LeadingComment = lc
 			}
-			if tc := cmakeargv.TrailingCommentLines(gls, s.line); tc != "" {
+			if tc := cmakeargv.TrailingCommentLines(gls, scanLine); tc != "" {
 				t.TrailingComment = tc
 			}
 			if t.Provenance.IsZero() {
@@ -172,16 +180,31 @@ func recoverCodegenGenruleComments(pkg *ir.Package, cmakeSrc, cmakeBuild string,
 					Command: s.command,
 				}
 			}
+			if t.CallSite.IsZero() && s.callFile != "" && s.callLine > 0 &&
+				(s.callFile != s.file || s.callLine != s.line) {
+				t.CallSite = ir.Provenance{
+					File:    reanchorProvenanceFile(s.callFile, cmakeSrc, cmakeBuild),
+					Line:    s.callLine,
+					Command: s.callCmd,
+				}
+			}
 			break
 		}
 	}
 }
 
-// codegenSite is a trace-call declaration site for a synthesized genrule.
+// codegenSite is a trace-call declaration site for a synthesized genrule,
+// plus the user-level invocation (callFile/callLine/callCmd) when the trace
+// frame stack recovered one — the macro/function call that wrapped the
+// codegen declaration. Empty call fields mean the declaration is
+// user-authored where it stands.
 type codegenSite struct {
-	file    string
-	line    int
-	command string
+	file     string
+	line     int
+	command  string
+	callFile string
+	callLine int
+	callCmd  string
 }
 
 // buildCodegenSiteIndex maps a codegen output's basename to the trace call that
@@ -213,11 +236,13 @@ func buildCodegenSiteIndex(
 	}
 	for _, c := range execProcs {
 		if c.OutputFile != "" {
-			add(c.OutputFile, codegenSite{file: c.File, line: c.Line, command: "execute_process"})
+			add(c.OutputFile, codegenSite{file: c.File, line: c.Line, command: "execute_process",
+				callFile: c.CallFile, callLine: c.CallLine, callCmd: c.CallCmd})
 		}
 	}
 	for _, c := range customCmds {
-		s := codegenSite{file: c.File, line: c.Line, command: "add_custom_command"}
+		s := codegenSite{file: c.File, line: c.Line, command: "add_custom_command",
+			callFile: c.CallFile, callLine: c.CallLine, callCmd: c.CallCmd}
 		for _, o := range c.Outputs {
 			add(o, s)
 		}
@@ -226,7 +251,8 @@ func buildCodegenSiteIndex(
 		}
 	}
 	for _, c := range customTgts {
-		s := codegenSite{file: c.File, line: c.Line, command: "add_custom_target"}
+		s := codegenSite{file: c.File, line: c.Line, command: "add_custom_target",
+			callFile: c.CallFile, callLine: c.CallLine, callCmd: c.CallCmd}
 		for _, o := range c.ByProducts {
 			add(o, s)
 		}

@@ -1051,6 +1051,44 @@ func TestExtractAddLibrary_InvocationCallSiteFromFrameStack(t *testing.T) {
 	}
 }
 
+// TestDecode_CodegenCallSiteFromFrameStack pins the frame-stack recovery of
+// the user-level invocation for codegen calls: a macro-wrapped
+// add_custom_command / add_custom_target / execute_process records the
+// wrapper invocation's file:line+command, while one at the top level of an
+// include()d file records nothing (inclusions are scope changes).
+func TestDecode_CodegenCallSiteFromFrameStack(t *testing.T) {
+	trace := []byte(
+		// Macro-wrapped pair: invocation at frame 1, bodies at frame 2.
+		`{"args":["lut"],"cmd":"gen_lut","file":"/src/CMakeLists.txt","frame":1,"line":9}` + "\n" +
+			`{"args":["OUTPUT","/b/lut.h","COMMAND","gen"],"cmd":"add_custom_command","file":"/src/cmake/codegen.cmake","frame":2,"line":3}` + "\n" +
+			`{"args":["gen_lut_tgt","DEPENDS","/b/lut.h"],"cmd":"add_custom_target","file":"/src/cmake/codegen.cmake","frame":2,"line":7}` + "\n" +
+			`{"args":["COMMAND","tool","OUTPUT_FILE","/b/probe.txt"],"cmd":"execute_process","file":"/src/cmake/codegen.cmake","frame":2,"line":11}` + "\n" +
+			// include()d-file top-level codegen: no call site.
+			`{"args":["cmake/tables.cmake"],"cmd":"include","file":"/src/CMakeLists.txt","frame":1,"line":12}` + "\n" +
+			`{"args":["OUTPUT","/b/t2.h","COMMAND","gen"],"cmd":"add_custom_command","file":"/src/cmake/tables.cmake","frame":2,"line":2}` + "\n",
+	)
+	d := Decode(trace, "/src", nil)
+	if len(d.AddCustomCommands) != 2 || len(d.AddCustomTargets) != 1 || len(d.ExecuteProcesses) != 1 {
+		t.Fatalf("decoded counts = %d cmds / %d tgts / %d procs; want 2/1/1",
+			len(d.AddCustomCommands), len(d.AddCustomTargets), len(d.ExecuteProcesses))
+	}
+	if c := d.AddCustomCommands[0]; c.CallFile != "/src/CMakeLists.txt" || c.CallLine != 9 || c.CallCmd != "gen_lut" {
+		t.Errorf("macro-wrapped add_custom_command call site = %q:%d (%q); want /src/CMakeLists.txt:9 (gen_lut)",
+			c.CallFile, c.CallLine, c.CallCmd)
+	}
+	if c := d.AddCustomTargets[0]; c.CallFile != "/src/CMakeLists.txt" || c.CallLine != 9 || c.CallCmd != "gen_lut" {
+		t.Errorf("macro-wrapped add_custom_target call site = %q:%d (%q); want /src/CMakeLists.txt:9 (gen_lut)",
+			c.CallFile, c.CallLine, c.CallCmd)
+	}
+	if c := d.ExecuteProcesses[0]; c.CallFile != "/src/CMakeLists.txt" || c.CallLine != 9 || c.CallCmd != "gen_lut" {
+		t.Errorf("macro-wrapped execute_process call site = %q:%d (%q); want /src/CMakeLists.txt:9 (gen_lut)",
+			c.CallFile, c.CallLine, c.CallCmd)
+	}
+	if c := d.AddCustomCommands[1]; c.CallFile != "" || c.CallLine != 0 {
+		t.Errorf("include()d-file add_custom_command call site = %q:%d; want none", c.CallFile, c.CallLine)
+	}
+}
+
 // TestDecode_IncludeDirectories records directory-scoped include_directories()
 // calls (the private-include signal), dropping the AFTER/BEFORE/SYSTEM keywords
 // and skipping calls outside the source tree.

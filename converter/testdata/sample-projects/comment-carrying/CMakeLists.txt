@@ -29,6 +29,20 @@ include(cmake/iface_helpers.cmake)
 # The gizmo interface lib — declared via the helper function.
 add_iface_lib(gizmo)  # trace-synth gizmo
 
+# Macro wrapping a codegen pair (command + driver target) — the comment on
+# the invocation below must carry to the synthesized genrule.
+macro(gen_lut name)
+  # inside the codegen macro
+  add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${name}.h
+    COMMAND ${CMAKE_COMMAND} -E echo "// generated lut" > ${CMAKE_CURRENT_BINARY_DIR}/${name}.h
+    VERBATIM)
+  add_custom_target(gen_${name} DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/${name}.h)
+endmacro()
+
+# Generate the LUT — wrapped in the codegen macro.
+gen_lut(lut)  # macro-made lut
+
 # Generate the lookup table from the spec.
 add_custom_command(
   OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/table.h

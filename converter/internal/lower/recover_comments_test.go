@@ -192,6 +192,50 @@ func TestRecoverSourceComments_CodegenGenrule(t *testing.T) {
 	}
 }
 
+// TestRecoverSourceComments_CodegenGenrule_MacroCallSite: a genrule whose
+// add_custom_command ran inside a macro body carries the comment above the
+// macro INVOCATION (the trace-recovered call site), not the body's; the
+// genrule is stamped with Provenance (the body line) and CallSite (the
+// invocation) so the breadcrumb leads with the invocation too.
+func TestRecoverSourceComments_CodegenGenrule_MacroCallSite(t *testing.T) {
+	dir := t.TempDir()
+	cml := filepath.Join(dir, "CMakeLists.txt")
+	body := "macro(make_table out)\n" + // 1
+		"  # codegen inside the macro\n" + // 2
+		"  add_custom_command(OUTPUT ${out} COMMAND gen)\n" + // 3 (body: Provenance)
+		"endmacro()\n" + // 4
+		"\n" + // 5
+		"# Build the LUT via the helper macro.\n" + // 6 leading for the call (line 7)
+		"make_table(gen/tables.inc)  # lut genrule\n" // 7 (invocation: CallSite)
+	if err := os.WriteFile(cml, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pkg := &ir.Package{Targets: []ir.Target{{
+		Name:        "gen_tables",
+		Kind:        ir.KindGenrule,
+		GenruleOuts: []string{"sub/gen/tables.inc"},
+	}}}
+	cmds := []shadow.AddCustomCommandCall{{
+		File: cml, Line: 3, Outputs: []string{"gen/tables.inc"},
+		CallFile: cml, CallLine: 7, CallCmd: "make_table",
+	}}
+
+	recoverSourceComments(pkg, dir, dir, "", nil, cmds, nil)
+
+	if got := pkg.Targets[0].LeadingComment; len(got) != 1 || got[0] != "# Build the LUT via the helper macro." {
+		t.Errorf("genrule leading comment = %q, want the call-site comment", got)
+	}
+	if got := pkg.Targets[0].TrailingComment; got != "# lut genrule" {
+		t.Errorf("genrule trailing comment = %q, want %q", got, "# lut genrule")
+	}
+	if p := pkg.Targets[0].Provenance; p.Line != 3 || p.Command != "add_custom_command" {
+		t.Errorf("genrule provenance = %+v, want line 3 add_custom_command", p)
+	}
+	if c := pkg.Targets[0].CallSite; c.Line != 7 || c.Command != "make_table" {
+		t.Errorf("genrule call site = %+v, want line 7 make_table", c)
+	}
+}
+
 // TestBuildCodegenSiteIndex_AmbiguousDropped: a basename produced by two
 // different sites is dropped rather than misattributed.
 func TestBuildCodegenSiteIndex_AmbiguousDropped(t *testing.T) {
