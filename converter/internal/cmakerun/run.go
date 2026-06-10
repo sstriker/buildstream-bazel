@@ -257,6 +257,25 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	if opts.SourceRoot == "" || opts.BuildDir == "" {
 		return Reply{}, fmt.Errorf("cmakerun: SourceRoot and BuildDir required")
 	}
+	// The configure runs with cwd = BuildDir (see runOnce), so every
+	// caller-relative path handed to the cmake child must absolutize
+	// against the CALLER's cwd first. TracePath is doubly sensitive: the
+	// child would write the trace under BuildDir while the Go reader
+	// resolves the same relative path against the converter's cwd — the
+	// trace reads back empty and every trace-driven recovery silently
+	// degrades. PrefixDir rides CMAKE_PREFIX_PATH, which the child also
+	// resolves against ITS cwd. (ToolchainCMakeFile is already Abs'd in
+	// buildCmakeArgv.)
+	for _, p := range []*string{&opts.SourceRoot, &opts.BuildDir, &opts.TracePath, &opts.PrefixDir} {
+		if *p == "" {
+			continue
+		}
+		abs, err := filepath.Abs(*p)
+		if err != nil {
+			return Reply{}, fmt.Errorf("cmakerun: absolutize %q: %w", *p, err)
+		}
+		*p = abs
+	}
 	if opts.BuildType == "" && len(opts.BuildTypes) == 0 {
 		opts.BuildType = "Release"
 	}
@@ -354,6 +373,14 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	// configure emits thousands of lines.
 	runOnce := func(extraEnv ...string) ([]byte, error) {
 		cmd := exec.CommandContext(ctx, "cmake", argv...)
+		// Run the configure with cwd = the build dir — the canonical
+		// `cd build && cmake ..` contract. execute_process's default
+		// WORKING_DIRECTORY is the cmake PROCESS's cwd, so cwd-writing
+		// generators (bison, tar without -C) land their outputs in the
+		// build tree instead of polluting whatever directory the
+		// converter was invoked from; the relative-operand anchoring in
+		// the execute_process lifts already assumes this contract.
+		cmd.Dir = opts.BuildDir
 		stderrTail := &boundedBuffer{limit: 16 * 1024}
 		cmd.Stdout = opts.Stdout
 		if opts.Stderr != nil {
