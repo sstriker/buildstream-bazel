@@ -633,18 +633,23 @@ trees, optional-feature deps, codegen instances). Each member's
 
 - **PCH forced-include lift — fidelity residue.** The lift (shipped: cmake's
   `target_precompile_headers` forced-include semantics expand into ordered
-  `-include` copts, incl. REUSE_FROM; gate `scripts/meta-cmake-pch.sh`) has two
-  documented v1 residues to revisit if a corpus member trips on them: (1)
-  cmake's generated cmake_pch header carries `#pragma GCC system_header`, so
-  warnings INSIDE declared PCH headers are suppressed under cmake but can fire
-  under the direct `-include` (a `-Werror` project could break — the fallback
-  is materializing a literal mirror of cmake_pch.h[xx] and force-including
-  that one file); (2) a per-config-VARYING PCH list rides the primary
-  configuration's view — the multi-config fold strips the per-config
-  `cmake_pch` arm tokens (`filterPCHCoptArm`) rather than re-expanding the
-  list per `//config:*` arm. Also pending: the next sdl survey/lens pass
-  should show the 223-TU `missing_in_bazel: ["-include"]` copt mismatch
-  collapse (the lift's corpus-level acceptance signal).
+  `-include` copts, incl. REUSE_FROM; gate `scripts/meta-cmake-pch.sh`;
+  corpus acceptance verified — the sdl build+compile-db lens re-run went
+  build `ok` with the prior 223-TU `missing_in_bazel: ["-include"]` copt
+  mismatch collapsed to ZERO mismatches) has three documented v1 residues to
+  revisit if a corpus member trips on them: (1) cmake's generated cmake_pch
+  header carries `#pragma GCC system_header`, so warnings INSIDE declared PCH
+  headers are suppressed under cmake but can fire under the direct `-include`
+  (a `-Werror` project could break — the fallback is materializing a literal
+  mirror of cmake_pch.h[xx] and force-including that one file); (2) a
+  per-config-VARYING PCH list rides the primary configuration's view — the
+  multi-config fold strips the per-config `cmake_pch` arm tokens
+  (`filterPCHCoptArm`) rather than re-expanding the list per `//config:*`
+  arm; (3) the expanded pairs append at the tail of copts rather than the
+  cmake_pch `-include`'s original compile-line position, so a target that
+  ALSO adds its own non-PCH forced include sees a different forced-include
+  processing order than under cmake (matters only when one forced header
+  depends on the other's macros).
 
 - **Genrule command-rewrite token-replace consolidation (deferred from the
   2026-06-08 refactoring audit).** `replaceBareToken` (genrule.go) and

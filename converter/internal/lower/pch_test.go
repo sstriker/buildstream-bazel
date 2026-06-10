@@ -119,7 +119,10 @@ func TestLowerTarget_PCH_ForcedIncludeLift(t *testing.T) {
 // the owning target from the fragment's CMakeFiles/<owner>.dir segment and
 // expand the OWNER's declared list — plus stage the source-tree headers the
 // consumer doesn't carry in its own Sources, and tag it (before the lift
-// this shape lost its forced include silently, with no tag at all).
+// this shape lost its forced include silently, with no tag at all). The
+// staging slot is SRCS, not hdrs: the header is a compile input of this
+// rule's own TUs only, and hdrs would export it to dependents (the
+// include-over-grant shape).
 func TestLowerTarget_PCH_ReuseFromConsumer(t *testing.T) {
 	pkg, err := ToIR(pchReply(), &ninja.Graph{}, Options{})
 	if err != nil {
@@ -136,8 +139,11 @@ func TestLowerTarget_PCH_ReuseFromConsumer(t *testing.T) {
 	if !stringSliceContains(user.Tags, "cmake-codegen-pch") {
 		t.Errorf("REUSE_FROM consumer should carry the PCH tag; got %v", user.Tags)
 	}
-	if !stringSliceContains(user.Hdrs, "pch.h") {
-		t.Errorf("owner's source-tree PCH header not staged on consumer: %v", user.Hdrs)
+	if !stringSliceContains(user.Srcs, "pch.h") {
+		t.Errorf("owner's source-tree PCH header not staged into consumer srcs: %v", user.Srcs)
+	}
+	if stringSliceContains(user.Hdrs, "pch.h") {
+		t.Errorf("staged PCH header must not be exported via hdrs: %v", user.Hdrs)
 	}
 }
 

@@ -3048,7 +3048,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		// PCH forced-include lift: expand the cmake_pch artifacts the
 		// fragment split withheld into the declared headers' ordered
 		// `-include` copts, staging + tagging as needed (see pch.go).
-		copts, irt.Hdrs = pchCtx.apply(pchArtifacts, cg, copts, irt.Hdrs, irt)
+		copts, irt.Srcs = pchCtx.apply(pchArtifacts, cg, copts, irt.Srcs, irt.Hdrs, irt)
 		irt.Copts = copts
 
 		for _, d := range cg.Defines {
@@ -4809,7 +4809,7 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		// language picks up ITS cmake_pch.h/.hxx expansion, the staged
 		// source-tree headers land on the sub where its compile runs, and
 		// the user-visible wrapper gets the tag.
-		copts, subHdrs = pchCtx.apply(pchArtifacts, cg, copts, subHdrs, irt)
+		copts, subSrcs = pchCtx.apply(pchArtifacts, cg, copts, subSrcs, subHdrs, irt)
 
 		subName := irt.Name + "_" + langSuffix(cg.Language)
 		if langCount[cg.Language] > 1 {

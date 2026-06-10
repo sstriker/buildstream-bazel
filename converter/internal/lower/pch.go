@@ -107,24 +107,30 @@ func (c pchLiftCtx) forcedIncludeCopts(artifacts []string, cg fileapi.CompileGro
 // apply is the rule-level application of the lift, shared by lowerTarget's
 // main compile-group path and splitCompileGroups' per-language subs: expand
 // the withheld artifacts into forced-include copts, stage the expansion's
-// source-tree headers into the rule's hdrs (append-if-missing — the
-// declaring target already carries them via t.Sources; a REUSE_FROM
-// consumer doesn't), and tag the user-visible target. The tag matters
+// source-tree headers, and tag the user-visible target. The tag matters
 // especially for the REUSE_FROM shape, whose codemodel PrecompileHeaders is
 // null — without the artifact-driven tag it would lose its PCH silently.
+//
+// Staging slot: headers not already present land in SRCS, not hdrs — they
+// are compile inputs of this rule's own TUs only (the forced include), and
+// hdrs would export them to dependents, the include-over-grant shape the
+// emit-side `cmake-include-over-grant` warning exists to flag. In practice
+// the append only fires for REUSE_FROM consumers: a declaring target
+// already carries its PCH headers in hdrs via the t.Sources walk (cmake
+// lists them in the target's sources), which the dedup honors.
 func (c pchLiftCtx) apply(artifacts []string, cg fileapi.CompileGroup,
-	copts, hdrs []string, irt *ir.Target) (newCopts, newHdrs []string) {
+	copts, srcs, hdrs []string, irt *ir.Target) (newCopts, newSrcs []string) {
 	pchCopts, pchHdrs := c.forcedIncludeCopts(artifacts, cg)
 	copts = append(copts, pchCopts...)
 	for _, h := range pchHdrs {
-		if !stringSliceContains(hdrs, h) {
-			hdrs = append(hdrs, h)
+		if !stringSliceContains(srcs, h) && !stringSliceContains(hdrs, h) {
+			srcs = append(srcs, h)
 		}
 	}
 	if len(artifacts) > 0 && !stringSliceContains(irt.Tags, "cmake-codegen-pch") {
 		irt.Tags = append(irt.Tags, "cmake-codegen-pch")
 	}
-	return copts, hdrs
+	return copts, srcs
 }
 
 // pchArtifactOwner extracts the owning target name from a cmake_pch artifact

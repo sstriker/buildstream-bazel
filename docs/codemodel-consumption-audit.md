@@ -233,9 +233,15 @@ finding keep that residual auditable; the operator pattern lives in
 Known fidelity residue of the lift itself: cmake's generated PCH
 header carries `#pragma GCC system_header`, so warnings *inside* PCH
 headers are suppressed under cmake but can fire under the direct
-`-include`; and a per-config-varying PCH list rides the primary
+`-include`; a per-config-varying PCH list rides the primary
 configuration's view (the multi-config fold strips the per-config
-`cmake_pch` tokens rather than re-expanding per arm).
+`cmake_pch` tokens rather than re-expanding per arm); and the
+expanded pairs are appended at the tail of copts, whereas cmake puts
+the `cmake_pch` `-include` at its original position on the compile
+line — so a target that ALSO adds its own non-PCH forced include
+sees a different forced-include processing order than under cmake
+(forced includes are processed in command-line order; only matters
+when one forced header depends on the other's macros).
 
 ## The other File API object kinds
 
