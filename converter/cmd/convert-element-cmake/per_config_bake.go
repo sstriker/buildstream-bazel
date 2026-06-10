@@ -1,9 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -78,13 +78,19 @@ func runPerConfigBakes(ctx context.Context, a cli.Args, hostBuildDir string, tra
 	// projects, a full cold configure each). Wall cost drops from sum to
 	// max. Any failure degrades the WHOLE feature to the pass-1 body, same
 	// contract as the serial form.
+	// Each configure's output is buffered per config (concurrent streaming
+	// to stderr would interleave into garbage) and dumped ONLY on failure —
+	// success stays silent, failure keeps cmake's own diagnostic alongside
+	// the Go-level error.
 	type cfgResult struct {
 		cfg string
 		err error
+		out bytes.Buffer
 	}
 	results := make([]cfgResult, len(a.BuildTypes))
 	var wg sync.WaitGroup
 	for i, cfg := range a.BuildTypes {
+		results[i].cfg = cfg
 		wg.Add(1)
 		go func(i int, cfg string) {
 			defer wg.Done()
@@ -95,16 +101,17 @@ func runPerConfigBakes(ctx context.Context, a cli.Args, hostBuildDir string, tra
 				ToolchainCMakeFile: a.ToolchainCMakeFile,
 				BuildType:          cfg,
 				ExtraCacheVars:     cmakeDefinesToMap(a.CmakeDefines),
-				Stdout:             io.Discard,
-				Stderr:             io.Discard,
+				Stdout:             &results[i].out,
+				Stderr:             &results[i].out,
 			})
-			results[i] = cfgResult{cfg: cfg, err: cfgErr}
+			results[i].err = cfgErr
 		}(i, cfg)
 	}
 	wg.Wait()
-	for _, r := range results {
-		if r.err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: per-config configure (%s) failed (%v); keeping the multi-config body for all arms.\n", r.cfg, r.err)
+	for i := range results {
+		if results[i].err != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: per-config configure (%s) failed (%v); keeping the multi-config body for all arms. cmake output:\n", results[i].cfg, results[i].err)
+			_, _ = os.Stderr.Write(results[i].out.Bytes())
 			return
 		}
 	}

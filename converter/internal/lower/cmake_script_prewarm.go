@@ -66,6 +66,53 @@ type scriptBakeCandidate struct {
 	workDir string
 }
 
+// scriptBakeWaves computes each candidate's dependency wave: the memoized
+// longest producer-path level (0 = no candidate-produced inputs). Memoized
+// per node — a shared visited-set would UNDER-level diamond graphs (a node
+// reached first through a sibling's walk would re-report level 0, letting a
+// consumer land in its own producer's wave: P consuming both X and Q(X)
+// must sit one past Q, not tie it). A separate on-stack set guards the
+// defensive cycle case (impossible in a valid ninja graph).
+func scriptBakeWaves(cands []scriptBakeCandidate, producedBy map[string]int) []int {
+	levels := make([]int, len(cands))
+	for i := range levels {
+		levels[i] = -1
+	}
+	onStack := make([]bool, len(cands))
+	var levelOf func(i int) int
+	levelOf = func(i int) int {
+		if levels[i] >= 0 {
+			return levels[i]
+		}
+		if onStack[i] {
+			return 0
+		}
+		onStack[i] = true
+		lvl := 0
+		for _, in := range cands[i].b.Inputs {
+			if p, ok := producedBy[in]; ok && p != i {
+				if l := levelOf(p) + 1; l > lvl {
+					lvl = l
+				}
+			}
+		}
+		for _, in := range cands[i].b.ImplicitInputs {
+			if p, ok := producedBy[in]; ok && p != i {
+				if l := levelOf(p) + 1; l > lvl {
+					lvl = l
+				}
+			}
+		}
+		onStack[i] = false
+		levels[i] = lvl
+		return lvl
+	}
+	for i := range cands {
+		levelOf(i)
+	}
+	return levels
+}
+
 // prewarmScriptBakes scans g for bakeable cmake -P custom commands and
 // executes them in dependency waves with a bounded pool, filling
 // cc.ScriptBakeRuns. No-op without a real build dir, a cmake binary, or
@@ -74,7 +121,14 @@ func prewarmScriptBakes(cc *codegenContext, g *ninja.Graph, buildDir string) {
 	if g == nil || buildDir == "" || cc.CMakeBinary == "" {
 		return
 	}
-	// Collect candidates + index their outputs for the wave edges.
+	// Collect candidates + index their outputs for the wave edges. The
+	// genruleOuts gate mirrors the serial bake's own pre-exec bail so the
+	// pre-warm never executes a script the serial path wouldn't. One
+	// deliberate over-execution remains: a script that a native recognizer
+	// (cc_embed / cc_hash) intercepts ahead of the bake never execs
+	// serially, but the pre-warm can't know the recognizer outcome up
+	// front and runs it anyway — wasted (idempotent) subprocess work when
+	// both opt-ins overlap, accepted for the parallel win.
 	var cands []scriptBakeCandidate
 	producedBy := map[string]int{} // output path -> index into cands
 	for _, b := range g.Builds {
@@ -87,6 +141,9 @@ func prewarmScriptBakes(cc *codegenContext, g *ninja.Graph, buildDir string) {
 		}
 		script := extractCmakeScriptPath(cmd)
 		if script == "" {
+			continue
+		}
+		if len(genruleOuts(b, buildDir)) == 0 {
 			continue
 		}
 		var workDir string
@@ -110,28 +167,11 @@ func prewarmScriptBakes(cc *codegenContext, g *ninja.Graph, buildDir string) {
 	// Wave assignment: a candidate consuming another candidate's output
 	// runs strictly after it (longest-path level — the libpng chain
 	// serializes; the VTK fan-out all lands in wave 0).
-	wave := make([]int, len(cands))
-	var levelOf func(i int, seen map[int]bool) int
-	levelOf = func(i int, seen map[int]bool) int {
-		if seen[i] {
-			return 0 // defensive: a cycle can't occur in a valid ninja graph
-		}
-		seen[i] = true
-		lvl := 0
-		for _, in := range append(append([]string(nil), cands[i].b.Inputs...), cands[i].b.ImplicitInputs...) {
-			if p, ok := producedBy[in]; ok && p != i {
-				if l := levelOf(p, seen) + 1; l > lvl {
-					lvl = l
-				}
-			}
-		}
-		return lvl
-	}
+	wave := scriptBakeWaves(cands, producedBy)
 	maxWave := 0
-	for i := range cands {
-		wave[i] = levelOf(i, map[int]bool{})
-		if wave[i] > maxWave {
-			maxWave = wave[i]
+	for _, w := range wave {
+		if w > maxWave {
+			maxWave = w
 		}
 	}
 	if cc.ScriptBakeRuns == nil {

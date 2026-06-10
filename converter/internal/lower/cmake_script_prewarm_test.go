@@ -46,3 +46,32 @@ func TestPrewarmScriptBakes_WavesAndCache(t *testing.T) {
 		}
 	}
 }
+
+// scriptBakeWaves must compute MEMOIZED longest-path levels: a shared
+// visited-set would under-level diamond graphs, letting a consumer land in
+// its own producer's wave (the review's counterexample: chain Z→Y→X with
+// Q(X) and P(X, Q) — a shared seen-set gives P level 3, tying Q; the true
+// level is 4).
+func TestScriptBakeWaves_DiamondLevels(t *testing.T) {
+	mk := func(out string, ins ...string) scriptBakeCandidate {
+		return scriptBakeCandidate{b: &ninja.Build{Outputs: []string{out}, Inputs: ins}}
+	}
+	cands := []scriptBakeCandidate{
+		mk("z"),           // 0: level 0
+		mk("y", "z"),      // 1: level 1
+		mk("x", "y"),      // 2: level 2
+		mk("q", "x"),      // 3: level 3
+		mk("p", "x", "q"), // 4: level 4 — must sit strictly past Q
+	}
+	producedBy := map[string]int{"z": 0, "y": 1, "x": 2, "q": 3, "p": 4}
+	got := scriptBakeWaves(cands, producedBy)
+	want := []int{0, 1, 2, 3, 4}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("cand %d (%v): wave %d, want %d (full: %v)", i, cands[i].b.Outputs, got[i], want[i], got)
+		}
+	}
+	if got[4] <= got[3] {
+		t.Errorf("consumer P (wave %d) must run strictly after its producer Q (wave %d)", got[4], got[3])
+	}
+}
