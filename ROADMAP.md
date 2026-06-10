@@ -13,17 +13,31 @@ transition cleanly.
   the code-complexity axis `go vet` / `gofmt` / `staticcheck` don't cover. The
   soft-launch burndown reached green (launch flagged 55) and the CI step is now
   **blocking** — every function is held to the thresholds, so new complexity
-  regressions fail the build. Six functions remain genuinely over threshold and
-  carry documented `//nolint` directives (keyed to this item) so the gate can
-  stay green: `lower.lowerTarget` (cognitive **754** / cyclomatic 322 — the
-  outlier), `convert-element-cmake`'s `run` (247/152), `lower.ToIR` (194/110),
-  `emit/bazel` `planSplit` (167/85) / `rewriteTarget` (107/69), and `write-a`
-  `main` (105/87). **What's left:** break each down via behavior-preserving
-  extraction of cohesive sub-passes into helpers (the established pattern —
-  `lowerTarget`'s link-fragment attribution / compile-group lowering /
-  generated-source handling are the obvious sub-passes), then **remove its
-  `//nolint`** so it gates like the rest. Tune thresholds in `.golangci.yml` if
-  a class proves low-yield.
+  regressions fail the build. Three functions remain genuinely over threshold
+  and carry documented `//nolint` directives (keyed to this item) so the gate
+  can stay green: `lower.lowerTarget` (cognitive **754** / cyclomatic 322 — the
+  outlier), `convert-element-cmake`'s `run` (247/152), and `lower.ToIR`
+  (194/110). (`emit/bazel`'s `planSplit` / `rewriteTarget` and `write-a`'s
+  `main` are done — extracted and de-nolinted.) **What's left:** break each
+  down via behavior-preserving extraction of cohesive sub-passes into helpers
+  (the established pattern — `lowerTarget`'s link-fragment attribution /
+  compile-group lowering / generated-source handling are the obvious
+  sub-passes), then **remove its `//nolint`** so it gates like the rest. Tune
+  thresholds in `.golangci.yml` if a class proves low-yield.
+
+- **`meta-cmake-cross-package-target-file` gate fails latently (predates
+  #550).** The consumer element's lifted file(GENERATE) is expected to carry
+  `--target-file=producer::producer="$(location //elements/producer:producer)"`
+  (the manifest-resolved cross-package `$<TARGET_FILE>` lift, tag
+  `cmake-codegen-genex-resolved`), but the conversion now takes the bake tier
+  instead — `gen_tool_path_h` bakes with "genex evaluator declined" and embeds
+  the convert-time absolute artifact path (`#define PRODUCER_ARTIFACT
+  "/tmp/…/libproducer.a"`). Reproduced identically on unmodified `main` and at
+  the pre-#550 merge base, so the regression is older; the gate isn't in CI's
+  `RENDER_GATES` aggregate, which is how it rotted silently. Needs a bisect to
+  the breaking change in the resolved-lift path (manifest lookup → genex
+  evaluation → `--target-file` emission), then wire the gate into
+  `RENDER_GATES` so it can't rot again.
 
 - **CI baseline.** A handful of e2e jobs (`cmake + bwrap`,
   `bazel build downstream`) fail intermittently for environment reasons
