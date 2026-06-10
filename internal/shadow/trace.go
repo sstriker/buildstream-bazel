@@ -22,6 +22,14 @@ type TraceEvent struct {
 	// that physically executes in an include()d/function-wrapper module
 	// (e.g. abseil's add_library inside the absl_cc_library function).
 	Frame int `json:"frame"`
+	// Defer is cmake's deferred-call id ("__0", "__1", …) when this event
+	// is the EXECUTION of a call scheduled via cmake_language(DEFER CALL …);
+	// empty for ordinary events (cmake emits `"defer": null`). A deferred
+	// event keeps the REGISTRATION site's file/line, so commands that
+	// resolve relative paths against the executing directory scope (a
+	// relative configure_file output) need the registration's DEFER
+	// DIRECTORY to anchor correctly — see deferDirectoryIndex.
+	Defer string `json:"defer"`
 }
 
 // ParseTrace walks the cmake --trace-format=json-v1 stream once and

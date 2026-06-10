@@ -1038,3 +1038,50 @@ func TestDecode_IncludeDirectories(t *testing.T) {
 		t.Errorf("call[1] Dirs = %v; want [thirdparty/inc] (AFTER/SYSTEM dropped)", got.Dirs)
 	}
 }
+
+// traceDeferDirectory holds a cmake_language(DEFER DIRECTORY <dir> CALL
+// configure_file …) registration plus its deferred EXECUTION event: cmake
+// re-reports the registration's file/line on the execution event and marks
+// it with a defer id. A sibling plain-DEFER (no DIRECTORY) pair confirms
+// DeferDir stays empty when the call executes in its own directory's scope.
+const traceDeferDirectory = `{"args":["DEFER","DIRECTORY","/src","CALL","configure_file","/src/sub/cfg.h.in","cfg.h"],"cmd":"cmake_language","file":"/src/sub/CMakeLists.txt","line":4,"frame":1}
+{"args":["/src/sub/cfg.h.in","cfg.h"],"cmd":"configure_file","file":"/src/sub/CMakeLists.txt","line":4,"frame":1,"defer":"__0"}
+{"args":["DEFER","CALL","configure_file","/src/sub/own.h.in","own.h"],"cmd":"cmake_language","file":"/src/sub/CMakeLists.txt","line":9,"frame":1}
+{"args":["/src/sub/own.h.in","own.h"],"cmd":"configure_file","file":"/src/sub/CMakeLists.txt","line":9,"frame":1,"defer":"__1"}
+`
+
+func TestExtractConfigureFiles_DeferDirectory(t *testing.T) {
+	got := ExtractConfigureFiles([]byte(traceDeferDirectory), "/src")
+	if len(got) != 2 {
+		t.Fatalf("want 2 configure_file calls; got %d (%+v)", len(got), got)
+	}
+	byOut := map[string]ConfigureFileCall{}
+	for _, c := range got {
+		byOut[c.Output] = c
+	}
+	if c := byOut["cfg.h"]; c.DeferDir != "/src" {
+		t.Errorf("DEFER DIRECTORY call: DeferDir = %q, want /src (%+v)", c.DeferDir, c)
+	}
+	if c := byOut["own.h"]; c.DeferDir != "" {
+		t.Errorf("plain DEFER call: DeferDir = %q, want empty (own-scope execution anchors normally)", c.DeferDir)
+	}
+}
+
+func TestDecode_DeferDirectoryOnConfigFiles(t *testing.T) {
+	d := Decode([]byte(traceDeferDirectory), "/src", nil)
+	if len(d.ConfigFiles) != 2 {
+		t.Fatalf("want 2 ConfigFiles; got %d (%+v)", len(d.ConfigFiles), d.ConfigFiles)
+	}
+	var sawDeferred bool
+	for _, c := range d.ConfigFiles {
+		if c.Output == "cfg.h" {
+			sawDeferred = true
+			if c.DeferDir != "/src" {
+				t.Errorf("Decode ConfigFiles DeferDir = %q, want /src", c.DeferDir)
+			}
+		}
+	}
+	if !sawDeferred {
+		t.Errorf("deferred configure_file missing from Decode output: %+v", d.ConfigFiles)
+	}
+}

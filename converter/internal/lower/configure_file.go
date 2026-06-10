@@ -94,6 +94,23 @@ func dirScopeRel(callFile, recordedSrcDir string, dirScopes []string) (string, b
 	return best, bestLen >= 0
 }
 
+// deferAnchorRel resolves the directory scope a cmake_language(DEFER
+// DIRECTORY <dir> CALL configure_file …) call's relative Output anchors
+// against: the DEFERRED-TO directory, source-relative. cmake executes the
+// deferred call at <dir>'s scope end with <dir>'s CMAKE_CURRENT_BINARY_DIR,
+// so the registration site's scope (what dirScopeRel computes from CallFile)
+// is the WRONG anchor — without this the output lands at a path cmake never
+// wrote and the recovery silently drops a generated file consumers #include.
+// Returns ("", false) for ordinary calls (empty deferDir — the overwhelmingly
+// common case) and for a deferDir outside the source root, so the caller
+// falls through to the normal CallFile-scope anchoring.
+func deferAnchorRel(deferDir, recordedSrcDir string) (string, bool) {
+	if deferDir == "" || recordedSrcDir == "" {
+		return "", false
+	}
+	return relativeIfInside(recordedSrcDir, deferDir)
+}
+
 // recoverConfigureFilesFromCalls is the same logic as
 // recoverConfigureFiles but takes pre-decoded ConfigureFileCall
 // records. Used by Lower's single-pass trace dispatch so the
@@ -136,7 +153,10 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 			// itself (unchanged behavior), and for an include()d module it's
 			// the includer's scope. Falls back to dir(CallFile) when no scope
 			// matches (offline runs without codemodel directories).
-			relDir, ok := dirScopeRel(call.CallFile, recordedSrcDir, dirScopes)
+			relDir, ok := deferAnchorRel(call.DeferDir, recordedSrcDir)
+			if !ok {
+				relDir, ok = dirScopeRel(call.CallFile, recordedSrcDir, dirScopes)
+			}
 			if !ok {
 				var inside bool
 				relDir, inside = relativeIfInside(recordedSrcDir, filepath.Dir(call.CallFile))
