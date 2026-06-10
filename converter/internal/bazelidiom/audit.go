@@ -168,7 +168,7 @@ func auditNonCCLanguageSources(rule, target string, call *build.CallExpr) []Find
 		Target: target,
 		Code:   "non-cc-language-source",
 		Message: rule + " has Fortran source(s) in srcs (e.g. " + sample + more +
-			") — Bazel's cc rules compile by file extension and can't build these. The converter normally partitions Fortran sources out into a `<target>_fortran_srcs` filegroup (tag cmake-codegen-fortran-target) so the cc_* target stays buildable; a finding here means some Fortran source slipped through (or the partition was disabled). Point a Fortran ruleset (rules_fortran / CcInfo-interop / rules_foreign_cc) at the filegroup, or fix the partition",
+			") — Bazel's cc rules compile by file extension and can't build these. The converter normally retags a Fortran target to a fortran_library (//rules:fortran.bzl, which drives the cc toolchain's own gfortran driver) and a mixed C+Fortran target gains a private `<name>_fortran` sibling the cc_* target deps on; a finding here means some Fortran source slipped through that retag. Fix the retag (lower's retagFortranTargets), or hand-route the source to a fortran_library",
 	}}
 }
 
@@ -209,8 +209,13 @@ func codegenTagToFinding(tag string) (code, msg string) {
 		return "pch-toolchain-feature-needed",
 			"target declares target_precompile_headers — Bazel cc_library has no native PCH attribute; wire via cc_toolchain pch feature for the actual PCH effect"
 	case tag == "cmake-codegen-fortran-target":
-		return "fortran-target-needs-ruleset",
-			"target had Fortran sources the converter partitioned into a `<name>_fortran_srcs` filegroup (Bazel cc rules can't compile Fortran). The cc_* target builds without them; to actually compile the Fortran, point a Fortran ruleset (rules_fortran / CcInfo-interop / rules_foreign_cc) at the filegroup. No canonical BCR Fortran ruleset exists yet, so this stays operator-wired"
+		// Informational-only now: the converter lowers Fortran targets to a
+		// buildable fortran_library (//rules:fortran.bzl) that drives the cc
+		// toolchain's own gfortran driver, so this is no longer an
+		// operator-action gap (it builds, given gfortran in the cc toolchain —
+		// the GNU default). The tag is kept for provenance/grep-ability; it
+		// doesn't surface as an idiom finding.
+		return "", ""
 	case tag == "cmake-codegen-qt-automoc":
 		return "qt-automoc-host-tool-needed",
 			"target has AUTOMOC=TRUE — cmake's generator runs moc as part of `cmake --build`; Bazel doesn't, so moc-generated sources are missing. Wrap moc as a host-tool genrule in a kind:bazel override or use a rules_qt module"

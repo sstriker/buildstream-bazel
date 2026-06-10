@@ -187,6 +187,14 @@ const (
 	// KindCudaTest renders as rules_cuda's `cuda_test(...)` — the CUDA
 	// analogue of cc_test for a `.cu`-only test executable.
 	KindCudaTest
+	// KindFortranLibrary renders as rules_buildstream_bazel's
+	// `fortran_library(...)` — the converter's self-contained lowering for a
+	// cmake Fortran target (a cc_* rule has no Fortran compile action). It
+	// compiles `.f`/`.f90`/... via the cc toolchain's own driver (gfortran)
+	// and exposes a CcInfo, so a consuming cc_* target deps on it like any
+	// library. The Fortran analogue of KindCudaLibrary; see
+	// //rules:fortran.bzl and lower's retagFortranTargets.
+	KindFortranLibrary
 )
 
 func (k Kind) String() string {
@@ -227,6 +235,8 @@ func (k Kind) String() string {
 		return "cuda_binary"
 	case KindCudaTest:
 		return "cuda_test"
+	case KindFortranLibrary:
+		return "fortran_library"
 	case KindBoolFlag:
 		return "bool_flag"
 	case KindConfigSetting:
@@ -380,6 +390,14 @@ type Target struct {
 
 	// Srcs are compilation inputs (.c / .cc / .cpp / .S / etc.).
 	Srcs []string
+
+	// ModuleSrcs are Fortran sources that DEFINE a module (gfortran writes a
+	// `.mod` for each), ordered so a module's provider precedes any provider
+	// that `use`s it. Set only on KindFortranLibrary targets: fortran_library
+	// compiles these first into a shared module directory, then compiles Srcs
+	// in parallel against it. Empty for module-free Fortran (the F77 bulk) and
+	// every non-Fortran rule. See lower's splitFortranModuleSrcs.
+	ModuleSrcs []string
 
 	// Hdrs are exported headers reachable via Includes/StripIncludePrefix.
 	Hdrs []string

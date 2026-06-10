@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -1767,11 +1768,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// test target, so the rename is safe; the authoritative
 	// codemodel-derived target keeps its name.
 	disambiguateTestNameCollisions(pkg)
-	// Fortran partition — move Fortran (.f / .f90 / ...) sources out of
-	// cc_* targets (which can't compile them) into a sibling filegroup,
-	// keeping the cc_* target buildable and the Fortran intent labeled +
-	// operator-routable. See partitionFortranSources.
-	partitionFortranSources(pkg)
+	// Fortran retag — lower a cmake Fortran target (.f / .f90 / ... sources a
+	// cc_* rule can't compile) to a buildable fortran_library that drives the
+	// cc toolchain's own gfortran driver and exposes CcInfo. Fortran-only
+	// targets retag in place; mixed C+Fortran targets gain a private sibling
+	// fortran_library the cc_* target deps on. See retagFortranTargets.
+	retagFortranTargets(pkg, cmakeSrc)
 	// CUDA retag — a cc_* target whose compiled srcs are entirely `.cu`
 	// CUDA device code renders as the matching rules_cuda rule (cuda_library
 	// / cuda_binary / cuda_test) so nvcc compiles it; a plain cc_library
@@ -2920,12 +2922,19 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// producing genrule still builds via //... and the artifact has no cc-rule
 	// role. Only entries WITH a non-cc extension are dropped, so bare-name /
 	// extensionless labels (`:foo`, `//pkg:foo`) are never touched.
+	//
+	// Fortran sources (.f / .f90 / ...) are explicitly KEPT here even though a
+	// cc rule can't compile them: the per-language compile-group split plus the
+	// pkg-level retagFortranTargets pass lower them to a fortran_library (the cc
+	// toolchain's gfortran driver). Dropping them here would silently lose a
+	// cmake Fortran target (OpenBLAS's reference LAPACK) before the retag ever
+	// sees it.
 	switch irt.Kind {
 	case ir.KindCCLibrary, ir.KindCCBinary, ir.KindCCTest,
 		ir.KindCudaLibrary, ir.KindCudaBinary, ir.KindCudaTest:
 		kept := make([]string, 0, len(irt.Srcs))
 		for _, s := range irt.Srcs {
-			if filepath.Ext(s) != "" && !isCcSrcEntry(s) {
+			if filepath.Ext(s) != "" && !isCcSrcEntry(s) && !isFortranSrc(s) {
 				droppedNonCcSrc = true
 				continue
 			}
@@ -5789,48 +5798,44 @@ func isFortranSrc(p string) bool {
 	return false
 }
 
-// partitionFortranSources moves Fortran sources OUT of each cc_*
-// target's srcs into a sibling `filegroup` named `<target>_fortran_srcs`.
+// retagFortranTargets lowers each cmake Fortran target to a buildable
+// fortran_library (//rules:fortran.bzl) instead of an unbuildable cc_* rule.
 //
-// Why: cmake routes a target's Fortran (.f / .f90 / ...) sources into
-// the same add_library/add_executable as its C/C++ sources, but Bazel's
-// cc rules dispatch by file extension and have NO Fortran compile action
-// — so a cc_library carrying `.f` srcs is unbuildable as emitted (the
-// non-cc-language-source idiom). There's no canonical Bazel Fortran
-// ruleset (rules_fortran is experimental + not in the BCR) and no
-// gazelle Fortran extension to hand off to, so the converter can't emit
-// a buildable Fortran rule. The honest, plain-Bazel increment:
+// cmake routes a target's Fortran (.f / .f90 / ...) sources into the same
+// add_library/add_executable as its C/C++ sources, but Bazel's cc rules
+// dispatch by file extension and have NO Fortran compile action. fortran_library
+// compiles them via the cc toolchain's OWN driver (gfortran) and exposes CcInfo,
+// so a consuming cc_* target links them transparently. Two shapes:
 //
-//   - pull the Fortran sources out so the cc_* target keeps only its
-//     C/C++/ASM sources and BUILDS;
-//   - park them in a `filegroup` (global Bazel namespace, no MODULE
-//     deps) that's clearly labeled, so the intent is preserved and an
-//     operator can point a Fortran ruleset (rules_fortran / foreign_cc /
-//     hand-rolled) at `:<target>_fortran_srcs` when they wire one;
-//   - tag both the cc_* target and the filegroup
-//     `cmake-codegen-fortran-target` so the gap is grep-able and the
-//     bazelidiom audit's non-cc-language-source finding has a concrete
-//     home (the filegroup), not a broken cc_library.
+//   - a Fortran-only target is retagged IN PLACE to KindFortranLibrary, keeping
+//     its name (so existing deps edges still resolve) and usage requirements
+//     (deps / copts / includes), with cc-only attributes normalized onto the
+//     fortran_library surface (defines / local_defines → -D copts,
+//     implementation_deps → deps; see normalizeFortranTarget);
 //
-// A cc_* target whose srcs become EMPTY after partitioning (a
-// Fortran-only library, e.g. OpenBLAS's reference-LAPACK targets) is
-// dropped — an srcs-less cc_library/cc_binary is Bazel-invalid, and the
-// filegroup carries the real content. The target's deps still resolve
-// via the filegroup label if needed; the all-sources-elided refusal
-// path (lowerTarget) doesn't fire here because partitioning runs as a
-// post-pass after emit-time target assembly.
-func partitionFortranSources(pkg *ir.Package) {
+//   - a MIXED target (C/C++/ASM + Fortran) keeps its cc_* rule for the
+//     non-Fortran srcs and gains a private sibling `<name>_fortran`
+//     fortran_library carrying the Fortran srcs; the cc_* target deps on it, so
+//     its own objects and its consumers link the Fortran symbols (cmake compiled
+//     them into one archive — the dep edge reunites them).
+//
+// The Fortran analogue of retagCudaTargets, and like it a post-emit pass after
+// the per-language compile-group split, so it sees WHOLE-target language
+// composition. Targets are tagged cmake-codegen-fortran-target so the gap's
+// provenance stays grep-able. A Fortran-only cc_binary / cc_test degrades to a
+// (non-runnable) fortran_library — the executable wrapper is lost, but that's
+// strictly better than the prior behavior (which dropped Fortran-only targets
+// entirely) and OpenBLAS's reference LAPACK is libraries.
+func retagFortranTargets(pkg *ir.Package, srcRoot string) {
 	if pkg == nil {
 		return
 	}
 	var added []ir.Target
-	kept := pkg.Targets[:0]
 	for i := range pkg.Targets {
-		t := pkg.Targets[i]
+		t := &pkg.Targets[i]
 		isCC := t.Kind == ir.KindCCLibrary || t.Kind == ir.KindCCBinary ||
 			t.Kind == ir.KindCCInterface || t.Kind == ir.KindCCTest
 		if !isCC || len(t.Srcs) == 0 {
-			kept = append(kept, t)
 			continue
 		}
 		var ftn, rest []string
@@ -5842,31 +5847,195 @@ func partitionFortranSources(pkg *ir.Package) {
 			}
 		}
 		if len(ftn) == 0 {
-			kept = append(kept, t)
 			continue
 		}
-		// Build the sibling filegroup carrying the Fortran sources.
-		fg := ir.Target{
-			Name:       t.Name + "_fortran_srcs",
-			Kind:       ir.KindFilegroup,
-			Srcs:       ftn,
-			Visibility: publicVisibility(),
-			Tags:       []string{"cmake-codegen-fortran-target"},
-		}
-		added = append(added, fg)
-
 		if len(rest) == 0 {
-			// Fortran-only target: the cc_* rule would be srcs-less
-			// (Bazel-invalid). Drop it; the filegroup holds the content.
+			// Fortran-only: retag in place, keep the name + dep edges.
+			t.Kind = ir.KindFortranLibrary
+			t.ModuleSrcs, t.Srcs = splitFortranModuleSrcs(ftn, srcRoot)
+			// The module-DEFINING sources' bytes shaped the BUILD (their
+			// `module`/`use` content decided the module_srcs partition + order);
+			// publish them as declared source-byte reads so the narrowing lens
+			// keeps them real. See ir.Package.SourceByteReads.
+			pkg.SourceByteReads = append(pkg.SourceByteReads, t.ModuleSrcs...)
+			normalizeFortranTarget(t)
+			if !stringSliceContains(t.Tags, "cmake-codegen-fortran-target") {
+				t.Tags = append(t.Tags, "cmake-codegen-fortran-target")
+			}
 			continue
 		}
+		// Mixed: keep the cc_* target with the non-Fortran srcs; split the
+		// Fortran srcs into a private sibling fortran_library and dep on it.
+		modSrcs, plainSrcs := splitFortranModuleSrcs(ftn, srcRoot)
+		// Publish the module-definers' content reads (see the Fortran-only
+		// branch above and ir.Package.SourceByteReads).
+		pkg.SourceByteReads = append(pkg.SourceByteReads, modSrcs...)
+		// The sibling does NOT copy t.LinkOpts: the cc_* wrapper retains them and
+		// the wrapper deps on the sibling, so the wrapper already threads its
+		// linkopts to consumers once. Copying them here too would duplicate them
+		// on every consumer link line (after the sibling's -lgfortran -lm),
+		// which can misbehave for position-sensitive flags (`-Wl,--whole-archive`
+		// pairs). The sibling only needs the gfortran runtime, which the rule
+		// adds unconditionally.
+		sub := ir.Target{
+			Name:               t.Name + "_fortran",
+			Kind:               ir.KindFortranLibrary,
+			ModuleSrcs:         modSrcs,
+			Srcs:               plainSrcs,
+			Deps:               append([]string(nil), t.Deps...),
+			ImplementationDeps: append([]string(nil), t.ImplementationDeps...),
+			Copts:              append([]string(nil), t.Copts...),
+			Includes:           append([]string(nil), t.Includes...),
+			Defines:            append([]string(nil), t.Defines...),
+			LocalDefines:       append([]string(nil), t.LocalDefines...),
+			Visibility:         []string{"//visibility:private"},
+			Tags:               []string{"cmake-codegen-fortran-target"},
+		}
+		normalizeFortranTarget(&sub)
+		added = append(added, sub)
 		t.Srcs = rest
+		t.Deps = appendUnique(t.Deps, ":"+sub.Name)
 		if !stringSliceContains(t.Tags, "cmake-codegen-fortran-target") {
 			t.Tags = append(t.Tags, "cmake-codegen-fortran-target")
 		}
-		kept = append(kept, t)
 	}
-	pkg.Targets = append(kept, added...)
+	pkg.Targets = append(pkg.Targets, added...)
+}
+
+// fortranModuleDefRe matches a Fortran free/fixed-form MODULE definition
+// (`module la_constants`), excluding `module procedure` (a submodule-interface
+// construct, not a module definition) and `module function`/`module subroutine`.
+var fortranModuleDefRe = regexp.MustCompile(`(?im)^\s*module\s+([a-z][a-z0-9_]*)\s*(?:!.*)?$`)
+
+// fortranUseRe matches a `use <module>` statement in all its forms — the bare
+// `use la_constants`, the F2003 `use :: la_constants`, and the
+// module-nature `use, non_intrinsic :: la_constants` (the leading `use\b`
+// boundary keeps it from matching an identifier like `used_var`). A
+// `use, intrinsic :: iso_fortran_env` also matches but is harmless: the
+// intrinsic module isn't a definer in this set, so the topo sort finds no
+// provider edge for it.
+var fortranUseRe = regexp.MustCompile(`(?im)^\s*use\b\s*(?:,\s*\w+\s*)?(?:::\s*)?([a-z][a-z0-9_]*)`)
+
+// splitFortranModuleSrcs partitions Fortran sources into the ones that DEFINE a
+// module (gfortran emits a `.mod` for each) and the rest. The module-definers
+// are returned topologically ordered — a definer that `use`s another definer's
+// module comes after it — so fortran_library can compile them in order into a
+// shared module directory before compiling the parallel bulk. cmake computes
+// this dependency at build time via its Fortran scanner (the Fortran.dd dyndep);
+// we replicate the scan here (only a handful of files in a project like LAPACK
+// define modules — la_constants.f90, la_xisnan.F90). srcRoot is the on-disk
+// directory the element-relative source paths resolve against (cmakeSrc);
+// unreadable files are treated as non-definers (safe: a missing definer just
+// means no module to order, the same as today's module-free path).
+func splitFortranModuleSrcs(srcs []string, srcRoot string) (moduleSrcs, rest []string) {
+	type def struct {
+		src      string
+		provides []string
+		uses     []string
+	}
+	var defs []def
+	provider := map[string]int{} // module name -> index into defs
+	for _, s := range srcs {
+		body, err := os.ReadFile(filepath.Join(srcRoot, s))
+		if err != nil {
+			rest = append(rest, s)
+			continue
+		}
+		var provides []string
+		for _, m := range fortranModuleDefRe.FindAllSubmatch(body, -1) {
+			name := strings.ToLower(string(m[1]))
+			// `module procedure` is excluded by the regex (it requires the
+			// module name to be the whole token); guard the reserved word
+			// anyway for fixed-form oddities.
+			if name == "procedure" || name == "function" || name == "subroutine" {
+				continue
+			}
+			provides = append(provides, name)
+		}
+		if len(provides) == 0 {
+			rest = append(rest, s)
+			continue
+		}
+		var uses []string
+		for _, m := range fortranUseRe.FindAllSubmatch(body, -1) {
+			uses = append(uses, strings.ToLower(string(m[1])))
+		}
+		for _, p := range provides {
+			provider[p] = len(defs)
+		}
+		defs = append(defs, def{src: s, provides: provides, uses: uses})
+	}
+	if len(defs) == 0 {
+		return nil, rest
+	}
+	// Topological sort over the definers: an edge def→dep when def `use`s a
+	// module another definer provides. Kahn's algorithm; ties broken by the
+	// input order for determinism. A cycle (pathological) falls back to input
+	// order for the remaining nodes.
+	indeg := make([]int, len(defs))
+	adj := make([][]int, len(defs)) // provider index -> dependent definer indices
+	for di, d := range defs {
+		seen := map[int]bool{}
+		for _, u := range d.uses {
+			pi, ok := provider[u]
+			if !ok || pi == di || seen[pi] {
+				continue
+			}
+			seen[pi] = true
+			adj[pi] = append(adj[pi], di)
+			indeg[di]++
+		}
+	}
+	var queue []int
+	for i := range defs {
+		if indeg[i] == 0 {
+			queue = append(queue, i)
+		}
+	}
+	emitted := make([]bool, len(defs))
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		moduleSrcs = append(moduleSrcs, defs[n].src)
+		emitted[n] = true
+		for _, m := range adj[n] {
+			indeg[m]--
+			if indeg[m] == 0 {
+				queue = append(queue, m)
+			}
+		}
+	}
+	// Any node left (cycle) — append in input order.
+	for i := range defs {
+		if !emitted[i] {
+			moduleSrcs = append(moduleSrcs, defs[i].src)
+		}
+	}
+	return moduleSrcs, rest
+}
+
+// normalizeFortranTarget folds a (former) cc target's attributes onto the
+// narrow fortran_library surface: defines / local_defines become -D copts (the
+// GNU driver passes -D through to the Fortran frontend; ignored on fixed-form
+// .f, honored on preprocessed .F), implementation_deps merge into deps
+// (fortran_library exposes only deps), and the cc-only header / link-shape
+// fields are cleared so emit's adaptFortranView never has to.
+func normalizeFortranTarget(t *ir.Target) {
+	for _, d := range t.Defines {
+		t.Copts = append(t.Copts, "-D"+d)
+	}
+	for _, d := range t.LocalDefines {
+		t.Copts = append(t.Copts, "-D"+d)
+	}
+	t.Defines = nil
+	t.LocalDefines = nil
+	t.Deps = appendUnique(t.Deps, t.ImplementationDeps...)
+	t.ImplementationDeps = nil
+	t.Hdrs = nil
+	t.TextualHdrs = nil
+	t.Alwayslink = false
+	t.Linkstatic = false
+	t.Features = nil
 }
 
 // isCudaSrc reports whether p is a CUDA device-code source (`.cu`). `.cuh`
@@ -5883,7 +6052,8 @@ func isCudaSrc(p string) bool {
 // `.cu` CUDA device code as the matching rules_cuda rule (cuda_library /
 // cuda_binary / cuda_test), so it renders with nvcc-driving rules instead of
 // a cc_library that Bazel can't compile (`.cu` has no cc compile action — the
-// same gap partitionFortranSources handles for Fortran, but unlike Fortran,
+// same gap retagFortranTargets handles for Fortran, now also with a real
+// buildable rule rather than a parked filegroup, but unlike Fortran,
 // CUDA HAS a canonical Bazel ruleset (rules_cuda in the BCR), so the honest
 // lowering is a real buildable rule, not a parked filegroup).
 //
