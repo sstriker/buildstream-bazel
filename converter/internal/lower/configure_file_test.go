@@ -298,6 +298,7 @@ func TestBuildConfigureFileGenrule_BakeShape(t *testing.T) {
 	got := buildConfigureFileGenrule(
 		"gen_cfg_h", "cfg.h", rendered, call,
 		"/src/project", "/src/project",
+		nil,   // dirScopes
 		false, // liftEnabled = false → legacy
 		nil,
 		nil, // stampVars
@@ -337,7 +338,7 @@ func TestBuildConfigureFileGenrule_BakeShape(t *testing.T) {
 func TestBuildConfigureFileGenrule_BinaryBakeStaysBase64(t *testing.T) {
 	rendered := []byte("a\x00b\n")
 	call := shadow.ConfigureFileCall{Input: "/src/project/cfg.h.in", Output: "/tmp/build/cfg.h"}
-	got := buildConfigureFileGenrule("gen_cfg_h", "cfg.h", rendered, call, "/src/project", "/src/project", false, nil, nil)
+	got := buildConfigureFileGenrule("gen_cfg_h", "cfg.h", rendered, call, "/src/project", "/src/project", nil, false, nil, nil)
 	if got.Kind != ir.KindGenrule {
 		t.Fatalf("binary bake should stay on the base64 genrule; got kind %v", got.Kind)
 	}
@@ -374,6 +375,7 @@ func TestBuildConfigureFileGenrule_LiftedShape(t *testing.T) {
 	got := buildConfigureFileGenrule(
 		"gen_cfg_h", "cfg.h", rendered, call,
 		hostSrc, hostSrc,
+		nil,  // dirScopes
 		true, // liftEnabled
 		map[string]string{"VERSION": "1.2.3"},
 		nil, // stampVars
@@ -425,6 +427,7 @@ func TestBuildConfigureFileGenrule_StampValues(t *testing.T) {
 	got := buildConfigureFileGenrule(
 		"gen_version_h", "version.h", rendered, call,
 		hostSrc, hostSrc,
+		nil,  // dirScopes
 		true, // liftEnabled
 		map[string]string{"GIT_SHA": "abc123", "VERSION": "1.2.3"},
 		map[string]string{"GIT_SHA": "STABLE_GIT_SHA", "UNUSED_STAMP": "STABLE_UNUSED_STAMP"},
@@ -457,6 +460,7 @@ func TestBuildConfigureFileGenrule_FallsBackOnMissingTemplate(t *testing.T) {
 	got := buildConfigureFileGenrule(
 		"gen_cfg_h", "cfg.h", rendered, call,
 		hostSrc, hostSrc,
+		nil,  // dirScopes
 		true, // liftEnabled, but template ReadFile fails
 		map[string]string{"VAR": "v"},
 		nil, // stampVars

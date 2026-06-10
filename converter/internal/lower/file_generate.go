@@ -188,7 +188,7 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 			callForOut := call
 			callForOut.Output = outPath
 			name := configureFileGenruleName(rel) // reuse the gen_<path> namer
-			gen := buildFileGenerateGenrule(name, rel, body, callForOut, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars, genexTargets, imports, cc)
+			gen := buildFileGenerateGenrule(name, rel, body, callForOut, hostSrcDir, recordedSrcDir, dirScopes, liftEnabled, cmakeVars, genexTargets, imports, cc)
 			cc.Genrules = append(cc.Genrules, gen)
 			cc.OutToGenrule[rel] = name
 
@@ -386,7 +386,7 @@ func liftFileGenerateGenex(name, outRel, inRel string, templateBody, rendered []
 	return genexLegacy
 }
 
-func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ir.Target {
+func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, dirScopes []dirScope, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ir.Target {
 	opts, optErr := fileGenerateOptions(call)
 	bake := bakeFileTarget(name, outRel, rendered, fileGenerateTags(fileGenerateTagSet{}))
 	if optErr != nil {
@@ -472,7 +472,7 @@ func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.
 			}
 			call.Input = resolved
 		}
-		templatePath, rel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
+		templatePath, rel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir, shadow.ConfigureFileCall{CallFile: call.File}, dirScopes)
 		if !ok {
 			return bake
 		}
@@ -1521,7 +1521,7 @@ func unresolvedCrossPackageTargetFiles(call shadow.FileGenerateCall, hostSrcDir,
 	case call.HasContent:
 		body = []byte(call.Content)
 	case call.HasInput:
-		inAbs, _, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
+		inAbs, _, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir, shadow.ConfigureFileCall{CallFile: call.File}, nil)
 		if !ok {
 			return nil
 		}

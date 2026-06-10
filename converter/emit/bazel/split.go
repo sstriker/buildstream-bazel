@@ -1071,6 +1071,21 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 			publicizeIfCrossPkgGen(d, consumerDir, t.Name)
 			publicizeIfCrossPkgTarget(d, consumerDir, t.Name)
 		}
+		// A lifted cmake_configure_file's template (a generated template
+		// owned by another package) and its TargetFiles/TargetObjects
+		// ":name" refs get the same cross-package treatment as srcs/deps
+		// once rewriteTarget relabels them.
+		if t.Kind == ir.KindCMakeConfigureFile && t.CMakeConfigureFile != nil {
+			if tpl := t.CMakeConfigureFile.Template; tpl != "" && !strings.HasPrefix(tpl, "//") {
+				publicizeIfCrossPkgGen(tpl, consumerDir, t.Name)
+			}
+			for k := range t.CMakeConfigureFile.TargetFiles {
+				publicizeIfCrossPkgTarget(k, consumerDir, t.Name)
+			}
+			for k := range t.CMakeConfigureFile.TargetObjects {
+				publicizeIfCrossPkgTarget(k, consumerDir, t.Name)
+			}
+		}
 	}
 	// Synthesized include-root header libs (headerLibTarget) aren't in
 	// pkg.Targets but reference their include-root's headers, cross-package-
@@ -1597,12 +1612,9 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 			rt.WriteFileOut = rel
 		}
 	}
-	if local && t.Kind == ir.KindCMakeConfigureFile &&
-		t.CMakeConfigureFile != nil && t.CMakeConfigureFile.Out != "" {
-		if rel, ok := relUnder(dir, t.CMakeConfigureFile.Out); ok {
-			specCopy := *t.CMakeConfigureFile
-			specCopy.Out = rel
-			rt.CMakeConfigureFile = &specCopy
+	if local && t.Kind == ir.KindCMakeConfigureFile && t.CMakeConfigureFile != nil {
+		if spec := rewriteConfigureFileSpec(t, dir, plan, exportsByDir); spec != nil {
+			rt.CMakeConfigureFile = spec
 		}
 	}
 
@@ -1846,6 +1858,63 @@ func recordExportedFile(exportsByDir map[string]map[string]struct{}, dir, file s
 		exportsByDir[dir] = map[string]struct{}{}
 	}
 	exportsByDir[dir][file] = struct{}{}
+}
+
+// rewriteConfigureFileSpec re-homes a lifted cmake_configure_file's spec to
+// its landing package: the out re-relativizes; the template — a FILE
+// reference, element-root-relative at lower time — rewrites exactly like a
+// srcs entry (package-relative when this package owns it, a cross-package
+// file label otherwise, + exports_files when it isn't a generated output;
+// pre-fix it passed through verbatim, so a re-homed rule's template resolved
+// against the WRONG package: "sub/cfg.h.in" inside //sub →
+// //sub:sub/cfg.h.in, nonexistent); and the label-keyed TargetFiles /
+// TargetObjects (":name" intra-element refs) relabel like deps. Returns nil
+// when nothing changed (the caller keeps the shared spec pointer).
+func rewriteConfigureFileSpec(t ir.Target, dir string, plan *splitPlan, exportsByDir map[string]map[string]struct{}) *ir.CMakeConfigureFileSpec {
+	specCopy := *t.CMakeConfigureFile
+	changed := false
+	if specCopy.Out != "" {
+		if rel, ok := relUnder(dir, specCopy.Out); ok {
+			specCopy.Out = rel
+			changed = true
+		}
+	}
+	if tpl := specCopy.Template; tpl != "" && !strings.HasPrefix(tpl, "//") {
+		owner := plan.deepestPkg(tpl)
+		if owner == dir {
+			if rel, ok := relUnder(dir, tpl); ok {
+				specCopy.Template = rel
+				changed = true
+			}
+		} else if file, _ := relUnder(owner, tpl); file != "" {
+			specCopy.Template = crossPkgLabel(plan, owner, file)
+			changed = true
+			if !plan.genOuts[tpl] {
+				recordExportedFile(exportsByDir, owner, file)
+			}
+		}
+	}
+	relabelKeys := func(m map[string]string) map[string]string {
+		if len(m) == 0 {
+			return m
+		}
+		out := make(map[string]string, len(m))
+		for k, v := range m {
+			if name, ok := strings.CutPrefix(k, ":"); ok {
+				out[targetLabel(plan, name)] = v
+				changed = true
+				continue
+			}
+			out[k] = v
+		}
+		return out
+	}
+	specCopy.TargetFiles = relabelKeys(specCopy.TargetFiles)
+	specCopy.TargetObjects = relabelKeys(specCopy.TargetObjects)
+	if !changed {
+		return nil
+	}
+	return &specCopy
 }
 
 // rewriteDataEntries routes a target's data list to the post-split shape.

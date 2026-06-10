@@ -21,19 +21,16 @@ cc_library(
     tags = ["has-cmake-codegen"],  # keep
 )
 
-cmake_configure_file(
+genrule(
     name = "gen_version_h",
-    out = "version.h",
-    copy_only = True,
+    srcs = ["src/version.h.in"],
+    outs = ["version.h"],
+    cmd = "mkdir -p \"$$(dirname \"$@\")\" && cp \"$(location src/version.h.in)\" \"$@\"",
     tags = [
         "cmake-codegen",
         "cmake-codegen-driver=file_generate",
         "cmake-codegen-file-generate",
-        "cmake-codegen-lifted",
     ],
-    template = "src/version.h.in",
-    tool = "//tools:cmake-configure-file",
-    values = {},
     visibility = ["//visibility:private"],
 )  # keep
 
