@@ -1,14 +1,10 @@
 package lower
 
 import (
-	"context"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 )
@@ -183,18 +179,16 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	argv = append(argv, "-P", scriptArg)
 	argv = append(argv, posArgs...)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	exe := exec.CommandContext(ctx, cc.CMakeBinary, argv...)
-	exe.Dir = workDir
-	exe.Env = []string{
-		"HOME=" + workDir,
-		"LC_ALL=C",
-		"PATH=" + os.Getenv("PATH"),
-	}
-	exe.Stdout = io.Discard
-	exe.Stderr = io.Discard
-	if err := exe.Run(); err != nil {
+	// The parallel pre-warm (prewarmScriptBakes) may already have run this
+	// exact build's script — consult the per-build result cache before
+	// paying for a serial run. The conversion-latency profile showed these
+	// sequential cmake -P waits dominating large converts' translation wall
+	// time (VTK: 238 runs ≈ 95s of a 126s multi-config translation).
+	if res, hit := cc.ScriptBakeRuns[b]; hit {
+		if res != nil {
+			return "", "", fmt.Sprintf("cmake -P %s failed at convert time: %v", scriptArg, res), false
+		}
+	} else if err := runScriptExec(cc.CMakeBinary, argv, workDir); err != nil {
 		return "", "", fmt.Sprintf("cmake -P %s failed at convert time: %v", scriptArg, err), false
 	}
 
