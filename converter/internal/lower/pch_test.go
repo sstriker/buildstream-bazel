@@ -223,10 +223,11 @@ func TestPCHIncludeArg(t *testing.T) {
 		{"bare relative (unresolved genex)", "dbg.h", "dbg.h", ""},
 		{"empty", "", "", ""},
 	}
+	c := pchLiftCtx{cmakeSrc: "/src", cmakeBuild: "/b"}
 	for _, tc := range cases {
-		arg, stage := pchIncludeArg(tc.header, "/src", "/b", nil)
+		arg, stage := c.includeArg(tc.header)
 		if arg != tc.wantArg || stage != tc.wantStage {
-			t.Errorf("%s: pchIncludeArg(%q) = (%q, %q), want (%q, %q)",
+			t.Errorf("%s: includeArg(%q) = (%q, %q), want (%q, %q)",
 				tc.name, tc.header, arg, stage, tc.wantArg, tc.wantStage)
 		}
 	}
@@ -235,10 +236,40 @@ func TestPCHIncludeArg(t *testing.T) {
 // TestPCHIncludeArg_Reanchor confirms the umbrella-promotion reanchor is
 // applied to source-tree entries (LLVM shape: labels rooted above cmakeSrc).
 func TestPCHIncludeArg_Reanchor(t *testing.T) {
-	reanchor := func(rel string) string { return "llvm/" + rel }
-	arg, stage := pchIncludeArg("/src/pch.h", "/src", "/b", reanchor)
+	c := pchLiftCtx{
+		cmakeSrc:   "/src",
+		cmakeBuild: "/b",
+		reanchor:   func(rel string) string { return "llvm/" + rel },
+	}
+	arg, stage := c.includeArg("/src/pch.h")
 	if arg != "llvm/pch.h" || stage != "llvm/pch.h" {
-		t.Errorf("pchIncludeArg with reanchor = (%q, %q), want (llvm/pch.h, llvm/pch.h)", arg, stage)
+		t.Errorf("includeArg with reanchor = (%q, %q), want (llvm/pch.h, llvm/pch.h)", arg, stage)
+	}
+}
+
+// TestPCHIncludeArg_PackagePath confirms in-element `-include` arguments
+// carry the exec-root form when the element lands in a subpackage
+// (--bazel-package-path): compile actions run from the exec root and copts
+// are verbatim — unlike the `includes` attribute, which Bazel
+// package-prefixes — so a bare element-relative path would fail to resolve
+// (SDL's `src/SDL_internal.h` under the build lens's elements/sdl mount).
+// The staged hdr stays element-relative (it's a package-level Hdrs entry).
+func TestPCHIncludeArg_PackagePath(t *testing.T) {
+	c := pchLiftCtx{cmakeSrc: "/src", cmakeBuild: "/b", pkgPath: "elements/sdl"}
+	arg, stage := c.includeArg("/src/src/SDL_internal.h")
+	if arg != "elements/sdl/src/SDL_internal.h" || stage != "src/SDL_internal.h" {
+		t.Errorf("includeArg with pkgPath = (%q, %q), want (elements/sdl/src/SDL_internal.h, src/SDL_internal.h)", arg, stage)
+	}
+	if arg, _ := c.includeArg("/b/gen/config.h"); arg != "elements/sdl/gen/config.h" {
+		t.Errorf("build-dir includeArg with pkgPath = %q, want elements/sdl/gen/config.h", arg)
+	}
+	// Out-of-tree absolutes and angle/verbatim/bare entries never get the
+	// package prefix — they don't name in-element files.
+	if arg, _ := c.includeArg("/usr/include/zlib.h"); arg != "/usr/include/zlib.h" {
+		t.Errorf("out-of-tree includeArg with pkgPath = %q, want /usr/include/zlib.h", arg)
+	}
+	if arg, _ := c.includeArg("<vector>"); arg != "vector" {
+		t.Errorf("angle includeArg with pkgPath = %q, want vector", arg)
 	}
 }
 

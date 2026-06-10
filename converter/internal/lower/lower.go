@@ -2416,6 +2416,16 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		}
 		return rel
 	}
+	// pchCtx drives the target_precompile_headers forced-include lift
+	// (pch.go) for this target's compile groups — both the main path and
+	// the per-language splitCompileGroups subs.
+	pchCtx := pchLiftCtx{
+		resolve:    lc.pchResolve,
+		cmakeSrc:   cmakeSrc,
+		cmakeBuild: cmakeBuild,
+		reanchor:   reanchor,
+		pkgPath:    lc.bazelPackagePath,
+	}
 	g, cc := lc.g, lc.cc
 	idToName, utilityIDs := lc.idToName, lc.utilityIDs
 	imports, tests := lc.imports, lc.tests
@@ -3038,8 +3048,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		// PCH forced-include lift: expand the cmake_pch artifacts the
 		// fragment split withheld into the declared headers' ordered
 		// `-include` copts, staging + tagging as needed (see pch.go).
-		copts, irt.Hdrs = applyPCHForcedIncludes(pchArtifacts, cg, lc.pchResolve,
-			cmakeSrc, cmakeBuild, reanchor, copts, irt.Hdrs, irt)
+		copts, irt.Hdrs = pchCtx.apply(pchArtifacts, cg, copts, irt.Hdrs, irt)
 		irt.Copts = copts
 
 		for _, d := range cg.Defines {
@@ -4396,7 +4405,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// codemodel partitions sources via CompileGroupIndex).
 	subsBefore := len(cc.Subs)
 	if shouldSplitCompileGroups(t) {
-		if err := splitCompileGroups(t, irt, cc, cmakeSrc, cmakeBuild, lc.pchResolve, reanchor); err != nil {
+		if err := splitCompileGroups(t, irt, cc, cmakeSrc, cmakeBuild, pchCtx); err != nil {
 			return nil, err
 		}
 	}
@@ -4670,7 +4679,7 @@ func intSuffix(n int) string {
 // The wrapper drops Srcs / Copts / Defines, retains the
 // public surface (hdrs, includes, visibility, install
 // metadata), and adds a Deps edge to each sub-library.
-func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, cmakeSrc, cmakeBuild string, pchResolve pchResolver, reanchor func(string) string) error {
+func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, cmakeSrc, cmakeBuild string, pchCtx pchLiftCtx) error {
 	// Sort CompileGroups by language for deterministic sub-
 	// library ordering across runs (the codemodel records them
 	// in source-declaration order, which is stable but harder
@@ -4800,8 +4809,7 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		// language picks up ITS cmake_pch.h/.hxx expansion, the staged
 		// source-tree headers land on the sub where its compile runs, and
 		// the user-visible wrapper gets the tag.
-		copts, subHdrs = applyPCHForcedIncludes(pchArtifacts, cg, pchResolve,
-			cmakeSrc, cmakeBuild, reanchor, copts, subHdrs, irt)
+		copts, subHdrs = pchCtx.apply(pchArtifacts, cg, copts, subHdrs, irt)
 
 		subName := irt.Name + "_" + langSuffix(cg.Language)
 		if langCount[cg.Language] > 1 {

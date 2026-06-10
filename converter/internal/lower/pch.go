@@ -43,9 +43,26 @@ import (
 // the fragment is the only signal it carries.
 type pchResolver func(targetName, language string) []fileapi.CompilePCH
 
-// pchForcedIncludeCopts expands the cmake_pch artifacts splitCompileFragments
-// detected (and dropped from copts) into the forced-include copts pairs that
-// preserve cmake's PCH include semantics:
+// pchLiftCtx bundles the inputs the forced-include expansion needs.
+// pkgPath is the element's repo-root-relative landing package
+// (--bazel-package-path): compile actions run from Bazel's EXEC ROOT,
+// and copts are passed verbatim (unlike the `includes` attribute, which
+// Bazel package-prefixes), so a `-include` argument naming an in-element
+// file must carry the exec-root form `<pkgPath>/<rel>` — the same
+// re-anchoring rewriteGenruleCmd applies to genrule cmds. Empty pkgPath
+// (standalone convert, element at the workspace root) keeps bare
+// element-relative args.
+type pchLiftCtx struct {
+	resolve    pchResolver
+	cmakeSrc   string
+	cmakeBuild string
+	reanchor   func(string) string
+	pkgPath    string
+}
+
+// forcedIncludeCopts expands the cmake_pch artifacts splitCompileFragments
+// detected (and withheld from copts) into the forced-include copts pairs
+// that preserve cmake's PCH include semantics:
 //
 //	-include <hdr-1> -include <hdr-2> ...
 //
@@ -60,21 +77,20 @@ type pchResolver func(targetName, language string) []fileapi.CompilePCH
 // reanchored element-relative paths, so the caller can ensure they're staged
 // as action inputs. The declaring target already carries them (cmake lists
 // PCH headers in the target's Sources), but a REUSE_FROM consumer does not.
-func pchForcedIncludeCopts(artifacts []string, cg fileapi.CompileGroup, resolve pchResolver,
-	cmakeSrc, cmakeBuild string, reanchor func(string) string) (copts, stageHdrs []string) {
+func (c pchLiftCtx) forcedIncludeCopts(artifacts []string, cg fileapi.CompileGroup) (copts, stageHdrs []string) {
 	if len(artifacts) == 0 {
 		return nil, nil
 	}
 	seen := map[string]bool{}
 	for _, art := range artifacts {
 		entries := cg.PrecompileHeaders
-		if len(entries) == 0 && resolve != nil {
-			if owner := pchArtifactOwner(art, cmakeBuild); owner != "" {
-				entries = resolve(owner, cg.Language)
+		if len(entries) == 0 && c.resolve != nil {
+			if owner := pchArtifactOwner(art, c.cmakeBuild); owner != "" {
+				entries = c.resolve(owner, cg.Language)
 			}
 		}
 		for _, e := range entries {
-			arg, stage := pchIncludeArg(e.Header, cmakeSrc, cmakeBuild, reanchor)
+			arg, stage := c.includeArg(e.Header)
 			if arg == "" || seen[arg] {
 				continue
 			}
@@ -88,18 +104,17 @@ func pchForcedIncludeCopts(artifacts []string, cg fileapi.CompileGroup, resolve 
 	return copts, stageHdrs
 }
 
-// applyPCHForcedIncludes is the rule-level application of the lift, shared by
-// lowerTarget's main compile-group path and splitCompileGroups' per-language
-// subs: expand the withheld artifacts into forced-include copts, stage the
-// expansion's source-tree headers into the rule's hdrs (append-if-missing —
-// the declaring target already carries them via t.Sources; a REUSE_FROM
+// apply is the rule-level application of the lift, shared by lowerTarget's
+// main compile-group path and splitCompileGroups' per-language subs: expand
+// the withheld artifacts into forced-include copts, stage the expansion's
+// source-tree headers into the rule's hdrs (append-if-missing — the
+// declaring target already carries them via t.Sources; a REUSE_FROM
 // consumer doesn't), and tag the user-visible target. The tag matters
 // especially for the REUSE_FROM shape, whose codemodel PrecompileHeaders is
 // null — without the artifact-driven tag it would lose its PCH silently.
-func applyPCHForcedIncludes(artifacts []string, cg fileapi.CompileGroup, resolve pchResolver,
-	cmakeSrc, cmakeBuild string, reanchor func(string) string,
+func (c pchLiftCtx) apply(artifacts []string, cg fileapi.CompileGroup,
 	copts, hdrs []string, irt *ir.Target) (newCopts, newHdrs []string) {
-	pchCopts, pchHdrs := pchForcedIncludeCopts(artifacts, cg, resolve, cmakeSrc, cmakeBuild, reanchor)
+	pchCopts, pchHdrs := c.forcedIncludeCopts(artifacts, cg)
 	copts = append(copts, pchCopts...)
 	for _, h := range pchHdrs {
 		if !stringSliceContains(hdrs, h) {
@@ -127,7 +142,7 @@ func pchArtifactOwner(artifact, cmakeBuild string) string {
 	return owner
 }
 
-// pchIncludeArg maps one codemodel precompileHeaders entry onto the argument
+// includeArg maps one codemodel precompileHeaders entry onto the argument
 // of a `-include` copt, plus (when the entry is a source-tree file) the
 // element-relative path the caller should stage as an action input.
 //
@@ -137,17 +152,17 @@ func pchArtifactOwner(artifact, cmakeBuild string) string {
 //     chain (`-include` falls back to the <...> chain after the quote chain).
 //   - `"other.h"`  (verbatim form) → `other.h`, resolved via the target's
 //     include paths the lift already replicates.
-//   - absolute source-tree path    → reanchored element-relative path; Bazel
-//     compiles from the execroot and adds `-iquote .`, so the relative path
-//     resolves, and the header itself is staged via stage.
-//   - absolute build-dir path      → build-dir-relative path (a generated
-//     header; resolves via Bazel's `-iquote <genfiles>` once its genrule
-//     stages it — the configure_file/codegen lifts own that half).
+//   - absolute source-tree path    → exec-root path `<pkgPath>/<element-rel>`
+//     (compile actions run from the exec root; see pchLiftCtx.pkgPath), with
+//     the header itself staged via stage.
+//   - absolute build-dir path      → exec-root path of the generated header
+//     (`<pkgPath>/<build-rel>`; resolves once its genrule stages it — the
+//     configure_file/codegen lifts own that half).
 //   - other absolute path          → kept verbatim (out-of-tree system
 //     header; cmake_pch baked the same absolute path).
 //   - bare relative path           → kept verbatim (a generator-expression
 //     result cmake didn't resolve; it rides the include search chain).
-func pchIncludeArg(h, cmakeSrc, cmakeBuild string, reanchor func(string) string) (arg, stage string) {
+func (c pchLiftCtx) includeArg(h string) (arg, stage string) {
 	switch {
 	case h == "":
 		return "", ""
@@ -156,19 +171,29 @@ func pchIncludeArg(h, cmakeSrc, cmakeBuild string, reanchor func(string) string)
 	case strings.HasPrefix(h, `"`):
 		return stripBalancedQuotes(h), ""
 	case filepath.IsAbs(h):
-		if rel, ok := relativeIfInside(cmakeSrc, h); ok {
-			if reanchor != nil {
-				rel = reanchor(rel)
+		if rel, ok := relativeIfInside(c.cmakeSrc, h); ok {
+			if c.reanchor != nil {
+				rel = c.reanchor(rel)
 			}
-			return rel, rel
+			return c.execRootPath(rel), rel
 		}
-		if rel, ok := relativeIfInsideRelaxed(cmakeBuild, h); ok {
-			return rel, ""
+		if rel, ok := relativeIfInsideRelaxed(c.cmakeBuild, h); ok {
+			return c.execRootPath(rel), ""
 		}
 		return h, ""
 	default:
 		return h, ""
 	}
+}
+
+// execRootPath turns an element-relative path into the form a verbatim copt
+// must carry to resolve from Bazel's exec root: prefixed with the landing
+// package when one is declared, bare otherwise.
+func (c pchLiftCtx) execRootPath(rel string) string {
+	if c.pkgPath == "" || c.pkgPath == "." {
+		return rel
+	}
+	return c.pkgPath + "/" + rel
 }
 
 // filterPCHCoptArm strips cmake PCH machinery tokens from one multi-config
@@ -181,7 +206,7 @@ func pchIncludeArg(h, cmakeSrc, cmakeBuild string, reanchor func(string) string)
 // no other non-flag token remains that could be the flag's argument (a
 // genuine per-config forced include of a project header keeps its pair).
 // The forced-include semantics themselves ride the baseline copts via
-// pchForcedIncludeCopts, not the per-config arms.
+// the forcedIncludeCopts lift, not the per-config arms.
 func filterPCHCoptArm(values []string) []string {
 	hadPCH := false
 	out := values[:0]
