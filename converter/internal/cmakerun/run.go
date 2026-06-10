@@ -508,6 +508,15 @@ func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath, probeGenexPath,
 		argv = append(argv, "-DCMAKE_FIND_PACKAGE_PREFER_CONFIG=ON")
 	}
 
+	// An operator-supplied CMAKE_PROJECT_TOP_LEVEL_INCLUDES (a dependency
+	// provider is the canonical use — cmake requires providers to be set
+	// from exactly this slot) must CHAIN with the converter's own hooks,
+	// not be clobbered by them: both would otherwise emit their own -D for
+	// the same variable and cmake keeps the last one (the hooks'). Capture
+	// the operator entries here — they seed the hook list below, ordered
+	// FIRST so a provider is installed before any converter hook runs —
+	// and skip the verbatim -D emission for this one key.
+	var operatorTopLevelIncludes []string
 	if len(opts.ExtraCacheVars) > 0 {
 		keys := make([]string, 0, len(opts.ExtraCacheVars))
 		for k := range opts.ExtraCacheVars {
@@ -515,6 +524,14 @@ func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath, probeGenexPath,
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
+			if k == "CMAKE_PROJECT_TOP_LEVEL_INCLUDES" {
+				for _, e := range strings.Split(opts.ExtraCacheVars[k], ";") {
+					if e != "" {
+						operatorTopLevelIncludes = append(operatorTopLevelIncludes, e)
+					}
+				}
+				continue
+			}
 			argv = append(argv, "-D"+k+"="+opts.ExtraCacheVars[k])
 		}
 	}
@@ -539,7 +556,7 @@ func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath, probeGenexPath,
 	// set it via set(CACHE) or for it to be already in the
 	// cache). _TOP_LEVEL_INCLUDES is explicitly designed for
 	// this CLI-injection pattern.
-	var topLevelIncludes []string
+	topLevelIncludes := append([]string(nil), operatorTopLevelIncludes...)
 	if cmp0026ShimPath != "" {
 		topLevelIncludes = append(topLevelIncludes, cmp0026ShimPath)
 	}

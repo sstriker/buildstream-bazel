@@ -1499,17 +1499,23 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// CMAKE_CURRENT_BINARY_DIR levels a relative configure_file output anchors
 	// against. Lets the recovery resolve a call made inside an include()d
 	// module to the includer's scope rather than the module's own dir.
-	configureDirScopes := make([]string, 0, len(cfg.Directories))
+	configureDirScopes := make([]dirScope, 0, len(cfg.Directories))
 	for _, d := range cfg.Directories {
 		// ToSlash first, THEN trim the trailing separator (matching
 		// subPackageDir) — a Windows-separator Source must be slash-normalized
 		// before the trim, else a trailing "/" survives and breaks dirScopeRel's
-		// prefix match.
-		s := strings.TrimSuffix(filepath.ToSlash(d.Source), "/")
-		if s == "." {
-			s = ""
+		// prefix match. Build rides along so relative-output anchoring lands
+		// where cmake actually writes when add_subdirectory used a custom
+		// binary dir (Source != Build; the FetchContent <name>-src/<name>-build
+		// shape).
+		norm := func(p string) string {
+			p = strings.TrimSuffix(filepath.ToSlash(p), "/")
+			if p == "." {
+				return ""
+			}
+			return p
 		}
-		configureDirScopes = append(configureDirScopes, s)
+		configureDirScopes = append(configureDirScopes, dirScope{Source: norm(d.Source), Build: norm(d.Build)})
 	}
 	var configureFiles []configureFileOut
 	if traceDecoded {
@@ -1552,7 +1558,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	var fileGenerates []fileGenerateOut
 	if traceDecoded {
 		var err error
-		fileGenerates, err = recoverFileGenerate(decodedFileGenerates, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, opts.CMakeVars, genexTargets, opts.Imports, cc)
+		fileGenerates, err = recoverFileGenerate(decodedFileGenerates, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, configureDirScopes, opts.LiftConfigureFile, opts.CMakeVars, genexTargets, opts.Imports, cc)
 		if err != nil {
 			return nil, err
 		}

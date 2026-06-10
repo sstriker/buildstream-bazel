@@ -462,3 +462,72 @@ func TestMatchPolicyFloorRemoved(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildCmakeArgv_OperatorTopLevelIncludesChainsWithHooks pins the
+// dependency-provider contract: an operator-supplied
+// CMAKE_PROJECT_TOP_LEVEL_INCLUDES (via --cmake-define / ExtraCacheVars —
+// the slot cmake requires dependency providers to use) must CHAIN with the
+// converter's staged hooks, ordered FIRST so a provider installs before any
+// hook runs — not be clobbered by the hooks' own -D (cmake keeps the last
+// duplicate -D), and not emit a duplicate -D pair.
+func TestBuildCmakeArgv_OperatorTopLevelIncludesChainsWithHooks(t *testing.T) {
+	got, err := buildCmakeArgv(Options{
+		SourceRoot: "/src",
+		BuildDir:   "/build",
+		BuildType:  "Release",
+		ExtraCacheVars: map[string]string{
+			"CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "/ops/provider.cmake",
+			"FOO":                              "1",
+		},
+	}, "/build/dump-vars.cmake", "", "", "")
+	if err != nil {
+		t.Fatalf("buildCmakeArgv: %v", err)
+	}
+	var tliArgs []string
+	for _, a := range got {
+		if strings.HasPrefix(a, "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=") {
+			tliArgs = append(tliArgs, a)
+		}
+	}
+	if len(tliArgs) != 1 {
+		t.Fatalf("want exactly one TOP_LEVEL_INCLUDES -D, got %v", tliArgs)
+	}
+	want := "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=/ops/provider.cmake;/build/dump-vars.cmake"
+	if tliArgs[0] != want {
+		t.Errorf("TOP_LEVEL_INCLUDES = %q, want %q (operator entries first)", tliArgs[0], want)
+	}
+	// The other extra cache var still emits verbatim.
+	found := false
+	for _, a := range got {
+		if a == "-DFOO=1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("-DFOO=1 missing: %v", got)
+	}
+}
+
+// Without any staged hook, the operator's value passes through unchanged.
+func TestBuildCmakeArgv_OperatorTopLevelIncludesAlone(t *testing.T) {
+	got, err := buildCmakeArgv(Options{
+		SourceRoot: "/src",
+		BuildDir:   "/build",
+		BuildType:  "Release",
+		ExtraCacheVars: map[string]string{
+			"CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "/ops/provider.cmake",
+		},
+	}, "", "", "", "")
+	if err != nil {
+		t.Fatalf("buildCmakeArgv: %v", err)
+	}
+	found := false
+	for _, a := range got {
+		if a == "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=/ops/provider.cmake" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("operator-only TOP_LEVEL_INCLUDES lost: %v", got)
+	}
+}

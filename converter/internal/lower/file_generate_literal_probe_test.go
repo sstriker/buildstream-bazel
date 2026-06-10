@@ -38,7 +38,7 @@ func TestRecoverFileGenerate_LiteralProbe_TwoPass(t *testing.T) {
 	sink := &LiteralProbeSink{}
 	cc1 := newCodegenContext()
 	cc1.LiteralProbeSink = sink
-	out1, err := recoverFileGenerate(mkCalls(), hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc1)
+	out1, err := recoverFileGenerate(mkCalls(), hostSrc, hostSrc, hostBuild, hostBuild, nil, true, nil, nil, nil, cc1)
 	if err != nil {
 		t.Fatalf("pass 1 recover: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestRecoverFileGenerate_LiteralProbe_TwoPass(t *testing.T) {
 	cc2.LiteralResolutions = map[string]cmakerun.LiteralResolution{
 		reqs[0].Hash(): {PerConfig: map[string]string{"": resolvedOutput}},
 	}
-	out2, err := recoverFileGenerate(mkCalls(), hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc2)
+	out2, err := recoverFileGenerate(mkCalls(), hostSrc, hostSrc, hostBuild, hostBuild, nil, true, nil, nil, nil, cc2)
 	if err != nil {
 		t.Fatalf("pass 2 recover: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestRecoverFileGenerate_LiteralProbe_PerConfigDivergenceDrops(t *testing.T)
 			"Debug":   filepath.Join(hostBuild, "dbg/x.h"),
 		}},
 	}
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, nil, true, nil, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestRecoverFileGenerate_LiteralProbe_NilSinkUnchanged(t *testing.T) {
 		HasInput: true,
 	}}
 	cc := newCodegenContext() // no sink, no resolutions
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, nil, true, nil, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestRecoverFileGenerate_MultiConfigGlobFanout(t *testing.T) {
 		HasInput: true,
 	}}
 	cc := newCodegenContext() // no probe sink/resolutions -> falls to glob
-	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, cc)
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, nil, true, nil, nil, nil, cc)
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
