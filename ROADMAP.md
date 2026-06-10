@@ -161,8 +161,13 @@ transition cleanly.
   - **eigen** (`EIGEN_BUILD_TESTING=OFF`): ~900-target `-Werror` SIMD suite,
     self-contained (no ext dep/codegen) but a huge build — needs a scoped/
     sharded build, not `//...` in one shot. Deferred dev surface.
-  - **openblas** (`BUILD_TESTING=OFF`): utest is C but the BLAS test surface
-    pulls the Fortran reference — gated on the (deferred) Fortran ruleset.
+  - **openblas** (`BUILD_TESTING=OFF`): the Fortran ruleset gate is LIFTED —
+    `fortran_library` (//rules:fortran.bzl) now compiles the real reference
+    LAPACK + BLAS, and both the Fortran and C_LAPACK shapes survey green
+    (`openblas` / `openblas-clapack`). Remaining: the BLAS test EXECUTABLES
+    (`?blat1/2/3`) are Fortran-only `add_executable`s, so retagFortranTargets
+    degrades them to (non-runnable) fortran_library — running them as real
+    cc_test/fortran binaries (a `fortran_binary` rule) is the follow-up.
   - **protobuf** (`protobuf_BUILD_TESTS=OFF`): needs googletest as a dep
     (BCR module / corpus member) wired like abseil's `GTest::gmock`.
 
