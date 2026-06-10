@@ -1085,3 +1085,22 @@ func TestDecode_DeferDirectoryOnConfigFiles(t *testing.T) {
 		t.Errorf("deferred configure_file missing from Decode output: %+v", d.ConfigFiles)
 	}
 }
+
+// traceBuildTypeRead: a project-side if(CMAKE_BUILD_TYPE STREQUAL ...) vs a
+// cmake-internal module consulting the same variable.
+const traceBuildTypeRead = `{"args":["CMAKE_BUILD_TYPE","STREQUAL","Debug"],"cmd":"if","file":"/src/CMakeLists.txt","line":6,"frame":1}
+`
+const traceBuildTypeInternalOnly = `{"args":["CMAKE_BUILD_TYPE"],"cmd":"if","file":"/usr/share/cmake-4.3/Modules/Foo.cmake","line":10,"frame":2}
+`
+
+func TestReadsBuildType(t *testing.T) {
+	if !ReadsBuildType([]byte(traceBuildTypeRead), "/src") {
+		t.Errorf("project-side CMAKE_BUILD_TYPE read should be detected")
+	}
+	if ReadsBuildType([]byte(traceBuildTypeInternalOnly), "/src") {
+		t.Errorf("cmake-internal CMAKE_BUILD_TYPE read must NOT trigger the per-config passes")
+	}
+	if ReadsBuildType(nil, "/src") {
+		t.Errorf("empty trace must not trigger")
+	}
+}

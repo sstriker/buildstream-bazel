@@ -503,18 +503,24 @@ trees, optional-feature deps, codegen instances). Each member's
   `.pc.in` configure_file isn't lifted) — a codegen-lift gap tracked with the
   configure_file theme.
 
-- **Two adjacent flag drops (system/threading-linkopt theme).** The bare
+- **One remaining flag drop (system/threading-linkopt theme).** The bare
   system-library link drop that headlined this theme is fixed (`-`-prefixed
-  `libraries`-role fragments route to linkopts). Two flag drops the lens
-  surfaced alongside it remain:
-  - build-type-conditional defines hardcoded `1` regardless of `//config`
-    (LLVM's `LLVM_ENABLE_ABI_BREAKING_CHECKS` / `LLVM_ENABLE_PLUGINS` / …) —
-    needs per-build-type values (a single configure captures one) + a `select()`.
+  `libraries`-role fragments route to linkopts), and the build-type-conditional
+  configure_file values (LLVM's `LLVM_ENABLE_ABI_BREAKING_CHECKS`) now ship via
+  the per-config bake (`--per-config-bake`: detection-gated single-config
+  re-configures whose differing write_file bodies render as
+  `content = select({"//config:<name>": …})`; gate
+  `scripts/meta-cmake-per-config-bake.sh`). Remaining:
   - dropped `target_compile_features` (googletest's PUBLIC `cxx_std_17`) — the
     target's own compile already gets `-std=c++17` via the `LanguageStandard`
     lift; only PUBLIC propagation to consumers is missing, which Bazel's native
     `cc_library` can't express transitively (no `exported_copts`). Needs a design
     call, not a quick fix.
+  - per-config bake residue: the lift covers the write_file bake tier; the
+    LIFTED configure_file tier (`--lift-configure-file`, values-dict driven)
+    still substitutes one configure's variable dump for all arms, and a
+    non-text (base64-genrule) body can't carry select arms — both degrade to
+    the primary config's view, tagged/un-tagged respectively.
 
 - **Emit absent targets / subpackages — investigated; mostly configure-scope,
   one real layout gap left.** Investigation (2026-06): the intent lens diffs the

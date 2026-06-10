@@ -125,3 +125,26 @@ func readPathFor(ev TraceEvent) string {
 	}
 	return ""
 }
+
+// ReadsBuildType reports whether the project's OWN configure logic consults
+// CMAKE_BUILD_TYPE — an event whose file sits inside sourceRoot carrying the
+// variable name in its args (`if(CMAKE_BUILD_TYPE STREQUAL "Debug")`,
+// `set(CMAKE_BUILD_TYPE ...)`; if()/STREQUAL keep bare variable NAMES even
+// under --trace-expand). Gates the per-config configure_file bake passes:
+// a project that never reads CMAKE_BUILD_TYPE can't derive configure_file
+// content from it, so the extra single-config reconfigures are skipped.
+// cmake's own modules read the variable constantly — the in-source-tree
+// filter keeps them from triggering the passes on every project.
+func ReadsBuildType(traceRaw []byte, sourceRoot string) bool {
+	for _, ev := range ParseTrace(traceRaw) {
+		if !inSourceTree(ev.File, sourceRoot) {
+			continue
+		}
+		for _, a := range ev.Args {
+			if strings.Contains(a, "CMAKE_BUILD_TYPE") {
+				return true
+			}
+		}
+	}
+	return false
+}

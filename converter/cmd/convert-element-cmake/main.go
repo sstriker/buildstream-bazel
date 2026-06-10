@@ -727,6 +727,20 @@ func run(a cli.Args) error {
 			}
 		}
 	}
+	// Per-config bake passes (conditional, cold): a multi-config configure
+	// runs ONCE with no CMAKE_BUILD_TYPE, so a baked configure_file body the
+	// project derives from CMAKE_BUILD_TYPE (LLVM's abi-breaking.h) carries
+	// one config's view for every //config:* arm. When multi-config was
+	// requested, the package holds ≥1 write_file bake, and the trace shows
+	// the project's own files consulting CMAKE_BUILD_TYPE (or --per-config-
+	// bake=on forces it), re-configure once per build type — single-config,
+	// into sibling scratch dirs (the multi-config build dir can't switch
+	// generators in place) — read each recovered output's per-config bytes,
+	// and fold differing bodies into content select() arms
+	// (lower.ApplyPerConfigBakes). Failures degrade to the pass-1 single
+	// body, exactly as without the feature.
+	runPerConfigBakes(ctx, a, hostBuildDir, traceRaw, pkg)
+
 	// Always materialize the rejections report when its path is
 	// set so consumers (CI gates, downstream scripts) can rely on
 	// the file existing. Empty array when no rejections fired or

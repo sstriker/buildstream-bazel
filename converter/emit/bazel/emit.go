@@ -1091,7 +1091,7 @@ var writeFileTmpl = template.Must(template.New("write_file").Funcs(template.Func
 }).Parse(`write_file(
     name = "{{.Name}}",
     out = "{{.Out}}",
-    content = {{strList .Content}},
+    content = {{.ContentExpr}},
     newline = "{{.Newline}}",
 {{- if .Tags}}
     tags = {{strList .Tags}},
@@ -1738,12 +1738,12 @@ func emitCCHash(w *bytes.Buffer, t ir.Target) error {
 
 // writeFileView projects ir.Target into the write_file template.
 type writeFileView struct {
-	Name       string
-	Out        string
-	Content    []string
-	Newline    string
-	Tags       []string
-	Visibility []string
+	Name        string
+	Out         string
+	ContentExpr string
+	Newline     string
+	Tags        []string
+	Visibility  []string
 }
 
 func emitWriteFile(w *bytes.Buffer, t ir.Target) error {
@@ -1751,18 +1751,33 @@ func emitWriteFile(w *bytes.Buffer, t ir.Target) error {
 	if newline == "" {
 		newline = "unix"
 	}
+	// Content is intentionally NOT sorted — it's an ordered file body, not a
+	// set. strList's %q-quoting escapes each line into a valid Starlark
+	// string literal; buildifier preserves the order (content is not a
+	// sortable-list attribute).
+	contentExpr := strList(t.WriteFileContent)
+	if len(t.WriteFileContentByConfig) > 0 {
+		// Per-build-type body (the per-config bake passes found the bytes
+		// differ across configs): render a pure select over the config_setting
+		// labels the IR carries, with the primary configure's view as the
+		// //conditions:default arm — same arm convention as attrExpr's
+		// PerPlatform selects.
+		sel := make(map[string][]string, len(t.WriteFileContentByConfig)+1)
+		for label, lines := range t.WriteFileContentByConfig {
+			sel[label] = lines
+		}
+		if _, ok := sel["//conditions:default"]; !ok {
+			sel["//conditions:default"] = t.WriteFileContent
+		}
+		contentExpr = attrExpr(nil, sel)
+	}
 	return writeFileTmpl.Execute(w, writeFileView{
-		Name: t.Name,
-		Out:  t.WriteFileOut,
-		// Content is intentionally NOT sorted — it's an ordered file
-		// body, not a set. The template renders it via strList, whose
-		// %q-quoting escapes each line into a valid Starlark string
-		// literal; buildifier preserves the order (content is not a
-		// sortable-list attribute).
-		Content:    t.WriteFileContent,
-		Newline:    newline,
-		Tags:       sortedCopy(t.Tags),
-		Visibility: nonDefaultVisibility(t.Visibility),
+		Name:        t.Name,
+		Out:         t.WriteFileOut,
+		ContentExpr: contentExpr,
+		Newline:     newline,
+		Tags:        sortedCopy(t.Tags),
+		Visibility:  nonDefaultVisibility(t.Visibility),
 	})
 }
 

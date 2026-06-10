@@ -352,6 +352,7 @@ RENDER_GATES = \
 	scripts/meta-cc-embed-recognize.sh \
 	scripts/meta-cmake-export-header.sh \
 	scripts/meta-cmake-pch.sh \
+	scripts/meta-cmake-per-config-bake.sh \
 	scripts/meta-cmake-cc-hash.sh \
 	scripts/meta-cmake-todos-coverage.sh \
 	scripts/meta-intent-capture-lens.sh \

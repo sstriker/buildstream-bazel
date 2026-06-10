@@ -369,6 +369,20 @@ type Args struct {
 	// disable.
 	TwoPassGenex bool
 
+	// PerConfigBake controls the per-build-type configure_file bake
+	// passes (multi-config mode only). A multi-config generator runs
+	// configure ONCE with no CMAKE_BUILD_TYPE, so a configure_file body a
+	// single-config-idiomatic project derives from CMAKE_BUILD_TYPE
+	// (LLVM's abi-breaking.h: ABI_BREAKING_CHECKS follows assertions, on
+	// for Debug only) bakes ONE config's view for every //config:* arm.
+	// "auto" (default) re-configures once per --build-types entry —
+	// single-config, into sibling scratch build dirs — ONLY when the
+	// pass-1 trace shows the project's own files consulting
+	// CMAKE_BUILD_TYPE and at least one write_file bake exists; bodies
+	// that differ across configs become `content = select({…})` arms.
+	// "on" forces the passes (skips the trace detection); "off" disables.
+	PerConfigBake string
+
 	// BuildType selects the cmake configuration name passed via
 	// -DCMAKE_BUILD_TYPE. Empty defaults to "Release" inside
 	// cmakerun.Configure. Mutually exclusive with BuildTypes —
@@ -720,6 +734,7 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.BoolVar(&a.AllowCMakeVersionMismatch, "allow-cmake-version-mismatch", false, "let convert-element-cmake run with cmake older than the codemodel-v2 floor (local-dev escape hatch)")
 	fs.BoolVar(&a.CMP0026Shim, "cmp0026-shim", false, "translate get_target_property(... LOCATION) into $<TARGET_FILE:...> at configure time (cmake 4.x escape hatch for removed CMP0026 OLD). Changes LOCATION's return shape project-wide; see #208.")
 	fs.BoolVar(&a.ProbeGenex, "probe-genex", true, "stage the per-target genex-probe hook (Phase 3 of the generator-parity uplift). cmake emits file(GENERATE) for each artifact-producing target's common genex shapes (TARGET_FILE, TARGET_OBJECTS, INTERFACE_*) so the lift reads post-walk resolved bytes instead of reimplementing the cmake-side evaluator. Default ON; requires cmake 3.24+.")
+	fs.StringVar(&a.PerConfigBake, "per-config-bake", "auto", "per-build-type configure_file bake passes (multi-config mode): a multi-config cmake configure runs ONCE with no CMAKE_BUILD_TYPE, so a baked configure_file body the project derives from CMAKE_BUILD_TYPE (LLVM's abi-breaking.h) carries one config's view for every //config:* arm. \"auto\" (default) runs one single-config re-configure per --build-types entry — gated on the trace showing project files consulting CMAKE_BUILD_TYPE, so zero overhead otherwise — and renders bodies that differ as content = select({...}) arms with the multi-config view as //conditions:default. \"on\" forces the passes; \"off\" disables.")
 	fs.BoolVar(&a.TwoPassGenex, "two-pass-genex", true, "enable the warm second cmake configure passes (source-root mode, cmake 3.24+). Two independent triggers share this flag: (1) arbitrary genex literals the structural probe + Go-side evaluator can't resolve are resolved via a file(GENERATE) reconfigure; (2) when the first pass finds VCS-stamp vars, a NON-EXPANDED-trace reconfigure recovers set(X ${Y}) copies so a configure_file referencing a copy of a stamp var lifts to stamp_values. Both are conditional (skipped when nothing is unresolved / no stamp vars — zero overhead otherwise) and warm (reuse the first pass's try_compile/find_package cache). Pass --two-pass-genex=false to disable both.")
 	fs.StringVar(&a.BuildType, "build-type", "", "cmake -DCMAKE_BUILD_TYPE value (defaults to Release in cmakerun). Mutually exclusive with --build-types.")
 	fs.Var(commaSlice{&a.BuildTypes}, "build-types", "comma-separated list of cmake configuration names; switches the generator to \"Ninja Multi-Config\" with -DCMAKE_CONFIGURATION_TYPES=<a;b;c>. Phase 5 of the generator-parity uplift (ROADMAP.md). Mutually exclusive with --build-type.")
