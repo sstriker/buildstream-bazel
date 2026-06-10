@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"sort"
 	"strings"
 	"time"
@@ -236,6 +237,21 @@ func loadOfflineReplyArtifacts(replyDir string) (ninjaPath string, cmakeVars map
 func run(a cli.Args) error {
 	t0 := time.Now()
 	var configureElapsed time.Duration
+
+	// Dev lens: CPU-profile the whole run (--cpuprofile). cmake
+	// subprocess time appears as wait, so the profile cleanly separates
+	// the converter's own Go work from cmake's.
+	if a.CPUProfile != "" {
+		f, perr := os.Create(a.CPUProfile)
+		if perr != nil {
+			return perr
+		}
+		defer f.Close()
+		if perr := pprof.StartCPUProfile(f); perr != nil {
+			return perr
+		}
+		defer pprof.StopCPUProfile()
+	}
 
 	// --split-packages is mutually exclusive with --out-ir-json: the
 	// latter round-trips IR through JSON for the multi-platform fold,
