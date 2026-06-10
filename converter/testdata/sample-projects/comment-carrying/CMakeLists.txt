@@ -21,6 +21,14 @@ add_gadget_lib(gadget)  # macro-made gadget
 # the comment above its OWN add_library, not lose it to the include() site.
 include(cmake/extra.cmake)
 
+# A header-only lib via a helper FUNCTION in an included module: the trace
+# frame stack must carry the invocation's comment (codemodel drops INTERFACE
+# libs, so this rides the trace-synth lift).
+include(cmake/iface_helpers.cmake)
+
+# The gizmo interface lib — declared via the helper function.
+add_iface_lib(gizmo)  # trace-synth gizmo
+
 # Generate the lookup table from the spec.
 add_custom_command(
   OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/table.h

@@ -159,6 +159,28 @@ func lowerInterfaceLibraries(
 			RootInclude: rootWalkByTarget[call.Name],
 			Visibility:  publicVisibility(),
 			Tags:        []string{"cmake-codegen-interface-library-from-trace"},
+			// Provenance is the add_library call the trace recorded (the
+			// helper body for function-wrapped declarations); CallSite the
+			// user-level invocation the trace frame stack recovered (the
+			// absl_cc_library(...) line) — comment recovery prefers it, so
+			// the comment above the invocation carries to the lib. Mirrors
+			// the codemodel path's targetProvenance split. The companion
+			// ALIAS target deliberately gets no CallSite: both rules come
+			// from ONE invocation, and two targets on one site would trip
+			// recovery's shared-site ambiguity skip for both.
+			Provenance: ir.Provenance{
+				File:    reanchorProvenanceFile(call.File, cmakeSrc, ""),
+				Line:    call.Line,
+				Command: "add_library",
+			},
+		}
+		if call.CallFile != "" && call.CallLine > 0 &&
+			(call.CallFile != call.File || call.CallLine != call.Line) {
+			tgt.CallSite = ir.Provenance{
+				File:    reanchorProvenanceFile(call.CallFile, cmakeSrc, ""),
+				Line:    call.CallLine,
+				Command: call.CallCmd,
+			}
 		}
 		out = append(out, tgt)
 	}
