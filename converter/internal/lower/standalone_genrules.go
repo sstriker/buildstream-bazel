@@ -290,16 +290,31 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// outs entry, which Bazel rejects ("file X as both an input and an
 		// output"). Detect the collision (an output whose source-tree form
 		// is also a src) and rename the colliding OUTPUT to a non-shadowing
-		// `.gen` sibling. The cmd-side rename is deferred until AFTER
-		// anchorGenruleOutputsToRuledir (below): cmake emits the output as
-		// a BARE basename redirect (`> ${native_export_file}`, run in
-		// CMAKE_CURRENT_BINARY_DIR), so the build-output token never carries
-		// a `<buildDir>/` prefix to match on the raw cmd — but every output
-		// form (bare-basename redirect, buildDir-prefixed) converges on the
-		// `$(RULEDIR)/<out>` form once anchored, so renaming there catches
-		// it uniformly while leaving the (source-tree, non-$(RULEDIR)) input
-		// occurrence untouched.
+		// `.gen` sibling. The rename is two-stage:
+		//
+		//  1. RAW cmd, while input and output are still distinguishable:
+		//     the source operand carries the absolute SOURCE-dir prefix,
+		//     the output is `<buildDir>/<o>` or a cwd-relative `<o>` (cmake
+		//     runs the recipe cd'd into the binary dir). Renaming here
+		//     (renameInPlaceOutputsRawCmd) is what keeps the SOURCE-input
+		//     occurrence safe when both collapse to the same workspace-
+		//     relative token after rewriteGenruleCmd — without it,
+		//     anchorGenruleOutputsToRuledir anchors the input too and the
+		//     cmd degenerates into a self-copy of the renamed output
+		//     (`cp $(RULEDIR)/x.gen $(RULEDIR)/x.gen`).
+		//  2. Post-anchor (renameAnchoredGenruleOutputs below): catches
+		//     output forms the raw pass can't key on — e.g. a bare BASENAME
+		//     redirect of a subdir output, which only converges with the
+		//     declared out at its `$(RULEDIR)/<out>` anchored form. A
+		//     no-op for occurrences stage 1 already renamed.
+		//
+		// outs are renamed HERE (before naming/anchoring) so the rule name
+		// derives from the renamed output and the anchor pass targets the
+		// renamed token only; the trace-driven name/consumer indexes are
+		// aliased to the renamed path so custom-target wrapping and
+		// add_dependencies visibility still resolve.
 		inPlaceRenames := detectInPlaceOutputRenames(outs, srcs, umbrellaPrefix)
+		cmd, outs = applyInPlaceRenames(cmd, outs, inPlaceRenames, buildDir, outputToTargetName, consumedOutputs)
 
 		// Naming: prefer the source-level add_custom_target name
 		// when one wraps any of the edge's outputs. Falls back to
@@ -369,23 +384,15 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			tags = append(tags, "manual")
 		}
 		if len(inPlaceRenames) > 0 {
-			// Deferred in-place-output rename (see detectInPlaceOutputRenames
-			// above): every output occurrence is now in its anchored
-			// $(RULEDIR)/<out> form, so rewrite the colliding output to its
-			// `.gen` sibling in BOTH the cmd and the outs declaration, in
-			// lockstep. The source-tree input occurrence (not
-			// $(RULEDIR)-prefixed) is left alone, so the genrule reads the
-			// source and writes the renamed, non-shadowing output.
+			// Stage 2 of the in-place-output rename (stage 1 ran on the raw
+			// cmd above, where input and output were still distinguishable):
+			// catch any colliding-output occurrence the raw pass couldn't
+			// key on — those converge with the declared out only at their
+			// anchored $(RULEDIR)/<out> form. The source-tree input
+			// occurrence (not $(RULEDIR)-prefixed) is left alone, so the
+			// genrule reads the source and writes the renamed,
+			// non-shadowing output. outs were renamed at detection time.
 			rewrittenCmd = renameAnchoredGenruleOutputs(rewrittenCmd, inPlaceRenames)
-			renamed := make([]string, len(outs))
-			for i, o := range outs {
-				if r, ok := inPlaceRenames[o]; ok {
-					renamed[i] = r
-				} else {
-					renamed[i] = o
-				}
-			}
-			outs = renamed
 			tags = append(tags, "cmake-codegen-genrule-inplace-rewrite")
 		}
 		out = append(out, ir.Target{
@@ -631,6 +638,87 @@ func inPlaceRenamedOutput(o string) string {
 	return o + ".gen"
 }
 
+// applyInPlaceRenames performs stage 1 of the in-place-output rename for
+// one edge: the raw-cmd rewrite (renameInPlaceOutputsRawCmd), the outs
+// rename, and the aliasing of the trace-driven name/consumer indexes to
+// the renamed paths (so custom-target wrapping and add_dependencies
+// visibility still resolve). No-op passthrough when there are no renames.
+func applyInPlaceRenames(cmd string, outs []string, renames map[string]string, buildDir string, outputToTargetName map[string]string, consumedOutputs map[string]bool) (string, []string) {
+	if len(renames) == 0 {
+		return cmd, outs
+	}
+	cmd = renameInPlaceOutputsRawCmd(cmd, renames, buildDir)
+	for i, o := range outs {
+		r, hit := renames[o]
+		if !hit {
+			continue
+		}
+		outs[i] = r
+		if tn, ok := outputToTargetName[o]; ok {
+			outputToTargetName[r] = tn
+		}
+		if consumedOutputs[o] {
+			consumedOutputs[r] = true
+		}
+	}
+	return cmd, outs
+}
+
+// renameInPlaceOutputsRawCmd is stage 1 of the in-place-output rename: it
+// runs on the RAW ninja cmd, where the colliding input and output are
+// still distinguishable by FORM — the source operand carries the absolute
+// SOURCE-dir prefix, while the output appears as `<buildDir>/<o>`
+// (explicit-path shape: `cmake -E copy <srcdir>/x <buildDir>/x`) or as a
+// cwd-relative `<o>` (cmake cd's the recipe into the binary dir, so a
+// bare-token occurrence names the build file). Renaming the output here —
+// before rewriteGenruleCmd collapses both operands to the same
+// workspace-relative token — is what lets anchorGenruleOutputsToRuledir
+// anchor ONLY the renamed output and leave the source input reading the
+// source. The bare-token pass is boundary-guarded (preceding byte must
+// not be '/'), so the source operand's `<srcdir>/<o>` occurrence — and
+// any already-prefixed occurrence — is never touched.
+func renameInPlaceOutputsRawCmd(cmd string, renames map[string]string, buildDir string) string {
+	if cmd == "" || len(renames) == 0 {
+		return cmd
+	}
+	type repl struct{ search, with string }
+	var pairs []repl
+	for o, renamed := range renames {
+		if o == "" {
+			continue
+		}
+		if buildDir != "" {
+			pairs = append(pairs, repl{buildDir + "/" + o, buildDir + "/" + renamed})
+		}
+		pairs = append(pairs, repl{o, renamed})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return len(pairs[i].search) > len(pairs[j].search) })
+	var b strings.Builder
+	for i := 0; i < len(cmd); {
+		matched := false
+		for _, p := range pairs {
+			if !strings.HasPrefix(cmd[i:], p.search) {
+				continue
+			}
+			// Bare-token boundary guard: an occurrence preceded by '/'
+			// sits inside a longer path (the source operand, or a
+			// buildDir-prefixed form a longer pair already handles).
+			if !strings.HasPrefix(p.search, "/") && i > 0 && cmd[i-1] == '/' {
+				continue
+			}
+			b.WriteString(p.with)
+			i += len(p.search)
+			matched = true
+			break
+		}
+		if !matched {
+			b.WriteByte(cmd[i])
+			i++
+		}
+	}
+	return b.String()
+}
+
 // renameAnchoredGenruleOutputs rewrites each `$(RULEDIR)/<o>` occurrence in
 // the ALREADY-ANCHORED cmd to `$(RULEDIR)/<renamed>`, renaming an in-place-
 // rewrite output to its non-shadowing `.gen` sibling in lockstep with the
@@ -653,8 +741,13 @@ func renameAnchoredGenruleOutputs(cmd string, renames map[string]string) string 
 	}
 	const rp = "$(RULEDIR)/"
 	type repl struct{ search, with string }
-	pairs := make([]repl, 0, len(renames))
+	pairs := make([]repl, 0, 2*len(renames))
 	for o, renamed := range renames {
+		// Identity pair first (longer, so sorted ahead of the rename
+		// pair): an occurrence stage 1 already renamed must not be
+		// re-suffixed (`x.gen` → `x.gen.gen`) — this pass is the
+		// second stage of the two-stage rename and must be idempotent.
+		pairs = append(pairs, repl{rp + renamed, rp + renamed})
 		pairs = append(pairs, repl{rp + o, rp + renamed})
 	}
 	sort.Slice(pairs, func(i, j int) bool { return len(pairs[i].search) > len(pairs[j].search) })

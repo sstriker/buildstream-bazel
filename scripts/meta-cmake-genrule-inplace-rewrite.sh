@@ -91,10 +91,24 @@ printf '%s\n' "$blk" | grep -qF 'srcs = ["version.txt"]' \
 
 # 3. cmd reads the source input (bare version.txt) and writes the renamed
 # output under $(RULEDIR); the input must NOT be anchored to $(RULEDIR).
+# The double-suffix and self-copy shapes are asserted explicitly: the
+# original assertions passed for years while the cmd was
+# `cp $(RULEDIR)/version.txt.gen $(RULEDIR)/version.txt.gen` (the input
+# anchored+renamed in lockstep with the output), because the trailing-
+# space grep can't see a `.gen`-suffixed self-copy.
 printf '%s\n' "$blk" | grep -qF '$(RULEDIR)/version.txt.gen' \
     || fail "cmd should write the renamed output to \$(RULEDIR)/version.txt.gen"
 printf '%s\n' "$blk" | grep -qF '$(RULEDIR)/version.txt ' \
     && fail "cmd anchored the INPUT to \$(RULEDIR)/version.txt — the self-copy bug (input should read the source, not RULEDIR)"
+printf '%s\n' "$blk" | grep -qF 'version.txt.gen.gen' \
+    && fail "output renamed twice (stage-2 rename not idempotent)"
+printf '%s\n' "$blk" | grep -qF 'cp version.txt $(RULEDIR)/version.txt.gen' \
+    || fail "cmd should read the SOURCE version.txt and write \$(RULEDIR)/version.txt.gen (self-copy bug)"
+
+# 3b. the rule is NAMED after the renamed output (the bazel half below
+# builds //:custom_command_version_txt_gen).
+printf '%s\n' "$blk" | grep -qF 'name = "custom_command_version_txt_gen"' \
+    || fail "rule should be named after the RENAMED output (custom_command_version_txt_gen)"
 
 # 4. audit tag.
 printf '%s\n' "$blk" | grep -q '"cmake-codegen-genrule-inplace-rewrite"' \
