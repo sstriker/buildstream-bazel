@@ -54,10 +54,6 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) (includes, readers
 	if hostSrc == "" || len(srcs) == 0 {
 		return nil, nil
 	}
-	compiled := make(map[string]bool, len(srcs))
-	for _, s := range srcs {
-		compiled[filepath.ToSlash(filepath.Clean(s))] = true
-	}
 	seen := map[string]bool{}
 	var out []string
 	var read []string
@@ -83,7 +79,7 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) (includes, readers
 			if strings.HasPrefix(inc, "/") || filepath.IsAbs(inc) {
 				continue
 			}
-			rel := resolveTextualInclude(hostSrc, dir, inc, s, compiled)
+			rel := resolveTextualInclude(hostSrc, dir, inc, s)
 			if rel == "" {
 				continue
 			}
@@ -110,14 +106,21 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) (includes, readers
 // `googletest/src/gtest-all.cc` does `#include "src/gtest.cc"` that cmake
 // resolves against the target's include root (the package dir `googletest/`
 // above `src/`), not the includer's `src/` dir. Returns the first candidate
-// that exists on disk under hostSrc, isn't the includer `self`, isn't already
-// compiled, and doesn't escape the element root; "" when none qualifies. The
-// deepest (most specific) ancestor wins, since the walk starts at `dir`.
-func resolveTextualInclude(hostSrc, dir, inc, self string, compiled map[string]bool) string {
+// that exists on disk under hostSrc, isn't the includer `self`, and doesn't
+// escape the element root; "" when none qualifies. The deepest (most specific)
+// ancestor wins, since the walk starts at `dir`.
+//
+// A candidate the target ALSO compiles is returned too: cmake builds both
+// shapes — VTK's bundled lz4 compiles lz4.c standalone AND lz4hc.c textually
+// `#include "lz4.c"` for its internal statics. Under Bazel a sibling src is
+// NOT an input of the includer's compile action, so the file must appear in
+// textual_hdrs as well (it stays in srcs; the routing never removes it) or
+// the includer fails "lz4.c: No such file or directory" in the sandbox.
+func resolveTextualInclude(hostSrc, dir, inc, self string) string {
 	for base := dir; ; base = filepath.Dir(base) {
 		rel := filepath.ToSlash(filepath.Clean(filepath.Join(base, inc)))
 		if rel != "." && rel != ".." && rel != self &&
-			!strings.HasPrefix(rel, "../") && !compiled[rel] {
+			!strings.HasPrefix(rel, "../") {
 			if st, err := os.Stat(filepath.Join(hostSrc, filepath.FromSlash(rel))); err == nil && !st.IsDir() {
 				return rel
 			}
@@ -253,7 +256,7 @@ func textualIncludeClosure(hostSrc string, seeds []string, compiled map[string]b
 			if strings.HasPrefix(inc, "/") || filepath.IsAbs(inc) {
 				continue
 			}
-			rel := resolveTextualInclude(hostSrc, dir, inc, cur, compiled)
+			rel := resolveTextualInclude(hostSrc, dir, inc, cur)
 			if rel == "" {
 				continue
 			}

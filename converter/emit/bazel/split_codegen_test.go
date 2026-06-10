@@ -208,3 +208,76 @@ func sliceRule(body, n string) string {
 	}
 	return rest
 }
+
+// Data FILE-path entries (consumer-attributed generated artifacts — VTK's
+// wrap-hierarchy .args/.data response files) must be rewritten per package
+// like srcs: package-relative when the consumer's own package owns the file,
+// a cross-package label (with the producer publicized) when another package
+// does. Pre-fix they passed through verbatim as element-root-relative paths,
+// which Bazel resolved against the consumer's package — 80 missing inputs on
+// VTK's IOInfovis. Target refs (":x") keep their deps-style relabel.
+func TestEmitSplit_DataFilePaths_RewrittenPerPackage(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "p",
+		Targets: []ir.Target{
+			// Producer of a generated non-cc artifact in gen/.
+			{
+				Name:         "gen_args",
+				Kind:         ir.KindWriteFile,
+				WriteFileOut: "gen/CMakeFiles/mod-hierarchy.Release.args",
+			},
+			// A real cc target making gen/ a package.
+			{Name: "genlib", Kind: ir.KindCCLibrary, Srcs: []string{"gen/genlib.cpp"}},
+			// Cross-package consumer: data names the OTHER package's artifact
+			// (element-root-relative, the lower-side attribution shape).
+			{
+				Name: "consumer",
+				Kind: ir.KindCCLibrary,
+				Srcs: []string{"lib/consumer.cpp"},
+				Data: []string{"gen/CMakeFiles/mod-hierarchy.Release.args"},
+			},
+			// Same-package consumer: data names its OWN package's artifact.
+			{
+				Name: "selfuser",
+				Kind: ir.KindCCLibrary,
+				Srcs: []string{"gen/selfuser.cpp"},
+				Data: []string{"gen/CMakeFiles/mod-hierarchy.Release.args"},
+			},
+		},
+		SubPackages: map[string]string{
+			"gen_args": "gen",
+			"genlib":   "gen",
+			"consumer": "lib",
+			"selfuser": "gen",
+		},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/p"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	gen := string(tree["gen"])
+	lib := string(tree["lib"])
+
+	// Cross-package consumer: full label into the owning package.
+	if !strings.Contains(lib, `"//elements/p/gen:CMakeFiles/mod-hierarchy.Release.args"`) {
+		t.Errorf("consumer data should carry the cross-package label:\n%s", lib)
+	}
+	if strings.Contains(lib, `"gen/CMakeFiles/mod-hierarchy.Release.args"`) {
+		t.Errorf("consumer data still carries the verbatim element-relative path:\n%s", lib)
+	}
+	// Same-package consumer: package-relative path.
+	if !strings.Contains(gen, `data = ["CMakeFiles/mod-hierarchy.Release.args"]`) {
+		t.Errorf("same-package data should be package-relative:\n%s", gen)
+	}
+	// The producer must be publicized for the cross-package data ref.
+	if !strings.Contains(gen, "gen_args") {
+		t.Fatalf("producer missing from gen package:\n%s", gen)
+	}
+	genArgsRule := gen[strings.Index(gen, `name = "gen_args"`):]
+	if end := strings.Index(genArgsRule, ")"); end > 0 {
+		genArgsRule = genArgsRule[:end]
+	}
+	if strings.Contains(genArgsRule, `//visibility:private`) {
+		t.Errorf("cross-package-consumed producer should be publicized:\n%s", genArgsRule)
+	}
+}

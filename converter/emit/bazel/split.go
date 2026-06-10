@@ -1062,6 +1062,15 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 		for _, h := range t.TextualHdrs {
 			publicizeIfCrossPkgGen(h, consumerDir, t.Name)
 		}
+		// data file paths referencing a generated output owned by another
+		// package (VTK's wrap-hierarchy .args/.data response files) become
+		// cross-package file labels (rewriteDataEntries), so the producing
+		// write_file/genrule needs publicizing exactly like a cross-package
+		// src; ":x" build-order refs need it like any cross-package target ref.
+		for _, d := range t.Data {
+			publicizeIfCrossPkgGen(d, consumerDir, t.Name)
+			publicizeIfCrossPkgTarget(d, consumerDir, t.Name)
+		}
 	}
 	// Synthesized include-root header libs (headerLibTarget) aren't in
 	// pkg.Targets but reference their include-root's headers, cross-package-
@@ -1608,13 +1617,19 @@ func rewriteTarget(t ir.Target, dir string, plan *splitPlan, local bool, exports
 	// different split packages.
 	rt.DynamicDeps = rewriteSharedDeps(t.DynamicDeps, plan)
 	rt.SharedLibDynamicDeps = rewriteSharedDeps(t.SharedLibDynamicDeps, plan)
-	// Data carries add_dependencies-derived intra-element target edges (":x",
-	// build-order only); relabel them to cross-package labels like deps, else a
-	// sub-package consumer's `:LLVMAnalysis` resolves to its OWN package
-	// (LLVM's lib/Frontend/Atomic referencing lib/Analysis:LLVMAnalysis →
-	// "missing input file"). Same target-ref shape as deps, so rewriteDeps is
-	// the right mapper.
-	rt.Data = rewriteDeps(t.Data, plan, nil)
+	// Data mixes two entry shapes: add_dependencies-derived intra-element
+	// TARGET refs (":x", build-order only) and consumer-attributed FILE paths
+	// (element-root-relative — VTK's wrap-hierarchy .args/.data response
+	// files attached by the file(GENERATE) consumer attribution). Refs
+	// relabel like deps — else a sub-package consumer's `:LLVMAnalysis`
+	// resolves to its OWN package (LLVM's lib/Frontend/Atomic →
+	// "missing input file"). Paths relabel like srcs — package-relative when
+	// owned by this package, a cross-package file label otherwise. Pre-fix,
+	// path entries passed through VERBATIM and resolved against the
+	// consumer's package, analysis-failing for every consumer not at the
+	// element root (VTK's IOInfovis: 80 missing inputs naming other modules'
+	// hierarchy args).
+	rt.Data = rewriteDataEntries(t.Data, plan, dir, local, exportsByDir)
 
 	// An alias's `actual` is an intra-element target reference too — relabel
 	// it to the target's real package the same way deps are. Aliases land in
@@ -1826,6 +1841,57 @@ func (p *splitPlan) setBase(b string) { p.base = b }
 // from relUnder, so it may include subdirectories) must be reachable
 // cross-package, so the owning package emits it in exports_files(). Single
 // chokepoint for the per-package collection the rewrite paths feed.
+// rewriteDataEntries routes a target's data list to the post-split shape.
+// Two entry shapes coexist (see the rewriteTarget call site): intra-element
+// TARGET refs (":x") relabel like deps; element-root-relative FILE paths
+// relabel like srcs — package-relative when this package owns the file, a
+// cross-package file label otherwise, plus an exports_files() need when the
+// cross-package file isn't a generated output (a generated one is reachable
+// through its publicized producer; see publicizeIfCrossPkgGen's data walk).
+// Already-qualified ("//...") entries and the non-local (SourceKey) regime
+// pass through unchanged — non-local srcs stay element-root-relative too.
+func rewriteDataEntries(data []string, plan *splitPlan, dir string, local bool, exportsByDir map[string]map[string]struct{}) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(l string) {
+		if _, ok := seen[l]; ok {
+			return
+		}
+		seen[l] = struct{}{}
+		out = append(out, l)
+	}
+	for _, d := range data {
+		if name, ok := strings.CutPrefix(d, ":"); ok {
+			add(targetLabel(plan, name))
+			continue
+		}
+		if strings.HasPrefix(d, "//") || !local {
+			add(d)
+			continue
+		}
+		owner := plan.deepestPkg(d)
+		if owner == dir {
+			if rel, ok := relUnder(dir, d); ok {
+				add(rel)
+			}
+			continue
+		}
+		file, _ := relUnder(owner, d)
+		if file == "" {
+			continue
+		}
+		add(crossPkgLabel(plan, owner, file))
+		if !plan.genOuts[d] {
+			recordExportedFile(exportsByDir, owner, file)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func recordExportedFile(exportsByDir map[string]map[string]struct{}, dir, file string) {
 	if exportsByDir[dir] == nil {
 		exportsByDir[dir] = map[string]struct{}{}
