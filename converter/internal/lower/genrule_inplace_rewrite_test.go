@@ -74,6 +74,78 @@ func TestDetectInPlaceOutputRenames(t *testing.T) {
 	}
 }
 
+// TestRenameInPlaceOutputsRawCmd covers stage 1 of the two-stage rename:
+// on the RAW cmd the buildDir-prefixed output operand and the bare
+// cwd-relative form are renamed, while the absolute SOURCE-dir operand —
+// whose trailing component is the same token — plus prefix-sharing and
+// extended names are protected by the two-sided token-boundary guards.
+// Without this stage, rewriteGenruleCmd collapses input and output to
+// one token and the anchor pass turns the cmd into a self-copy of the
+// renamed output.
+func TestRenameInPlaceOutputsRawCmd(t *testing.T) {
+	renames := map[string]string{"version.txt": "version.txt.gen"}
+	for _, tc := range []struct {
+		name, cmd, want string
+	}{
+		{
+			name: "explicit-path copy (the fixture shape)",
+			cmd:  "cd /b && cmake -E copy /s/version.txt /b/version.txt",
+			want: "cd /b && cmake -E copy /s/version.txt /b/version.txt.gen",
+		},
+		{
+			name: "bare cwd-relative output token",
+			cmd:  "gen.py /s/version.txt > version.txt",
+			want: "gen.py /s/version.txt > version.txt.gen",
+		},
+		{
+			name: "relative source ref stays protected",
+			cmd:  "tool ../src/version.txt version.txt",
+			want: "tool ../src/version.txt version.txt.gen",
+		},
+		{
+			name: "prefix-sharing token untouched (left boundary)",
+			cmd:  "tool myversion.txt /b/version.txt",
+			want: "tool myversion.txt /b/version.txt.gen",
+		},
+		{
+			name: "extended name untouched (right boundary)",
+			cmd:  "tool version.txt.bak /b/version.txt",
+			want: "tool version.txt.bak /b/version.txt.gen",
+		},
+		{
+			name: "buildDir-prefixed extended name untouched",
+			cmd:  "tool /b/version.txt.bak /b/version.txt",
+			want: "tool /b/version.txt.bak /b/version.txt.gen",
+		},
+	} {
+		if got := renameInPlaceOutputsRawCmd(tc.cmd, renames, "/b"); got != tc.want {
+			t.Errorf("%s:\ngot  %q\nwant %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestRenameAnchoredGenruleOutputs_RightBoundary confirms an anchored
+// token that merely STARTS with the renamed output — a `.bak` sibling, a
+// `.d` depfile — is a different file and stays untouched.
+func TestRenameAnchoredGenruleOutputs_RightBoundary(t *testing.T) {
+	cmd := "tool $(RULEDIR)/version.txt.bak -MF $(RULEDIR)/version.txt.d > $(RULEDIR)/version.txt"
+	got := renameAnchoredGenruleOutputs(cmd, map[string]string{"version.txt": "version.txt.gen"})
+	want := "tool $(RULEDIR)/version.txt.bak -MF $(RULEDIR)/version.txt.d > $(RULEDIR)/version.txt.gen"
+	if got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+// TestRenameAnchoredGenruleOutputs_Idempotent confirms stage 2 leaves an
+// occurrence stage 1 already renamed alone (no `x.gen.gen`).
+func TestRenameAnchoredGenruleOutputs_Idempotent(t *testing.T) {
+	cmd := "cp version.txt $(RULEDIR)/version.txt.gen"
+	got := renameAnchoredGenruleOutputs(cmd, map[string]string{"version.txt": "version.txt.gen"})
+	if got != cmd {
+		t.Errorf("already-renamed token re-suffixed:\ngot  %q\nwant %q", got, cmd)
+	}
+}
+
 // TestRenameAnchoredGenruleOutputs confirms the rename keys on the anchored
 // $(RULEDIR)/<out> output form (renaming it to its `.gen` sibling) while the
 // source-tree input occurrence — sharing the same basename but carrying the
