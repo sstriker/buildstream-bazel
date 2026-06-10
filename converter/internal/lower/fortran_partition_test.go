@@ -1,10 +1,41 @@
 package lower
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
+
+// TestSplitFortranModuleSrcs_UseColonColonOrdering: a module provider whose
+// `use` of another provider's module is written in the F2003 `use :: M` form
+// (and the `use, non_intrinsic :: M` form) is still ordered after its provider.
+// Guards fortranUseRe against the double-colon forms.
+func TestSplitFortranModuleSrcs_UseColonColonOrdering(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// base defines M (no deps); mid defines N, `use :: M`; top defines O,
+	// `use, non_intrinsic :: N`. Expected provider order: base, mid, top.
+	write("base.f90", "module m\n integer :: a\nend module m\n")
+	write("mid.f90", "module n\n use :: m\n integer :: b\nend module n\n")
+	write("top.f90", "module o\n use, non_intrinsic :: n\n integer :: c\nend module o\n")
+	write("plain.f", "      subroutine sub\n      end\n") // no module → rest
+
+	srcs := []string{"top.f90", "mid.f90", "base.f90", "plain.f"}
+	mod, rest := splitFortranModuleSrcs(srcs, dir)
+
+	if !fpEqual(mod, []string{"base.f90", "mid.f90", "top.f90"}) {
+		t.Errorf("module order = %v; want [base.f90 mid.f90 top.f90] (provider before user)", mod)
+	}
+	if !fpEqual(rest, []string{"plain.f"}) {
+		t.Errorf("rest = %v; want [plain.f]", rest)
+	}
+}
 
 func fpEqual(a, b []string) bool {
 	if len(a) != len(b) {

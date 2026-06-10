@@ -29,6 +29,7 @@ OpenBLAS ships is fixed-form FORTRAN 77 (module-free) where per-source
 compilation is fully parallel. See docs/survey-corpus.md (OpenBLAS rows).
 """
 
+load("@bazel_skylib//lib:shell.bzl", "shell")
 load("@rules_cc//cc:action_names.bzl", "ACTION_NAMES")
 load("@rules_cc//cc:find_cc_toolchain.bzl", "find_cc_toolchain", "use_cc_toolchain")
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
@@ -62,10 +63,18 @@ def _impl(ctx):
     comp_ctx = dep_cc_info.compilation_context
 
     include_args = []
+    # cc-rule `includes` semantics: each dir is PACKAGE-relative and searched
+    # in BOTH the source tree and the generated (bin) tree; workspace_root
+    # carries the `external/<repo>` prefix when the rendered project is consumed
+    # as an external repo. (A bare `-I<inc>` would only resolve for a
+    # root-package render of the main repo — wrong for the converter's
+    # per-package split BUILD mode and for external consumption.)
+    src_root = "/".join([p for p in [ctx.label.workspace_root, ctx.label.package] if p])
+    bin_root = "/".join([p for p in [ctx.bin_dir.path, ctx.label.workspace_root, ctx.label.package] if p])
     for inc in ctx.attr.includes:
-        # Mirror cc rules' `includes`: the dir is searched both as a
-        # source-tree path and as its generated (bin) counterpart.
-        include_args.append("-I" + inc)
+        rel = src_root + "/" + inc if src_root else inc
+        include_args.append("-I" + rel)
+        include_args.append("-I" + bin_root + "/" + inc)
     for inc in comp_ctx.includes.to_list():
         include_args.append("-I" + inc)
     for inc in comp_ctx.quote_includes.to_list():
@@ -93,15 +102,23 @@ def _impl(ctx):
             obj = ctx.actions.declare_file("_objs/%s/mod_%d_%s.pic.o" % (ctx.label.name, i, src.basename))
             mod_outputs.append(obj)
             pic_objects.append(obj)
-            cmds.append("'%s' -fPIC -c '%s' -o '%s' -J'%s' -I'%s' %s %s" % (
-                compiler,
-                src.path,
-                obj.path,
-                moddir.path,
-                moddir.path,
-                " ".join(["'%s'" % c for c in ctx.attr.copts]),
-                " ".join(["'%s'" % a for a in include_args]),
-            ))
+            # shell.quote every interpolated value (paths, copts, include
+            # flags) so a token with an embedded quote — e.g. a `-DVERSION='"x"'`
+            # define folded into copts by normalizeFortranTarget — can't break
+            # the command, matching the Args-based bulk path's robustness.
+            parts = [
+                shell.quote(compiler),
+                "-fPIC",
+                "-c",
+                shell.quote(src.path),
+                "-o",
+                shell.quote(obj.path),
+                "-J" + shell.quote(moddir.path),
+                "-I" + shell.quote(moddir.path),
+            ]
+            parts += [shell.quote(c) for c in ctx.attr.copts]
+            parts += [shell.quote(a) for a in include_args]
+            cmds.append(" ".join(parts))
         ctx.actions.run_shell(
             command = " && ".join(cmds),
             inputs = depset(

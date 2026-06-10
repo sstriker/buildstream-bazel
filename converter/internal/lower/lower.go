@@ -5870,6 +5870,13 @@ func retagFortranTargets(pkg *ir.Package, srcRoot string) {
 		// Publish the module-definers' content reads (see the Fortran-only
 		// branch above and ir.Package.SourceByteReads).
 		pkg.SourceByteReads = append(pkg.SourceByteReads, modSrcs...)
+		// The sibling does NOT copy t.LinkOpts: the cc_* wrapper retains them and
+		// the wrapper deps on the sibling, so the wrapper already threads its
+		// linkopts to consumers once. Copying them here too would duplicate them
+		// on every consumer link line (after the sibling's -lgfortran -lm),
+		// which can misbehave for position-sensitive flags (`-Wl,--whole-archive`
+		// pairs). The sibling only needs the gfortran runtime, which the rule
+		// adds unconditionally.
 		sub := ir.Target{
 			Name:               t.Name + "_fortran",
 			Kind:               ir.KindFortranLibrary,
@@ -5879,7 +5886,6 @@ func retagFortranTargets(pkg *ir.Package, srcRoot string) {
 			ImplementationDeps: append([]string(nil), t.ImplementationDeps...),
 			Copts:              append([]string(nil), t.Copts...),
 			Includes:           append([]string(nil), t.Includes...),
-			LinkOpts:           append([]string(nil), t.LinkOpts...),
 			Defines:            append([]string(nil), t.Defines...),
 			LocalDefines:       append([]string(nil), t.LocalDefines...),
 			Visibility:         []string{"//visibility:private"},
@@ -5901,8 +5907,14 @@ func retagFortranTargets(pkg *ir.Package, srcRoot string) {
 // construct, not a module definition) and `module function`/`module subroutine`.
 var fortranModuleDefRe = regexp.MustCompile(`(?im)^\s*module\s+([a-z][a-z0-9_]*)\s*(?:!.*)?$`)
 
-// fortranUseRe matches a `use <module>` statement.
-var fortranUseRe = regexp.MustCompile(`(?im)^\s*use\s+([a-z][a-z0-9_]*)`)
+// fortranUseRe matches a `use <module>` statement in all its forms — the bare
+// `use la_constants`, the F2003 `use :: la_constants`, and the
+// module-nature `use, non_intrinsic :: la_constants` (the leading `use\b`
+// boundary keeps it from matching an identifier like `used_var`). A
+// `use, intrinsic :: iso_fortran_env` also matches but is harmless: the
+// intrinsic module isn't a definer in this set, so the topo sort finds no
+// provider edge for it.
+var fortranUseRe = regexp.MustCompile(`(?im)^\s*use\b\s*(?:,\s*\w+\s*)?(?:::\s*)?([a-z][a-z0-9_]*)`)
 
 // splitFortranModuleSrcs partitions Fortran sources into the ones that DEFINE a
 // module (gfortran emits a `.mod` for each) and the rest. The module-definers
