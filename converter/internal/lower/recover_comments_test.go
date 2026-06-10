@@ -129,14 +129,17 @@ func TestRecoverSourceComments_PerInvocationCallSites(t *testing.T) {
 	}
 }
 
-// TestRecoverSourceComments_SharedCallSiteSkipped: one macro invocation that
-// declares TWO targets — the call site is shared, so neither target gets the
-// comment (same ambiguity policy as shared declaration sites).
-func TestRecoverSourceComments_SharedCallSiteSkipped(t *testing.T) {
+// TestRecoverSourceComments_SharedCallSiteDuplicated: one macro invocation
+// that declares TWO targets — the invocation's comment describes everything
+// it produced, so BOTH targets carry it (the uniform multi-target-per-
+// invocation policy; the codegen-genrule path behaves the same). Contrast
+// with TestRecoverSourceComments_SharedSiteSkipped: a shared DECLARATION
+// line stays ambiguous and recovers nothing.
+func TestRecoverSourceComments_SharedCallSiteDuplicated(t *testing.T) {
 	dir := t.TempDir()
 	cml := filepath.Join(dir, "CMakeLists.txt")
 	body := "# both libs at once\n" + // 1
-		"add_widget_pair(a b)\n" // 2 (one invocation, two targets)
+		"add_widget_pair(a b)  # the pair\n" // 2 (one invocation, two targets)
 	if err := os.WriteFile(cml, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -149,8 +152,11 @@ func TestRecoverSourceComments_SharedCallSiteSkipped(t *testing.T) {
 	recoverSourceComments(pkg, dir, dir, "", nil, nil, nil)
 
 	for _, tg := range pkg.Targets {
-		if tg.LeadingComment != nil {
-			t.Errorf("shared-call-site target %q got comment %q; want none", tg.Name, tg.LeadingComment)
+		if lc := tg.LeadingComment; len(lc) != 1 || lc[0] != "# both libs at once" {
+			t.Errorf("shared-call-site target %q leading comment = %q; want [# both libs at once]", tg.Name, lc)
+		}
+		if tg.TrailingComment != "# the pair" {
+			t.Errorf("shared-call-site target %q trailing comment = %q; want %q", tg.Name, tg.TrailingComment, "# the pair")
 		}
 	}
 }

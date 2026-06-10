@@ -34,10 +34,13 @@ func provenanceHostPath(file, hostSrc string) string {
 // declaring command ran inside a macro/function (the invocation the author
 // wrote, where their comment sits), else its Provenance declaration site (the
 // add_library/add_executable/… file:line). We read the contiguous `#`
-// leading-comment block there. To avoid misattributing one comment to many
-// targets, **sites shared by more than one target are skipped** — e.g. a
-// single macro invocation that declares several targets, or a helper body
-// line with no recoverable call site. cmake-internal and unreadable files are
+// leading-comment block there. A CALL SITE shared by several targets — one
+// invocation declaring a pair of libs — carries its comment to EACH of them:
+// the comment describes everything the invocation produced (the same policy
+// the codegen-genrule path applies). A DECLARATION site shared by several
+// call-site-less targets is the opposite case — one helper body line reached
+// by N different invocations — and is skipped as ambiguous: the body comment
+// belongs to no specific invocation. cmake-internal and unreadable files are
 // skipped (best-effort; offline --reply-dir runs whose recorded paths don't
 // exist locally simply recover nothing).
 func recoverSourceComments(pkg *ir.Package, hostSrc, cmakeSrc, cmakeBuild string,
@@ -93,18 +96,26 @@ func commentSite(t *ir.Target) ir.Provenance {
 
 // recoverTargetComments recovers each codemodel target's leading/trailing
 // source comment from its comment site (the user-level call site for
-// macro-declared targets, else the Provenance declaration site). Sites shared
-// by >1 target — one macro invocation declaring several targets, or a helper
-// body line with no call site recovered — are skipped to avoid misattributing
-// one comment to many targets. fileLines reads + caches source files.
+// macro-declared targets, else the Provenance declaration site). A call site
+// shared by several targets carries its comment to each (one invocation, one
+// comment describing all its products — uniform with the codegen-genrule
+// path); a DECLARATION site shared by several call-site-less targets (a
+// helper body line reached by N invocations) is skipped as ambiguous.
+// fileLines reads + caches source files.
 func recoverTargetComments(pkg *ir.Package, hostSrc string, fileLines func(string) []string) {
 	type site struct {
 		file string
 		line int
 	}
+	// Ambiguity count over DECLARATION sites only: targets with a recovered
+	// call site neither consult nor contribute to it.
 	count := map[site]int{}
 	for i := range pkg.Targets {
-		p := commentSite(&pkg.Targets[i])
+		t := &pkg.Targets[i]
+		if !t.CallSite.IsZero() {
+			continue
+		}
+		p := t.Provenance
 		if p.File == "" || p.Line <= 0 {
 			continue
 		}
@@ -116,9 +127,8 @@ func recoverTargetComments(pkg *ir.Package, hostSrc string, fileLines func(strin
 		if len(t.LeadingComment) > 0 || p.File == "" || p.Line <= 0 {
 			continue
 		}
-		key := site{p.File, p.Line}
-		if count[key] != 1 {
-			continue // shared site: multi-target declaration, ambiguous — skip
+		if t.CallSite.IsZero() && count[site{p.File, p.Line}] != 1 {
+			continue // shared declaration line: ambiguous — skip
 		}
 		host := provenanceHostPath(p.File, hostSrc)
 		// isCMakeInternalPath matches forward-slash substrings; host comes from

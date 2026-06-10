@@ -165,9 +165,10 @@ func lowerInterfaceLibraries(
 			// absl_cc_library(...) line) — comment recovery prefers it, so
 			// the comment above the invocation carries to the lib. Mirrors
 			// the codemodel path's targetProvenance split. The companion
-			// ALIAS target deliberately gets no CallSite: both rules come
-			// from ONE invocation, and two targets on one site would trip
-			// recovery's shared-site ambiguity skip for both.
+			// ALIAS target deliberately gets no CallSite: it's a secondary
+			// projection of the SAME declaration, and duplicating the
+			// invocation's comment onto the adjacent alias() rule would be
+			// noise, not information.
 			Provenance: ir.Provenance{
 				File:    reanchorProvenanceFile(call.File, cmakeSrc, ""),
 				Line:    call.Line,
