@@ -101,6 +101,18 @@ if grep -qF -- "inside the helper body" "$ws/BUILD.bazel"; then
   sed 's/^/   /' "$ws/BUILD.bazel"
   exit 1
 fi
+# (4e) One invocation, several targets: add_lib_pair(thing) declares thing_a
+# AND thing_b — the invocation's comment must appear on BOTH rules (the
+# uniform duplicate policy; a shared declaration line would instead skip).
+pair_count=$(grep -cF -- "Both halves of the pair — one comment, two rules." "$ws/BUILD.bazel" || true)
+if [ "$pair_count" != "2" ]; then
+  echo "FAIL: pair invocation comment should appear on BOTH rules; found $pair_count"
+  echo "   --- generated BUILD ---"
+  sed 's/^/   /' "$ws/BUILD.bazel"
+  exit 1
+fi
+echo "ok  meta-cmake-comment-carrying: one-invocation pair comment duplicated onto both targets"
+
 # (4d) Macro-wrapped codegen genrule: the comment above the gen_lut(...)
 # invocation carries to the synthesized genrule (leading + trailing), the
 # macro body's internal comment does not, and the genrule's breadcrumb leads
@@ -158,7 +170,8 @@ for marker in \
   "The gizmo interface lib — declared via the helper function." \
   "trace-synth gizmo" \
   "Generate the LUT — wrapped in the codegen macro." \
-  "macro-made lut"; do
+  "macro-made lut" \
+  "Both halves of the pair — one comment, two rules."; do
   if grep -qF "$marker" "$ws/BUILD.nocomments"; then
     echo "FAIL: author comment present with --emit-source-comments=false: $marker"
     exit 1

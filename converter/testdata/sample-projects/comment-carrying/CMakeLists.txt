@@ -29,6 +29,16 @@ include(cmake/iface_helpers.cmake)
 # The gizmo interface lib — declared via the helper function.
 add_iface_lib(gizmo)  # trace-synth gizmo
 
+# Macro declaring TWO libs from one invocation — the invocation's comment
+# must carry to BOTH (the uniform multi-target-per-invocation policy).
+macro(add_lib_pair name)
+  add_library(${name}_a STATIC src/pair_a.c)
+  add_library(${name}_b STATIC src/pair_b.c)
+endmacro()
+
+# Both halves of the pair — one comment, two rules.
+add_lib_pair(thing)
+
 # Macro wrapping a codegen pair (command + driver target) — the comment on
 # the invocation below must carry to the synthesized genrule.
 macro(gen_lut name)

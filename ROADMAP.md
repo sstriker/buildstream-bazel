@@ -711,19 +711,6 @@ trees, optional-feature deps, codegen instances). Each member's
   processing order than under cmake (matters only when one forced header
   depends on the other's macros).
 
-- **Comment carrying — multi-target-per-invocation policy.** All three
-  macro-expansion paths now carry the author comment above the user-level
-  INVOCATION (`ir.Target.CallSite`): codemodel targets (backtrace's
-  outermost user invocation frame), trace-synthesized INTERFACE libraries
-  and synthesized codegen genrules (the trace frame stack's
-  `invocationCallSite`, with inclusion frames terminating the walk). What's
-  left is a deliberate policy for one invocation declaring several targets:
-  the codemodel path skips shared call sites as ambiguous (and abseil's
-  lib+alias pair from one `absl_cc_library` call is why ALIAS targets get
-  no CallSite), while one macro invocation wrapping several
-  add_custom_commands duplicates its comment onto each genrule — pick one
-  rule (skip vs duplicate) and apply it uniformly.
-
 - **Genrule command-rewrite token-replace consolidation (deferred from the
   2026-06-08 refactoring audit).** `replaceBareToken` (genrule.go) and
   `replaceBareAnchorAtBoundary` (lower.go) share the same whole-word
