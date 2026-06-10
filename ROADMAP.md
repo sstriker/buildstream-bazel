@@ -231,7 +231,13 @@ transition cleanly.
   single-config).
 
 - **Include over-propagation is the `root_headers` element-root grant, NOT
-  per-target include scope (THE real include-fidelity item).** Define-scope
+  per-target include scope (THE real include-fidelity item — DETECTION shipped,
+  fix parked).** A convert-time diagnostic now flags it:
+  `EmitSplit`'s `overGrantedIncludeRoots` emits a `cmake-include-over-grant`
+  warning to stderr naming each nested include-root re-exported via the
+  element-root header-lib forwarding (OpenBLAS prints `lapack-netlib/LAPACKE/
+  include`), so the over-grant is visible on every split convert without a lens
+  run. The fix below is therefore safe to defer. Define-scope
   (#535) and link-dep-scope (#536) made those axes faithful via cmake's
   usage-requirement signal; the include analog (B1/B2, #539 — directory-scoped
   `include_directories()` + the `INTERFACE_INCLUDE_DIRECTORIES` whitelist →

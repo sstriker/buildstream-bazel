@@ -49,6 +49,26 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 	plan := planSplit(pkg, local)
 	plan.setBase(strings.Trim(opts.BazelPackagePath, "/"))
 
+	// Surface the include over-grant (the element-root header-lib forwarding
+	// re-propagates nested include-roots' bare -I beyond cmake's element-root-
+	// RELATIVE grant — the structural source of the compile-db include_mismatch).
+	// Report-only diagnostic so the operator knows it's happening without a lens
+	// run; the fix is the root_headers redesign (ROADMAP).
+	if opts.Warn != nil {
+		if og := plan.overGrantedIncludeRoots(); len(og) > 0 {
+			shown := og
+			const cap = 8
+			suffix := ""
+			if len(shown) > cap {
+				shown = shown[:cap]
+				suffix = fmt.Sprintf(" … (+%d more)", len(og)-cap)
+			}
+			fmt.Fprintf(opts.Warn,
+				"emit: cmake-include-over-grant: %d nested include-root header lib(s) are re-exported via the element-root header-lib forwarding, so their bare -I propagates to every consumer of the element-root grant — cmake grants only element-root-RELATIVE reachability, so consumers may receive includes cmake scopes more narrowly. Quantify per-TU with SURVEY_COMPILE_DB (include_mismatch); fix tracked in ROADMAP (root_headers). Roots: %s%s\n",
+				len(og), strings.Join(shown, ", "), suffix)
+		}
+	}
+
 	// 2. Partition real targets by their declaring directory and
 	//    rewrite each target's srcs / hdrs / deps for the split layout.
 	groups := map[string][]ir.Target{} // dir → targets
@@ -508,6 +528,34 @@ func (p *splitPlan) rootHdrAggTarget() ir.Target {
 		Deps:       deps,
 		Visibility: []string{"//visibility:public"},
 	}
+}
+
+// overGrantedIncludeRoots returns the include-root dirs whose synthesized header
+// lib (`includes=["."]`, propagating a bare `-I<dir>`) is re-exported by an
+// ANCESTOR include-root's header lib via headerLibTarget's descendant-forwarding
+// (the "Forward to descendant include-root header libs" block). cmake grants a
+// `-I<element root>` target only element-root-RELATIVE reachability, NOT the
+// bare `-I` of every nested include-root — so that forwarding (the element-root
+// `root_headers` lib forwards every other include-root) over-grants those bare
+// paths to every consumer of the ancestor. This is the structural source of the
+// include over-propagation the compile-db lens measures (OpenBLAS
+// `lapack-netlib/LAPACKE/include` etc.); see ROADMAP (root_headers). Sorted,
+// deduped.
+func (p *splitPlan) overGrantedIncludeRoots() []string {
+	var out []string
+	for r2 := range p.headerLibs {
+		for inc := range p.headerLibs {
+			if inc == r2 {
+				continue
+			}
+			if _, ok := relUnder(inc, r2); ok {
+				out = append(out, r2)
+				break
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // globSrcFilegroups synthesizes the build-time glob() filegroups that back
