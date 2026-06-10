@@ -1351,7 +1351,12 @@ func relocateGenruleTools(rt *ir.Target, t ir.Target, plan *splitPlan) {
 // its package; exports_files() over it would error, and the label
 // resolves to the rule's output regardless) — when a deeper/other
 // package does. ok=false when the entry isn't expressible post-split (a
-// bare packaged directory, file == "").
+// bare packaged directory, file == ""). CAUTION: ok=true with an EMPTY
+// label is possible on the in-package branch (path == dir — the entry
+// names the package itself); callers historically append it verbatim, a
+// quirk inherited from the three pre-refactor per-attribute copies and
+// preserved for byte-identical output. Don't assume ok implies a usable
+// label.
 func splitFileLabel(plan *splitPlan, dir, path string, exportsByDir map[string]map[string]struct{}) (string, bool) {
 	d := plan.deepestPkg(path)
 	if d == dir {
