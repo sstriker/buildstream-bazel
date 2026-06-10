@@ -391,6 +391,14 @@ type Target struct {
 	// Srcs are compilation inputs (.c / .cc / .cpp / .S / etc.).
 	Srcs []string
 
+	// ModuleSrcs are Fortran sources that DEFINE a module (gfortran writes a
+	// `.mod` for each), ordered so a module's provider precedes any provider
+	// that `use`s it. Set only on KindFortranLibrary targets: fortran_library
+	// compiles these first into a shared module directory, then compiles Srcs
+	// in parallel against it. Empty for module-free Fortran (the F77 bulk) and
+	// every non-Fortran rule. See lower's splitFortranModuleSrcs.
+	ModuleSrcs []string
+
 	// Hdrs are exported headers reachable via Includes/StripIncludePrefix.
 	Hdrs []string
 

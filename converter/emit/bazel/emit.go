@@ -868,6 +868,9 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
 {{- if .SrcsExpr}}
     srcs = {{.SrcsExpr}},
 {{- end}}
+{{- if .ModuleSrcsExpr}}
+    module_srcs = {{.ModuleSrcsExpr}},
+{{- end}}
 {{- if .HdrsExpr}}
     hdrs = {{.HdrsExpr}},
 {{- end}}
@@ -1292,6 +1295,7 @@ type ccView struct {
 	RuleKind                   string
 	Name                       string
 	SrcsExpr                   string
+	ModuleSrcsExpr             string
 	HdrsExpr                   string
 	TextualHdrsExpr            string
 	IncludesExpr               string
@@ -1924,9 +1928,13 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	}
 
 	v := ccView{
-		RuleKind:                   t.Kind.String(),
-		Name:                       t.Name,
-		SrcsExpr:                   attrExpr(srcs, srcsSel),
+		RuleKind: t.Kind.String(),
+		Name:     t.Name,
+		SrcsExpr: attrExpr(srcs, srcsSel),
+		// module_srcs (fortran_library only): the module-defining Fortran
+		// sources, kept in the converter's topological order (NOT sorted — a
+		// module's provider must precede any provider that uses it).
+		ModuleSrcsExpr:             attrExpr(append([]string(nil), t.ModuleSrcs...), nil),
 		HdrsExpr:                   attrExpr(hdrs, hdrsSel),
 		TextualHdrsExpr:            attrExpr(sortedCopy(t.TextualHdrs), perPlatformAttr(t, "textual_hdrs")),
 		IncludesExpr:               attrExpr(includes, perPlatformAttr(t, "includes")),

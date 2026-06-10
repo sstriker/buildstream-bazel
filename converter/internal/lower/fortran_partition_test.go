@@ -46,7 +46,7 @@ func TestRetagFortranTargets_MixedTarget(t *testing.T) {
 		Kind: ir.KindCCLibrary,
 		Srcs: []string{"wrap.c", "dgemm.f", "ddot.f90", "helper.cc"},
 	}}}
-	retagFortranTargets(pkg)
+	retagFortranTargets(pkg, "")
 
 	cc := findTarget(pkg, "blas")
 	if cc == nil {
@@ -93,7 +93,7 @@ func TestRetagFortranTargets_FortranOnlyRetaggedInPlace(t *testing.T) {
 		Defines:            []string{"ADD_"},
 		ImplementationDeps: []string{":blas"},
 	}}}
-	retagFortranTargets(pkg)
+	retagFortranTargets(pkg, "")
 
 	fl := findTarget(pkg, "lapack_ref")
 	if fl == nil {
@@ -132,7 +132,7 @@ func TestRetagFortranTargets_NoFortranUnchanged(t *testing.T) {
 		Kind: ir.KindCCLibrary,
 		Srcs: []string{"a.c", "b.cc"},
 	}}}
-	retagFortranTargets(pkg)
+	retagFortranTargets(pkg, "")
 
 	if len(pkg.Targets) != 1 {
 		t.Fatalf("expected 1 target (no sibling); got %d", len(pkg.Targets))

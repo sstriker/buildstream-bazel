@@ -74,6 +74,46 @@ def _impl(ctx):
         include_args.append("-isystem" + inc)
 
     pic_objects = []
+
+    # Module-defining sources (module_srcs) are compiled FIRST, in the order the
+    # converter topologically sorted them, into a SHARED module directory: each
+    # `module X` emits an `X.mod` gfortran writes with -J and later sources read
+    # with -I. gfortran has no automatic source reordering — a `use` of a module
+    # whose provider hasn't been compiled yet is a hard error — so these run in a
+    # single ordered action that produces the module dir, and the parallel bulk
+    # below depends on that dir. (Most Fortran defines no modules: module_srcs is
+    # empty and this whole block is skipped.)
+    mod_extra_inputs = []
+    moddir = None
+    if ctx.files.module_srcs:
+        moddir = ctx.actions.declare_directory("_fmod/" + ctx.label.name)
+        mod_outputs = [moddir]
+        cmds = ["mkdir -p " + moddir.path]
+        for i, src in enumerate(ctx.files.module_srcs):
+            obj = ctx.actions.declare_file("_objs/%s/mod_%d_%s.pic.o" % (ctx.label.name, i, src.basename))
+            mod_outputs.append(obj)
+            pic_objects.append(obj)
+            cmds.append("'%s' -fPIC -c '%s' -o '%s' -J'%s' -I'%s' %s %s" % (
+                compiler,
+                src.path,
+                obj.path,
+                moddir.path,
+                moddir.path,
+                " ".join(["'%s'" % c for c in ctx.attr.copts]),
+                " ".join(["'%s'" % a for a in include_args]),
+            ))
+        ctx.actions.run_shell(
+            command = " && ".join(cmds),
+            inputs = depset(
+                direct = ctx.files.module_srcs,
+                transitive = [cc_toolchain.all_files, comp_ctx.headers],
+            ),
+            outputs = mod_outputs,
+            mnemonic = "FortranModuleCompile",
+            progress_message = "Compiling Fortran modules for %s" % ctx.label.name,
+        )
+        mod_extra_inputs = [moddir]
+
     for i, src in enumerate(ctx.files.srcs):
         obj = ctx.actions.declare_file("_objs/%s/%d_%s.pic.o" % (ctx.label.name, i, src.basename))
         args = ctx.actions.args()
@@ -81,13 +121,17 @@ def _impl(ctx):
         args.add("-c")
         args.add(src)
         args.add("-o", obj)
+        # Search the module dir produced above so a `use LA_CONSTANTS` resolves
+        # the provider's .mod (no-op when there are no module_srcs).
+        if moddir != None:
+            args.add("-I" + moddir.path)
         args.add_all(ctx.attr.copts)
         args.add_all(include_args)
         ctx.actions.run(
             executable = compiler,
             arguments = [args],
             inputs = depset(
-                direct = [src],
+                direct = [src] + mod_extra_inputs,
                 transitive = [cc_toolchain.all_files, comp_ctx.headers],
             ),
             outputs = [obj],
@@ -103,7 +147,7 @@ def _impl(ctx):
         objects = depset(pic_objects),
         pic_objects = depset(pic_objects),
     )
-    linking_context, _ = cc_common.create_linking_context_from_compilation_outputs(
+    linking_context, linking_outputs = cc_common.create_linking_context_from_compilation_outputs(
         actions = ctx.actions,
         feature_configuration = feature_configuration,
         cc_toolchain = cc_toolchain,
@@ -115,8 +159,20 @@ def _impl(ctx):
         linking_contexts = [dep_cc_info.linking_context],
     )
 
+    # Expose the archive as the rule's default output so `bazel build //...`
+    # (and `bazel build :this`) actually compiles + archives the Fortran. Without
+    # a non-empty DefaultInfo the objects are only built on demand when a
+    # consumer links the CcInfo — so a fortran_library nothing links would
+    # silently never compile (a phantom-green //... build).
+    out_files = []
+    lib = linking_outputs.library_to_link
+    if lib != None:
+        for f in (lib.pic_static_library, lib.static_library, lib.dynamic_library):
+            if f != None:
+                out_files.append(f)
+
     return [
-        DefaultInfo(),
+        DefaultInfo(files = depset(out_files)),
         CcInfo(
             compilation_context = comp_ctx,
             linking_context = linking_context,
@@ -150,6 +206,28 @@ fortran_library = rule(
                 ".fpp",
             ],
             doc = "Fortran sources (.f/.f90/...). Compiled with the cc toolchain's driver.",
+        ),
+        "module_srcs": attr.label_list(
+            allow_files = [
+                ".f",
+                ".F",
+                ".f77",
+                ".F77",
+                ".f90",
+                ".F90",
+                ".f95",
+                ".F95",
+                ".f03",
+                ".F03",
+                ".f08",
+                ".F08",
+                ".for",
+                ".FOR",
+                ".ftn",
+                ".fpp",
+            ],
+            doc = "Fortran sources that DEFINE a module, in dependency order. " +
+                  "Compiled first into a shared module dir the other srcs read.",
         ),
         "deps": attr.label_list(
             providers = [CcInfo],

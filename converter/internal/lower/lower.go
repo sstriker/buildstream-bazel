@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -1765,7 +1766,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// cc toolchain's own gfortran driver and exposes CcInfo. Fortran-only
 	// targets retag in place; mixed C+Fortran targets gain a private sibling
 	// fortran_library the cc_* target deps on. See retagFortranTargets.
-	retagFortranTargets(pkg)
+	retagFortranTargets(pkg, cmakeSrc)
 	// CUDA retag — a cc_* target whose compiled srcs are entirely `.cu`
 	// CUDA device code renders as the matching rules_cuda rule (cuda_library
 	// / cuda_binary / cuda_test) so nvcc compiles it; a plain cc_library
@@ -2896,12 +2897,19 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// producing genrule still builds via //... and the artifact has no cc-rule
 	// role. Only entries WITH a non-cc extension are dropped, so bare-name /
 	// extensionless labels (`:foo`, `//pkg:foo`) are never touched.
+	//
+	// Fortran sources (.f / .f90 / ...) are explicitly KEPT here even though a
+	// cc rule can't compile them: the per-language compile-group split plus the
+	// pkg-level retagFortranTargets pass lower them to a fortran_library (the cc
+	// toolchain's gfortran driver). Dropping them here would silently lose a
+	// cmake Fortran target (OpenBLAS's reference LAPACK) before the retag ever
+	// sees it.
 	switch irt.Kind {
 	case ir.KindCCLibrary, ir.KindCCBinary, ir.KindCCTest,
 		ir.KindCudaLibrary, ir.KindCudaBinary, ir.KindCudaTest:
 		kept := make([]string, 0, len(irt.Srcs))
 		for _, s := range irt.Srcs {
-			if filepath.Ext(s) != "" && !isCcSrcEntry(s) {
+			if filepath.Ext(s) != "" && !isCcSrcEntry(s) && !isFortranSrc(s) {
 				droppedNonCcSrc = true
 				continue
 			}
@@ -5785,7 +5793,7 @@ func isFortranSrc(p string) bool {
 // (non-runnable) fortran_library — the executable wrapper is lost, but that's
 // strictly better than the prior behavior (which dropped Fortran-only targets
 // entirely) and OpenBLAS's reference LAPACK is libraries.
-func retagFortranTargets(pkg *ir.Package) {
+func retagFortranTargets(pkg *ir.Package, srcRoot string) {
 	if pkg == nil {
 		return
 	}
@@ -5811,6 +5819,7 @@ func retagFortranTargets(pkg *ir.Package) {
 		if len(rest) == 0 {
 			// Fortran-only: retag in place, keep the name + dep edges.
 			t.Kind = ir.KindFortranLibrary
+			t.ModuleSrcs, t.Srcs = splitFortranModuleSrcs(ftn, srcRoot)
 			normalizeFortranTarget(t)
 			if !stringSliceContains(t.Tags, "cmake-codegen-fortran-target") {
 				t.Tags = append(t.Tags, "cmake-codegen-fortran-target")
@@ -5819,10 +5828,12 @@ func retagFortranTargets(pkg *ir.Package) {
 		}
 		// Mixed: keep the cc_* target with the non-Fortran srcs; split the
 		// Fortran srcs into a private sibling fortran_library and dep on it.
+		modSrcs, plainSrcs := splitFortranModuleSrcs(ftn, srcRoot)
 		sub := ir.Target{
 			Name:               t.Name + "_fortran",
 			Kind:               ir.KindFortranLibrary,
-			Srcs:               ftn,
+			ModuleSrcs:         modSrcs,
+			Srcs:               plainSrcs,
 			Deps:               append([]string(nil), t.Deps...),
 			ImplementationDeps: append([]string(nil), t.ImplementationDeps...),
 			Copts:              append([]string(nil), t.Copts...),
@@ -5842,6 +5853,112 @@ func retagFortranTargets(pkg *ir.Package) {
 		}
 	}
 	pkg.Targets = append(pkg.Targets, added...)
+}
+
+// fortranModuleDefRe matches a Fortran free/fixed-form MODULE definition
+// (`module la_constants`), excluding `module procedure` (a submodule-interface
+// construct, not a module definition) and `module function`/`module subroutine`.
+var fortranModuleDefRe = regexp.MustCompile(`(?im)^\s*module\s+([a-z][a-z0-9_]*)\s*(?:!.*)?$`)
+
+// fortranUseRe matches a `use <module>` statement.
+var fortranUseRe = regexp.MustCompile(`(?im)^\s*use\s+([a-z][a-z0-9_]*)`)
+
+// splitFortranModuleSrcs partitions Fortran sources into the ones that DEFINE a
+// module (gfortran emits a `.mod` for each) and the rest. The module-definers
+// are returned topologically ordered — a definer that `use`s another definer's
+// module comes after it — so fortran_library can compile them in order into a
+// shared module directory before compiling the parallel bulk. cmake computes
+// this dependency at build time via its Fortran scanner (the Fortran.dd dyndep);
+// we replicate the scan here (only a handful of files in a project like LAPACK
+// define modules — la_constants.f90, la_xisnan.F90). srcRoot is the on-disk
+// directory the element-relative source paths resolve against (cmakeSrc);
+// unreadable files are treated as non-definers (safe: a missing definer just
+// means no module to order, the same as today's module-free path).
+func splitFortranModuleSrcs(srcs []string, srcRoot string) (moduleSrcs, rest []string) {
+	type def struct {
+		src      string
+		provides []string
+		uses     []string
+	}
+	var defs []def
+	provider := map[string]int{} // module name -> index into defs
+	for _, s := range srcs {
+		body, err := os.ReadFile(filepath.Join(srcRoot, s))
+		if err != nil {
+			rest = append(rest, s)
+			continue
+		}
+		var provides []string
+		for _, m := range fortranModuleDefRe.FindAllSubmatch(body, -1) {
+			name := strings.ToLower(string(m[1]))
+			// `module procedure` is excluded by the regex (it requires the
+			// module name to be the whole token); guard the reserved word
+			// anyway for fixed-form oddities.
+			if name == "procedure" || name == "function" || name == "subroutine" {
+				continue
+			}
+			provides = append(provides, name)
+		}
+		if len(provides) == 0 {
+			rest = append(rest, s)
+			continue
+		}
+		var uses []string
+		for _, m := range fortranUseRe.FindAllSubmatch(body, -1) {
+			uses = append(uses, strings.ToLower(string(m[1])))
+		}
+		for _, p := range provides {
+			provider[p] = len(defs)
+		}
+		defs = append(defs, def{src: s, provides: provides, uses: uses})
+	}
+	if len(defs) == 0 {
+		return nil, rest
+	}
+	// Topological sort over the definers: an edge def→dep when def `use`s a
+	// module another definer provides. Kahn's algorithm; ties broken by the
+	// input order for determinism. A cycle (pathological) falls back to input
+	// order for the remaining nodes.
+	indeg := make([]int, len(defs))
+	adj := make([][]int, len(defs)) // provider index -> dependent definer indices
+	for di, d := range defs {
+		seen := map[int]bool{}
+		for _, u := range d.uses {
+			pi, ok := provider[u]
+			if !ok || pi == di || seen[pi] {
+				continue
+			}
+			seen[pi] = true
+			adj[pi] = append(adj[pi], di)
+			indeg[di]++
+		}
+	}
+	var queue []int
+	for i := range defs {
+		if indeg[i] == 0 {
+			queue = append(queue, i)
+		}
+	}
+	emitted := make([]bool, len(defs))
+	for len(queue) > 0 {
+		n := queue[0]
+		queue = queue[1:]
+		moduleSrcs = append(moduleSrcs, defs[n].src)
+		emitted[n] = true
+		for _, m := range adj[n] {
+			indeg[m]--
+			if indeg[m] == 0 {
+				queue = append(queue, m)
+			}
+		}
+	}
+	// Any node left (cycle) — append in input order.
+	for i := range defs {
+		if !emitted[i] {
+			moduleSrcs = append(moduleSrcs, defs[i].src)
+		}
+	}
+	return moduleSrcs, rest
 }
 
 // normalizeFortranTarget folds a (former) cc target's attributes onto the
