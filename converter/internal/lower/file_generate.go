@@ -54,7 +54,7 @@ type fileGenerateOut struct {
 // Returns an empty slice with no error when calls is empty or
 // hostBuildDir is unset — preserves the pre-trace behavior for
 // offline runs without a stashed fixture.
-func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ([]fileGenerateOut, error) {
+func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, dirScopes []dirScope, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ([]fileGenerateOut, error) {
 	if len(calls) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
@@ -129,11 +129,23 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 
 		for _, outPath := range outputs {
 			if !filepath.IsAbs(outPath) {
-				// Relative outputs can't be anchored without
-				// per-call binary-dir context (cmake resolves
-				// against the current binary dir at expand time).
-				// configure_file applies the same filter.
-				continue
+				// A relative OUTPUT resolves against the registering
+				// directory scope's CMAKE_CURRENT_BINARY_DIR (cmake docs:
+				// "relative paths are computed with respect to the value of
+				// CMAKE_CURRENT_BINARY_DIR") — anchor it via the same
+				// codemodel directory-scope walk configure_file uses
+				// (dirScopeRel: deepest scope containing the call file,
+				// include() doesn't open a scope, BUILD mirror honored for
+				// custom-binary-dir add_subdirectory). Offline runs without
+				// codemodel directories keep the historical drop.
+				if call.File == "" || recordedSrcDir == "" {
+					continue
+				}
+				relDir, ok := dirScopeRel(call.File, recordedSrcDir, dirScopes)
+				if !ok {
+					continue
+				}
+				outPath = filepath.Join(recordedBuildDir, relDir, outPath)
 			}
 			rel, ok := relativeIfInsideRelaxed(recordedBuildDir, outPath)
 			if !ok {

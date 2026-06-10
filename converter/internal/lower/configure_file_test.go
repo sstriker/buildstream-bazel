@@ -538,7 +538,7 @@ func TestRecoverConfigureFilesFromCalls_IncludedModuleRelativeOutput(t *testing.
 		Output:   "src/proj_config.h", // relative → anchored to the includer scope
 	}}
 	// Directory scopes: root + "sub" (the includer). "sub/cmake" is NOT a scope.
-	dirScopes := []string{"", "sub"}
+	dirScopes := []dirScope{{Source: "", Build: ""}, {Source: "sub", Build: "sub"}}
 	cc := newCodegenContext()
 	out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, dirScopes, false, nil, cc)
 	if err != nil {
@@ -569,7 +569,14 @@ func TestRecoverConfigureFilesFromCalls_IncludedModuleRelativeOutput(t *testing.
 
 func TestDirScopeRel(t *testing.T) {
 	src := "/src/proj"
-	scopes := []string{"", "sub", "sub/deep", "other"}
+	scopes := []dirScope{
+		{Source: "", Build: ""},
+		{Source: "sub", Build: "sub"},
+		// A custom-binary-dir add_subdirectory: outputs land at the BUILD
+		// path, not the source-relative one.
+		{Source: "sub/deep", Build: "custom/deepbuild"},
+		{Source: "other", Build: "other"},
+	}
 	cases := []struct {
 		callFile string
 		want     string
@@ -579,8 +586,9 @@ func TestDirScopeRel(t *testing.T) {
 		{"/src/proj/sub/CMakeLists.txt", "sub", true},
 		// Call from an include()d module under sub/cmake (no own scope) → sub.
 		{"/src/proj/sub/cmake/Mod.cmake", "sub", true},
-		// Deepest wins: a module under sub/deep/x → sub/deep, not sub.
-		{"/src/proj/sub/deep/x/Mod.cmake", "sub/deep", true},
+		// Deepest wins, and the scope's BUILD path is returned: a module
+		// under sub/deep/x anchors at the custom binary dir, not sub/deep.
+		{"/src/proj/sub/deep/x/Mod.cmake", "custom/deepbuild", true},
 		// Root-level call → "".
 		{"/src/proj/CMakeLists.txt", "", true},
 		// Outside the source tree → no scope.
@@ -808,7 +816,7 @@ func TestRecoverConfigureFilesFromCalls_DeferDirectoryAnchor(t *testing.T) {
 		Output:   "cfg.h", // relative → resolves in the DEFERRED-TO scope
 		DeferDir: hostSrc, // cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} …)
 	}}
-	dirScopes := []string{"", "sub"}
+	dirScopes := []dirScope{{Source: "", Build: ""}, {Source: "sub", Build: "sub"}}
 	cc := newCodegenContext()
 	out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, dirScopes, false, nil, cc)
 	if err != nil {

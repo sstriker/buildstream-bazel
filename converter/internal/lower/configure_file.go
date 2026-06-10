@@ -53,7 +53,7 @@ type configureFileOut struct {
 // or no configure_file events are recorded — preserves the
 // pre-trace behavior for offline runs without a stashed
 // fixture.
-func recoverConfigureFiles(traceRaw []byte, hostSrcDir, hostBuildDir, recordedSrcDir, recordedBuildDir string, dirScopes []string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]configureFileOut, error) {
+func recoverConfigureFiles(traceRaw []byte, hostSrcDir, hostBuildDir, recordedSrcDir, recordedBuildDir string, dirScopes []dirScope, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]configureFileOut, error) {
 	if len(traceRaw) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
@@ -63,16 +63,30 @@ func recoverConfigureFiles(traceRaw []byte, hostSrcDir, hostBuildDir, recordedSr
 	return recoverConfigureFilesFromCalls(shadow.ExtractConfigureFiles(traceRaw, recordedSrcDir), hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, dirScopes, liftEnabled, cmakeVars, cc)
 }
 
-// dirScopeRel returns the source-relative path of the deepest codemodel
-// directory SCOPE (an entry of dirScopes — the per-config directory Sources,
-// "" for the root) that CONTAINS callFile. This is the directory whose
-// CMAKE_CURRENT_BINARY_DIR a relative configure_file output anchors against:
-// for a call straight from a CMakeLists.txt it's that file's own dir; for a
-// call inside an include()d .cmake module it's the includer's scope (include()
-// doesn't open a new directory scope). Returns ("", false) when no scope
-// contains the call file (e.g. an offline run with no codemodel directories,
-// or a module outside the source tree) so the caller can fall back.
-func dirScopeRel(callFile, recordedSrcDir string, dirScopes []string) (string, bool) {
+// dirScope is one codemodel directory scope: the SOURCE dir (source-root-
+// relative, "" for the root) and its BUILD mirror (build-root-relative).
+// The two are equal for the default add_subdirectory layout; they DIVERGE
+// under add_subdirectory(<src> <custom-binary-dir>) — the shape
+// FetchContent_MakeAvailable uses for its <name>-src/<name>-build pair —
+// where cmake writes the scope's CMAKE_CURRENT_BINARY_DIR outputs at Build,
+// not at the source-relative path.
+type dirScope struct {
+	Source string
+	Build  string
+}
+
+// dirScopeRel returns the BUILD-relative dir of the deepest codemodel
+// directory SCOPE whose SOURCE dir contains callFile. This is the directory
+// whose CMAKE_CURRENT_BINARY_DIR a relative configure_file output anchors
+// against: for a call straight from a CMakeLists.txt it's that file's own
+// scope; for a call inside an include()d .cmake module it's the includer's
+// scope (include() doesn't open a new directory scope). The BUILD path is
+// returned (not the source-relative path) so a custom-binary-dir
+// add_subdirectory anchors where cmake actually writes. Returns ("", false)
+// when no scope contains the call file (e.g. an offline run with no
+// codemodel directories, or a module outside the source tree) so the caller
+// can fall back.
+func dirScopeRel(callFile, recordedSrcDir string, dirScopes []dirScope) (string, bool) {
 	callDir := filepath.ToSlash(filepath.Dir(callFile))
 	// Trim any trailing separator so scopeAbs doesn't become "<src>/" (or
 	// "<src>//<scope>"), which would defeat the exact/prefix match below.
@@ -81,13 +95,13 @@ func dirScopeRel(callFile, recordedSrcDir string, dirScopes []string) (string, b
 	bestLen := -1
 	for _, scope := range dirScopes {
 		scopeAbs := src
-		if scope != "" {
-			scopeAbs = src + "/" + scope
+		if scope.Source != "" {
+			scopeAbs = src + "/" + scope.Source
 		}
 		if callDir == scopeAbs || strings.HasPrefix(callDir, scopeAbs+"/") {
 			if len(scopeAbs) > bestLen {
 				bestLen = len(scopeAbs)
-				best = scope
+				best = scope.Build
 			}
 		}
 	}
@@ -96,19 +110,35 @@ func dirScopeRel(callFile, recordedSrcDir string, dirScopes []string) (string, b
 
 // deferAnchorRel resolves the directory scope a cmake_language(DEFER
 // DIRECTORY <dir> CALL configure_file …) call's relative Output anchors
-// against: the DEFERRED-TO directory, source-relative. cmake executes the
+// against: the DEFERRED-TO directory's BUILD mirror. cmake executes the
 // deferred call at <dir>'s scope end with <dir>'s CMAKE_CURRENT_BINARY_DIR,
 // so the registration site's scope (what dirScopeRel computes from CallFile)
 // is the WRONG anchor — without this the output lands at a path cmake never
 // wrote and the recovery silently drops a generated file consumers #include.
-// Returns ("", false) for ordinary calls (empty deferDir — the overwhelmingly
-// common case) and for a deferDir outside the source root, so the caller
-// falls through to the normal CallFile-scope anchoring.
-func deferAnchorRel(deferDir, recordedSrcDir string) (string, bool) {
+// The source-relative dir maps through dirScopes to its Build path (they
+// diverge under a custom-binary-dir add_subdirectory); an unmatched scope
+// keeps the source-relative form (the mirror default). Returns ("", false)
+// for ordinary calls (empty deferDir — the overwhelmingly common case) and
+// for a deferDir outside the source root, so the caller falls through to the
+// normal CallFile-scope anchoring.
+func deferAnchorRel(deferDir, recordedSrcDir string, dirScopes []dirScope) (string, bool) {
 	if deferDir == "" || recordedSrcDir == "" {
 		return "", false
 	}
-	return relativeIfInside(recordedSrcDir, deferDir)
+	rel, ok := relativeIfInside(recordedSrcDir, deferDir)
+	if !ok {
+		return "", false
+	}
+	rel = strings.TrimSuffix(filepath.ToSlash(rel), "/")
+	if rel == "." {
+		rel = ""
+	}
+	for _, scope := range dirScopes {
+		if scope.Source == rel {
+			return scope.Build, true
+		}
+	}
+	return rel, true
 }
 
 // recoverConfigureFilesFromCalls is the same logic as
@@ -117,7 +147,7 @@ func deferAnchorRel(deferDir, recordedSrcDir string) (string, bool) {
 // trace is parsed once total across all extractors (including
 // the configure_file recovery), instead of one pass per
 // extractor.
-func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, dirScopes []string, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]configureFileOut, error) {
+func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, dirScopes []dirScope, liftEnabled bool, cmakeVars map[string]string, cc *codegenContext) ([]configureFileOut, error) {
 	if len(calls) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
@@ -153,7 +183,7 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 			// itself (unchanged behavior), and for an include()d module it's
 			// the includer's scope. Falls back to dir(CallFile) when no scope
 			// matches (offline runs without codemodel directories).
-			relDir, ok := deferAnchorRel(call.DeferDir, recordedSrcDir)
+			relDir, ok := deferAnchorRel(call.DeferDir, recordedSrcDir, dirScopes)
 			if !ok {
 				relDir, ok = dirScopeRel(call.CallFile, recordedSrcDir, dirScopes)
 			}
