@@ -5820,6 +5820,11 @@ func retagFortranTargets(pkg *ir.Package, srcRoot string) {
 			// Fortran-only: retag in place, keep the name + dep edges.
 			t.Kind = ir.KindFortranLibrary
 			t.ModuleSrcs, t.Srcs = splitFortranModuleSrcs(ftn, srcRoot)
+			// The module-DEFINING sources' bytes shaped the BUILD (their
+			// `module`/`use` content decided the module_srcs partition + order);
+			// publish them as declared source-byte reads so the narrowing lens
+			// keeps them real. See ir.Package.SourceByteReads.
+			pkg.SourceByteReads = append(pkg.SourceByteReads, t.ModuleSrcs...)
 			normalizeFortranTarget(t)
 			if !stringSliceContains(t.Tags, "cmake-codegen-fortran-target") {
 				t.Tags = append(t.Tags, "cmake-codegen-fortran-target")
@@ -5829,6 +5834,9 @@ func retagFortranTargets(pkg *ir.Package, srcRoot string) {
 		// Mixed: keep the cc_* target with the non-Fortran srcs; split the
 		// Fortran srcs into a private sibling fortran_library and dep on it.
 		modSrcs, plainSrcs := splitFortranModuleSrcs(ftn, srcRoot)
+		// Publish the module-definers' content reads (see the Fortran-only
+		// branch above and ir.Package.SourceByteReads).
+		pkg.SourceByteReads = append(pkg.SourceByteReads, modSrcs...)
 		sub := ir.Target{
 			Name:               t.Name + "_fortran",
 			Kind:               ir.KindFortranLibrary,
