@@ -822,6 +822,20 @@ type Target struct {
 	// stay on the base64 genrule.
 	WriteFileNewline string
 
+	// WriteFileContentByConfig, when non-empty, carries per-build-type
+	// file bodies (config_setting label, e.g. "//config:debug" → lines,
+	// same line-split contract as WriteFileContent) for a baked configure_file whose content the
+	// per-config reconfigure passes found to DIFFER across build types — a
+	// single-config-idiomatic project deriving values from
+	// CMAKE_BUILD_TYPE (LLVM's abi-breaking.h:
+	// LLVM_ENABLE_ABI_BREAKING_CHECKS follows assertions, on for Debug,
+	// off for Release). The emitter renders
+	// `content = select({"//config:<name>": …})` with WriteFileContent
+	// (the primary multi-config configure's view) as the
+	// //conditions:default arm. Empty for the overwhelmingly common
+	// config-independent body.
+	WriteFileContentByConfig map[string][]string
+
 	// CMakeConfigureFile carries the cmake_configure_file rule's
 	// attributes. Non-nil only when Kind == KindCMakeConfigureFile.
 	CMakeConfigureFile *CMakeConfigureFileSpec

@@ -23,15 +23,19 @@ import (
 var quoteIncludeRe = regexp.MustCompile(`(?m)^[ \t]*#[ \t]*include[ \t]*"([^"]+)"`)
 
 // findTextualSourceIncludes scans a target's compiled source files for
-// quote-includes of OTHER source files — `#include "x.cc"` — that the target
-// does not itself compile. This is the "textually include a .cc to intercept
-// its internals" idiom (fmt's posix-mock-test defines POSIX mocks, then
-// `#include "../src/os.cc"` so os.cc's syscalls bind to them). Such a file
-// must be a declared INPUT but must NOT be compiled standalone (that would
-// duplicate its symbols), so it cannot sit in srcs; it's surfaced here so the
-// caller can route it to a textual_hdrs slot (directly on a cc_library, or
-// via a synthesized textual-hdrs cc_library dep for a cc_binary / cc_test,
-// which have no textual_hdrs attribute).
+// quote-includes of OTHER source files — `#include "x.cc"`. Two project
+// shapes produce this: the "textually include a .cc to intercept its
+// internals" idiom (fmt's posix-mock-test defines POSIX mocks, then
+// `#include "../src/os.cc"` so os.cc's syscalls bind to them — the included
+// file is NOT compiled standalone), and the fused shape where the included
+// file IS also compiled standalone (VTK's bundled lz4: lz4.c compiles AND
+// lz4hc.c textually includes it for its internal statics). Either way the
+// included file must be a declared INPUT of the includer's compile action —
+// sibling srcs are not staged for each other's actions — so it's surfaced
+// here for the caller to route to a textual_hdrs slot (directly on a
+// cc_library, or via a synthesized textual-hdrs cc_library dep for a
+// cc_binary / cc_test, which have no textual_hdrs attribute). A file already
+// in srcs STAYS there; textual_hdrs is additive staging.
 //
 // Returns element-root-relative paths (the shape of irt.Srcs), sorted and
 // deduped. hostSrc must be the on-disk source root — the caller gates on
@@ -40,9 +44,9 @@ var quoteIncludeRe = regexp.MustCompile(`(?m)^[ \t]*#[ \t]*include[ \t]*"([^"]+)
 // against its ancestor directories (the gtest "fused source" shape, where
 // gtest-all.cc does `#include "src/gtest.cc"` resolved against the target's
 // include root — the package dir above src/); see resolveTextualInclude. A path
-// that escapes the element root (".." after cleaning) or names a file the
-// target already compiles, or one absent on disk, is skipped — only a real,
-// in-tree, not-otherwise-compiled source qualifies.
+// that escapes the element root (".." after cleaning) or is absent on disk is
+// skipped — only a real, in-tree source qualifies (compiled or not; see the
+// fused shape above).
 // Also returns `readers`: the element-root-relative INCLUDER sources whose
 // bytes yielded ≥1 kept textual include — i.e. the source files whose CONTENT
 // determined the result (the includer's `#include "x.cc"` line). The included
@@ -53,10 +57,6 @@ var quoteIncludeRe = regexp.MustCompile(`(?m)^[ \t]*#[ \t]*include[ \t]*"([^"]+)
 func findTextualSourceIncludes(hostSrc string, srcs []string) (includes, readers []string) {
 	if hostSrc == "" || len(srcs) == 0 {
 		return nil, nil
-	}
-	compiled := make(map[string]bool, len(srcs))
-	for _, s := range srcs {
-		compiled[filepath.ToSlash(filepath.Clean(s))] = true
 	}
 	seen := map[string]bool{}
 	var out []string
@@ -83,7 +83,7 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) (includes, readers
 			if strings.HasPrefix(inc, "/") || filepath.IsAbs(inc) {
 				continue
 			}
-			rel := resolveTextualInclude(hostSrc, dir, inc, s, compiled)
+			rel := resolveTextualInclude(hostSrc, dir, inc, s)
 			if rel == "" {
 				continue
 			}
@@ -110,14 +110,21 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) (includes, readers
 // `googletest/src/gtest-all.cc` does `#include "src/gtest.cc"` that cmake
 // resolves against the target's include root (the package dir `googletest/`
 // above `src/`), not the includer's `src/` dir. Returns the first candidate
-// that exists on disk under hostSrc, isn't the includer `self`, isn't already
-// compiled, and doesn't escape the element root; "" when none qualifies. The
-// deepest (most specific) ancestor wins, since the walk starts at `dir`.
-func resolveTextualInclude(hostSrc, dir, inc, self string, compiled map[string]bool) string {
+// that exists on disk under hostSrc, isn't the includer `self`, and doesn't
+// escape the element root; "" when none qualifies. The deepest (most specific)
+// ancestor wins, since the walk starts at `dir`.
+//
+// A candidate the target ALSO compiles is returned too: cmake builds both
+// shapes — VTK's bundled lz4 compiles lz4.c standalone AND lz4hc.c textually
+// `#include "lz4.c"` for its internal statics. Under Bazel a sibling src is
+// NOT an input of the includer's compile action, so the file must appear in
+// textual_hdrs as well (it stays in srcs; the routing never removes it) or
+// the includer fails "lz4.c: No such file or directory" in the sandbox.
+func resolveTextualInclude(hostSrc, dir, inc, self string) string {
 	for base := dir; ; base = filepath.Dir(base) {
 		rel := filepath.ToSlash(filepath.Clean(filepath.Join(base, inc)))
 		if rel != "." && rel != ".." && rel != self &&
-			!strings.HasPrefix(rel, "../") && !compiled[rel] {
+			!strings.HasPrefix(rel, "../") {
 			if st, err := os.Stat(filepath.Join(hostSrc, filepath.FromSlash(rel))); err == nil && !st.IsDir() {
 				return rel
 			}
@@ -130,10 +137,11 @@ func resolveTextualInclude(hostSrc, dir, inc, self string, compiled map[string]b
 }
 
 // synthesizeTextualSourceIncludeLibs wires the textual-source-include idiom
-// into the package: a target whose sources quote-include a .cc the target
-// doesn't compile (findTextualSourceIncludes) needs that file as a declared
-// INPUT but must NOT compile it standalone (that would duplicate its symbols),
-// so it belongs in a textual_hdrs slot. Two shapes:
+// into the package: a target whose sources quote-include a .cc
+// (findTextualSourceIncludes) needs that file as a declared INPUT of the
+// includer's compile action, so it belongs in a textual_hdrs slot — whether
+// or not the target also compiles the file standalone (the fmt/gtest idiom
+// doesn't; VTK's fused lz4 does, and keeps it in srcs). Two routings:
 //
 //   - cc_library / cc_interface HAVE a textual_hdrs attribute, so the included
 //     sources are added directly to the target's own textual_hdrs. This is the
@@ -223,6 +231,16 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 // parent's include line + its own existence, not its bytes, so it is NOT a
 // reader). readers is the declared source-byte-read set this closure
 // contributes (see ir.Package.SourceByteReads).
+//
+// ASYMMETRY with findTextualSourceIncludes, deliberate for now: that pass
+// (post-lz4) surfaces a textually-included file the target ALSO compiles, on
+// the sandbox argument that sibling srcs aren't inputs of each other's
+// compile actions; this closure still excludes compiled files. The seeds
+// here are generated-wrapper kernel chains whose members are include-only in
+// the corpus (OpenBLAS micro-kernels), so no member trips the gap — if a
+// closure chain ever reaches a compiled sibling, drop the `compiled`
+// exclusion from push (and re-validate OpenBLAS) rather than rediscovering
+// this note the hard way.
 func textualIncludeClosure(hostSrc string, seeds []string, compiled map[string]bool) (closure, readers []string) {
 	result := map[string]bool{}
 	read := map[string]bool{}
@@ -253,7 +271,7 @@ func textualIncludeClosure(hostSrc string, seeds []string, compiled map[string]b
 			if strings.HasPrefix(inc, "/") || filepath.IsAbs(inc) {
 				continue
 			}
-			rel := resolveTextualInclude(hostSrc, dir, inc, cur, compiled)
+			rel := resolveTextualInclude(hostSrc, dir, inc, cur)
 			if rel == "" {
 				continue
 			}

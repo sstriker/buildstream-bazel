@@ -52,8 +52,12 @@ func TestFindTextualSourceIncludes(t *testing.T) {
 }
 
 // TestFindTextualSourceIncludes_NoneAndGuards: a target with only normal
-// header includes (or no on-disk sources) yields nothing; a .cc include that
-// names an already-compiled src is not double-counted.
+// header includes (or no on-disk sources) yields nothing. A .cc include that
+// names an already-compiled sibling src IS surfaced — cmake builds both
+// shapes (VTK's bundled lz4: lz4.c compiles standalone AND lz4hc.c textually
+// #include's it), and under Bazel a sibling src is not an input of the
+// includer's compile action, so it must ALSO ride textual_hdrs (it stays in
+// srcs; the attach never removes it).
 func TestFindTextualSourceIncludes_NoneAndGuards(t *testing.T) {
 	hostSrc := t.TempDir()
 	write := func(rel, body string) {
@@ -65,13 +69,21 @@ func TestFindTextualSourceIncludes_NoneAndGuards(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// a.cc includes a header (skip) and b.cc — but b.cc is compiled by the
-	// target, so it must not be surfaced as a textual include.
+	// a.cc includes a header (skip) and b.cc; b.cc is compiled by the target
+	// AND textually included, so it must be surfaced (the lz4 fused shape).
 	write("a.cc", "#include \"a.h\"\n#include \"b.cc\"\n")
 	write("a.h", "#define A 1\n")
 	write("b.cc", "int b(){return 0;}\n")
-	if got, readers := findTextualSourceIncludes(hostSrc, []string{"a.cc", "b.cc"}); got != nil || readers != nil {
-		t.Errorf("expected nil (b.cc is compiled), got includes=%v readers=%v", got, readers)
+	got, readers := findTextualSourceIncludes(hostSrc, []string{"a.cc", "b.cc"})
+	if len(got) != 1 || got[0] != "b.cc" {
+		t.Errorf("compiled-and-textually-included sibling should be surfaced; got includes=%v", got)
+	}
+	if len(readers) != 1 || readers[0] != "a.cc" {
+		t.Errorf("readers = %v, want [a.cc]", readers)
+	}
+	// A header-only includer surfaces nothing.
+	if got, readers := findTextualSourceIncludes(hostSrc, []string{"b.cc"}); got != nil || readers != nil {
+		t.Errorf("header-only target: got includes=%v readers=%v, want nil", got, readers)
 	}
 	// Empty inputs / missing host root are safe no-ops.
 	if got, readers := findTextualSourceIncludes("", []string{"a.cc"}); got != nil || readers != nil {

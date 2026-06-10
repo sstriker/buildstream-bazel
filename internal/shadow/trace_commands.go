@@ -23,6 +23,7 @@ package shadow
 import (
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -87,6 +88,7 @@ func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) De
 func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, knownTargets map[string]bool, fs fsReader) Decoded {
 	events := ParseTrace(traceRaw)
 	reads := map[string]struct{}{}
+	deferDirs := deferDirectoryIndex(events)
 	var d Decoded
 	// Tier 1 platform-conditional scope tracking is dispatched
 	// on the trace's shape — see extractPlatformConditionalSources
@@ -118,9 +120,11 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 			d.CompileOptions = append(d.CompileOptions, call)
 		}
 		if call, ok := classifyConfigureFile(ev, traceSourceRoot); ok {
+			call.DeferDir = deferDirFor(ev, deferDirs)
 			d.ConfigFiles = append(d.ConfigFiles, call)
 		}
 		if call, ok := classifyFileRename(ev, traceSourceRoot); ok {
+			call.DeferDir = deferDirFor(ev, deferDirs)
 			d.ConfigFiles = append(d.ConfigFiles, call)
 		}
 		if call, ok := classifyFileGenerate(ev, traceSourceRoot); ok {
@@ -279,6 +283,16 @@ type ConfigureFileCall struct {
 	// directory — so the recovery needs it to anchor relative outputs (the
 	// ubiquitous `configure_file(config.h.in config.h)` autotools idiom).
 	CallFile string
+	// DeferDir is the cmake_language(DEFER DIRECTORY <dir> CALL …) target
+	// directory (absolute source-tree path) when this call was deferred to a
+	// DIFFERENT directory's scope end. The deferred execution keeps the
+	// registration site's file/line, but cmake resolves a relative Output
+	// against the DEFERRED-TO directory's CMAKE_CURRENT_BINARY_DIR — so the
+	// recovery must anchor there, not at CallFile's scope. Empty for ordinary
+	// calls AND for plain DEFER (no DIRECTORY), which executes in the
+	// registering directory's own scope where CallFile anchoring is already
+	// right.
+	DeferDir string
 }
 
 // ExtractTargetIncludes returns one entry per user-written
@@ -676,13 +690,79 @@ func classifyDefineSymbols(ev TraceEvent) map[string]string {
 // callers resolve relative paths against the source dir
 // (input) or build dir (output) per cmake's conventions.
 func ExtractConfigureFiles(traceRaw []byte, sourceRoot string) []ConfigureFileCall {
+	events := ParseTrace(traceRaw)
+	deferDirs := deferDirectoryIndex(events)
 	var out []ConfigureFileCall
-	for _, ev := range ParseTrace(traceRaw) {
+	for _, ev := range events {
 		if call, ok := classifyConfigureFile(ev, sourceRoot); ok {
+			call.DeferDir = deferDirFor(ev, deferDirs)
 			out = append(out, call)
 		}
 	}
 	return out
+}
+
+// deferDirectoryIndex maps a cmake_language(DEFER DIRECTORY <dir> CALL …)
+// registration site ("<file>\x00<line>") to its expanded <dir>. A deferred
+// call's EXECUTION trace event keeps the registration's file/line (plus a
+// defer id), so this pairs an executed deferred call back to the directory
+// whose scope end it actually ran in — the scope cmake resolves the call's
+// relative paths against. Plain DEFER registrations (no DIRECTORY) are
+// skipped: they execute in the registering directory's own scope, where the
+// recoveries' CallFile anchoring is already right. Returns nil when the
+// trace has no DEFER DIRECTORY registrations (the overwhelmingly common
+// case), keeping the lookup free.
+//
+// Known limitation: the key is the registration site, last writer wins — a
+// single site registering DEFER DIRECTORY for SEVERAL directories (a
+// foreach(subdir) loop around cmake_language(DEFER DIRECTORY ${subdir} …))
+// collapses to the last-traced dir, and the executions can't be
+// disambiguated because registration events carry no defer id to pair
+// against ev.Defer. All executions at such a site anchor to one directory;
+// the failure degrades to the pre-index mis-anchor (a silently-dropped
+// relative output), not worse. No corpus member registers multi-directory
+// DEFERs today.
+func deferDirectoryIndex(events []TraceEvent) map[string]string {
+	var idx map[string]string
+	for _, ev := range events {
+		if !strings.EqualFold(ev.Cmd, "cmake_language") || len(ev.Args) < 4 {
+			continue
+		}
+		if !strings.EqualFold(ev.Args[0], "DEFER") {
+			continue
+		}
+		dir := ""
+		for i := 1; i < len(ev.Args)-1; i++ {
+			if strings.EqualFold(ev.Args[i], "CALL") {
+				break
+			}
+			if strings.EqualFold(ev.Args[i], "DIRECTORY") {
+				dir = ev.Args[i+1]
+			}
+		}
+		if dir == "" {
+			continue
+		}
+		if idx == nil {
+			idx = map[string]string{}
+		}
+		idx[deferSiteKey(ev.File, ev.Line)] = dir
+	}
+	return idx
+}
+
+// deferDirFor resolves the DEFER DIRECTORY for one executed trace event:
+// non-empty only when the event is a deferred execution (ev.Defer set) whose
+// registration named a DIRECTORY.
+func deferDirFor(ev TraceEvent, idx map[string]string) string {
+	if ev.Defer == "" || len(idx) == 0 {
+		return ""
+	}
+	return idx[deferSiteKey(ev.File, ev.Line)]
+}
+
+func deferSiteKey(file string, line int) string {
+	return file + "\x00" + strconv.Itoa(line)
 }
 
 func classifyConfigureFile(ev TraceEvent, sourceRoot string) (ConfigureFileCall, bool) {

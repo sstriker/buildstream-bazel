@@ -22,6 +22,14 @@ type TraceEvent struct {
 	// that physically executes in an include()d/function-wrapper module
 	// (e.g. abseil's add_library inside the absl_cc_library function).
 	Frame int `json:"frame"`
+	// Defer is cmake's deferred-call id ("__0", "__1", …) when this event
+	// is the EXECUTION of a call scheduled via cmake_language(DEFER CALL …);
+	// empty for ordinary events (cmake emits `"defer": null`). A deferred
+	// event keeps the REGISTRATION site's file/line, so commands that
+	// resolve relative paths against the executing directory scope (a
+	// relative configure_file output) need the registration's DEFER
+	// DIRECTORY to anchor correctly — see deferDirectoryIndex.
+	Defer string `json:"defer"`
 }
 
 // ParseTrace walks the cmake --trace-format=json-v1 stream once and
@@ -116,4 +124,27 @@ func readPathFor(ev TraceEvent) string {
 		}
 	}
 	return ""
+}
+
+// ReadsBuildType reports whether the project's OWN configure logic consults
+// CMAKE_BUILD_TYPE — an event whose file sits inside sourceRoot carrying the
+// variable name in its args (`if(CMAKE_BUILD_TYPE STREQUAL "Debug")`,
+// `set(CMAKE_BUILD_TYPE ...)`; if()/STREQUAL keep bare variable NAMES even
+// under --trace-expand). Gates the per-config configure_file bake passes:
+// a project that never reads CMAKE_BUILD_TYPE can't derive configure_file
+// content from it, so the extra single-config reconfigures are skipped.
+// cmake's own modules read the variable constantly — the in-source-tree
+// filter keeps them from triggering the passes on every project.
+func ReadsBuildType(traceRaw []byte, sourceRoot string) bool {
+	for _, ev := range ParseTrace(traceRaw) {
+		if !inSourceTree(ev.File, sourceRoot) {
+			continue
+		}
+		for _, a := range ev.Args {
+			if strings.Contains(a, "CMAKE_BUILD_TYPE") {
+				return true
+			}
+		}
+	}
+	return false
 }

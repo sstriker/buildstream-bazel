@@ -55,32 +55,36 @@ transition cleanly.
 
 - **Green the remaining heavyweight corpus members: vtk (tail), cuda-samples.**
   25/26 are green (protobuf + sdl + vtk + grpc landed). Remaining:
-  - **vtk** — configures + converts with 0 rejections, analysis fully green
-    (2359/2359), and `bazel build //...` compiles **~6,345 / 6,366 (~99.6%)**.
-    REMAINING TAIL (~20, well-diagnosed):
-    - **configure_file same-dir config-headers (~19) — CONVERTER FIX SHIPPED,
-      build recount pending.** `kwsysPrivate.h` (15), `proj_config.h` (4),
-      `pugiconfig.hpp` (3): a header `configure_file(... COPYONLY)` output
-      #included by BARE quote name from a same-dir source. cmake needs no `-I`
-      (quote resolves same-dir), so the prefix-match attribution (gated on a
-      build-dir `-I`) settled the header's hosting include on a shallower PARENT
-      package and never put the header's OWN genfiles dir on the search path. The
-      same-dir-attribution pass DID record the header but its include-dir
-      surfacing was gated on the header being *newly* added — and the prefix-match
-      pass had already staged it, so the dir was skipped. Fix decouples the dir
-      surfacing from that gate (and mirrors it in the genrule sibling-header
-      pass). Verified on a VTK re-convert: the `vtksys` sub-libs now dep a header
-      lib at their OWN package (`Utilities_KWSys_vtksys_headers`, `includes=["."]`,
-      hosting `kwsysPrivate.h`). OPEN: re-run the vtk build lens to confirm the
-      ~19 now compile (the ~99.6% count below predates this fix).
-    - **2 genrule-EXECUTION failures:** `proj_db` (`cmake -P
-      generate_proj_db.cmake` fails at `include(sql_filelist.cmake)` — relative
-      include not staged in the genrule's cwd at build time) and
-      `vtkCommonCore-hierarchy.txt` (`vtkWrapHierarchy: couldn't open
-      @…hierarchy.Debug.args` — the `.args` response-file, routed to `data`,
-      isn't staged as a genrule input at the expected path). Both are build-time
-      genrule input-staging fixes.
-    - misc: `lz4.c` (1).
+  - **vtk** — configures + converts with 0 rejections, and the 2026-06-10
+    re-run under the data-label + fused-source fixes ANALYZES fully green
+    (2,527 targets; previously an 80-missing-input hard abort on IOInfovis).
+    The `--keep_going` recount: **6,606/6,608 actions ran, 2,405/2,527
+    top-level targets built, exactly 3 ROOT failures** (the rest of the gap
+    is transitively blocked by them). REMAINING TAIL (well-diagnosed):
+    - **wrap-hierarchy genrule EXECUTION** (`vtkCommonCore-hierarchy.txt` et
+      al.): analysis staging is fixed (the `.args`/`.data` response files are
+      real cross-package labels now), but the genrule cmd still references
+      them by cmake build-dir-relative path (`@Common/Core/CMakeFiles/…args`)
+      instead of `$(location …)`, carries ninja depfile plumbing (`-MF …d` +
+      `cmake -E cmake_transform_depfile …` with an absolute cmake path), and
+      the BAKED args/data content embeds convert-time absolute `-I`/source
+      paths that need re-anchoring to exec-root form. Three mechanical fixes
+      in the genrule-rewrite family.
+    - **proj_db** (`cmake -P generate_proj_db.cmake` fails at
+      `include(sql_filelist.cmake)` — relative include not staged in the
+      genrule's cwd at build time; plus the `$<TARGET_FILE:VTK::sqlitebin>`
+      built-tool reference, see the built-tool genrule recovery note in
+      `scripts/build-lens/vtk.conf`).
+    - **vtkProbeOpenGLVersion LINK** (1 binary): undefined `vtkFXAAFilterFS`
+      / `vtkTextureObjectVS` — vtkEncodeString-generated shader-string
+      symbols (the cc_embed lift) not reaching the probe binary's link;
+      likely a missing dep edge or alwayslink on the embedded-shader objects
+      under static archive linking. Distinct mechanism from the two genrule
+      items.
+    - The earlier ~19 configure_file same-dir config-header failures
+      (`kwsysPrivate.h` / `proj_config.h` / `pugiconfig.hpp`) had their
+      converter fix shipped previously; the 2026-06-10 sweep shows no
+      compile-phase recurrences of that class.
   - **cuda-samples** — a surveyed sample builds GREEN (needs CUDA provisioned:
     `apt-get install nvidia-cuda-toolkit gcc-12` + `scripts/provision-cuda-root.sh`
     → `BSB_CUDA_ROOT`; `BSB_CUDA_HOST_CC=/usr/bin/gcc-12`). `cpp/0_Introduction/
@@ -503,18 +507,24 @@ trees, optional-feature deps, codegen instances). Each member's
   `.pc.in` configure_file isn't lifted) — a codegen-lift gap tracked with the
   configure_file theme.
 
-- **Two adjacent flag drops (system/threading-linkopt theme).** The bare
+- **One remaining flag drop (system/threading-linkopt theme).** The bare
   system-library link drop that headlined this theme is fixed (`-`-prefixed
-  `libraries`-role fragments route to linkopts). Two flag drops the lens
-  surfaced alongside it remain:
-  - build-type-conditional defines hardcoded `1` regardless of `//config`
-    (LLVM's `LLVM_ENABLE_ABI_BREAKING_CHECKS` / `LLVM_ENABLE_PLUGINS` / …) —
-    needs per-build-type values (a single configure captures one) + a `select()`.
+  `libraries`-role fragments route to linkopts), and the build-type-conditional
+  configure_file values (LLVM's `LLVM_ENABLE_ABI_BREAKING_CHECKS`) now ship via
+  the per-config bake (`--per-config-bake`: detection-gated single-config
+  re-configures whose differing write_file bodies render as
+  `content = select({"//config:<name>": …})`; gate
+  `scripts/meta-cmake-per-config-bake.sh`). Remaining:
   - dropped `target_compile_features` (googletest's PUBLIC `cxx_std_17`) — the
     target's own compile already gets `-std=c++17` via the `LanguageStandard`
     lift; only PUBLIC propagation to consumers is missing, which Bazel's native
     `cc_library` can't express transitively (no `exported_copts`). Needs a design
     call, not a quick fix.
+  - per-config bake residue: the lift covers the write_file bake tier; the
+    LIFTED configure_file tier (`--lift-configure-file`, values-dict driven)
+    still substitutes one configure's variable dump for all arms, and a
+    non-text (base64-genrule) body can't carry select arms — both degrade to
+    the primary config's view, tagged/un-tagged respectively.
 
 - **Emit absent targets / subpackages — investigated; mostly configure-scope,
   one real layout gap left.** Investigation (2026-06): the intent lens diffs the
@@ -635,6 +645,35 @@ trees, optional-feature deps, codegen instances). Each member's
   build-tracer-on-CI fixture so the trace-driven sibling gate can run too.
 
 ## Later (research / open questions)
+
+- **Dynamic-execution cmake constructs — sweep residue (2026-06 DEFER audit).**
+  An empirical sweep of cmake_language-family constructs against the trace
+  recoveries found most shapes already correct: plain `DEFER` (own-scope
+  execution; trace keeps the registration's file/line + expanded argv),
+  `DEFER` registered in helper functions, `EVAL CODE` (the virtual
+  `<file>:N:EVAL` path still prefix-matches the source tree),
+  `CANCEL_CALL` (a cancelled call never executes → never traced), and
+  variable/scope plumbing (`block()`, `return(PROPAGATE)`,
+  `variable_watch`) which the expanded trace flattens away. The
+  `DEFER DIRECTORY` relative-output mis-anchor is fixed (configure_file +
+  file(RENAME); execute_process already refused relative outputs). Three
+  adjacent residues remain, none corpus-blocking today:
+  (1) `add_subdirectory(<src> <custom-binary-dir>)` breaks the
+  build-mirrors-source assumption the relative-output anchoring rests on
+  (`dirScopeRel` joins the scope's SOURCE-relative path under the build
+  root; the codemodel's per-directory `build` path would be the faithful
+  anchor) — also the exact shape `FetchContent_MakeAvailable` uses for its
+  `<name>-src`/`<name>-build` add_subdirectory;
+  (2) `file(GENERATE OUTPUT <relative>)` is still dropped outright ("no
+  per-call binary-dir context") rather than anchored like configure_file
+  now is — the same CallFile-scope + DeferDir treatment would recover it;
+  (3) `cmake_language(SET_DEPENDENCY_PROVIDER)` interplay: a project/
+  operator dependency provider rides CMAKE_PROJECT_TOP_LEVEL_INCLUDES,
+  which the converter's own hook staging (-D) can clobber — acknowledged
+  in cmakerun's comments, unexercised by the corpus, worth a deliberate
+  contract when a provider-using member appears. (FetchContent /
+  ExternalProject themselves remain the researched-but-unimplemented
+  mapping in `docs/research/cmake_analysis.md` §14.)
 
 - **PCH forced-include lift — fidelity residue.** The lift (shipped: cmake's
   `target_precompile_headers` forced-include semantics expand into ordered

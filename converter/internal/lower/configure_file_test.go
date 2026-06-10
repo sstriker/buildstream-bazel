@@ -786,3 +786,55 @@ func equalStringsForCF(a, b []string) bool {
 	}
 	return true
 }
+
+// TestRecoverConfigureFilesFromCalls_DeferDirectoryAnchor pins the
+// cmake_language(DEFER DIRECTORY <dir> CALL configure_file …) anchoring: the
+// deferred call executes at <dir>'s scope end with <dir>'s
+// CMAKE_CURRENT_BINARY_DIR, so its RELATIVE output lands in <dir>'s build
+// mirror — NOT the registration site's scope (what CallFile-based anchoring
+// computes). sub/CMakeLists.txt defers to the root, so `cfg.h` is written at
+// <build>/cfg.h; pre-fix the recovery looked under <build>/sub/ and silently
+// dropped a generated header consumers #include.
+func TestRecoverConfigureFilesFromCalls_DeferDirectoryAnchor(t *testing.T) {
+	hostSrc := t.TempDir()
+	hostBuild := t.TempDir()
+	// cmake wrote the deferred output at the ROOT build dir.
+	if err := os.WriteFile(filepath.Join(hostBuild, "cfg.h"), []byte("#define CFG_VALUE 7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ConfigureFileCall{{
+		CallFile: filepath.Join(hostSrc, "sub", "CMakeLists.txt"),
+		Input:    filepath.Join(hostSrc, "sub", "cfg.h.in"),
+		Output:   "cfg.h", // relative → resolves in the DEFERRED-TO scope
+		DeferDir: hostSrc, // cmake_language(DEFER DIRECTORY ${CMAKE_SOURCE_DIR} …)
+	}}
+	dirScopes := []string{"", "sub"}
+	cc := newCodegenContext()
+	out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, dirScopes, false, nil, cc)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(out) != 1 {
+		t.Fatalf("out = %v; want 1 entry (the deferred output recovered at the root scope)", out)
+	}
+	if out[0].RelOutput != "cfg.h" {
+		t.Errorf("RelOutput = %q, want cfg.h (deferred-to root scope, not sub/)", out[0].RelOutput)
+	}
+	if _, ok := cc.OutToGenrule["cfg.h"]; !ok {
+		t.Errorf("no genrule recovered for cfg.h; OutToGenrule=%v", cc.OutToGenrule)
+	}
+
+	// Control: the same call WITHOUT DeferDir anchors to the registration
+	// scope (sub/), where no file exists — dropped. That is correct for a
+	// plain DEFER (own-scope execution) and was the pre-fix behavior for
+	// DEFER DIRECTORY.
+	calls[0].DeferDir = ""
+	cc2 := newCodegenContext()
+	out2, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, dirScopes, false, nil, cc2)
+	if err != nil {
+		t.Fatalf("recover (no DeferDir): %v", err)
+	}
+	if len(out2) != 0 {
+		t.Errorf("without DeferDir the output should anchor to sub/ and drop; got %v", out2)
+	}
+}
