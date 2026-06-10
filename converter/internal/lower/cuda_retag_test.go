@@ -114,7 +114,7 @@ func TestSplitCompileFragments_DropsCudaArchFlags(t *testing.T) {
 		{Fragment: "--generate-code arch=compute_90,code=sm_90"},
 		{Fragment: "-std=c++17"},
 	}
-	copts, _ := splitCompileFragments(frags)
+	copts, _, _ := splitCompileFragments(frags)
 	want := []string{"-O3", "--extended-lambda", "-std=c++17"}
 	if len(copts) != len(want) {
 		t.Fatalf("copts = %v; want %v", copts, want)
@@ -139,7 +139,7 @@ func TestSplitCompileFragments_ShellEscapedDefine(t *testing.T) {
 		{Fragment: "-DNDEBUG"},
 		{Fragment: `-DMSG="hello world"`}, // quoted value with a space stays one define
 	}
-	_, defines := splitCompileFragments(frags)
+	_, defines, _ := splitCompileFragments(frags)
 	want := []string{`VERSION="0.3.28"`, "NDEBUG", "MSG=hello world"}
 	if len(defines) != len(want) {
 		t.Fatalf("defines = %q; want %q", defines, want)

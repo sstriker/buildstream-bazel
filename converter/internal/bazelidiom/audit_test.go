@@ -663,12 +663,12 @@ func TestAudit_CmakeCodegenPCHTag(t *testing.T) {
 	}
 	found := false
 	for _, f := range findings {
-		if f.Code == "pch-toolchain-feature-needed" {
+		if f.Code == "pch-speed-not-replicated" {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected pch-toolchain-feature-needed; got %v", findings)
+		t.Errorf("expected pch-speed-not-replicated; got %v", findings)
 	}
 }
 

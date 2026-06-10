@@ -235,6 +235,79 @@ generated default (which could lift onto features your toolchain doesn't
 define); the converter prints a warning naming the path so the under-lift
 isn't a surprise.
 
+## Precompiled headers (`target_precompile_headers`) — speed half only
+
+cmake's PCH machinery is two effects welded together, and the
+converter splits them:
+
+- **Forced include (correctness) — handled automatically.** Every TU
+  of a PCH-using target compiles as if the declared headers were
+  `#include`d first; the converter expands that into ordered
+  `-include` copts on the emitted rule (including the `REUSE_FROM`
+  consumer shape). Converted targets compile identically to cmake's
+  preprocessor view; nothing for the operator to do.
+- **Precompilation (compile speed) — operator-owned.** Bazel
+  `cc_library` has no native PCH attribute, so the `.gch`/`.pch`
+  speed-up is not replicated. Targets that used PCH carry the
+  `cmake-codegen-pch` tag, and the idiom audit surfaces a
+  `pch-speed-not-replicated` finding per target, so the residual is
+  one `bazel query 'attr("tags", "cmake-codegen-pch", //...)'` away.
+
+### Should you bother?
+
+Usually no. Bazel's local action cache, remote cache, and per-TU
+parallelism already absorb most of what PCH bought the cmake build —
+PCH pays off on *clean* compiles of warm TU sets, exactly what the
+caches make rare. Measure a converted build first; wire PCH only if
+header-parse time still dominates a profile.
+
+### The pattern, if you need it
+
+GCC picks up a precompiled header automatically: when resolving
+`-include pch.h` it tries `pch.h.gch` in each search directory before
+`pch.h` itself. So the shape is a genrule that compiles the header
+with the toolchain compiler, plus search-path ordering that lets the
+`.gch` win:
+
+```python
+# Compile the PCH once. The flags MUST match the consuming rules'
+# compile exactly (language, -std, -D, -O...) — gcc validates and
+# silently falls back to the plain header on mismatch (add
+# -Winvalid-pch to the consumers to see when that happens).
+genrule(
+    name = "core_pch",
+    srcs = ["pch.h"],
+    outs = ["pch/pch.h.gch"],
+    cmd = "$(CC) $(CC_FLAGS) -x c++-header -std=c++17 -O2 -o $@ $(location pch.h)",
+    toolchains = [
+        "@bazel_tools//tools/cpp:current_cc_toolchain",
+        "@bazel_tools//tools/cpp:cc_flags",
+    ],
+)
+
+cc_library(
+    name = "core",
+    srcs = [...],
+    # Stage the .gch into the compile actions (Bazel 7+ attribute for
+    # non-source compiler inputs referenced from copts).
+    additional_compiler_inputs = [":core_pch"],
+    # The .gch's directory must be searched BEFORE the directory
+    # holding the plain pch.h, or gcc opens the plain header and the
+    # precompile never engages. (Paths here assume the root package;
+    # in a subpackage prefix the package path.)
+    copts = ["-I$(GENDIR)/pch", "-include", "pch.h", "-Winvalid-pch"],
+)
+```
+
+The flag-identity requirement is the real cost: every change to the
+consuming rule's copts (or to `--copt` on the command line) must be
+mirrored into the genrule or the PCH silently degrades to a plain
+include. That coupling is why the converter doesn't emit this shape
+itself — it would bake a flag snapshot the operator then owns without
+knowing it. The degradation is at least *safe*: a stale or mismatched
+`.gch` falls back to the plain header, which the forced-include lift
+already makes correct.
+
 ## Per-source COMPILE_DEFINITIONS — no operator action needed
 
 cmake's `set_source_files_properties(foo.c PROPERTIES
