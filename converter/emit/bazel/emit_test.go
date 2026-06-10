@@ -1969,6 +1969,40 @@ func TestEmit_Provenance_RendersWhenEnabled(t *testing.T) {
 	}
 }
 
+// TestEmit_Provenance_MacroCallSiteLeads: a macro-declared target (CallSite
+// set) leads with the user-level invocation as `# Source:` and keeps the
+// macro-internal declaring command on a `# Declared:` second line.
+func TestEmit_Provenance_MacroCallSiteLeads(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{
+			Name: "gadget",
+			Kind: ir.KindCCLibrary,
+			Srcs: []string{"gadget.c"},
+			Provenance: ir.Provenance{
+				File:    "cmake/helpers.cmake",
+				Line:    14,
+				Command: "add_library",
+			},
+			CallSite: ir.Provenance{
+				File:    "CMakeLists.txt",
+				Line:    18,
+				Command: "add_gadget_lib",
+			},
+		}},
+	}
+	got, err := bazel.EmitWithOptions(pkg, bazel.Options{EmitProvenance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	iSrc := strings.Index(s, "# Source: CMakeLists.txt:18 (add_gadget_lib)")
+	iDecl := strings.Index(s, "# Declared: cmake/helpers.cmake:14 (add_library)")
+	iRule := strings.Index(s, "cc_library(")
+	if !(iSrc >= 0 && iSrc < iDecl && iDecl < iRule) {
+		t.Errorf("want `# Source:` (call site) then `# Declared:` then rule; got %d/%d/%d in:\n%s", iSrc, iDecl, iRule, s)
+	}
+}
+
 // TestEmit_Provenance_OmittedWhenDisabled confirms the comment is
 // suppressed when the flag is off, keeping existing goldens
 // byte-stable.

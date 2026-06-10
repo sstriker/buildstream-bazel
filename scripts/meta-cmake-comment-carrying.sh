@@ -63,9 +63,21 @@ assert_present "wraps the vendored widget code" "the cc_library leading comment"
 assert_present "Generate the lookup table from the spec" "the codegen genrule leading comment"
 assert_present "the widget core lib" "the cc_library trailing comment"
 # (4) Macro-declared target: the comment above the INVOCATION carries (leading
-# + trailing), the macro body's internal comment does not.
+# + trailing), the macro body's internal comment does not — and the provenance
+# breadcrumb leads with the invocation (`# Source:`) while keeping the
+# macro-internal add_library on a `# Declared:` line.
 assert_present "The gadget lib — declared via the helper macro." "the macro call-site leading comment"
 assert_present "macro-made gadget" "the macro call-site trailing comment"
+assert_breadcrumb() { # regex description
+  if ! grep -qE -- "$1" "$ws/BUILD.bazel"; then
+    echo "FAIL: expected $2 in the emitted BUILD: $1"
+    echo "   --- generated BUILD ---"
+    sed 's/^/   /' "$ws/BUILD.bazel"
+    exit 1
+  fi
+}
+assert_breadcrumb '^# Source: CMakeLists\.txt:[0-9]+ \(add_gadget_lib\)' "the call-site # Source: breadcrumb"
+assert_breadcrumb '^# Declared: CMakeLists\.txt:[0-9]+ \(add_library\)' "the macro-internal # Declared: breadcrumb"
 if grep -qF -- "inside the macro body" "$ws/BUILD.bazel"; then
   echo "FAIL: macro BODY comment misattributed to a target: inside the macro body"
   echo "   --- generated BUILD ---"

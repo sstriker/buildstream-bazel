@@ -64,17 +64,44 @@ func emitPackageDefaultVisibility(buf *bytes.Buffer) {
 	buf.WriteString(`package(default_visibility = ["//visibility:public"])` + "\n\n")
 }
 
-// emitProvenanceComment writes a leading `# Source: <file>:<line>
-// (<command>)` comment above the next emitted rule. Phase 1
-// task 1 of the generator-parity uplift — the backtrace-derived
-// annotation that tells the operator which cmake call site
-// declared the target.
+// emitTargetProvenance writes the backtrace-derived breadcrumb(s) above the
+// next emitted rule — Phase 1 task 1 of the generator-parity uplift, the
+// annotation that tells the operator which cmake call site declared the
+// target.
 //
-// File / Line / Command are written verbatim. The buildtools
-// canonicalize pass preserves leading comments attached to rule
-// calls, so the comment survives the formatter round-trip.
-func emitProvenanceComment(buf *bytes.Buffer, p ir.Provenance) {
-	buf.WriteString("# Source: ")
+// Directly-declared targets get the single familiar line:
+//
+//	# Source: CMakeLists.txt:9 (add_library)
+//
+// Macro/function-declared targets (CallSite set) lead with the user-level
+// invocation — the line the operator can navigate to in THEIR CMakeLists —
+// and keep the macro-internal declaring command on a second line, which
+// matters when the helper lives in another file (abseil's
+// AbseilHelpers.cmake shape):
+//
+//	# Source: CMakeLists.txt:18 (add_gadget_lib)
+//	# Declared: cmake/helpers.cmake:14 (add_library)
+func emitTargetProvenance(buf *bytes.Buffer, t ir.Target) {
+	if t.CallSite.IsZero() {
+		if !t.Provenance.IsZero() {
+			emitProvenanceComment(buf, "Source", t.Provenance)
+		}
+		return
+	}
+	emitProvenanceComment(buf, "Source", t.CallSite)
+	if !t.Provenance.IsZero() {
+		emitProvenanceComment(buf, "Declared", t.Provenance)
+	}
+}
+
+// emitProvenanceComment writes one `# <label>: <file>:<line> (<command>)`
+// breadcrumb line. File / Line / Command are written verbatim. The buildtools
+// canonicalize pass preserves leading comments attached to rule calls, so the
+// comment survives the formatter round-trip.
+func emitProvenanceComment(buf *bytes.Buffer, label string, p ir.Provenance) {
+	buf.WriteString("# ")
+	buf.WriteString(label)
+	buf.WriteString(": ")
 	buf.WriteString(p.File)
 	if p.Line > 0 {
 		buf.WriteString(":")
@@ -466,8 +493,8 @@ func emitTarget(buf *bytes.Buffer, t ir.Target, opts Options) error {
 		// breadcrumb beneath it (when both are on).
 		emitLeadingComment(buf, t.LeadingComment)
 	}
-	if opts.EmitProvenance && !t.Provenance.IsZero() {
-		emitProvenanceComment(buf, t.Provenance)
+	if opts.EmitProvenance {
+		emitTargetProvenance(buf, t)
 	}
 	switch t.Kind {
 	case ir.KindGenrule:

@@ -349,9 +349,12 @@ type Target struct {
 	// Emit-side rendering is gated by emit.Options.EmitProvenance:
 	// when on, the emitter writes a leading
 	// `# Source: <file>:<line> (<command>)` comment above each
-	// rule whose Provenance is non-zero. Operators use the
-	// annotation to navigate "why does this Bazel target exist?"
-	// without re-running the converter.
+	// rule whose Provenance is non-zero — or, for macro-declared
+	// targets (CallSite set), a `# Source:` line for the user-level
+	// invocation followed by a `# Declared:` line for this
+	// declaration site. Operators use the annotation to navigate
+	// "why does this Bazel target exist?" without re-running the
+	// converter.
 	//
 	// Zero-value Provenance (File == "") suppresses the comment;
 	// the IR stays back-compat for lowerers / fixtures that
@@ -369,8 +372,9 @@ type Target struct {
 	// Comment recovery (lower.Options.RecoverSourceComments) prefers
 	// this site over Provenance, so an author comment above a
 	// target-generating macro call carries to the target. The
-	// `# Source:` provenance breadcrumb keeps using Provenance (the
-	// precise declaring command).
+	// provenance breadcrumb leads with it too (`# Source:` names the
+	// invocation; the declaring command follows on a `# Declared:`
+	// line — see the Provenance doc above).
 	CallSite Provenance
 
 	// LeadingComment is the author's source comment block recovered from
