@@ -161,8 +161,13 @@ transition cleanly.
   - **eigen** (`EIGEN_BUILD_TESTING=OFF`): ~900-target `-Werror` SIMD suite,
     self-contained (no ext dep/codegen) but a huge build — needs a scoped/
     sharded build, not `//...` in one shot. Deferred dev surface.
-  - **openblas** (`BUILD_TESTING=OFF`): utest is C but the BLAS test surface
-    pulls the Fortran reference — gated on the (deferred) Fortran ruleset.
+  - **openblas** (`BUILD_TESTING=OFF`): the Fortran ruleset gate is LIFTED —
+    `fortran_library` (//rules:fortran.bzl) now compiles the real reference
+    LAPACK + BLAS, and both the Fortran and C_LAPACK shapes survey green
+    (`openblas` / `openblas-clapack`). Remaining: the BLAS test EXECUTABLES
+    (`?blat1/2/3`) are Fortran-only `add_executable`s, so retagFortranTargets
+    degrades them to (non-runnable) fortran_library — running them as real
+    cc_test/fortran binaries (a `fortran_binary` rule) is the follow-up.
   - **protobuf** (`protobuf_BUILD_TESTS=OFF`): needs googletest as a dep
     (BCR module / corpus member) wired like abseil's `GTest::gmock`.
 
@@ -650,6 +655,19 @@ trees, optional-feature deps, codegen instances). Each member's
   ALSO adds its own non-PCH forced include sees a different forced-include
   processing order than under cmake (matters only when one forced header
   depends on the other's macros).
+
+- **Comment carrying — remaining macro-expansion sites.** Codemodel targets
+  now carry the author comment above their macro/function INVOCATION
+  (`ir.Target.CallSite`, the backtrace's outermost user frame; comment
+  recovery prefers it over the body-line Provenance). Two sibling paths still
+  read only the body line: synthesized codegen genrules (the shadow-trace
+  `add_custom_command` File/Line is the macro body for macro-wrapped codegen;
+  the trace frame stack / `declaringScopeFile` mechanism could recover the
+  invocation) and trace-synthesized INTERFACE libraries (abseil's
+  `absl_cc_library` — Provenance is the helper-module line, shared across
+  targets, so recovery skips them). Also open: a deliberate policy for one
+  invocation declaring several targets (currently skipped as ambiguous;
+  could instead attach the same call-site comment to each).
 
 - **Genrule command-rewrite token-replace consolidation (deferred from the
   2026-06-08 refactoring audit).** `replaceBareToken` (genrule.go) and

@@ -187,6 +187,14 @@ const (
 	// KindCudaTest renders as rules_cuda's `cuda_test(...)` — the CUDA
 	// analogue of cc_test for a `.cu`-only test executable.
 	KindCudaTest
+	// KindFortranLibrary renders as rules_buildstream_bazel's
+	// `fortran_library(...)` — the converter's self-contained lowering for a
+	// cmake Fortran target (a cc_* rule has no Fortran compile action). It
+	// compiles `.f`/`.f90`/... via the cc toolchain's own driver (gfortran)
+	// and exposes a CcInfo, so a consuming cc_* target deps on it like any
+	// library. The Fortran analogue of KindCudaLibrary; see
+	// //rules:fortran.bzl and lower's retagFortranTargets.
+	KindFortranLibrary
 )
 
 func (k Kind) String() string {
@@ -227,6 +235,8 @@ func (k Kind) String() string {
 		return "cuda_binary"
 	case KindCudaTest:
 		return "cuda_test"
+	case KindFortranLibrary:
+		return "fortran_library"
 	case KindBoolFlag:
 		return "bool_flag"
 	case KindConfigSetting:
@@ -349,14 +359,36 @@ type Target struct {
 	// Emit-side rendering is gated by emit.Options.EmitProvenance:
 	// when on, the emitter writes a leading
 	// `# Source: <file>:<line> (<command>)` comment above each
-	// rule whose Provenance is non-zero. Operators use the
-	// annotation to navigate "why does this Bazel target exist?"
-	// without re-running the converter.
+	// rule whose Provenance is non-zero — or, for macro-declared
+	// targets (CallSite set), a `# Source:` line for the user-level
+	// invocation followed by a `# Declared:` line for this
+	// declaration site. Operators use the annotation to navigate
+	// "why does this Bazel target exist?" without re-running the
+	// converter.
 	//
 	// Zero-value Provenance (File == "") suppresses the comment;
 	// the IR stays back-compat for lowerers / fixtures that
 	// pre-date this field.
 	Provenance Provenance
+
+	// CallSite is the user-level invocation that produced this target
+	// when the declaring command ran inside a macro/function expansion:
+	// the outermost user-source INVOCATION frame of the declaration
+	// backtrace (e.g. the `add_widget_lib(foo)` call in the user's
+	// CMakeLists, where Provenance is the helper body's add_library
+	// line). Zero when the target was declared directly — Provenance
+	// already IS the user's call — or when no backtrace is available.
+	// Inclusion frames (include() / find_package() / add_subdirectory())
+	// are scope changes, not invocations: a target declared at an
+	// included file's top level also gets no CallSite.
+	//
+	// Comment recovery (lower.Options.RecoverSourceComments) prefers
+	// this site over Provenance, so an author comment above a
+	// target-generating macro call carries to the target. The
+	// provenance breadcrumb leads with it too (`# Source:` names the
+	// invocation; the declaring command follows on a `# Declared:`
+	// line — see the Provenance doc above).
+	CallSite Provenance
 
 	// LeadingComment is the author's source comment block recovered from
 	// the originating CMakeLists (the contiguous `#` line-comment block
@@ -380,6 +412,14 @@ type Target struct {
 
 	// Srcs are compilation inputs (.c / .cc / .cpp / .S / etc.).
 	Srcs []string
+
+	// ModuleSrcs are Fortran sources that DEFINE a module (gfortran writes a
+	// `.mod` for each), ordered so a module's provider precedes any provider
+	// that `use`s it. Set only on KindFortranLibrary targets: fortran_library
+	// compiles these first into a shared module directory, then compiles Srcs
+	// in parallel against it. Empty for module-free Fortran (the F77 bulk) and
+	// every non-Fortran rule. See lower's splitFortranModuleSrcs.
+	ModuleSrcs []string
 
 	// Hdrs are exported headers reachable via Includes/StripIncludePrefix.
 	Hdrs []string

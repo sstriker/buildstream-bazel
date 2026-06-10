@@ -64,17 +64,44 @@ func emitPackageDefaultVisibility(buf *bytes.Buffer) {
 	buf.WriteString(`package(default_visibility = ["//visibility:public"])` + "\n\n")
 }
 
-// emitProvenanceComment writes a leading `# Source: <file>:<line>
-// (<command>)` comment above the next emitted rule. Phase 1
-// task 1 of the generator-parity uplift — the backtrace-derived
-// annotation that tells the operator which cmake call site
-// declared the target.
+// emitTargetProvenance writes the backtrace-derived breadcrumb(s) above the
+// next emitted rule — Phase 1 task 1 of the generator-parity uplift, the
+// annotation that tells the operator which cmake call site declared the
+// target.
 //
-// File / Line / Command are written verbatim. The buildtools
-// canonicalize pass preserves leading comments attached to rule
-// calls, so the comment survives the formatter round-trip.
-func emitProvenanceComment(buf *bytes.Buffer, p ir.Provenance) {
-	buf.WriteString("# Source: ")
+// Directly-declared targets get the single familiar line:
+//
+//	# Source: CMakeLists.txt:9 (add_library)
+//
+// Macro/function-declared targets (CallSite set) lead with the user-level
+// invocation — the line the operator can navigate to in THEIR CMakeLists —
+// and keep the macro-internal declaring command on a second line, which
+// matters when the helper lives in another file (abseil's
+// AbseilHelpers.cmake shape):
+//
+//	# Source: CMakeLists.txt:18 (add_gadget_lib)
+//	# Declared: cmake/helpers.cmake:14 (add_library)
+func emitTargetProvenance(buf *bytes.Buffer, t ir.Target) {
+	if t.CallSite.IsZero() {
+		if !t.Provenance.IsZero() {
+			emitProvenanceComment(buf, "Source", t.Provenance)
+		}
+		return
+	}
+	emitProvenanceComment(buf, "Source", t.CallSite)
+	if !t.Provenance.IsZero() {
+		emitProvenanceComment(buf, "Declared", t.Provenance)
+	}
+}
+
+// emitProvenanceComment writes one `# <label>: <file>:<line> (<command>)`
+// breadcrumb line. File / Line / Command are written verbatim. The buildtools
+// canonicalize pass preserves leading comments attached to rule calls, so the
+// comment survives the formatter round-trip.
+func emitProvenanceComment(buf *bytes.Buffer, label string, p ir.Provenance) {
+	buf.WriteString("# ")
+	buf.WriteString(label)
+	buf.WriteString(": ")
 	buf.WriteString(p.File)
 	if p.Line > 0 {
 		buf.WriteString(":")
@@ -438,6 +465,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	emitCMakeConfigureFileLoad(&buf, pkg)
 	emitCCEmbedLoad(&buf, pkg)
 	emitCCHashLoad(&buf, pkg)
+	emitFortranLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
 
 	for i, t := range pkg.Targets {
@@ -466,8 +494,8 @@ func emitTarget(buf *bytes.Buffer, t ir.Target, opts Options) error {
 		// breadcrumb beneath it (when both are on).
 		emitLeadingComment(buf, t.LeadingComment)
 	}
-	if opts.EmitProvenance && !t.Provenance.IsZero() {
-		emitProvenanceComment(buf, t.Provenance)
+	if opts.EmitProvenance {
+		emitTargetProvenance(buf, t)
 	}
 	switch t.Kind {
 	case ir.KindGenrule:
@@ -688,7 +716,7 @@ func addKeepMarkers(f *build.File) {
 		}
 		kind := callRuleKind(call)
 		switch kind {
-		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files", "write_file", "cmake_configure_file":
+		case "genrule", "filegroup", "package", "cc_import", "alias", "pkg_files", "write_file", "cmake_configure_file", "fortran_library":
 			markCallKeep(call)
 		case "cc_library", "cc_binary", "cc_test", "cuda_library", "cuda_binary", "cuda_test":
 			if kind == "cc_library" && callHasTag(call, generatedIncludesTag) {
@@ -866,6 +894,9 @@ var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
     name = "{{.Name}}",
 {{- if .SrcsExpr}}
     srcs = {{.SrcsExpr}},
+{{- end}}
+{{- if .ModuleSrcsExpr}}
+    module_srcs = {{.ModuleSrcsExpr}},
 {{- end}}
 {{- if .HdrsExpr}}
     hdrs = {{.HdrsExpr}},
@@ -1291,6 +1322,7 @@ type ccView struct {
 	RuleKind                   string
 	Name                       string
 	SrcsExpr                   string
+	ModuleSrcsExpr             string
 	HdrsExpr                   string
 	TextualHdrsExpr            string
 	IncludesExpr               string
@@ -1606,6 +1638,19 @@ func emitCCHashLoad(buf *bytes.Buffer, pkg *ir.Package) {
 	}
 }
 
+// emitFortranLoad writes the
+// `load("@rules_buildstream_bazel//rules:fortran.bzl", "fortran_library")` line
+// when pkg has any KindFortranLibrary target, else nothing — a non-Fortran
+// BUILD stays byte-identical and needs no extra load.
+func emitFortranLoad(buf *bytes.Buffer, pkg *ir.Package) {
+	for _, t := range pkg.Targets {
+		if t.Kind == ir.KindFortranLibrary {
+			buf.WriteString(`load("@rules_buildstream_bazel//rules:fortran.bzl", "fortran_library")` + "\n\n")
+			return
+		}
+	}
+}
+
 // cudaRuleLoads maps each CUDA Kind to its @rules_cuda//cuda:defs.bzl symbol.
 // Separate from ccRuleLoads (which is the @rules_cc load set) so the two loads
 // stay distinct — a BUILD with `.cu` targets loads cuda_library/cuda_binary/
@@ -1910,9 +1955,13 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	}
 
 	v := ccView{
-		RuleKind:                   t.Kind.String(),
-		Name:                       t.Name,
-		SrcsExpr:                   attrExpr(srcs, srcsSel),
+		RuleKind: t.Kind.String(),
+		Name:     t.Name,
+		SrcsExpr: attrExpr(srcs, srcsSel),
+		// module_srcs (fortran_library only): the module-defining Fortran
+		// sources, kept in the converter's topological order (NOT sorted — a
+		// module's provider must precede any provider that uses it).
+		ModuleSrcsExpr:             attrExpr(append([]string(nil), t.ModuleSrcs...), nil),
 		HdrsExpr:                   attrExpr(hdrs, hdrsSel),
 		TextualHdrsExpr:            attrExpr(sortedCopy(t.TextualHdrs), perPlatformAttr(t, "textual_hdrs")),
 		IncludesExpr:               attrExpr(includes, perPlatformAttr(t, "includes")),
@@ -1968,7 +2017,35 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	if isCudaKind(t.Kind) {
 		adaptCudaView(&v)
 	}
+	if t.Kind == ir.KindFortranLibrary {
+		adaptFortranView(&v)
+	}
 	return ccRuleTmpl.Execute(w, v)
+}
+
+// adaptFortranView rewrites a ccView assembled for a Fortran target so it only
+// carries the attributes //rules:fortran.bzl's fortran_library accepts: name,
+// srcs, deps, copts, linkopts, includes (plus the implicit tags / visibility).
+// The lowering (retagFortranTargets) already folds defines into copts (-D…) and
+// implementation_deps into deps, so those exprs are normally empty here; this
+// clears every cc-only attribute defensively so a stray value can never render
+// an attribute fortran_library would reject at analysis. Headers have no
+// fortran_library analogue (Fortran sources don't declare a public header
+// surface the rule consumes) and are dropped.
+func adaptFortranView(v *ccView) {
+	v.HdrsExpr = ""
+	v.TextualHdrsExpr = ""
+	v.DefinesExpr = ""
+	v.LocalDefinesExpr = ""
+	v.ImplementationDepsExpr = ""
+	v.AdditionalLinkerInputsExpr = ""
+	v.DynamicDepsExpr = ""
+	v.IncludePrefix = ""
+	v.StripIncludePrefix = ""
+	v.Linkstatic = false
+	v.Alwayslink = false
+	v.Features = nil
+	v.Data = nil
 }
 
 // isCudaKind reports whether k is one of the rules_cuda rule kinds.

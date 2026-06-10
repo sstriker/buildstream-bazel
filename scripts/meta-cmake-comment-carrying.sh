@@ -8,7 +8,11 @@
 #   1. the file-header block lands at the top of the BUILD;
 #   2. a target's leading comment lands above its cc_library;
 #   3. a codegen genrule's originating add_custom_command comment lands above it;
-#   4. buildifier -mode=diff is a no-op over the emitted BUILD (the comments sit
+#   4. a macro-declared target carries the comment above the macro INVOCATION
+#      (its user-level call site), not the macro body's internal comment —
+#      while targets declared directly in an include()d file keep their own
+#      comments (an inclusion is a scope change, not a call site);
+#   5. buildifier -mode=diff is a no-op over the emitted BUILD (the comments sit
 #      in canonical positions — the gazelle-roundtrip contract holds).
 #
 # Suppression check: comment-carrying is default-ON, so --emit-source-comments=false
@@ -37,7 +41,7 @@ bin_dir="$repo_root/build/bin"
 mkdir -p "$bin_dir"
 make converter >/dev/null
 
-# (1)-(3) Convert WITH comment-carrying.
+# (1)-(4) Convert WITH comment-carrying.
 "$bin_dir/convert-element-cmake" \
   --source-root "$ws" \
   --emit-source-comments \
@@ -60,7 +64,41 @@ assert_present "Copyright 2026 the comment-carrying authors." "the file-header b
 assert_present "wraps the vendored widget code" "the cc_library leading comment"
 assert_present "Generate the lookup table from the spec" "the codegen genrule leading comment"
 assert_present "the widget core lib" "the cc_library trailing comment"
-echo "ok  meta-cmake-comment-carrying: file header + target (leading+trailing) + codegen comments carried"
+# (4) Macro-declared target: the comment above the INVOCATION carries (leading
+# + trailing), the macro body's internal comment does not — and the provenance
+# breadcrumb leads with the invocation (`# Source:`) while keeping the
+# macro-internal add_library on a `# Declared:` line.
+assert_present "The gadget lib — declared via the helper macro." "the macro call-site leading comment"
+assert_present "macro-made gadget" "the macro call-site trailing comment"
+assert_breadcrumb() { # regex description
+  if ! grep -qE -- "$1" "$ws/BUILD.bazel"; then
+    echo "FAIL: expected $2 in the emitted BUILD: $1"
+    echo "   --- generated BUILD ---"
+    sed 's/^/   /' "$ws/BUILD.bazel"
+    exit 1
+  fi
+}
+assert_breadcrumb '^# Source: CMakeLists\.txt:[0-9]+ \(add_gadget_lib\)' "the call-site # Source: breadcrumb"
+assert_breadcrumb '^# Declared: CMakeLists\.txt:[0-9]+ \(add_library\)' "the macro-internal # Declared: breadcrumb"
+# (4b) include()d-file declarations: an inclusion is a scope change, not an
+# invocation — each target declared at the included file's top level keeps the
+# comment above its OWN add_library (two targets, one included file: the
+# shared-site guard must NOT fire), and no breadcrumb names the include() line.
+assert_present "The alpha lib — declared at the top of an included file." "the first included-file leading comment"
+assert_present "The beta lib — second target in the same included file." "the second included-file leading comment"
+if grep -qE -- '^# Source: [^ ]+ \(include\)' "$ws/BUILD.bazel"; then
+  echo "FAIL: an include() line leads a # Source: breadcrumb (inclusions are not call sites)"
+  echo "   --- generated BUILD ---"
+  sed 's/^/   /' "$ws/BUILD.bazel"
+  exit 1
+fi
+if grep -qF -- "inside the macro body" "$ws/BUILD.bazel"; then
+  echo "FAIL: macro BODY comment misattributed to a target: inside the macro body"
+  echo "   --- generated BUILD ---"
+  sed 's/^/   /' "$ws/BUILD.bazel"
+  exit 1
+fi
+echo "ok  meta-cmake-comment-carrying: file header + target (leading+trailing) + codegen + macro call-site comments carried"
 
 # (suppression) Comment-carrying is default-ON (since the "Default-on
 # comment-carrying" flip); --emit-source-comments=false is the opt-out. Convert
@@ -83,7 +121,11 @@ for marker in \
   "Copyright 2026 the comment-carrying authors." \
   "wraps the vendored widget code" \
   "Generate the lookup table from the spec" \
-  "the widget core lib"; do
+  "the widget core lib" \
+  "The gadget lib — declared via the helper macro." \
+  "macro-made gadget" \
+  "The alpha lib — declared at the top of an included file." \
+  "The beta lib — second target in the same included file."; do
   if grep -qF "$marker" "$ws/BUILD.nocomments"; then
     echo "FAIL: author comment present with --emit-source-comments=false: $marker"
     exit 1
@@ -91,7 +133,7 @@ for marker in \
 done
 echo "ok  meta-cmake-comment-carrying: --emit-source-comments=false suppresses all author comments"
 
-# (4) buildifier -mode=diff must be a no-op (canonical comment placement).
+# (5) buildifier -mode=diff must be a no-op (canonical comment placement).
 if ! command -v buildifier >/dev/null 2>&1; then
   echo "ok  meta-cmake-comment-carrying: buildifier not on PATH, skipping no-op check"
   exit 0
