@@ -62,6 +62,99 @@ func TestRecoverSourceComments_SharedSiteSkipped(t *testing.T) {
 	}
 }
 
+// TestRecoverSourceComments_MacroCallSiteCarried: a target declared inside a
+// macro body carries the comment above the macro INVOCATION (its CallSite),
+// not the (absent) comment above the body line.
+func TestRecoverSourceComments_MacroCallSiteCarried(t *testing.T) {
+	dir := t.TempDir()
+	cml := filepath.Join(dir, "CMakeLists.txt")
+	body := "macro(add_widget name)\n" + // 1
+		"  add_library(${name} STATIC ${name}.c)\n" + // 2 (body: Provenance)
+		"endmacro()\n" + // 3
+		"\n" + // 4
+		"# The widget lib, via the helper macro.\n" + // 5 leading for the call (line 6)
+		"add_widget(widget)  # macro-made\n" // 6 (invocation: CallSite)
+	if err := os.WriteFile(cml, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pkg := &ir.Package{Targets: []ir.Target{{
+		Name:       "widget",
+		Kind:       ir.KindCCLibrary,
+		Provenance: prov(2),
+		CallSite:   ir.Provenance{File: "CMakeLists.txt", Line: 6, Command: "add_widget"},
+	}}}
+
+	recoverSourceComments(pkg, dir, dir, "", nil, nil, nil)
+
+	if got := pkg.Targets[0].LeadingComment; len(got) != 1 || got[0] != "# The widget lib, via the helper macro." {
+		t.Errorf("leading comment = %q, want the call-site comment", got)
+	}
+	if got := pkg.Targets[0].TrailingComment; got != "# macro-made" {
+		t.Errorf("trailing comment = %q, want %q", got, "# macro-made")
+	}
+}
+
+// TestRecoverSourceComments_PerInvocationCallSites: a helper invoked twice
+// yields two targets sharing one body line (Provenance) but with distinct
+// CallSites — each carries its OWN invocation's comment. (Without call
+// sites this was the shared-site-skipped case.)
+func TestRecoverSourceComments_PerInvocationCallSites(t *testing.T) {
+	dir := t.TempDir()
+	cml := filepath.Join(dir, "CMakeLists.txt")
+	body := "macro(add_widget name)\n" + // 1
+		"  add_library(${name} STATIC ${name}.c)\n" + // 2 (shared body line)
+		"endmacro()\n" + // 3
+		"# the a lib\n" + // 4
+		"add_widget(a)\n" + // 5
+		"# the b lib\n" + // 6
+		"add_widget(b)\n" // 7
+	if err := os.WriteFile(cml, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	call := func(line int) ir.Provenance {
+		return ir.Provenance{File: "CMakeLists.txt", Line: line, Command: "add_widget"}
+	}
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "a", Provenance: prov(2), CallSite: call(5)},
+		{Name: "b", Provenance: prov(2), CallSite: call(7)},
+	}}
+
+	recoverSourceComments(pkg, dir, dir, "", nil, nil, nil)
+
+	if got := pkg.Targets[0].LeadingComment; len(got) != 1 || got[0] != "# the a lib" {
+		t.Errorf("a's leading comment = %q, want [# the a lib]", got)
+	}
+	if got := pkg.Targets[1].LeadingComment; len(got) != 1 || got[0] != "# the b lib" {
+		t.Errorf("b's leading comment = %q, want [# the b lib]", got)
+	}
+}
+
+// TestRecoverSourceComments_SharedCallSiteSkipped: one macro invocation that
+// declares TWO targets — the call site is shared, so neither target gets the
+// comment (same ambiguity policy as shared declaration sites).
+func TestRecoverSourceComments_SharedCallSiteSkipped(t *testing.T) {
+	dir := t.TempDir()
+	cml := filepath.Join(dir, "CMakeLists.txt")
+	body := "# both libs at once\n" + // 1
+		"add_widget_pair(a b)\n" // 2 (one invocation, two targets)
+	if err := os.WriteFile(cml, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	call := ir.Provenance{File: "CMakeLists.txt", Line: 2, Command: "add_widget_pair"}
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "a", Provenance: prov(9), CallSite: call},
+		{Name: "b", Provenance: prov(9), CallSite: call},
+	}}
+
+	recoverSourceComments(pkg, dir, dir, "", nil, nil, nil)
+
+	for _, tg := range pkg.Targets {
+		if tg.LeadingComment != nil {
+			t.Errorf("shared-call-site target %q got comment %q; want none", tg.Name, tg.LeadingComment)
+		}
+	}
+}
+
 func TestRecoverSourceComments_NoHeaderWhenNoFile(t *testing.T) {
 	// hostSrc points at a dir with no CMakeLists.txt → no header, no panic.
 	pkg := &ir.Package{Targets: []ir.Target{{Name: "foo"}}}

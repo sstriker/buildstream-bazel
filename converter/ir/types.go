@@ -359,14 +359,36 @@ type Target struct {
 	// Emit-side rendering is gated by emit.Options.EmitProvenance:
 	// when on, the emitter writes a leading
 	// `# Source: <file>:<line> (<command>)` comment above each
-	// rule whose Provenance is non-zero. Operators use the
-	// annotation to navigate "why does this Bazel target exist?"
-	// without re-running the converter.
+	// rule whose Provenance is non-zero — or, for macro-declared
+	// targets (CallSite set), a `# Source:` line for the user-level
+	// invocation followed by a `# Declared:` line for this
+	// declaration site. Operators use the annotation to navigate
+	// "why does this Bazel target exist?" without re-running the
+	// converter.
 	//
 	// Zero-value Provenance (File == "") suppresses the comment;
 	// the IR stays back-compat for lowerers / fixtures that
 	// pre-date this field.
 	Provenance Provenance
+
+	// CallSite is the user-level invocation that produced this target
+	// when the declaring command ran inside a macro/function expansion:
+	// the outermost user-source INVOCATION frame of the declaration
+	// backtrace (e.g. the `add_widget_lib(foo)` call in the user's
+	// CMakeLists, where Provenance is the helper body's add_library
+	// line). Zero when the target was declared directly — Provenance
+	// already IS the user's call — or when no backtrace is available.
+	// Inclusion frames (include() / find_package() / add_subdirectory())
+	// are scope changes, not invocations: a target declared at an
+	// included file's top level also gets no CallSite.
+	//
+	// Comment recovery (lower.Options.RecoverSourceComments) prefers
+	// this site over Provenance, so an author comment above a
+	// target-generating macro call carries to the target. The
+	// provenance breadcrumb leads with it too (`# Source:` names the
+	// invocation; the declaring command follows on a `# Declared:`
+	// line — see the Provenance doc above).
+	CallSite Provenance
 
 	// LeadingComment is the author's source comment block recovered from
 	// the originating CMakeLists (the contiguous `#` line-comment block

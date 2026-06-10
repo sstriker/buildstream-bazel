@@ -2411,24 +2411,10 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// target's JSON file carries. Phase 1 task 1 of the
 	// generator-parity uplift (ROADMAP.md). Emit-side gating
 	// renders this as a leading comment when EmitProvenance is
-	// on.
-	if t.Backtrace > 0 && t.Backtrace < len(t.BacktraceGraph.Nodes) {
-		node := t.BacktraceGraph.Nodes[t.Backtrace]
-		var file, cmd string
-		if node.File >= 0 && node.File < len(t.BacktraceGraph.Files) {
-			file = t.BacktraceGraph.Files[node.File]
-		}
-		if node.Command >= 0 && node.Command < len(t.BacktraceGraph.Commands) {
-			cmd = t.BacktraceGraph.Commands[node.Command]
-		}
-		if file != "" {
-			irt.Provenance = ir.Provenance{
-				File:    reanchorProvenanceFile(file, cmakeSrc, cmakeBuild),
-				Line:    node.Line,
-				Command: cmd,
-			}
-		}
-	}
+	// on. CallSite additionally records the user-level macro/
+	// function invocation when the declaring command ran inside
+	// one (comment recovery prefers it).
+	irt.Provenance, irt.CallSite = targetProvenance(t, cmakeSrc, cmakeBuild)
 
 	switch t.Type {
 	case "STATIC_LIBRARY":

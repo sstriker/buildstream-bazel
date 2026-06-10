@@ -8,6 +8,19 @@ project(commentcarrying C)
 # Built static for the embedded target.
 add_library(widget STATIC src/widget.c)  # the widget core lib
 
+# Helper macro — its body comment must NOT land on the targets it makes.
+macro(add_gadget_lib name)
+  # inside the macro body
+  add_library(${name} STATIC src/gadget.c)
+endmacro()
+
+# The gadget lib — declared via the helper macro.
+add_gadget_lib(gadget)  # macro-made gadget
+
+# Two more libs declared directly inside an included file — each must keep
+# the comment above its OWN add_library, not lose it to the include() site.
+include(cmake/extra.cmake)
+
 # Generate the lookup table from the spec.
 add_custom_command(
   OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/table.h

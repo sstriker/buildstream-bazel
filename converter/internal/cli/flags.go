@@ -392,7 +392,10 @@ type Args struct {
 	// EmitProvenance enables Phase 1 task 1's backtrace-derived
 	// per-rule annotation: emit a leading `# Source: <file>:<line>
 	// (<command>)` comment above each rule whose cmake declaration
-	// is recorded in the codemodel's BacktraceGraph. Default ON —
+	// is recorded in the codemodel's BacktraceGraph. For a target
+	// declared inside a macro/function, `# Source:` names the
+	// user-level invocation and a second `# Declared:` line names
+	// the macro-internal declaring command. Default ON —
 	// the comment is high-signal navigation help; pass
 	// --emit-provenance=false for byte-clean output (e.g. golden
 	// regression tests pre-dating the provenance comments).
@@ -720,7 +723,7 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.BoolVar(&a.TwoPassGenex, "two-pass-genex", true, "enable the warm second cmake configure passes (source-root mode, cmake 3.24+). Two independent triggers share this flag: (1) arbitrary genex literals the structural probe + Go-side evaluator can't resolve are resolved via a file(GENERATE) reconfigure; (2) when the first pass finds VCS-stamp vars, a NON-EXPANDED-trace reconfigure recovers set(X ${Y}) copies so a configure_file referencing a copy of a stamp var lifts to stamp_values. Both are conditional (skipped when nothing is unresolved / no stamp vars — zero overhead otherwise) and warm (reuse the first pass's try_compile/find_package cache). Pass --two-pass-genex=false to disable both.")
 	fs.StringVar(&a.BuildType, "build-type", "", "cmake -DCMAKE_BUILD_TYPE value (defaults to Release in cmakerun). Mutually exclusive with --build-types.")
 	fs.Var(commaSlice{&a.BuildTypes}, "build-types", "comma-separated list of cmake configuration names; switches the generator to \"Ninja Multi-Config\" with -DCMAKE_CONFIGURATION_TYPES=<a;b;c>. Phase 5 of the generator-parity uplift (ROADMAP.md). Mutually exclusive with --build-type.")
-	fs.BoolVar(&a.EmitProvenance, "emit-provenance", true, "above each emitted rule, write a leading `# Source: <file>:<line> (<command>)` comment derived from the cmake codemodel's BacktraceGraph. Default ON; pass --emit-provenance=false for byte-clean output.")
+	fs.BoolVar(&a.EmitProvenance, "emit-provenance", true, "above each emitted rule, write a leading `# Source: <file>:<line> (<command>)` comment derived from the cmake codemodel's BacktraceGraph (macro-declared targets get the invocation as `# Source:` plus the declaring command on a `# Declared:` line). Default ON; pass --emit-provenance=false for byte-clean output.")
 	fs.BoolVar(&a.EmitSourceComments, "emit-source-comments", true, "carry author comments from CMakeLists into the emitted BUILD: the leading `#` comment block above each target's declaration, plus the top-of-file header block. Default ON; pass --emit-source-comments=false to suppress (skips reading raw source — useful for byte-clean output or reply-dir-only runs where source isn't staged).")
 	fs.BoolVar(&a.EmitStandaloneCustomCommands, "emit-standalone-custom-commands", true, "Phase 4 of the generator-parity uplift: walk every CUSTOM_COMMAND edge in build.ninja and emit a genrule for each whose outputs aren't already covered by an existing recoverGenrule emission. On by default; covers add_custom_target / add_custom_command edges nothing consumes. Pass --emit-standalone-custom-commands=false to opt out.")
 	fs.StringVar(&a.OutSanitizerFeatures, "out-sanitizer-features", "", "write cc_toolchain sanitizer feature definitions (.bzl) extracted from cmake's CMAKE_<LANG>_FLAGS_<CONFIG> cache for sanitizer-shaped configs in --build-types. Phase 5 of the generator-parity uplift.")
