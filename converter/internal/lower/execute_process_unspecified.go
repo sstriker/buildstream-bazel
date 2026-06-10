@@ -366,10 +366,39 @@ func liftDirOperandOutputs(call shadow.ExecuteProcessCall, dirRel string, anc ex
 	return rels, true
 }
 
+// unspecBuildOperandRel classifies one argv element as a BUILD-path
+// operand using the argv-codegen lift's discriminator: an absolute path
+// anchoring under the build root always is; a clean RELATIVE token only
+// when it names the dir operand, a produced file, or something existing
+// on disk under the build root. A bare word naming nothing — old-style
+// `tar xf` flags, subcommands, mode words — is an ordinary string
+// argument, not a path, so it falls through to the literal branch
+// instead of declining the lift.
+func unspecBuildOperandRel(p, dirRel string, anc execAnchors, cc *codegenContext) (string, bool) {
+	if rel, ok := executeProcessAnchorOutput(p, anc); ok {
+		return rel, true
+	}
+	rel, ok := relativeArgvBuildRel(p)
+	if !ok {
+		return "", false
+	}
+	if rel == dirRel {
+		return rel, true
+	}
+	if _, produced := cc.OutToGenrule[rel]; produced {
+		return rel, true
+	}
+	if _, err := os.Stat(filepath.Join(anc.hostBuildDir, filepath.FromSlash(rel))); err == nil {
+		return rel, true
+	}
+	return "", false
+}
+
 // rewriteArgvUnspecDir renders the dir-operand re-run argv: the directory
-// operand → `$(RULEDIR)/<dir>`, inputs per the argv-codegen policy, other
-// build-dir operands decline (an unclassified second build path means the
-// shape isn't understood).
+// operand → `$(RULEDIR)/<dir>`, inputs per the argv-codegen policy
+// (including its relative-operand existence discriminator — see
+// unspecBuildOperandRel), other build-dir operands decline (an
+// unclassified second build path means the shape isn't understood).
 func rewriteArgvUnspecDir(argv []string, dirRel string, anc execAnchors, cc *codegenContext) (srcs, rewritten []string, ok bool) {
 	srcSet := map[string]bool{}
 	addSrc := func(rel string) {
@@ -386,7 +415,7 @@ func rewriteArgvUnspecDir(argv []string, dirRel string, anc execAnchors, cc *cod
 	}
 	for i, a := range argv {
 		p := stripArgvPathPrefix(a)
-		if rel, anchored := argvBuildRel(p, anc); anchored && i > 0 {
+		if rel, anchored := unspecBuildOperandRel(p, dirRel, anc, cc); anchored && i > 0 {
 			if rel == dirRel {
 				rewritten = append(rewritten, emitKeyed(a, "$(RULEDIR)/"+dirRel))
 				continue

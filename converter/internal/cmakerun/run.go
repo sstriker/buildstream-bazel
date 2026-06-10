@@ -257,9 +257,19 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	if opts.SourceRoot == "" || opts.BuildDir == "" {
 		return Reply{}, fmt.Errorf("cmakerun: SourceRoot and BuildDir required")
 	}
-	// The configure runs with cwd = BuildDir (see runOnce), so caller-
-	// relative roots must absolutize against the CALLER's cwd first.
-	for _, p := range []*string{&opts.SourceRoot, &opts.BuildDir} {
+	// The configure runs with cwd = BuildDir (see runOnce), so every
+	// caller-relative path handed to the cmake child must absolutize
+	// against the CALLER's cwd first. TracePath is doubly sensitive: the
+	// child would write the trace under BuildDir while the Go reader
+	// resolves the same relative path against the converter's cwd — the
+	// trace reads back empty and every trace-driven recovery silently
+	// degrades. PrefixDir rides CMAKE_PREFIX_PATH, which the child also
+	// resolves against ITS cwd. (ToolchainCMakeFile is already Abs'd in
+	// buildCmakeArgv.)
+	for _, p := range []*string{&opts.SourceRoot, &opts.BuildDir, &opts.TracePath, &opts.PrefixDir} {
+		if *p == "" {
+			continue
+		}
 		abs, err := filepath.Abs(*p)
 		if err != nil {
 			return Reply{}, fmt.Errorf("cmakerun: absolutize %q: %w", *p, err)

@@ -149,6 +149,28 @@ func TestLiftUnspecifiedOutputs_NinjaProducedNotClaimed(t *testing.T) {
 	}
 }
 
+// A bare relative word naming no build file (old-style tar flags,
+// subcommands, mode words) stays a literal string argument — the
+// argv-codegen discriminator — instead of declining the dir-operand lift.
+func TestLiftUnspecifiedOutputs_BareWordStaysLiteral(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	writeTree(t, hostSrc, "payload.tar", "T")
+	writeTree(t, hostBuild, "gen/a.h", "A")
+	call := argvCall(hostSrc, "tar", "xf", filepath.Join(hostSrc, "payload.tar"), filepath.Join(hostBuild, "gen"))
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	if len(refusals) != 0 || len(cc.Genrules) != 1 {
+		t.Fatalf("old-style flag word must not decline the lift: refusals=%+v genrules=%+v", refusals, cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	if !strings.Contains(g.GenruleCmd, " xf ") {
+		t.Errorf("bare word should stay literal: %q", g.GenruleCmd)
+	}
+	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "gen/a.h" {
+		t.Errorf("outs: %v", g.GenruleOuts)
+	}
+}
+
 // Duplicate trace entries of the same call (configure re-evaluation: same
 // file:line) count as ONE claim — they don't self-disqualify, and the
 // second entry reuses the first's genrule.

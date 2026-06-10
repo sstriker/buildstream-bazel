@@ -7,24 +7,6 @@ transition cleanly.
 
 ## Now
 
-- **In-place-rewrite genrule: cmd self-copy + un-renamed rule name (latent
-  since the feature landed, PR #484).** The converted
-  `genrule-inplace-rewrite` fixture emits
-  `cmd = "cp $(RULEDIR)/version.txt.gen $(RULEDIR)/version.txt.gen"` — the
-  SOURCE-input operand is anchored to `$(RULEDIR)` and then renamed in
-  lockstep with the output, so the rule copies its own (never-created)
-  output onto itself instead of reading the source; the rule is also named
-  `custom_command_version_txt` while the gate's bazel half builds
-  `//:custom_command_version_txt_gen`. `anchorGenruleOutputsToRuledir`
-  can't distinguish the two identical post-rewrite `version.txt` tokens
-  (standalone_genrules.go's two-pass ordering), so the input must be
-  disambiguated BEFORE anchoring. Hidden until now because the gate's
-  render-half assertions don't catch the `.gen`-suffixed self-copy and the
-  bazel-build half self-skips below bazel 9 (CI); on a bazel-9 host
-  `make e2e-meta-cmake-render-gates` fails at this gate and blocks the
-  suite. Fix the rewrite ordering + strengthen the gate's render
-  assertions (rule name + source-reading cmd).
-
 - **Complexity lens — break down the grandfathered giants.**
   `make lint-complexity` (golangci-lint, complexity-only config in
   `.golangci.yml`: gocyclo / gocognit / cyclop / nestif / funlen / maintidx) is
