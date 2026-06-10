@@ -850,3 +850,62 @@ func TestRecoverConfigureFilesFromCalls_DeferDirectoryAnchor(t *testing.T) {
 		t.Errorf("without DeferDir the output should anchor to sub/ and drop; got %v", out2)
 	}
 }
+
+// TestRecoverConfigureFiles_SamePathCopyOnlyMirror_NoRule pins the no-rule
+// rewire: a COPYONLY configure_file whose template's source-relative path
+// equals the output's build-relative path (the "stage a header into the
+// binary dir" idiom) emits NO rule — consumers resolve the rel path to the
+// committed source file via the includes attr's source-root coverage. A
+// RENAMED copy (cfg.h.in → cfg.h) keeps its rule.
+func TestRecoverConfigureFiles_SamePathCopyOnlyMirror_NoRule(t *testing.T) {
+	hostSrc := t.TempDir()
+	hostBuild := t.TempDir()
+	write := func(root, rel, body string) {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(hostSrc, "sub/config.h", "#define X 1\n")
+	write(hostBuild, "sub/config.h", "#define X 1\n")
+	write(hostSrc, "sub/cfg.h.in", "#define Y 2\n")
+	write(hostBuild, "sub/cfg.h", "#define Y 2\n")
+	calls := []shadow.ConfigureFileCall{
+		{
+			CallFile: filepath.Join(hostSrc, "sub", "CMakeLists.txt"),
+			Input:    filepath.Join(hostSrc, "sub", "config.h"),
+			Output:   filepath.Join(hostBuild, "sub", "config.h"),
+			Options:  []string{"COPYONLY"},
+		},
+		{
+			CallFile: filepath.Join(hostSrc, "sub", "CMakeLists.txt"),
+			Input:    filepath.Join(hostSrc, "sub", "cfg.h.in"),
+			Output:   filepath.Join(hostBuild, "sub", "cfg.h"),
+			Options:  []string{"COPYONLY"},
+		},
+	}
+	cc := newCodegenContext()
+	out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, nil, false, nil, cc)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("out = %+v; want both outputs wired for consumer attribution", out)
+	}
+	// Exactly ONE rule: the renamed copy. The same-path mirror emits none.
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules = %+v; want exactly one (the renamed cfg.h copy)", cc.Genrules)
+	}
+	if got := cc.Genrules[0].GenruleOuts; len(got) != 1 || got[0] != "sub/cfg.h" {
+		// Bake tier may emit write_file instead of genrule for text.
+		if cc.Genrules[0].WriteFileOut != "sub/cfg.h" {
+			t.Errorf("the surviving rule should produce sub/cfg.h; got %+v", cc.Genrules[0])
+		}
+	}
+	if _, registered := cc.OutToGenrule["sub/config.h"]; registered {
+		t.Errorf("same-path mirror must not register a producer; consumers resolve to the source file")
+	}
+}

@@ -236,6 +236,23 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 		// the captured cmake var namespace).
 		body = []byte(reanchorConvertTimePaths(string(body), recordedSrcDir, recordedBuildDir))
 
+		// Same-path COPYONLY mirror — no rule at all. The "stage a header
+		// into the binary dir" idiom (configure_file(<src>/sub/config.h
+		// <build>/sub/config.h COPYONLY)) produces an output whose
+		// build-relative path EQUALS the template's source-relative path
+		// with byte-identical content. Bazel needs no copy: the consumer
+		// attribution attaches the rel path to hdrs and the `includes`
+		// attribute resolves the same relative dir against the source root
+		// (and its genfiles mirror) alike — so the committed source file IS
+		// the header, same as the in==out link_to_source drop. Skipping the
+		// rule drops a build action and a BUILD.bazel rule per mirrored
+		// header; the configureFileOut entry still flows so consumer wiring
+		// happens.
+		if copyOnlySourceMirror(call, rel, body, hostSrcDir, recordedSrcDir, dirScopes) {
+			out = append(out, configureFileOut{AbsOutput: output, RelOutput: rel})
+			continue
+		}
+
 		name := configureFileGenruleName(rel)
 		gen := buildConfigureFileGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, dirScopes, liftEnabled, cmakeVars, cc.StampVars)
 		cc.Genrules = append(cc.Genrules, gen)
@@ -251,6 +268,27 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RelOutput < out[j].RelOutput })
 	return out, nil
+}
+
+// copyOnlySourceMirror reports whether call is a COPYONLY configure_file
+// whose template's source-relative path equals the output's build-relative
+// path (outRel) with byte-identical content — the no-rule rewire condition.
+// The byte comparison is belt-and-braces (COPYONLY guarantees it modulo the
+// convert-time path scrub); any mismatch keeps the conservative copy rule.
+func copyOnlySourceMirror(call shadow.ConfigureFileCall, outRel string, rendered []byte, hostSrcDir, recordedSrcDir string, dirScopes []dirScope) bool {
+	opts, err := configureFileOptionsFromCall(call.Options)
+	if err != nil || !opts.CopyOnly {
+		return false
+	}
+	templatePath, inRel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir, call, dirScopes)
+	if !ok || inRel != outRel {
+		return false
+	}
+	templateBody, err := os.ReadFile(templatePath)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(templateBody, rendered)
 }
 
 // reanchorConvertTimePaths rewrites convert-time absolute build- and
