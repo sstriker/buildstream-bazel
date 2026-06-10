@@ -136,15 +136,18 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 		}
 		if call, ok := classifyExecuteProcess(ev, traceSourceRoot); ok {
 			call.DeferDir = deferDirFor(ev, deferDirs)
+			call.CallFile, call.CallLine, call.CallCmd = invocationCallSite(ev, lastEventAtFrame, traceSourceRoot)
 			d.ExecuteProcesses = append(d.ExecuteProcesses, call)
 		}
 		if call, ok := classifySourceFileProperties(ev, traceSourceRoot); ok {
 			d.SourceFileProperties = append(d.SourceFileProperties, call)
 		}
 		if call, ok := classifyAddCustomCommand(ev, traceSourceRoot); ok {
+			call.CallFile, call.CallLine, call.CallCmd = invocationCallSite(ev, lastEventAtFrame, traceSourceRoot)
 			d.AddCustomCommands = append(d.AddCustomCommands, call)
 		}
 		if call, ok := classifyAddCustomTarget(ev, traceSourceRoot); ok {
+			call.CallFile, call.CallLine, call.CallCmd = invocationCallSite(ev, lastEventAtFrame, traceSourceRoot)
 			d.AddCustomTargets = append(d.AddCustomTargets, call)
 		}
 		if call, ok := classifyAddDependencies(ev, traceSourceRoot); ok {
@@ -1146,6 +1149,16 @@ type ExecuteProcessCall struct {
 	// forward parity (a future WORKING_DIRECTORY lift where a
 	// scope-relative WD could matter).
 	DeferDir string
+
+	// CallFile/CallLine/CallCmd: the user-level invocation that
+	// (transitively) executed this call, recovered from the trace frame
+	// stack — same contract as AddLibraryCall's fields of the same name
+	// (empty/zero for direct calls, include()d-file top-level calls, and
+	// deferred events). Comment recovery prefers this site so a comment
+	// above a codegen-wrapping macro call carries to the genrule.
+	CallFile string
+	CallLine int
+	CallCmd  string
 }
 
 // FileGlobCall records one user-written file(GLOB <var> ...) or
@@ -1690,6 +1703,16 @@ type AddCustomCommandCall struct {
 	WorkingDirectory string
 	Comment          string
 	RawArgs          []string
+
+	// CallFile/CallLine/CallCmd: the user-level invocation that
+	// (transitively) executed this call, recovered from the trace frame
+	// stack — same contract as AddLibraryCall's fields of the same name
+	// (empty/zero for direct calls, include()d-file top-level calls, and
+	// deferred events). Comment recovery prefers this site so a comment
+	// above a codegen-wrapping macro call carries to the genrule.
+	CallFile string
+	CallLine int
+	CallCmd  string
 }
 
 // AddCustomTargetCall records one user-written
@@ -1721,6 +1744,16 @@ type AddCustomTargetCall struct {
 	WorkingDirectory string
 	Comment          string
 	RawArgs          []string
+
+	// CallFile/CallLine/CallCmd: the user-level invocation that
+	// (transitively) executed this call, recovered from the trace frame
+	// stack — same contract as AddLibraryCall's fields of the same name
+	// (empty/zero for direct calls, include()d-file top-level calls, and
+	// deferred events). Comment recovery prefers this site so a comment
+	// above a codegen-wrapping macro call carries to the genrule.
+	CallFile string
+	CallLine int
+	CallCmd  string
 }
 
 // AddDependenciesCall records one user-written

@@ -101,6 +101,20 @@ if grep -qF -- "inside the helper body" "$ws/BUILD.bazel"; then
   sed 's/^/   /' "$ws/BUILD.bazel"
   exit 1
 fi
+# (4d) Macro-wrapped codegen genrule: the comment above the gen_lut(...)
+# invocation carries to the synthesized genrule (leading + trailing), the
+# macro body's internal comment does not, and the genrule's breadcrumb leads
+# with the invocation while keeping the add_custom_command on # Declared:.
+assert_present "Generate the LUT — wrapped in the codegen macro." "the macro-wrapped genrule leading comment"
+assert_present "macro-made lut" "the macro-wrapped genrule trailing comment"
+assert_breadcrumb '^# Source: CMakeLists\.txt:[0-9]+ \(gen_lut\)' "the genrule call-site # Source: breadcrumb"
+assert_breadcrumb '^# Declared: CMakeLists\.txt:[0-9]+ \(add_custom_command\)' "the genrule macro-internal # Declared: breadcrumb"
+if grep -qF -- "inside the codegen macro" "$ws/BUILD.bazel"; then
+  echo "FAIL: codegen macro BODY comment misattributed to a genrule: inside the codegen macro"
+  echo "   --- generated BUILD ---"
+  sed 's/^/   /' "$ws/BUILD.bazel"
+  exit 1
+fi
 if grep -qE -- '^# Source: [^ ]+ \(include\)' "$ws/BUILD.bazel"; then
   echo "FAIL: an include() line leads a # Source: breadcrumb (inclusions are not call sites)"
   echo "   --- generated BUILD ---"
@@ -142,7 +156,9 @@ for marker in \
   "The alpha lib — declared at the top of an included file." \
   "The beta lib — second target in the same included file." \
   "The gizmo interface lib — declared via the helper function." \
-  "trace-synth gizmo"; do
+  "trace-synth gizmo" \
+  "Generate the LUT — wrapped in the codegen macro." \
+  "macro-made lut"; do
   if grep -qF "$marker" "$ws/BUILD.nocomments"; then
     echo "FAIL: author comment present with --emit-source-comments=false: $marker"
     exit 1

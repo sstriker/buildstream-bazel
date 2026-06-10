@@ -711,20 +711,18 @@ trees, optional-feature deps, codegen instances). Each member's
   processing order than under cmake (matters only when one forced header
   depends on the other's macros).
 
-- **Comment carrying — remaining macro-expansion sites.** Codemodel targets
-  and trace-synthesized INTERFACE libraries now carry the author comment
-  above their macro/function INVOCATION (`ir.Target.CallSite` — backtrace's
-  outermost user invocation frame on the codemodel side,
-  `AddLibraryCall.CallFile/CallLine/CallCmd` from the trace frame stack on
-  the trace side; comment recovery prefers it over the body-line
-  Provenance). One sibling path still reads only the body line: synthesized
-  codegen genrules (the shadow-trace `add_custom_command` File/Line is the
-  macro body for macro-wrapped codegen; the same `invocationCallSite` frame
-  walk could recover the invocation). Also open: a deliberate policy for one
-  invocation declaring several targets (currently skipped as ambiguous;
-  could instead attach the same call-site comment to each — abseil's
-  lib+alias pair from one `absl_cc_library` call is why aliases get no
-  CallSite today).
+- **Comment carrying — multi-target-per-invocation policy.** All three
+  macro-expansion paths now carry the author comment above the user-level
+  INVOCATION (`ir.Target.CallSite`): codemodel targets (backtrace's
+  outermost user invocation frame), trace-synthesized INTERFACE libraries
+  and synthesized codegen genrules (the trace frame stack's
+  `invocationCallSite`, with inclusion frames terminating the walk). What's
+  left is a deliberate policy for one invocation declaring several targets:
+  the codemodel path skips shared call sites as ambiguous (and abseil's
+  lib+alias pair from one `absl_cc_library` call is why ALIAS targets get
+  no CallSite), while one macro invocation wrapping several
+  add_custom_commands duplicates its comment onto each genrule — pick one
+  rule (skip vs duplicate) and apply it uniformly.
 
 - **Genrule command-rewrite token-replace consolidation (deferred from the
   2026-06-08 refactoring audit).** `replaceBareToken` (genrule.go) and
