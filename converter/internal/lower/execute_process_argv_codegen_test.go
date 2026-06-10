@@ -204,6 +204,68 @@ func TestLiftArgvFileProducing_InPlaceDeclines(t *testing.T) {
 	_ = refusals
 }
 
+// A configure-BUILT tool (argv[0] anchored in the build dir) declines: it
+// isn't on PATH at re-run time and srcs-staging a build artifact via
+// $(location) without tools=/executable bits is wrong.
+func TestLiftArgvFileProducing_BuildDirToolDeclines(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	writeTree(t, hostSrc, "in.txt", "x\n")
+	writeTree(t, hostBuild, "bin/gen", "#!/bin/sh\n")
+	writeTree(t, hostBuild, "out.h", "X")
+	for name, tool := range map[string]string{
+		"absolute": filepath.Join(hostBuild, "bin/gen"),
+		"relative": "bin/gen", // resolves against the build-root cwd
+	} {
+		cc := newCodegenContext()
+		call := argvCall(hostSrc, tool, filepath.Join(hostSrc, "in.txt"), filepath.Join(hostBuild, "out.h"))
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+		if len(refusals) != 1 || len(cc.Genrules) != 0 {
+			t.Errorf("%s build-dir tool must decline: refusals=%+v genrules=%+v", name, refusals, cc.Genrules)
+		}
+	}
+}
+
+// A source-tree DIRECTORY operand declines: an unstaged literal dir is
+// absent/empty under sandboxing, and a dir-scanning generator exiting 0
+// over the empty view would be a SILENT divergence.
+func TestLiftArgvFileProducing_SourceDirOperandDeclines(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	writeTree(t, hostSrc, "proto/in.txt", "x\n")
+	writeTree(t, hostBuild, "out.h", "X")
+	call := argvCall(hostSrc, "mygen", filepath.Join(hostSrc, "proto"), filepath.Join(hostBuild, "out.h"))
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	if len(refusals) != 1 || len(cc.Genrules) != 0 {
+		t.Fatalf("source dir operand must decline: refusals=%+v genrules=%+v", refusals, cc.Genrules)
+	}
+}
+
+// Two calls sharing one output path never yield two genrules claiming the
+// same out: the second call sees the registered path as a generated INPUT
+// (and the defensive partial-overlap decline backs the invariant).
+func TestLiftArgvFileProducing_SharedOutputSingleProducer(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	writeTree(t, hostSrc, "in.txt", "x\n")
+	writeTree(t, hostBuild, "shared.h", "S")
+	writeTree(t, hostBuild, "second.h", "T")
+	callA := argvCall(hostSrc, "genA", filepath.Join(hostSrc, "in.txt"), filepath.Join(hostBuild, "shared.h"))
+	callB := argvCall(hostSrc, "genB", filepath.Join(hostBuild, "shared.h"), filepath.Join(hostBuild, "second.h"))
+	cc := newCodegenContext()
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{callA, callB}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("refusals: %+v", refusals)
+	}
+	claims := map[string]int{}
+	for _, g := range cc.Genrules {
+		for _, o := range g.GenruleOuts {
+			claims[o]++
+		}
+	}
+	if claims["shared.h"] != 1 || claims["second.h"] != 1 {
+		t.Fatalf("each out must have exactly one producer: %v (genrules %+v)", claims, cc.Genrules)
+	}
+}
+
 // Eligibility gates: keywords keep declining (the ROADMAP expansion order).
 func TestLiftArgvFileProducing_KeywordsDecline(t *testing.T) {
 	hostSrc, hostBuild := t.TempDir(), t.TempDir()

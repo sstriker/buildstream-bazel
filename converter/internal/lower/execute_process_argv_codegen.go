@@ -47,6 +47,16 @@ import (
 // argv fail in the sandbox. In-place shapes (an output that is also a
 // staged input) decline — Bazel rejects input==output.
 //
+// One shape escapes the loud-failure net: a `key=` flag ASSIGNMENT whose
+// value coincidentally resolves as an existing input (`-DNAME=/src/x` where
+// /src/x exists) gets the input-side `$(location)` rewrite, so the re-run's
+// argv silently differs from the configure's — if the tool bakes the string
+// into its output rather than opening it, the bytes drift with no failure.
+// Existence is the only discriminator available, and rewriting genuine
+// `--config=<path>` inputs is desirable, so this stays a documented trade
+// rather than a gate. (Output-side misclassification stays loud: the
+// genrule fails on the never-written out.)
+//
 // Attempted only for BucketRefuse calls (cmake -E ops, POSIX copies,
 // OUTPUT_FILE hoists, stamps and probes all classify earlier), with the
 // same conservative keyword gates as liftFileProducing — the ROADMAP
@@ -59,22 +69,29 @@ func liftArgvFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *
 		return nil, false
 	}
 	argv := call.Commands[0]
+	if !argvToolLiftable(argv[0], anc, cc) {
+		return nil, false
+	}
 	outSet, ok := classifyArgvOutputs(argv, anc, cc)
 	if !ok || len(outSet) == 0 {
 		return nil, false
 	}
 	// Idempotency across duplicate trace calls: if every output is already
-	// registered, reuse (the same contract as the other lifts).
-	allRegistered := true
-	for _, rel := range outSet {
-		if _, exists := cc.OutToGenrule[rel]; !exists {
-			allRegistered = false
-			break
+	// registered, reuse (the same contract as the other lifts). A PARTIAL
+	// overlap (a distinct call sharing only some outs) declines — emitting
+	// a second genrule re-claiming a registered out is an analysis error.
+	rels := sortedArgvOuts(outSet)
+	registered := 0
+	for _, rel := range rels {
+		if _, exists := cc.OutToGenrule[rel]; exists {
+			registered++
 		}
 	}
-	rels := sortedArgvOuts(outSet)
-	if allRegistered {
+	if registered == len(rels) {
 		return rels, true
+	}
+	if registered > 0 {
+		return nil, false
 	}
 
 	srcs, rewritten, ok := rewriteArgvCodegen(argv, outSet, anc, cc)
@@ -125,6 +142,28 @@ func liftArgvFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *
 		cc.OutToGenrule[rel] = name
 	}
 	return rels, true
+}
+
+// argvToolLiftable reports whether argv[0] is a re-runnable tool. A
+// configure-BUILT tool living in the build dir — absolute, or relative
+// (resolving against the build-root cwd) naming an existing or produced
+// build file — cannot be re-run by the genrule: it isn't on PATH, and
+// srcs-staging a build artifact via $(location) without tools=/executable
+// bits is wrong. The PATH-portability policy (basename) only makes sense
+// for system tools, so the lift declines instead.
+func argvToolLiftable(tool string, anc execAnchors, cc *codegenContext) bool {
+	if _, anchored := executeProcessAnchorOutput(tool, anc); anchored {
+		return false
+	}
+	if rel, ok := relativeArgvBuildRel(tool); ok {
+		if _, produced := cc.OutToGenrule[rel]; produced {
+			return false
+		}
+		if st, err := os.Stat(filepath.Join(anc.hostBuildDir, filepath.FromSlash(rel))); err == nil && !st.IsDir() {
+			return false
+		}
+	}
+	return true
 }
 
 // argvCodegenEligible applies the conservative shape gates: a single
@@ -209,10 +248,13 @@ func stripArgvPathPrefix(a string) string {
 // rewriteArgvCodegen renders the genrule cmd argv: outputs →
 // `$(location <out>)`, source-tree FILE inputs → srcs + `$(location)`,
 // produced build-dir inputs → srcs (the producing rule's out label) +
-// `$(location)`, source-tree dirs → literal relative path, abs tool path →
-// basename (the hoist's portability policy). A source-anchored FILE that
-// does not exist on disk declines — it could be an in-source WRITE the
-// classifier must not mistake for an input.
+// `$(location)`, abs tool path → basename (the hoist's portability
+// policy). A source-anchored FILE that does not exist on disk declines —
+// it could be an in-source WRITE the classifier must not mistake for an
+// input. A source-anchored DIRECTORY operand also declines: a literal
+// path can't be staged, so under sandboxing a dir-scanning generator
+// would see an absent/empty directory and could exit 0 over the empty
+// view — a SILENT divergence, unlike the file-side guards.
 func rewriteArgvCodegen(argv []string, outs map[int]string, anc execAnchors, cc *codegenContext) (srcs, rewritten []string, ok bool) {
 	srcSet := map[string]bool{}
 	addSrc := func(rel string) {
@@ -249,13 +291,8 @@ func rewriteArgvCodegen(argv []string, outs map[int]string, anc execAnchors, cc 
 			}
 		}
 		if rel, anchored := executeProcessAnchorSource(path, anc); anchored {
-			isDir := rel == "" || isExistingDir(filepath.Join(anc.hostSrcDir, rel))
-			if rel == "" {
-				rel = "."
-			}
-			if isDir {
-				rewritten = append(rewritten, shellQuoteArg(rel))
-				continue
+			if rel == "" || isExistingDir(filepath.Join(anc.hostSrcDir, rel)) {
+				return nil, nil, false
 			}
 			if _, err := os.Stat(filepath.Join(anc.hostSrcDir, filepath.FromSlash(rel))); err != nil {
 				return nil, nil, false
