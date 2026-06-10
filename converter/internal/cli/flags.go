@@ -161,6 +161,12 @@ type Args struct {
 	// exactly these real and reports the set per member.
 	OutSourceReads string
 
+	// CPUProfile, when non-empty, writes a runtime/pprof CPU profile of
+	// the whole run (configure subprocess time shows as wait, so the
+	// profile separates the converter's own Go work from cmake's). Dev
+	// lens for the conversion-latency work; not part of any contract.
+	CPUProfile string
+
 	// OutTimings, when non-empty, writes a JSON document with
 	// per-phase wall-clock timings: cmake configure, translation
 	// (lower + emit), and total. M3 aggregates these into a final
@@ -721,6 +727,7 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.StringVar(&a.OutReadPaths, "out-read-paths", "", "write JSON array of source-tree paths cmake read at configure time (requires --source-root, optional)")
 	fs.StringVar(&a.OutSourceReads, "out-source-reads", "", "write JSON array of element-root-relative SOURCE/HEADER paths the lowering passes byte-read affecting the BUILD (fused-source / generated-source-include scans); the declared narrowing exception (optional)")
 	fs.StringVar(&a.OutTimings, "out-timings", "", "write JSON with per-phase wall-clock timings (cmake configure, translation, total)")
+	fs.StringVar(&a.CPUProfile, "cpuprofile", "", "write a runtime/pprof CPU profile of the run to this path (dev lens for conversion latency; cmake subprocess time appears as wait, separating converter Go work from cmake's)")
 	fs.StringVar(&a.OutCMakeConfigureReads, "out-cmake-configure-reads", "", "write JSON array of source-relative paths from build.ninja's RERUN_CMAKE implicit-input list (configure-time oracle)")
 	fs.StringVar(&a.OutToolchainSignalDir, "out-toolchain-signal-dir", "", "directory; on success, copy the cmake File API reply contents here so the unifier can fold per-element toolchain signal into the platform's ResolvedToolchain.Base")
 	fs.StringVar(&a.OutIRJSON, "out-ir-json", "", "write the post-lower ir.Package as JSON to this path. Drives the orchestrator's per-element multi-platform fold; ignored by single-platform flows.")

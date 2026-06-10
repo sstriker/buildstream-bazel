@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
@@ -93,31 +92,26 @@ func TestRecoverFileGenerate_InputForm_Lifted(t *testing.T) {
 	if g.Name != "gen_banner_h" {
 		t.Errorf("name: %q want gen_banner_h", g.Name)
 	}
-	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
-		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
+	// A genex-free INPUT-form file(GENERATE) is a verbatim copy (CopyOnly
+	// with no dynamics), so the lift DOWNGRADES to a plain template-driven
+	// cp genrule — same rebuild semantics, no //tools:cmake-configure-file
+	// dependency (see cmakeConfigureFileTarget's copy-only downgrade).
+	if g.Kind != ir.KindGenrule {
+		t.Fatalf("kind = %v; want KindGenrule (copy-only downgrade)", g.Kind)
 	}
-	if g.CMakeConfigureFile.Template != "src/banner.h.in" {
-		t.Errorf("template: %q want src/banner.h.in", g.CMakeConfigureFile.Template)
+	if len(g.Srcs) != 1 || g.Srcs[0] != "src/banner.h.in" {
+		t.Errorf("srcs: %v want [src/banner.h.in] (template-driven copy)", g.Srcs)
 	}
-	if g.CMakeConfigureFile.Tool != "//tools:cmake-configure-file" {
-		t.Errorf("tool: %q", g.CMakeConfigureFile.Tool)
+	if !strings.Contains(g.GenruleCmd, "cp ") || !strings.Contains(g.GenruleCmd, "src/banner.h.in") {
+		t.Errorf("cmd: %q want a cp of the template", g.GenruleCmd)
 	}
-	// file(GENERATE) lifts always set CopyOnly + an empty
-	// values map — cmakeVars don't ride into the spec.
-	if !g.CMakeConfigureFile.CopyOnly {
-		t.Errorf("file(GENERATE) lifted spec should set CopyOnly")
-	}
-	if len(g.CMakeConfigureFile.Values) != 0 {
-		t.Errorf("file(GENERATE) lifted spec should carry an empty values dict; got %v", g.CMakeConfigureFile.Values)
-	}
-	if !hasTag(g.Tags, "cmake-codegen-lifted") {
-		t.Errorf("lifted tag missing: %v", g.Tags)
+	// The downgrade drops the lifted-tool tag (the documented meaning is
+	// the Bazel-time tool run); the driver facets stay.
+	if hasTag(g.Tags, "cmake-codegen-lifted") {
+		t.Errorf("copy-only downgrade should drop the lifted tag: %v", g.Tags)
 	}
 	if !hasTag(g.Tags, "cmake-codegen-file-generate") {
 		t.Errorf("driver-facet tag missing: %v", g.Tags)
-	}
-	if !sort.StringsAreSorted(g.Tags) {
-		t.Errorf("tags not sorted: %v", g.Tags)
 	}
 }
 
@@ -598,11 +592,13 @@ func TestRecoverFileGenerate_OutputSideGenexResolved(t *testing.T) {
 		t.Fatalf("Genrules: %+v", cc.Genrules)
 	}
 	g := cc.Genrules[0]
-	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
-		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
+	// Resolved OUTPUT genex + verbatim body → the copy-only downgrade
+	// emits the template-driven cp genrule at the RESOLVED path.
+	if g.Kind != ir.KindGenrule {
+		t.Fatalf("kind = %v; want KindGenrule (copy-only downgrade)", g.Kind)
 	}
-	if g.CMakeConfigureFile.Out != "Release/banner.h" {
-		t.Errorf("lifted out: %q want Release/banner.h", g.CMakeConfigureFile.Out)
+	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "Release/banner.h" {
+		t.Errorf("outs: %v want [Release/banner.h]", g.GenruleOuts)
 	}
 }
 
@@ -687,14 +683,14 @@ func TestRecoverFileGenerate_InputArgGenexResolved(t *testing.T) {
 		t.Fatalf("Genrules: %+v", cc.Genrules)
 	}
 	g := cc.Genrules[0]
-	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
-		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
+	if g.Kind != ir.KindGenrule {
+		t.Fatalf("kind = %v; want KindGenrule (copy-only downgrade of the resolved verbatim copy)", g.Kind)
 	}
-	if g.CMakeConfigureFile.Template != "Release/banner.h.in" {
-		t.Errorf("template: %q want Release/banner.h.in", g.CMakeConfigureFile.Template)
+	if len(g.Srcs) != 1 || g.Srcs[0] != "Release/banner.h.in" {
+		t.Errorf("srcs: %v want [Release/banner.h.in] (resolved template)", g.Srcs)
 	}
-	if !hasTag(g.Tags, "cmake-codegen-lifted") {
-		t.Errorf("lifted tag missing: %v", g.Tags)
+	if hasTag(g.Tags, "cmake-codegen-lifted") {
+		t.Errorf("copy-only downgrade should drop the lifted tag: %v", g.Tags)
 	}
 	if hasTag(g.Tags, "cmake-codegen-genex-unresolved") {
 		t.Errorf("resolved INPUT-arg genex should NOT carry the legacy-fallback tag; got %v", g.Tags)

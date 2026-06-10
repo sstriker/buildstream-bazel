@@ -298,6 +298,7 @@ func TestBuildConfigureFileGenrule_BakeShape(t *testing.T) {
 	got := buildConfigureFileGenrule(
 		"gen_cfg_h", "cfg.h", rendered, call,
 		"/src/project", "/src/project",
+		nil,   // dirScopes
 		false, // liftEnabled = false → legacy
 		nil,
 		nil, // stampVars
@@ -337,7 +338,7 @@ func TestBuildConfigureFileGenrule_BakeShape(t *testing.T) {
 func TestBuildConfigureFileGenrule_BinaryBakeStaysBase64(t *testing.T) {
 	rendered := []byte("a\x00b\n")
 	call := shadow.ConfigureFileCall{Input: "/src/project/cfg.h.in", Output: "/tmp/build/cfg.h"}
-	got := buildConfigureFileGenrule("gen_cfg_h", "cfg.h", rendered, call, "/src/project", "/src/project", false, nil, nil)
+	got := buildConfigureFileGenrule("gen_cfg_h", "cfg.h", rendered, call, "/src/project", "/src/project", nil, false, nil, nil)
 	if got.Kind != ir.KindGenrule {
 		t.Fatalf("binary bake should stay on the base64 genrule; got kind %v", got.Kind)
 	}
@@ -374,6 +375,7 @@ func TestBuildConfigureFileGenrule_LiftedShape(t *testing.T) {
 	got := buildConfigureFileGenrule(
 		"gen_cfg_h", "cfg.h", rendered, call,
 		hostSrc, hostSrc,
+		nil,  // dirScopes
 		true, // liftEnabled
 		map[string]string{"VERSION": "1.2.3"},
 		nil, // stampVars
@@ -425,6 +427,7 @@ func TestBuildConfigureFileGenrule_StampValues(t *testing.T) {
 	got := buildConfigureFileGenrule(
 		"gen_version_h", "version.h", rendered, call,
 		hostSrc, hostSrc,
+		nil,  // dirScopes
 		true, // liftEnabled
 		map[string]string{"GIT_SHA": "abc123", "VERSION": "1.2.3"},
 		map[string]string{"GIT_SHA": "STABLE_GIT_SHA", "UNUSED_STAMP": "STABLE_UNUSED_STAMP"},
@@ -457,6 +460,7 @@ func TestBuildConfigureFileGenrule_FallsBackOnMissingTemplate(t *testing.T) {
 	got := buildConfigureFileGenrule(
 		"gen_cfg_h", "cfg.h", rendered, call,
 		hostSrc, hostSrc,
+		nil,  // dirScopes
 		true, // liftEnabled, but template ReadFile fails
 		map[string]string{"VAR": "v"},
 		nil, // stampVars
@@ -844,5 +848,64 @@ func TestRecoverConfigureFilesFromCalls_DeferDirectoryAnchor(t *testing.T) {
 	}
 	if len(out2) != 0 {
 		t.Errorf("without DeferDir the output should anchor to sub/ and drop; got %v", out2)
+	}
+}
+
+// TestRecoverConfigureFiles_SamePathCopyOnlyMirror_NoRule pins the no-rule
+// rewire: a COPYONLY configure_file whose template's source-relative path
+// equals the output's build-relative path (the "stage a header into the
+// binary dir" idiom) emits NO rule — consumers resolve the rel path to the
+// committed source file via the includes attr's source-root coverage. A
+// RENAMED copy (cfg.h.in → cfg.h) keeps its rule.
+func TestRecoverConfigureFiles_SamePathCopyOnlyMirror_NoRule(t *testing.T) {
+	hostSrc := t.TempDir()
+	hostBuild := t.TempDir()
+	write := func(root, rel, body string) {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(hostSrc, "sub/config.h", "#define X 1\n")
+	write(hostBuild, "sub/config.h", "#define X 1\n")
+	write(hostSrc, "sub/cfg.h.in", "#define Y 2\n")
+	write(hostBuild, "sub/cfg.h", "#define Y 2\n")
+	calls := []shadow.ConfigureFileCall{
+		{
+			CallFile: filepath.Join(hostSrc, "sub", "CMakeLists.txt"),
+			Input:    filepath.Join(hostSrc, "sub", "config.h"),
+			Output:   filepath.Join(hostBuild, "sub", "config.h"),
+			Options:  []string{"COPYONLY"},
+		},
+		{
+			CallFile: filepath.Join(hostSrc, "sub", "CMakeLists.txt"),
+			Input:    filepath.Join(hostSrc, "sub", "cfg.h.in"),
+			Output:   filepath.Join(hostBuild, "sub", "cfg.h"),
+			Options:  []string{"COPYONLY"},
+		},
+	}
+	cc := newCodegenContext()
+	out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, nil, false, nil, cc)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("out = %+v; want both outputs wired for consumer attribution", out)
+	}
+	// Exactly ONE rule: the renamed copy. The same-path mirror emits none.
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules = %+v; want exactly one (the renamed cfg.h copy)", cc.Genrules)
+	}
+	if got := cc.Genrules[0].GenruleOuts; len(got) != 1 || got[0] != "sub/cfg.h" {
+		// Bake tier may emit write_file instead of genrule for text.
+		if cc.Genrules[0].WriteFileOut != "sub/cfg.h" {
+			t.Errorf("the surviving rule should produce sub/cfg.h; got %+v", cc.Genrules[0])
+		}
+	}
+	if _, registered := cc.OutToGenrule["sub/config.h"]; registered {
+		t.Errorf("same-path mirror must not register a producer; consumers resolve to the source file")
 	}
 }

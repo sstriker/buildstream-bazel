@@ -84,6 +84,13 @@ type codegenContext struct {
 	// the same generated source.
 	SeenBuilds map[*ninja.Build]string
 
+	// ScriptBakeRuns is the parallel pre-warm's per-build cmake -P
+	// execution result (nil = ran clean), filled by prewarmScriptBakes
+	// and consulted by bakeCmakeScriptGenrule so a pre-warmed script
+	// isn't re-executed serially. A build absent from the map runs
+	// serially (the historical path).
+	ScriptBakeRuns map[*ninja.Build]error
+
 	// HeaderWalkCache memoizes filesystem walks of include directories
 	// across targets within one lower-element invocation. Keyed on the
 	// absolute include-dir path; value is the package-relative header

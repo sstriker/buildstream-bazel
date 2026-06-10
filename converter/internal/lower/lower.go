@@ -1355,6 +1355,15 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	cc.Warnings = opts.Warnings
 	cc.LiteralProbeSink = opts.LiteralProbeSink
 	cc.LiteralResolutions = opts.LiteralResolutions
+	// Parallel pre-warm of the cmake -P script bakes: with the bake opted
+	// in, run every bakeable script up front in dependency waves with a
+	// bounded pool (see cmake_script_prewarm.go) — the serial recovery path
+	// then consumes the cached results instead of paying one subprocess
+	// wait at a time (the dominant translation cost on script-heavy
+	// projects; VTK: 238 runs ≈ 95s serial).
+	if cc.CMakeScriptBake {
+		prewarmScriptBakes(cc, g, opts.BuildDir)
+	}
 
 	// execute_process recovery. Configure-time subprocess
 	// invocations are a hermeticity violation by Bazel's

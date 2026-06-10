@@ -69,8 +69,10 @@ func TestRecoverFileGenerate_LiteralProbe_TwoPass(t *testing.T) {
 	if len(cc2.Genrules) != 1 {
 		t.Fatalf("pass 2 Genrules: %+v", cc2.Genrules)
 	}
-	if g := cc2.Genrules[0]; g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil || g.CMakeConfigureFile.Out != "generated/x.h" {
-		t.Fatalf("pass 2 lifted out = %+v (kind %v), want Out=generated/x.h", g.CMakeConfigureFile, g.Kind)
+	// The resolved call is a verbatim INPUT-form copy, so the lift
+	// downgrades to the template-driven cp genrule (copy-only downgrade).
+	if g := cc2.Genrules[0]; g.Kind != ir.KindGenrule || len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "generated/x.h" {
+		t.Fatalf("pass 2 lifted outs = %v (kind %v), want [generated/x.h]", g.GenruleOuts, g.Kind)
 	}
 }
 

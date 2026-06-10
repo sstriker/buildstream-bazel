@@ -236,8 +236,25 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 		// the captured cmake var namespace).
 		body = []byte(reanchorConvertTimePaths(string(body), recordedSrcDir, recordedBuildDir))
 
+		// Same-path COPYONLY mirror — no rule at all. The "stage a header
+		// into the binary dir" idiom (configure_file(<src>/sub/config.h
+		// <build>/sub/config.h COPYONLY)) produces an output whose
+		// build-relative path EQUALS the template's source-relative path
+		// with byte-identical content. Bazel needs no copy: the consumer
+		// attribution attaches the rel path to hdrs and the `includes`
+		// attribute resolves the same relative dir against the source root
+		// (and its genfiles mirror) alike — so the committed source file IS
+		// the header, same as the in==out link_to_source drop. Skipping the
+		// rule drops a build action and a BUILD.bazel rule per mirrored
+		// header; the configureFileOut entry still flows so consumer wiring
+		// happens.
+		if copyOnlySourceMirror(call, rel, body, hostSrcDir, recordedSrcDir, dirScopes) {
+			out = append(out, configureFileOut{AbsOutput: output, RelOutput: rel})
+			continue
+		}
+
 		name := configureFileGenruleName(rel)
-		gen := buildConfigureFileGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, liftEnabled, cmakeVars, cc.StampVars)
+		gen := buildConfigureFileGenrule(name, rel, body, call, hostSrcDir, recordedSrcDir, dirScopes, liftEnabled, cmakeVars, cc.StampVars)
 		cc.Genrules = append(cc.Genrules, gen)
 		cc.OutToGenrule[rel] = name
 
@@ -251,6 +268,27 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].RelOutput < out[j].RelOutput })
 	return out, nil
+}
+
+// copyOnlySourceMirror reports whether call is a COPYONLY configure_file
+// whose template's source-relative path equals the output's build-relative
+// path (outRel) with byte-identical content — the no-rule rewire condition.
+// The byte comparison is belt-and-braces (COPYONLY guarantees it modulo the
+// convert-time path scrub); any mismatch keeps the conservative copy rule.
+func copyOnlySourceMirror(call shadow.ConfigureFileCall, outRel string, rendered []byte, hostSrcDir, recordedSrcDir string, dirScopes []dirScope) bool {
+	opts, err := configureFileOptionsFromCall(call.Options)
+	if err != nil || !opts.CopyOnly {
+		return false
+	}
+	templatePath, inRel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir, call, dirScopes)
+	if !ok || inRel != outRel {
+		return false
+	}
+	templateBody, err := os.ReadFile(templatePath)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(templateBody, rendered)
 }
 
 // reanchorConvertTimePaths rewrites convert-time absolute build- and
@@ -311,7 +349,7 @@ func reanchorConvertTimePaths(content, recordedSrcDir, recordedBuildDir string) 
 // at configure time, so any marker the user later adds
 // resolves correctly through the Bazel-time tool — closing
 // the soundness gap PR #94 review identified.
-func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir string, liftEnabled bool, cmakeVars, stampVars map[string]string) ir.Target {
+func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow.ConfigureFileCall, hostSrcDir, recordedSrcDir string, dirScopes []dirScope, liftEnabled bool, cmakeVars, stampVars map[string]string) ir.Target {
 	// Bake the fully-resolved bytes via the shared bakeFileTarget chooser:
 	// readable skylib write_file for \n-only text, byte-exact base64
 	// genrule for binary / control-byte / CRLF bodies. Same de-base64
@@ -325,7 +363,7 @@ func buildConfigureFileGenrule(name, outRel string, rendered []byte, call shadow
 	if optErr != nil {
 		return bake
 	}
-	templatePath, inRel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir)
+	templatePath, inRel, ok := resolveTemplatePath(call.Input, hostSrcDir, recordedSrcDir, call, dirScopes)
 	if !ok {
 		return bake
 	}
@@ -386,8 +424,36 @@ func newlineStyleFlag(opts configurefile.Options) string {
 
 // cmakeConfigureFileTarget wraps a spec into the KindCMakeConfigureFile
 // ir.Target shared by the configure_file, file(GENERATE), and cmake -E
-// configure_file lifts.
+// configure_file lifts. A spec the tool would only COPY (CopyOnly with no
+// stamp/genex/target-file dynamics and no newline rewrite) downgrades to a
+// plain `cp` genrule over the template — same template-driven rebuild
+// semantics, no //tools:cmake-configure-file dependency, one less tool run
+// per output at Bazel time. The CONTENT-form equivalent stays on the rule:
+// its body is already inline either way and the bake tier owns that shape.
 func cmakeConfigureFileTarget(name string, spec *ir.CMakeConfigureFileSpec, tags []string) ir.Target {
+	if spec.CopyOnly && spec.Template != "" && spec.NewlineStyle == "" &&
+		len(spec.StampValues) == 0 && len(spec.GenexValues) == 0 &&
+		len(spec.GenexValuesPerConfig) == 0 && spec.GenexContext == "" &&
+		len(spec.TargetFiles) == 0 && len(spec.TargetObjects) == 0 {
+		// Drop the lifted-tool tag: the mechanism is a plain copy now, and
+		// the lifted tag's documented meaning is the Bazel-time tool run.
+		var copyTags []string
+		for _, tg := range tags {
+			if tg == "cmake-codegen-lifted" {
+				continue
+			}
+			copyTags = append(copyTags, tg)
+		}
+		return ir.Target{
+			Name:        name,
+			Kind:        ir.KindGenrule,
+			Srcs:        []string{spec.Template},
+			GenruleCmd:  fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && cp "$(location %s)" "$@"`, spec.Template),
+			GenruleOuts: []string{spec.Out},
+			Tags:        copyTags,
+			Visibility:  []string{"//visibility:private"},
+		}
+	}
 	return ir.Target{
 		Name:               name,
 		Kind:               ir.KindCMakeConfigureFile,
@@ -472,18 +538,66 @@ func templateMentionsVar(templateBody []byte, varName string, opts configurefile
 // the genrule's srcs label resolves at Bazel time. Returns
 // ok=false when the input lives outside the source tree or
 // can't be made source-relative.
-func resolveTemplatePath(input, hostSrcDir, recordedSrcDir string) (string, string, bool) {
+func resolveTemplatePath(input, hostSrcDir, recordedSrcDir string, call shadow.ConfigureFileCall, dirScopes []dirScope) (string, string, bool) {
 	if !filepath.IsAbs(input) {
-		// Trace usually records absolute paths after cmake
-		// expands variables; if not, we can't anchor without
-		// per-call current-source-dir context.
-		return "", "", false
+		// A relative INPUT resolves against CMAKE_CURRENT_SOURCE_DIR — the
+		// call's directory SCOPE on the SOURCE side (include() doesn't open
+		// a scope; a DEFER DIRECTORY call executes in the deferred-to
+		// scope). This is the source-side twin of the relative-OUTPUT
+		// anchoring and recovers the ubiquitous bare
+		// `configure_file(cfg.h.in cfg.h)` spelling for the LIFT tier —
+		// previously every relative-input call silently fell back to the
+		// bake.
+		anchor, ok := templateSourceAnchor(call, recordedSrcDir, dirScopes)
+		if !ok {
+			return "", "", false
+		}
+		input = filepath.Join(recordedSrcDir, anchor, input)
 	}
 	rel, ok := relativeIfInsideRelaxed(recordedSrcDir, input)
 	if !ok {
 		return "", "", false
 	}
 	return filepath.Join(hostSrcDir, rel), filepath.ToSlash(rel), true
+}
+
+// templateSourceAnchor returns the source-root-relative directory a relative
+// configure_file INPUT resolves against: the deferred-to directory for a
+// DEFER DIRECTORY call, else the deepest codemodel scope (SOURCE side)
+// containing the call file, else dir(CallFile) as the offline fallback.
+func templateSourceAnchor(call shadow.ConfigureFileCall, recordedSrcDir string, dirScopes []dirScope) (string, bool) {
+	if call.DeferDir != "" {
+		if rel, ok := relativeIfInside(recordedSrcDir, call.DeferDir); ok {
+			return rel, true
+		}
+		return "", false
+	}
+	if call.CallFile == "" || recordedSrcDir == "" {
+		return "", false
+	}
+	callDir := filepath.ToSlash(filepath.Dir(call.CallFile))
+	src := strings.TrimSuffix(filepath.ToSlash(recordedSrcDir), "/")
+	best := ""
+	bestLen := -1
+	for _, scope := range dirScopes {
+		scopeAbs := src
+		if scope.Source != "" {
+			scopeAbs = src + "/" + scope.Source
+		}
+		if callDir == scopeAbs || strings.HasPrefix(callDir, scopeAbs+"/") {
+			if len(scopeAbs) > bestLen {
+				bestLen = len(scopeAbs)
+				best = scope.Source
+			}
+		}
+	}
+	if bestLen >= 0 {
+		return best, true
+	}
+	if rel, ok := relativeIfInside(recordedSrcDir, filepath.Dir(call.CallFile)); ok {
+		return rel, true
+	}
+	return "", false
 }
 
 // configureFileOptionsFromCall parses cmake's configure_file

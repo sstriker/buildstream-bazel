@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/cli"
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
@@ -69,24 +71,53 @@ func runPerConfigBakes(ctx context.Context, a cli.Args, hostBuildDir string, tra
 			os.RemoveAll(scratch(cfg))
 		}
 	}()
+	// The per-config configures are independent cmake processes in disjoint
+	// scratch dirs — run them CONCURRENTLY (the conversion-latency profile
+	// showed converter wall time is dominated by serial subprocess waits;
+	// these are the largest single block on CMAKE_BUILD_TYPE-reading
+	// projects, a full cold configure each). Wall cost drops from sum to
+	// max. Any failure degrades the WHOLE feature to the pass-1 body, same
+	// contract as the serial form.
+	// Each configure's output is buffered per config (concurrent streaming
+	// to stderr would interleave into garbage) and dumped ONLY on failure —
+	// success stays silent, failure keeps cmake's own diagnostic alongside
+	// the Go-level error.
+	type cfgResult struct {
+		cfg string
+		err error
+		out bytes.Buffer
+	}
+	results := make([]cfgResult, len(a.BuildTypes))
+	var wg sync.WaitGroup
+	for i, cfg := range a.BuildTypes {
+		results[i].cfg = cfg
+		wg.Add(1)
+		go func(i int, cfg string) {
+			defer wg.Done()
+			_, cfgErr := cmakerun.Configure(ctx, cmakerun.Options{
+				SourceRoot:         a.SourceRoot,
+				BuildDir:           scratch(cfg),
+				PrefixDir:          a.PrefixDir,
+				ToolchainCMakeFile: a.ToolchainCMakeFile,
+				BuildType:          cfg,
+				ExtraCacheVars:     cmakeDefinesToMap(a.CmakeDefines),
+				Stdout:             &results[i].out,
+				Stderr:             &results[i].out,
+			})
+			results[i].err = cfgErr
+		}(i, cfg)
+	}
+	wg.Wait()
+	for i := range results {
+		if results[i].err != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: per-config configure (%s) failed (%v); keeping the multi-config body for all arms. cmake output:\n", results[i].cfg, results[i].err)
+			_, _ = os.Stderr.Write(results[i].out.Bytes())
+			return
+		}
+	}
 	bakes := map[string]map[string][]byte{}
 	for _, cfg := range a.BuildTypes {
 		cfgDir := scratch(cfg)
-		// No trace / dump-vars / probe hooks: this pass exists only to
-		// materialize the configure_file outputs under one CMAKE_BUILD_TYPE.
-		if _, cfgErr := cmakerun.Configure(ctx, cmakerun.Options{
-			SourceRoot:         a.SourceRoot,
-			BuildDir:           cfgDir,
-			PrefixDir:          a.PrefixDir,
-			ToolchainCMakeFile: a.ToolchainCMakeFile,
-			BuildType:          cfg,
-			ExtraCacheVars:     cmakeDefinesToMap(a.CmakeDefines),
-			Stdout:             os.Stderr,
-			Stderr:             os.Stderr,
-		}); cfgErr != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: per-config configure (%s) failed (%v); keeping the multi-config body for all arms.\n", cfg, cfgErr)
-			return
-		}
 		for _, rel := range outs {
 			body, readErr := os.ReadFile(filepath.Join(cfgDir, filepath.FromSlash(rel)))
 			if readErr != nil {
