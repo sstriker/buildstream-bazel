@@ -674,9 +674,11 @@ func applyInPlaceRenames(cmd string, outs []string, renames map[string]string, b
 // before rewriteGenruleCmd collapses both operands to the same
 // workspace-relative token — is what lets anchorGenruleOutputsToRuledir
 // anchor ONLY the renamed output and leave the source input reading the
-// source. The bare-token pass is boundary-guarded (preceding byte must
-// not be '/'), so the source operand's `<srcdir>/<o>` occurrence — and
-// any already-prefixed occurrence — is never touched.
+// source. Matches are guarded on BOTH token edges (renameTokenBoundary…)
+// so the source operand's `<srcdir>/<o>` occurrence, prefix-sharing
+// names (`my<o>`), and extended names (`<o>.bak`) are never touched —
+// a mid-word rewrite here would be a silently corrupted cmd, not a loud
+// failure.
 func renameInPlaceOutputsRawCmd(cmd string, renames map[string]string, buildDir string) string {
 	if cmd == "" || len(renames) == 0 {
 		return cmd
@@ -700,10 +702,7 @@ func renameInPlaceOutputsRawCmd(cmd string, renames map[string]string, buildDir 
 			if !strings.HasPrefix(cmd[i:], p.search) {
 				continue
 			}
-			// Bare-token boundary guard: an occurrence preceded by '/'
-			// sits inside a longer path (the source operand, or a
-			// buildDir-prefixed form a longer pair already handles).
-			if !strings.HasPrefix(p.search, "/") && i > 0 && cmd[i-1] == '/' {
+			if !renameTokenBoundaryLeft(cmd, i) || !renameTokenBoundaryRight(cmd, i+len(p.search)) {
 				continue
 			}
 			b.WriteString(p.with)
@@ -717,6 +716,36 @@ func renameInPlaceOutputsRawCmd(cmd string, renames map[string]string, buildDir 
 		}
 	}
 	return b.String()
+}
+
+// renameTokenBoundaryLeft reports whether position i opens a shell token:
+// the string start or a separator byte. A preceding '/' (mid-path — the
+// source operand), word byte (`my<o>`), or any other glue byte means the
+// match sits inside a longer token and must not be rewritten.
+func renameTokenBoundaryLeft(cmd string, i int) bool {
+	if i == 0 {
+		return true
+	}
+	switch cmd[i-1] {
+	case ' ', '\t', '\'', '"', '=', '(', '<', '>', ';', '&', '|':
+		return true
+	}
+	return false
+}
+
+// renameTokenBoundaryRight reports whether position end closes a shell
+// token: the string end or a separator byte. A following extension byte
+// (`<o>.bak`) or path byte (`<o>/…`) means the match is a prefix of a
+// longer name and must not be rewritten.
+func renameTokenBoundaryRight(cmd string, end int) bool {
+	if end >= len(cmd) {
+		return true
+	}
+	switch cmd[end] {
+	case ' ', '\t', '\'', '"', ')', ';', '&', '|', '<', '>':
+		return true
+	}
+	return false
 }
 
 // renameAnchoredGenruleOutputs rewrites each `$(RULEDIR)/<o>` occurrence in
@@ -734,7 +763,10 @@ func renameInPlaceOutputsRawCmd(cmd string, renames map[string]string, buildDir 
 // that overlapping outputs (`$(RULEDIR)/x` vs `$(RULEDIR)/x.inc`) and the
 // search-is-a-prefix-of-its-replacement case (`$(RULEDIR)/x` →
 // `$(RULEDIR)/x.gen`) can't re-match or mangle one another, independent of
-// Go's randomized map iteration order.
+// Go's randomized map iteration order. Each match must CLOSE a token
+// (renameTokenBoundaryRight): an anchored token that merely starts with
+// the output — `$(RULEDIR)/<o>.bak`, a depfile `$(RULEDIR)/<o>.d` — is a
+// different file and renaming its prefix would silently corrupt the cmd.
 func renameAnchoredGenruleOutputs(cmd string, renames map[string]string) string {
 	if cmd == "" || len(renames) == 0 {
 		return cmd
@@ -755,7 +787,7 @@ func renameAnchoredGenruleOutputs(cmd string, renames map[string]string) string 
 	for i := 0; i < len(cmd); {
 		matched := false
 		for _, p := range pairs {
-			if strings.HasPrefix(cmd[i:], p.search) {
+			if strings.HasPrefix(cmd[i:], p.search) && renameTokenBoundaryRight(cmd, i+len(p.search)) {
 				b.WriteString(p.with)
 				i += len(p.search)
 				matched = true
