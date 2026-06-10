@@ -2450,7 +2450,6 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 	executeProcesses, configureFiles, fileGenerates := ra.executeProcesses, ra.configureFiles, ra.fileGenerates
 	genexTargets, findPkgAttrib := ra.genexTargets, ra.findPkgAttrib
-	_, _ = executeProcesses, configureFiles
 
 	// Build the in-codebase id -> Bazel-rule-name map up front so dep
 	// lowering can map t.Dependencies[].Id to a label without re-walking
