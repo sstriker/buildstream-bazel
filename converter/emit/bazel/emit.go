@@ -10,6 +10,7 @@ package bazel
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"text/template"
@@ -365,6 +366,12 @@ type Options struct {
 	// like EmitProvenance it changes BUILD bytes, and it reads raw source.
 	// CLI surface via `convert-element-cmake --emit-source-comments`.
 	EmitSourceComments bool
+
+	// Warn, when non-nil, receives convert-time emit diagnostics — currently
+	// the cmake-include-over-grant finding (the split's element-root header-lib
+	// forwarding re-propagates nested include-roots' bare -I beyond cmake's
+	// scope; see EmitSplit / ROADMAP root_headers). nil silences it (tests).
+	Warn io.Writer
 }
 
 // Emit returns the contents of a BUILD.bazel file for pkg using

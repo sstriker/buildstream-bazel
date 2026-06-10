@@ -772,6 +772,7 @@ func run(a cli.Args) error {
 			BazelPackagePath:   a.BazelPackagePath,
 			EmitProvenance:     a.EmitProvenance,
 			EmitSourceComments: a.EmitSourceComments,
+			Warn:               os.Stderr,
 		})
 		if err != nil {
 			return err
