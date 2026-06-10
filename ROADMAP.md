@@ -58,8 +58,9 @@ transition cleanly.
   - **vtk** — configures + converts with 0 rejections, and the 2026-06-10
     re-run under the data-label + fused-source fixes ANALYZES fully green
     (2,527 targets; previously an 80-missing-input hard abort on IOInfovis).
-    A `--keep_going` sweep compiles ~6.6k actions with 2 failing genrule
-    classes left (final recount in flight). REMAINING TAIL (well-diagnosed):
+    The `--keep_going` recount: **6,606/6,608 actions ran, 2,405/2,527
+    top-level targets built, exactly 3 ROOT failures** (the rest of the gap
+    is transitively blocked by them). REMAINING TAIL (well-diagnosed):
     - **wrap-hierarchy genrule EXECUTION** (`vtkCommonCore-hierarchy.txt` et
       al.): analysis staging is fixed (the `.args`/`.data` response files are
       real cross-package labels now), but the genrule cmd still references
@@ -74,6 +75,12 @@ transition cleanly.
       genrule's cwd at build time; plus the `$<TARGET_FILE:VTK::sqlitebin>`
       built-tool reference, see the built-tool genrule recovery note in
       `scripts/build-lens/vtk.conf`).
+    - **vtkProbeOpenGLVersion LINK** (1 binary): undefined `vtkFXAAFilterFS`
+      / `vtkTextureObjectVS` — vtkEncodeString-generated shader-string
+      symbols (the cc_embed lift) not reaching the probe binary's link;
+      likely a missing dep edge or alwayslink on the embedded-shader objects
+      under static archive linking. Distinct mechanism from the two genrule
+      items.
     - The earlier ~19 configure_file same-dir config-header failures
       (`kwsysPrivate.h` / `proj_config.h` / `pugiconfig.hpp`) had their
       converter fix shipped previously; the 2026-06-10 sweep shows no
