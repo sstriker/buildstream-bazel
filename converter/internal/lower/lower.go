@@ -1616,6 +1616,41 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// generated `.inc` headers after standalone-genrule recovery completes.
 	codegenConsumerDeps := map[string][]fileapi.TargetDependency{}
 
+	// PCH owner index for the forced-include lift: target name + language →
+	// that target's ordered PrecompileHeaders. A REUSE_FROM consumer's
+	// codemodel carries a null PrecompileHeaders — only the `-include
+	// <owner>.dir/cmake_pch.*` fragment names the owner — so lowerTarget
+	// resolves the owner's declared list through this. Keyed on the primary
+	// configuration's view (the same view the rest of the lower walks); the
+	// name-only fallback covers a language-mismatch edge (e.g. a C consumer
+	// reusing a CXX owner's PCH) better than dropping the include outright.
+	pchByNameLang := map[string][]fileapi.CompilePCH{}
+	pchByName := map[string][]fileapi.CompilePCH{}
+	for _, tref := range cfg.Targets {
+		t, ok := r.Targets[tref.Id]
+		if !ok {
+			continue
+		}
+		for _, cg := range t.CompileGroups {
+			if len(cg.PrecompileHeaders) == 0 {
+				continue
+			}
+			k := tref.Name + "\x00" + cg.Language
+			if _, dup := pchByNameLang[k]; !dup {
+				pchByNameLang[k] = cg.PrecompileHeaders
+			}
+			if _, dup := pchByName[tref.Name]; !dup {
+				pchByName[tref.Name] = cg.PrecompileHeaders
+			}
+		}
+	}
+	pchResolve := func(targetName, language string) []fileapi.CompilePCH {
+		if entries := pchByNameLang[targetName+"\x00"+language]; len(entries) > 0 {
+			return entries
+		}
+		return pchByName[targetName]
+	}
+
 	lc := targetLowerCtx{
 		cmakeSrc:            cmakeSrc,
 		cmakeBuild:          cmakeBuild,
@@ -1637,6 +1672,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		generatedSources:    generatedSources,
 		rejections:          opts.Rejections,
 		emitSharedLibraries: opts.EmitSharedLibraries,
+		pchResolve:          pchResolve,
 	}
 
 	for _, tref := range cfg.Targets {
@@ -2323,6 +2359,10 @@ type targetLowerCtx struct {
 	// IR carries SharedLibName so emit renders a real cc_shared_library wrapper
 	// (faithful-SHARED). Off by default — the static-collapse emit is unchanged.
 	emitSharedLibraries bool
+	// pchResolve resolves a target name + language to its declared
+	// target_precompile_headers list — the REUSE_FROM half of the PCH
+	// forced-include lift (see pch.go).
+	pchResolve pchResolver
 }
 
 // targetTrace bundles the per-target trace-derived inputs to
@@ -2966,7 +3006,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		// M1 assumption: at most one language per target. Aggregate the
 		// first compile group's flags/includes/defines.
 		cg := t.CompileGroups[0]
-		copts, defs := splitCompileFragments(cg.CompileCommandFragments)
+		copts, defs, pchArtifacts := splitCompileFragments(cg.CompileCommandFragments)
 		// LanguageStandard: cmake records the resolved
 		// CMAKE_<LANG>_STANDARD value (e.g. "17" for cxx_std_17)
 		// per CompileGroup. Most projects already see the standard
@@ -2995,6 +3035,11 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			}
 			copts = append(copts, "-F"+fw.Path)
 		}
+		// PCH forced-include lift: expand the cmake_pch artifacts the
+		// fragment split withheld into the declared headers' ordered
+		// `-include` copts, staging + tagging as needed (see pch.go).
+		copts, irt.Hdrs = applyPCHForcedIncludes(pchArtifacts, cg, lc.pchResolve,
+			cmakeSrc, cmakeBuild, reanchor, copts, irt.Hdrs, irt)
 		irt.Copts = copts
 
 		for _, d := range cg.Defines {
@@ -3023,15 +3068,14 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			}
 		}
 
-		// Phase 1 task 3 extension: tag targets that declare
-		// target_precompile_headers. The codemodel records the
-		// PCH set in CompileGroup.PrecompileHeaders; the PCH
-		// headers themselves are typically already in t.Sources
-		// (and route through the standard srcs/hdrs walk). The
-		// tag surfaces the cmake-side PCH intent so operators
-		// can grep `cmake-codegen-pch` and route via a
-		// cc_toolchain pch feature (Bazel cc_library has no
-		// native PCH attribute).
+		// Tag targets that declare target_precompile_headers even when no
+		// cmake_pch fragment reached the compile line (the artifact-driven
+		// shapes — incl. REUSE_FROM consumers — are tagged inside
+		// applyPCHForcedIncludes). The forced-include semantics are
+		// preserved by the lift above; the tag keeps the remaining
+		// residual — the compile-SPEED effect of actual precompilation,
+		// which Bazel cc_library can't express — greppable for operators
+		// (see docs/operator-toolchain-features.md).
 		for _, cgPCH := range t.CompileGroups {
 			if len(cgPCH.PrecompileHeaders) > 0 {
 				if !stringSliceContains(irt.Tags, "cmake-codegen-pch") {
@@ -4352,7 +4396,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// codemodel partitions sources via CompileGroupIndex).
 	subsBefore := len(cc.Subs)
 	if shouldSplitCompileGroups(t) {
-		if err := splitCompileGroups(t, irt, cc, cmakeSrc, cmakeBuild); err != nil {
+		if err := splitCompileGroups(t, irt, cc, cmakeSrc, cmakeBuild, lc.pchResolve, reanchor); err != nil {
 			return nil, err
 		}
 	}
@@ -4626,7 +4670,7 @@ func intSuffix(n int) string {
 // The wrapper drops Srcs / Copts / Defines, retains the
 // public surface (hdrs, includes, visibility, install
 // metadata), and adds a Deps edge to each sub-library.
-func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, cmakeSrc, cmakeBuild string) error {
+func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, cmakeSrc, cmakeBuild string, pchResolve pchResolver, reanchor func(string) string) error {
 	// Sort CompileGroups by language for deterministic sub-
 	// library ordering across runs (the codemodel records them
 	// in source-declaration order, which is stable but harder
@@ -4719,7 +4763,7 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		if len(subSrcs) == 0 {
 			continue
 		}
-		copts, defs := splitCompileFragments(cg.CompileCommandFragments)
+		copts, defs, pchArtifacts := splitCompileFragments(cg.CompileCommandFragments)
 		// Replay the wrapper's PRIVATE include-dir copts (see
 		// sharedIncludeCopts above) so this sub's sources resolve headers
 		// reached via target_include_directories(... PRIVATE ...).
@@ -4751,6 +4795,13 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		}
 		subHdrs = subBakeView.Hdrs
 		subTags = subBakeView.Tags
+		// PCH forced-include lift — the per-language sibling of the main
+		// compile-group path in lowerTarget (see pch.go): this sub's
+		// language picks up ITS cmake_pch.h/.hxx expansion, the staged
+		// source-tree headers land on the sub where its compile runs, and
+		// the user-visible wrapper gets the tag.
+		copts, subHdrs = applyPCHForcedIncludes(pchArtifacts, cg, pchResolve,
+			cmakeSrc, cmakeBuild, reanchor, copts, subHdrs, irt)
 
 		subName := irt.Name + "_" + langSuffix(cg.Language)
 		if langCount[cg.Language] > 1 {
@@ -7212,7 +7263,12 @@ func isNvccArchFlag(s string) bool {
 // time absolute like /tmp/proj/) never matches anything in the compile
 // invocation and the flag becomes either a no-op or a leak of convert-time
 // state into the audit surface.
-func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []string) {
+//
+// pchArtifacts returns the cmake_pch.h[xx] paths whose `-include` pairs were
+// withheld from copts (order-preserving, deduped). The caller routes them
+// through pchForcedIncludeCopts (pch.go), which expands the declared PCH
+// header list into the forced-include copts that preserve cmake's semantics.
+func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines, pchArtifacts []string) {
 	// Order-preserving dedup against cmake's own duplication —
 	// projects with `add_compile_options` chains, transitive
 	// PUBLIC propagation through multiple deps, or just hand-
@@ -7228,11 +7284,14 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 	// argument: cmake's target_precompile_headers adds `-include
 	// <build>/CMakeFiles/<t>.dir/<cfg>/cmake_pch.h` to the compile line, an
 	// absolute build-dir path to a PCH that doesn't exist under Bazel's
-	// hermetic compile. Bazel has no PCH (it's a compile-speed optimization,
-	// not a correctness input — the real headers are #included by the sources
-	// normally), so drop the flag+arg pair. A `-include` of a NON-PCH forced
-	// header is preserved (the held flag is emitted when its arg isn't a PCH).
+	// hermetic compile. The pair is withheld from copts and the artifact path
+	// surfaced via pchArtifacts — the caller expands it into the declared PCH
+	// headers' forced-include copts (pchForcedIncludeCopts), preserving
+	// cmake's "PCH header is included first in every TU" semantics. A
+	// `-include` of a NON-PCH forced header is preserved as-is (the held flag
+	// is emitted when its arg isn't a PCH).
 	heldInclude := ""
+	pchSeen := map[string]bool{}
 	emitHeld := func() {
 		if heldInclude != "" && !coptsSeen[heldInclude] {
 			coptsSeen[heldInclude] = true
@@ -7263,11 +7322,16 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 		for _, p := range splitShellTokens(f.Fragment) {
 			// Resolve a pending `-include` / `-include-pch` against this
 			// token (its argument). A cmake PCH artifact (cmake_pch.h /
-			// cmake_pch.hxx) drops the whole pair; any other forced-include
-			// header keeps both.
+			// cmake_pch.hxx) withholds the pair and surfaces the artifact
+			// for the forced-include lift; any other forced-include header
+			// keeps both.
 			if heldInclude != "" {
 				if isCMakePCHPath(p) {
 					heldInclude = ""
+					if !pchSeen[p] {
+						pchSeen[p] = true
+						pchArtifacts = append(pchArtifacts, p)
+					}
 					continue
 				}
 				emitHeld()
@@ -7327,7 +7391,7 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines []st
 	// A `-include` with no following argument in the fragment stream (cmake
 	// shouldn't emit this, but be defensive) is preserved rather than lost.
 	emitHeld()
-	return copts, defines
+	return copts, defines, pchArtifacts
 }
 
 // wireDynamicDeps adds, to every consumer of a shared (SharedLibName-bearing)
@@ -7503,10 +7567,10 @@ func localDefineHasName(irt *ir.Target, macro string) bool {
 // isCMakePCHPath reports whether p is a cmake target_precompile_headers
 // artifact — the generated PCH header cmake names cmake_pch.h / cmake_pch.hxx
 // under CMakeFiles/<target>.dir/<config>/. These are absolute build-dir paths
-// that don't exist under Bazel's hermetic compile and carry no correctness
-// (PCH is a speed optimization); splitCompileFragments drops the `-include` of
-// one. Match on basename so it's robust to the host build-dir prefix and the
-// per-config segment.
+// that don't exist under Bazel's hermetic compile; splitCompileFragments
+// surfaces them so the PCH forced-include lift (pch.go) can expand the
+// declared header list in their place. Match on basename so it's robust to
+// the host build-dir prefix and the per-config segment.
 func isCMakePCHPath(p string) bool {
 	base := filepath.Base(p)
 	return base == "cmake_pch.h" || base == "cmake_pch.hxx" ||

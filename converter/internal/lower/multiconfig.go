@@ -181,9 +181,13 @@ func dedupBaselineAgainstDeltas(tgt *ir.Target) {
 //     handling).
 //   - defines: drop / re-anchor define values that embed convert-
 //     time absolute paths via reanchorDefineValue.
-//   - copts / includes: unchanged. copts tokens are short flags
-//     without embedded paths after splitCompileFragments;
-//     includes are paths the existing includes handler normalises.
+//   - copts: cmake PCH machinery tokens are stripped per arm
+//     (filterPCHCoptArm) — the per-config cmake_pch.hxx path is a
+//     convert-time build-dir leak; the PCH forced-include lift rides
+//     the baseline copts. Everything else passes through (copts
+//     tokens are short flags without embedded paths after
+//     splitCompileFragments).
+//   - includes: paths the existing includes handler normalises.
 func applyPartition(tgt *ir.Target, attr string, p configfold.Partition, cmakeSrc, cmakeBuild string) {
 	if len(p.Deltas) == 0 {
 		return
@@ -251,6 +255,15 @@ func applyPartition(tgt *ir.Target, attr string, p configfold.Partition, cmakeSr
 			default:
 				values = append(values, tok)
 			}
+		}
+		if attr == "copts" {
+			// Strip cmake PCH machinery from per-config arms: the per-config
+			// cmake_pch path (`CMakeFiles/<t>.dir/<Config>/cmake_pch.hxx`)
+			// differs per cell, so it lands here as a raw convert-time
+			// build-dir path token. The forced-include semantics ride the
+			// baseline copts via the pchForcedIncludeCopts lift, so the arm
+			// token is pure leakage. See filterPCHCoptArm (pch.go).
+			values = filterPCHCoptArm(values)
 		}
 		sort.Strings(values)
 		// Merge: a target already populated with per-platform

@@ -73,7 +73,7 @@ datapoints noted here.
 | `Target.compileGroups[].languageStandard` | 493 | ✓ | `-std=` injection |
 | `Target.compileGroups[].sourceIndexes` | 576 | ✓ | per-group source split |
 | `Target.compileGroups[].includes[].isSystem` | 0 | ✓ | PRIVATE system include → `-isystem<dir>` copts; PUBLIC rides `cc_library.includes`, which Bazel already emits as `-isystem` + transitive |
-| `Target.compileGroups[].precompileHeaders` | varies | tag-only | `cmake-codegen-pch` tag; PCH lift kept tag-only by decision (operator cc_toolchain feature) |
+| `Target.compileGroups[].precompileHeaders` | varies | ✓ | forced-include lift (`-include` copts over the declared list, incl. REUSE_FROM via the cmake_pch fragment); precompilation *speed* stays operator-side, kept auditable via the `cmake-codegen-pch` tag |
 | `Target.dependencies` | 2151 | ✓ | `deps = [...]` |
 | `Target.dependencies[].backtrace` | 2151 | ✗ | per-dep call-site provenance; niche |
 | `Target.artifacts` | 558 | ✓ | tool-from-target lift |
@@ -198,22 +198,44 @@ warning-suppressing SYSTEM flavour survives. Tests:
 (PUBLIC via `includes`). Survey remains empty, so the path is pinned
 by hand-built fixtures rather than a corpus project.
 
-### 3. `Target.compileGroups[].precompileHeaders` — tag-only, by decision
+### 3. `Target.compileGroups[].precompileHeaders` — forced-include lift
 
-The PCH header set is recorded in the codemodel; current handling
-emits a `cmake-codegen-pch` tag. Bazel `cc_library` has no native
-PCH attribute — Bazel-idiomatic PCH is a cc_toolchain feature
-(`pch` flag set wired by the operator's cc_toolchain config).
+cmake's `target_precompile_headers` is two effects welded together:
+a **forced include** (every TU compiles as if the generated
+`cmake_pch.h[xx]` — which `#include`s the declared headers in order —
+were its first line) and a **compile-speed optimisation** (the
+`.gch`/`.pch` precompilation of that header). An earlier revision of
+this entry closed PCH as "tag-only, speed-not-correctness"; that
+rationale was wrong — sources legitimately rely on the forced
+include for declarations and macros they never `#include` themselves
+(stdafx-style codebases), and SDL's compile-commands fidelity report
+measured the drop as 223/259 TUs missing a `-include`.
 
-**Status (closed — won't lift)**: kept tag-only by decision. A real
-PCH lift can't live in the converter alone: it needs the operator's
-cc_toolchain to define the `pch` feature, which is a cross-boundary
-handshake (the converter emits BUILD; the cc_toolchain is operator-
-owned). PCH is a build-speed optimisation, not a correctness
-requirement — the converted target compiles identically without it —
-so the tag (which keeps the omission auditable) is the right
-terminal state until an operator-toolchain contract exists. Tracked
-in [`operator-toolchain-features.md`](operator-toolchain-features.md).
+Current handling (`converter/internal/lower/pch.go`) preserves the
+correctness half: the `-include <build>/CMakeFiles/<t>.dir/cmake_pch.*`
+fragment is expanded into ordered `-include` copts pairs over the
+declared header list (source-tree absolute → element-relative path +
+staged header; `<vector>` angle form → bare name on the include
+search chain; `[["..."]]` verbatim form → unquoted). The REUSE_FROM
+shape — where the consumer's `precompileHeaders` is null and the PCH
+arrives only via the owner-dir fragment — resolves the owning
+target's list through the `CMakeFiles/<owner>.dir/` segment. Render
+gate: `scripts/meta-cmake-pch.sh` (include-free PCH-reliant sources
+must compile under Bazel).
+
+**Status (open residual — speed half is operator-owned)**: the
+precompilation speed effect still can't live in the converter alone:
+it needs the operator's toolchain/rules, a cross-boundary handshake
+(the converter emits BUILD; the cc_toolchain is operator-owned). The
+`cmake-codegen-pch` tag + the `pch-speed-not-replicated` audit
+finding keep that residual auditable; the operator pattern lives in
+[`operator-toolchain-features.md`](operator-toolchain-features.md).
+Known fidelity residue of the lift itself: cmake's generated PCH
+header carries `#pragma GCC system_header`, so warnings *inside* PCH
+headers are suppressed under cmake but can fire under the direct
+`-include`; and a per-config-varying PCH list rides the primary
+configuration's view (the multi-config fold strips the per-config
+`cmake_pch` tokens rather than re-expanding per arm).
 
 ## The other File API object kinds
 
@@ -336,7 +358,7 @@ Not yet wired (with rationale):
 | `target_link_directories` | Codemodel folds into `Link.CommandFragments[role=libraryPath]` |
 | `target_sources` | Codemodel exposes sources directly |
 | `set_target_properties` | Probe-genex covers the properties Bazel cares about (POSITION_INDEPENDENT_CODE, VISIBILITY presets); the rest are IDE / debugger-only |
-| `target_precompile_headers` | Codemodel exposes via `CompileGroup.PrecompileHeaders` — see PCH gap above |
+| `target_precompile_headers` | Codemodel exposes via `CompileGroup.PrecompileHeaders` — see the PCH forced-include lift above |
 | `install` | Directory installers come through codemodel; trace would be redundant |
 | `enable_language` | Codemodel `LanguageStandard` covers what Bazel needs |
 | `find_package` | Imports manifest is the contract; in-tree synthesis covered by ALIAS lift |

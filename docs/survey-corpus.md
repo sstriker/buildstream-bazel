@@ -55,7 +55,7 @@ in *Build-lens status* below; the full corpus roster + rationale is under
 | **libevent** | 0 | 5 | 0 | `ok` (libs; regress tests off) | 40 | 7 |
 | **mbedtls** | 0 | 0 | 0 | `ok` (crypto libs; tests+programs off, link_to_source in==out drop) | 113 | 14 |
 | **protobuf** | 0 | 8 | 0 | `ok` (libs + protoc + upb generators; find_package(absl) via @abseil-cpp + //absl_umbrella, host zlib) | 286 | 11 |
-| **sdl** | 2 | 5 | 0 | `ok` (multi-config × per-platform; file(GENERATE) $<CONFIG> headers, PCH drop, select-arm relabel; host X11 + GL/GLES/EGL dev headers) | 259 | 9 |
+| **sdl** | 2 | 5 | 0 | `ok` (multi-config × per-platform; file(GENERATE) $<CONFIG> headers, PCH forced-include lift, select-arm relabel; host X11 + GL/GLES/EGL dev headers) | 259 | 9 |
 
 The four large members driven for convertibility but not the build lens
 (`grpc`, `llvm`, `vtk`, `cuda-samples`) aren't in this table but DO have

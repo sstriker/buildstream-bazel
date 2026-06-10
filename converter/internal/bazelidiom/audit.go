@@ -206,8 +206,8 @@ func auditCmakeCodegenTags(rule, target string, call *build.CallExpr) []Finding 
 func codegenTagToFinding(tag string) (code, msg string) {
 	switch {
 	case tag == "cmake-codegen-pch":
-		return "pch-toolchain-feature-needed",
-			"target declares target_precompile_headers — Bazel cc_library has no native PCH attribute; wire via cc_toolchain pch feature for the actual PCH effect"
+		return "pch-speed-not-replicated",
+			"target uses target_precompile_headers — the forced-include semantics are preserved (the converter expands the declared PCH header list into -include copts), but the compile-SPEED effect of actual precompilation is not (Bazel cc_library has no native PCH attribute). Optional: wire real precompilation operator-side per docs/operator-toolchain-features.md"
 	case tag == "cmake-codegen-fortran-target":
 		return "fortran-target-needs-ruleset",
 			"target had Fortran sources the converter partitioned into a `<name>_fortran_srcs` filegroup (Bazel cc rules can't compile Fortran). The cc_* target builds without them; to actually compile the Fortran, point a Fortran ruleset (rules_fortran / CcInfo-interop / rules_foreign_cc) at the filegroup. No canonical BCR Fortran ruleset exists yet, so this stays operator-wired"
