@@ -257,6 +257,15 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	if opts.SourceRoot == "" || opts.BuildDir == "" {
 		return Reply{}, fmt.Errorf("cmakerun: SourceRoot and BuildDir required")
 	}
+	// The configure runs with cwd = BuildDir (see runOnce), so caller-
+	// relative roots must absolutize against the CALLER's cwd first.
+	for _, p := range []*string{&opts.SourceRoot, &opts.BuildDir} {
+		abs, err := filepath.Abs(*p)
+		if err != nil {
+			return Reply{}, fmt.Errorf("cmakerun: absolutize %q: %w", *p, err)
+		}
+		*p = abs
+	}
 	if opts.BuildType == "" && len(opts.BuildTypes) == 0 {
 		opts.BuildType = "Release"
 	}
@@ -354,6 +363,14 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	// configure emits thousands of lines.
 	runOnce := func(extraEnv ...string) ([]byte, error) {
 		cmd := exec.CommandContext(ctx, "cmake", argv...)
+		// Run the configure with cwd = the build dir — the canonical
+		// `cd build && cmake ..` contract. execute_process's default
+		// WORKING_DIRECTORY is the cmake PROCESS's cwd, so cwd-writing
+		// generators (bison, tar without -C) land their outputs in the
+		// build tree instead of polluting whatever directory the
+		// converter was invoked from; the relative-operand anchoring in
+		// the execute_process lifts already assumes this contract.
+		cmd.Dir = opts.BuildDir
 		stderrTail := &boundedBuffer{limit: 16 * 1024}
 		cmd.Stdout = opts.Stdout
 		if opts.Stderr != nil {

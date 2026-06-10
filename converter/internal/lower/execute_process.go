@@ -192,7 +192,11 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			outs = append(outs, executeProcessOut{RelOutput: rel})
 		}
 	}
-	for _, call := range calls {
+	// Cross-call linkage pre-pass for the unspecified-output lift: the
+	// single-claim ambiguity rule needs every eligible call's directory
+	// operands and stem claims in view before any per-call emission.
+	unspec := planUnspecifiedOutputs(calls, anc, cc)
+	for ci, call := range calls {
 		v := Classify(call)
 		switch v.Bucket {
 		case BucketCMakeE:
@@ -229,6 +233,15 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			// configure's own on-disk evidence, no convert-time execution.
 			if v.Bucket == BucketRefuse {
 				if rels, lifted := liftArgvFileProducing(call, anc, cc); lifted {
+					collect(rels)
+					continue
+				}
+				// Unspecified-output rescue: outputs absent from the argv,
+				// recovered declaratively from File-API demand + ninja
+				// exclusion + argv linkage (dir-operand containment or
+				// derived-name correlation) — see
+				// execute_process_unspecified.go.
+				if rels, lifted := liftUnspecifiedOutputs(ci, call, anc, cc, unspec); lifted {
 					collect(rels)
 					continue
 				}

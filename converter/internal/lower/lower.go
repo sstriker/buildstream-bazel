@@ -1437,6 +1437,12 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	for _, a := range opts.SetAssignments {
 		forwardedStampVars[a.SrcVar] = true
 	}
+	// Demand/exclusion sets for the unspecified-output execute_process
+	// lift (execute_process_unspecified.go): consumed build-dir sources
+	// from the codemodel, minus anything a ninja edge produces, are the
+	// orphans only configure-time codegen can explain.
+	cc.NinjaOuts = ninjaOutputSet(g)
+	cc.ConsumedBuildRel = consumedBuildDirSources(r, cmakeBuild)
 	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, rescueVars, forwardedStampVars, cc)
 	// Expand the stamp-var set through verbatim set(X ${Y}) copies the
 	// driver recovered from a non-expanded trace (empty in the single-pass

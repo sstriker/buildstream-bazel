@@ -91,6 +91,17 @@ type codegenContext struct {
 	// serially (the historical path).
 	ScriptBakeRuns map[*ninja.Build]error
 
+	// ConsumedBuildRel is the File-API demand side for the
+	// unspecified-output execute_process lift: every codemodel target
+	// source anchored under the build dir, build-relative. NinjaOuts is
+	// the matching exclusion: every path a ninja edge produces (build-time
+	// codegen, already recovered elsewhere). A consumed build file with no
+	// ninja producer is an orphan only configure-time codegen can explain.
+	// Both populated by ToIR before recoverExecuteProcess runs; nil maps
+	// degrade to "no orphans" (the lift declines).
+	ConsumedBuildRel map[string]bool
+	NinjaOuts        map[string]bool
+
 	// HeaderWalkCache memoizes filesystem walks of include directories
 	// across targets within one lower-element invocation. Keyed on the
 	// absolute include-dir path; value is the package-relative header

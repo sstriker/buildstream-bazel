@@ -7,6 +7,24 @@ transition cleanly.
 
 ## Now
 
+- **In-place-rewrite genrule: cmd self-copy + un-renamed rule name (latent
+  since the feature landed, PR #484).** The converted
+  `genrule-inplace-rewrite` fixture emits
+  `cmd = "cp $(RULEDIR)/version.txt.gen $(RULEDIR)/version.txt.gen"` — the
+  SOURCE-input operand is anchored to `$(RULEDIR)` and then renamed in
+  lockstep with the output, so the rule copies its own (never-created)
+  output onto itself instead of reading the source; the rule is also named
+  `custom_command_version_txt` while the gate's bazel half builds
+  `//:custom_command_version_txt_gen`. `anchorGenruleOutputsToRuledir`
+  can't distinguish the two identical post-rewrite `version.txt` tokens
+  (standalone_genrules.go's two-pass ordering), so the input must be
+  disambiguated BEFORE anchoring. Hidden until now because the gate's
+  render-half assertions don't catch the `.gen`-suffixed self-copy and the
+  bazel-build half self-skips below bazel 9 (CI); on a bazel-9 host
+  `make e2e-meta-cmake-render-gates` fails at this gate and blocks the
+  suite. Fix the rewrite ordering + strengthen the gate's render
+  assertions (rule name + source-reading cmd).
+
 - **Complexity lens — break down the grandfathered giants.**
   `make lint-complexity` (golangci-lint, complexity-only config in
   `.golangci.yml`: gocyclo / gocognit / cyclop / nestif / funlen / maintidx) is
@@ -654,10 +672,16 @@ trees, optional-feature deps, codegen instances). Each member's
   signal to lift on. The argv-declared codegen shape (`tool <in…> <out…>`,
   inputs/outputs in the argv) LIFTS now — classification from the
   configure's on-disk evidence, no convert-time re-execution; gate
-  `meta-cmake-execute-process-argv-codegen.sh`. Its deferred variants:
-  output-DIRECTORY operands (needs a TreeArtifact-vs-enumerated-outs
-  decision) and a bake fallback for non-PATH-portable tools (capture the
-  configure's bytes via bakeFileTarget instead of re-running). Assessed mechanical cost ordering when a fixture lands:
+  `meta-cmake-execute-process-argv-codegen.sh`. UNSPECIFIED outputs (not
+  in the argv at all) also lift declaratively — File-API consumed
+  build-dir sources as demand, ninja's output set as exclusion, argv
+  linkage via directory-operand containment (enumerated outs, re-run with
+  the operand → `$(RULEDIR)/<dir>`) or derived-name correlation (bake
+  tier); single-claim ambiguity rule, declines stay loud refusals; gate
+  `meta-cmake-execute-process-unspecified-outs.sh`. Remaining deferred
+  variant: a bake fallback for non-PATH-portable tools on the
+  argv-declared shape (capture the configure's bytes via bakeFileTarget
+  instead of re-running). Assessed mechanical cost ordering when a fixture lands:
   ENVIRONMENT (`env 'A=B'` prefix; guard values embedding convert-time abs
   paths) → INPUT_FILE (`< "$(location <rel>)"` + srcs when source-anchored;
   refuse build-dir stdin chaining) → ERROR_FILE (a SECOND output: the shared
@@ -665,10 +689,11 @@ trees, optional-feature deps, codegen instances). Each member's
   WORKING_DIRECTORY (`cd` breaks execroot-relative `$(location)`/`$@` — every
   reference needs `$$PWD`-absolutizing and the anchor contract changes) →
   TIMEOUT (keep refusing absent evidence; silently ignoring changes failure
-  semantics). Sibling gap, same demand channel: side-effect WRITERS (a tool
-  writing files with NO OUTPUT_FILE) are refused loudly but undetectable
-  without write tracing — a `--cmake-script-trace`-style strace/fsmonitor
-  capture for arbitrary tools is the research item.
+  semantics). Sibling gap narrowed but open, same demand channel:
+  side-effect WRITERS whose outputs are neither consumed (so no File-API
+  demand) nor dir/stem-correlatable still refuse loudly — a
+  `--cmake-script-trace`-style strace/fsmonitor capture for arbitrary
+  tools is the research item.
 
 - **PCH forced-include lift — fidelity residue.** The lift (shipped: cmake's
   `target_precompile_headers` forced-include semantics expand into ordered
