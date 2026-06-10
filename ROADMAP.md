@@ -651,7 +651,13 @@ trees, optional-feature deps, codegen instances). Each member's
   TIMEOUT / INPUT_FILE / ERROR_FILE (execute_process.go ~1620-1630); every
   such refusal now surfaces in `conversion-todos.json` as a structured
   `execute-process-refusal` todo with file:line + argv, which is the demand
-  signal to lift on. Assessed mechanical cost ordering when a fixture lands:
+  signal to lift on. The argv-declared codegen shape (`tool <in…> <out…>`,
+  inputs/outputs in the argv) LIFTS now — classification from the
+  configure's on-disk evidence, no convert-time re-execution; gate
+  `meta-cmake-execute-process-argv-codegen.sh`. Its deferred variants:
+  output-DIRECTORY operands (needs a TreeArtifact-vs-enumerated-outs
+  decision) and a bake fallback for non-PATH-portable tools (capture the
+  configure's bytes via bakeFileTarget instead of re-running). Assessed mechanical cost ordering when a fixture lands:
   ENVIRONMENT (`env 'A=B'` prefix; guard values embedding convert-time abs
   paths) → INPUT_FILE (`< "$(location <rel>)"` + srcs when source-anchored;
   refuse build-dir stdin chaining) → ERROR_FILE (a SECOND output: the shared
