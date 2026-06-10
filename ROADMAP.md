@@ -13,12 +13,12 @@ transition cleanly.
   the code-complexity axis `go vet` / `gofmt` / `staticcheck` don't cover. The
   soft-launch burndown reached green (launch flagged 55) and the CI step is now
   **blocking** — every function is held to the thresholds, so new complexity
-  regressions fail the build. Three functions remain genuinely over threshold
+  regressions fail the build. Two functions remain genuinely over threshold
   and carry documented `//nolint` directives (keyed to this item) so the gate
   can stay green: `lower.lowerTarget` (cognitive **754** / cyclomatic 322 — the
-  outlier), `convert-element-cmake`'s `run` (247/152), and `lower.ToIR`
-  (194/110). (`emit/bazel`'s `planSplit` / `rewriteTarget` and `write-a`'s
-  `main` are done — extracted and de-nolinted.) **What's left:** break each
+  outlier) and `lower.ToIR` (194/110). (`emit/bazel`'s `planSplit` /
+  `rewriteTarget`, `write-a`'s `main`, and `convert-element-cmake`'s `run`
+  are done — extracted and de-nolinted.) **What's left:** break each
   down via behavior-preserving extraction of cohesive sub-passes into helpers
   (the established pattern — `lowerTarget`'s link-fragment attribution /
   compile-group lowering / generated-source handling are the obvious
