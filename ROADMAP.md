@@ -642,6 +642,35 @@ trees, optional-feature deps, codegen instances). Each member's
 
 ## Later (research / open questions)
 
+- **Dynamic-execution cmake constructs — sweep residue (2026-06 DEFER audit).**
+  An empirical sweep of cmake_language-family constructs against the trace
+  recoveries found most shapes already correct: plain `DEFER` (own-scope
+  execution; trace keeps the registration's file/line + expanded argv),
+  `DEFER` registered in helper functions, `EVAL CODE` (the virtual
+  `<file>:N:EVAL` path still prefix-matches the source tree),
+  `CANCEL_CALL` (a cancelled call never executes → never traced), and
+  variable/scope plumbing (`block()`, `return(PROPAGATE)`,
+  `variable_watch`) which the expanded trace flattens away. The
+  `DEFER DIRECTORY` relative-output mis-anchor is fixed (configure_file +
+  file(RENAME); execute_process already refused relative outputs). Three
+  adjacent residues remain, none corpus-blocking today:
+  (1) `add_subdirectory(<src> <custom-binary-dir>)` breaks the
+  build-mirrors-source assumption the relative-output anchoring rests on
+  (`dirScopeRel` joins the scope's SOURCE-relative path under the build
+  root; the codemodel's per-directory `build` path would be the faithful
+  anchor) — also the exact shape `FetchContent_MakeAvailable` uses for its
+  `<name>-src`/`<name>-build` add_subdirectory;
+  (2) `file(GENERATE OUTPUT <relative>)` is still dropped outright ("no
+  per-call binary-dir context") rather than anchored like configure_file
+  now is — the same CallFile-scope + DeferDir treatment would recover it;
+  (3) `cmake_language(SET_DEPENDENCY_PROVIDER)` interplay: a project/
+  operator dependency provider rides CMAKE_PROJECT_TOP_LEVEL_INCLUDES,
+  which the converter's own hook staging (-D) can clobber — acknowledged
+  in cmakerun's comments, unexercised by the corpus, worth a deliberate
+  contract when a provider-using member appears. (FetchContent /
+  ExternalProject themselves remain the researched-but-unimplemented
+  mapping in `docs/research/cmake_analysis.md` §14.)
+
 - **PCH forced-include lift — fidelity residue.** The lift (shipped: cmake's
   `target_precompile_headers` forced-include semantics expand into ordered
   `-include` copts, incl. REUSE_FROM; gate `scripts/meta-cmake-pch.sh`;
