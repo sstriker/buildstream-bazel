@@ -7,7 +7,7 @@
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
         fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-catch2 fetch-libpng fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
-        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm fetch-cgal fetch-cryptoauthlib fetch-survey-regression \
+        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm fetch-cryptoauthlib fetch-survey-regression \
         survey-gazelle survey-multiplatform update-golden record-fixtures lint vet fmt staticcheck check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
@@ -87,9 +87,6 @@ GLOG_VERSION      ?= v0.7.1
 GLOG_DIR          ?= /tmp/glog
 GLM_VERSION       ?= 1.0.1
 GLM_DIR           ?= /tmp/glm
-# CGAL: real-world cmake_language(DEFER) end-of-configuration finalizer hooks.
-CGAL_VERSION      ?= v6.2
-CGAL_DIR          ?= /tmp/cgal
 # cryptoauthlib: real-world recursive cmake via configure-time execute_process.
 CRYPTOAUTHLIB_VERSION ?= v3.8.0
 CRYPTOAUTHLIB_DIR     ?= /tmp/cryptoauthlib
@@ -1362,20 +1359,6 @@ fetch-glm:
 		echo "glm already at $(GLM_DIR); rm -rf to refetch"; \
 	fi
 
-# CGAL: real-world cmake_language(DEFER) — the top-level CMakeLists includes
-# CGAL_enable_end_of_configuration_hook.cmake, which registers
-# `cmake_language(DEFER CALL …)` end-of-directory-scope finalizers
-# (CGAL_hooks_at_end_of_all_directories, CGAL_hook_check_CMAKE_BUILD_TYPE).
-# That's the deferred-call idiom the defer-execute-process fixture models,
-# on real code. NOTE: CGAL's configure needs Boost headers (+ GMP/MPFR for
-# the number types) on the host.
-fetch-cgal:
-	@if [ ! -d "$(CGAL_DIR)" ]; then \
-		git clone --depth 1 --branch $(CGAL_VERSION) https://github.com/CGAL/cgal.git "$(CGAL_DIR)"; \
-	else \
-		echo "cgal already at $(CGAL_DIR); rm -rf to refetch"; \
-	fi
-
 # cryptoauthlib: real-world recursive cmake via configure-time execute_process
 # — the superbuild-at-configure idiom nested_cmake.go lifts. Its
 # cmake/mbedtls.cmake does configure_file(third_party/CMakeLists-mbedtls.txt.in)
@@ -1503,7 +1486,7 @@ fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
 # Convenience aggregate: fetch the regression corpus (the projects that
 # surfaced past bugs + the clean controls). cutlass / cuda-samples need a
 # CUDA toolkit to actually survey; they're fetched so the corpus is whole.
-fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm fetch-cgal fetch-cryptoauthlib
+fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm fetch-cryptoauthlib
 
 # survey-gazelle: the strongest lens-2 (structural idiom) check — run the
 # gazelle_cc round-trip on wild corpus projects (see
