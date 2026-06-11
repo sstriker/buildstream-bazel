@@ -13,6 +13,14 @@ import (
 
 // TraceEvent is one record from `cmake --trace-expand --trace-format=json-v1`.
 // We deliberately decode only the fields we read; cmake adds more.
+//
+// IMMUTABLE: ParseTrace memoizes its result and hands the SAME []TraceEvent
+// (and thus the same per-event Args slices) to every caller, so a TraceEvent
+// must be treated as read-only. Never assign through a field of a parsed event
+// (`ev.Args[i] = …`) or sort/append-in-place a field slice — a mutation
+// through the shared slice silently corrupts every later consumer (e.g. a
+// warm-pass re-lower reading the cached events after pass 1). Derive new
+// values instead.
 type TraceEvent struct {
 	File string   `json:"file"`
 	Line int      `json:"line"`
