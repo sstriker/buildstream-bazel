@@ -3732,8 +3732,12 @@ func lowerTargetSources(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 	st.srcEmitPath = make(map[int]string, len(t.Sources))
 	for i, src := range t.Sources {
 		// CMake's bookkeeping `<build>/version.h.rule` files are internal
-		// re-run markers; skip them silently.
-		if strings.HasSuffix(src.Path, ".rule") {
+		// re-run markers; skip them silently. Same for the PCH machinery
+		// sources (the generated cmake_pch creator TU + header) cmake
+		// lists on a declaring target: the mirror lift owns the
+		// semantics, and eliding them as "missing build-dir sources"
+		// would stamp a misleading audit tag on every PCH target.
+		if strings.HasSuffix(src.Path, ".rule") || isCMakePCHMachinerySource(src.Path) {
 			continue
 		}
 
@@ -4286,10 +4290,13 @@ func lowerCompileGroups(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 	var privateIncDirs []string
 
 	//nolint:nestif // inside the grandfathered lowerTarget giant; folds into its ROADMAP burndown pass.
-	if len(t.CompileGroups) > 0 {
+	if cg, ok := firstRealCompileGroup(t); ok {
 		// M1 assumption: at most one language per target. Aggregate the
-		// first compile group's flags/includes/defines.
-		cg := t.CompileGroups[0]
+		// first REAL compile group's flags/includes/defines — skipping
+		// cmake's PCH-creator group, whose `-x c++-header` fragments
+		// would otherwise compile every project TU as a header (the
+		// shape executables hit: they don't split groups, so the
+		// creator group used to be picked verbatim).
 		copts, defs, pchArtifacts := splitCompileFragments(cg.CompileCommandFragments)
 		// LanguageStandard: cmake records the resolved
 		// CMAKE_<LANG>_STANDARD value (e.g. "17" for cxx_std_17)
@@ -4880,6 +4887,7 @@ func lowerTargetDeps(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc targe
 	idToName, utilityIDs := lc.idToName, lc.utilityIDs
 	rejections := lc.rejections
 	traceLinkScope := tt.traceLinkScope
+	reuseOwners := pchReuseFromOwners(t, tt, lc.cmakeBuild)
 	// Lower dependencies. In-codebase target ids look like `<name>::@<hash>`
 	// where <name> is the CMake target name; out-of-tree find_package-
 	// imported targets carry a namespaced name like `Pkg::tgt::@<hash>`.
@@ -4975,9 +4983,21 @@ func lowerTargetDeps(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc targe
 		// edge has no compile/link impact. Conservative — only
 		// fires when the codemodel records the call directly;
 		// macro-wrapped add_dependencies stay on Deps until the
-		// outermost-user-frame walk surfaces them (future slice).
-		if isAddDependenciesEdge(dep, t.BacktraceGraph) {
+		// outermost-user-frame walk surfaces them.
+		if isBuildOrderOnlyEdge(dep, t.BacktraceGraph) {
 			irt.Data = append(irt.Data, label)
+			continue
+		}
+		// REUSE_FROM owner edges DROP entirely: under the mirror lift
+		// the consumer's real input is the owner's mirror FILE (staged
+		// via srcs — that edge already orders the build), the owner
+		// TARGET contributes no headers or link inputs, deps would be
+		// illegal for an executable-kind owner (no linkable CcInfo),
+		// and even data poisons: a cc_test owner is implicitly
+		// testonly, which a non-test consumer can't reference. A
+		// consumer that genuinely LINKS its owner still wires the dep
+		// through the link-fragment attribution channel.
+		if reuseOwners[stripIDHash(dep.Id)] {
 			continue
 		}
 		if allowsImplementationDeps && depScopeIsPrivate(traceLinkScope, dep, idToName) {
@@ -5277,10 +5297,12 @@ func shouldSplitCompileGroups(t *fileapi.Target) bool {
 	if len(t.CompileGroups) < 2 {
 		return false
 	}
-	// Multi-language: existing case.
+	// Multi-language: existing case. PCH-creator groups are cmake
+	// machinery, not project compiles — they must not force a split
+	// (nor count as a language).
 	langs := map[string]bool{}
 	for _, cg := range t.CompileGroups {
-		if cg.Language == "" {
+		if cg.Language == "" || isPCHCreatorCompileGroup(t, &cg) {
 			continue
 		}
 		langs[cg.Language] = true
@@ -5293,7 +5315,7 @@ func shouldSplitCompileGroups(t *fileapi.Target) bool {
 	type sig struct{ defs, cmdFrags string }
 	seen := map[string]sig{}
 	for _, cg := range t.CompileGroups {
-		if cg.Language == "" {
+		if cg.Language == "" || isPCHCreatorCompileGroup(t, &cg) {
 			continue
 		}
 		s := sig{
@@ -7231,7 +7253,71 @@ func cmakeTruthy(v string) bool {
 // returns a fresh slice so callers can't alias a shared one.
 func publicVisibility() []string { return []string{"//visibility:public"} }
 
-// isAddDependenciesEdge reports whether a TargetDependency came
+// pchReuseFromOwners names the OTHER targets whose cmake_pch artifacts
+// this target's compile fragments force-include AND that nothing
+// evidences a genuine link of — the drop-safe REUSE_FROM owner set.
+// cmake records the REUSE_FROM owner as a plain TargetDependency with
+// NO backtrace (probed: cmake 4.x writes no backtrace EVEN when the
+// same dep is also genuinely linked — target_link_libraries + REUSE_FROM
+// dedup into one entry), so the artifact in the consumer's own fragments
+// is the only reuse signal, and link evidence is the discriminator:
+// the trace's target_link_libraries ground truth (tt.traceLinkScope /
+// traceLinkLibs — also covers STATIC consumers, which have no link
+// step for fragments to witness) or the owner's artifact in the
+// consumer's link.commandFragments. An owner with link evidence keeps
+// its dep edge (dropping it would sever the only in-tree link channel:
+// lowerLinkAttribution's contract is that in-codebase names arrive via
+// t.Dependencies). An owner with NO link evidence drops at the call
+// site: the consumer's real input is the owner's mirror FILE (staged
+// via srcs), deps would be illegal for an executable-kind owner, and
+// even data poisons (a cc_test owner is implicitly testonly).
+func pchReuseFromOwners(t *fileapi.Target, tt targetTrace, cmakeBuild string) map[string]bool {
+	var owners map[string]bool
+	for _, cg := range t.CompileGroups {
+		_, _, arts := splitCompileFragments(cg.CompileCommandFragments)
+		for _, art := range arts {
+			owner := pchArtifactOwner(art, cmakeBuild)
+			if owner == "" || owner == t.Name || pchOwnerLinkEvidence(t, tt, owner) {
+				continue
+			}
+			if owners == nil {
+				owners = map[string]bool{}
+			}
+			owners[owner] = true
+		}
+	}
+	return owners
+}
+
+// pchOwnerLinkEvidence reports whether anything beyond the PCH reuse
+// evidences a genuine link of owner by this target: a recorded
+// target_link_libraries call naming it (the trace ground truth), or the
+// owner's conventional artifact name (lib<owner>.* / <owner>.*) in the
+// link command fragments.
+func pchOwnerLinkEvidence(t *fileapi.Target, tt targetTrace, owner string) bool {
+	if _, ok := tt.traceLinkScope[owner]; ok {
+		return true
+	}
+	for _, lib := range tt.traceLinkLibs {
+		if lib == owner {
+			return true
+		}
+	}
+	if t.Link == nil {
+		return false
+	}
+	for _, frag := range t.Link.CommandFragments {
+		for _, tok := range strings.Fields(frag.Fragment) {
+			base := filepath.Base(tok)
+			if strings.HasPrefix(base, "lib"+owner+".") || strings.HasPrefix(base, owner+".") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isBuildOrderOnlyEdge reports whether a TargetDependency came
 // from an `add_dependencies(target dep)` call rather than a
 // target_link_libraries (or similar) — the former carries no
 // compile/link facts; only build order matters. Bazel maps the
@@ -7245,7 +7331,7 @@ func publicVisibility() []string { return []string{"//visibility:public"} }
 // over-emit link edges for the macro case (safe but redundant)
 // vs miss build-order semantics for the direct case (currently
 // silent). The direct case is the common one.
-func isAddDependenciesEdge(dep fileapi.TargetDependency, g fileapi.BacktraceGraph) bool {
+func isBuildOrderOnlyEdge(dep fileapi.TargetDependency, g fileapi.BacktraceGraph) bool {
 	if dep.Backtrace <= 0 || dep.Backtrace >= len(g.Nodes) {
 		return false
 	}
@@ -8441,6 +8527,52 @@ func isCMakePCHPath(p string) bool {
 	base := filepath.Base(p)
 	return base == "cmake_pch.h" || base == "cmake_pch.hxx" ||
 		base == "cmake_pch.h.gch" || base == "cmake_pch.hxx.pch"
+}
+
+// isCMakePCHMachinerySource reports whether a target source is part of
+// cmake's PCH machinery: the generated creator TU
+// (CMakeFiles/<t>.dir/cmake_pch.hxx.cxx / cmake_pch.h.c — the compile
+// that produces the .gch) or the generated cmake_pch header itself,
+// both listed in the declaring target's Sources. They're cmake-internal
+// bookkeeping, not project sources — the mirror lift (pch.go) preserves
+// the forced-include semantics, and the .gch precompilation has no
+// Bazel-side equivalent to feed. Anchored on the CMakeFiles/ layout the
+// machinery always lives under, not the basename alone: a PROJECT
+// source legitimately named cmake_pch.* must not be silently skipped.
+func isCMakePCHMachinerySource(p string) bool {
+	return strings.HasPrefix(filepath.Base(p), "cmake_pch.") &&
+		strings.Contains(filepath.ToSlash(p), "CMakeFiles/")
+}
+
+// isPCHCreatorCompileGroup reports whether a compile group exists only
+// to BUILD the PCH artifact: every source it compiles is cmake PCH
+// machinery. cmake's codemodel lists this group ALONGSIDE the real TU
+// groups on a PCH-declaring target, with creator-only fragments
+// (`-x c++-header`) that must never leak onto project TUs — selecting
+// it as "the" compile group would compile every source as a header.
+func isPCHCreatorCompileGroup(t *fileapi.Target, cg *fileapi.CompileGroup) bool {
+	if len(cg.SourceIndexes) == 0 {
+		return false
+	}
+	for _, si := range cg.SourceIndexes {
+		if si < 0 || si >= len(t.Sources) || !isCMakePCHMachinerySource(t.Sources[si].Path) {
+			return false
+		}
+	}
+	return true
+}
+
+// firstRealCompileGroup returns the first compile group that compiles
+// project sources (skipping PCH-creator groups), preserving the M1
+// "primary compile group" contract for PCH-declaring targets whose
+// FIRST group is the creator (executables that don't split groups).
+func firstRealCompileGroup(t *fileapi.Target) (fileapi.CompileGroup, bool) {
+	for _, cg := range t.CompileGroups {
+		if !isPCHCreatorCompileGroup(t, &cg) {
+			return cg, true
+		}
+	}
+	return fileapi.CompileGroup{}, false
 }
 
 // subPackageDir returns the element-root-relative directory the target at

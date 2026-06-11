@@ -17,7 +17,7 @@ func TestIsAddDependenciesEdge_True(t *testing.T) {
 		},
 	}
 	dep := fileapi.TargetDependency{Id: "foo::@", Backtrace: 1}
-	if !isAddDependenciesEdge(dep, g) {
+	if !isBuildOrderOnlyEdge(dep, g) {
 		t.Error("expected true for add_dependencies-backed dep")
 	}
 }
@@ -32,14 +32,14 @@ func TestIsAddDependenciesEdge_FalseForTLL(t *testing.T) {
 		},
 	}
 	dep := fileapi.TargetDependency{Id: "foo::@", Backtrace: 1}
-	if isAddDependenciesEdge(dep, g) {
+	if isBuildOrderOnlyEdge(dep, g) {
 		t.Error("expected false for target_link_libraries-backed dep")
 	}
 }
 
 func TestIsAddDependenciesEdge_FalseForMissingBacktrace(t *testing.T) {
 	dep := fileapi.TargetDependency{Id: "foo::@", Backtrace: 0}
-	if isAddDependenciesEdge(dep, fileapi.BacktraceGraph{}) {
+	if isBuildOrderOnlyEdge(dep, fileapi.BacktraceGraph{}) {
 		t.Error("expected false for zero backtrace")
 	}
 }

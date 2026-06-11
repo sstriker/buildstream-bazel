@@ -362,7 +362,7 @@ func interestingCopt(a string) bool {
 		return false
 	}
 	for _, p := range []string{
-		"-D", "-I", "-isystem", "-iquote", "-std=", // extracted elsewhere
+		"-D", "-I", "-isystem", "-iquote", "-idirafter", "-std=", // extracted elsewhere
 		"-O", "-g", "-W", "-w", // optimization / debug / warnings (toolchain + build-mode noise)
 		"-fstack-protector", "-fno-omit-frame-pointer", "-fno-canonical-system-headers",
 		"-fPIC", "-fPIE", "-fpic", "-fpie",
@@ -449,6 +449,22 @@ func factsFromArgv(argv []string) tuFacts {
 			}
 		case strings.HasPrefix(a, "-iquote"):
 			recordQuoteInclude(&f, strings.TrimPrefix(a, "-iquote"))
+		case strings.HasPrefix(a, "-idirafter"):
+			// An include DIR like -I/-isystem, not an opaque copt: cmake's
+			// side carries the convert-host absolute dir while the
+			// converted side carries the exec-root re-anchored form (the
+			// lower-side -idirafter re-anchor) — same compiler input, two
+			// path spaces. Route the dir through the include normalization
+			// so the two sides diff in one space; comparing the raw token
+			// flags every PCH-free TU of an -idirafter project (sdl: 224).
+			d := strings.TrimPrefix(a, "-idirafter")
+			if d == "" && i+1 < len(argv) {
+				i++
+				d = argv[i]
+			}
+			if d != "" {
+				f.IncludeDir[d] = true // raw; normalized at diff time
+			}
 		default:
 			if interestingCopt(a) {
 				f.Copts[a] = true
