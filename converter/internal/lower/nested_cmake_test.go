@@ -148,6 +148,17 @@ func TestNestedHasCompiledSources(t *testing.T) {
 	if !nestedHasCompiledSources(withHdrs) {
 		t.Error("package with an hdrs-bearing target reported no compiled sources")
 	}
+	// textual_hdrs (fused-source idiom) and data are file labels too — a
+	// build-dir-sourced target carrying only one of them would still dangle,
+	// so the guard covers every file-bearing attribute.
+	withTextual := &ir.Package{Targets: []ir.Target{{Name: "t", Kind: ir.KindCCLibrary, TextualHdrs: []string{"t.inc"}}}}
+	if !nestedHasCompiledSources(withTextual) {
+		t.Error("package with a textual_hdrs-only target reported no compiled sources")
+	}
+	withData := &ir.Package{Targets: []ir.Target{{Name: "d", Kind: ir.KindCCLibrary, Data: []string{"d.bin"}}}}
+	if !nestedHasCompiledSources(withData) {
+		t.Error("package with a data-only target reported no compiled sources")
+	}
 }
 
 func TestRecoverNestedCMakeCall_SinkAndCompanions(t *testing.T) {

@@ -399,8 +399,12 @@ func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSr
 }
 
 // nestedHasCompiledSources reports whether a nested package has any target
-// carrying srcs/hdrs — files that would merge into the outer package as
-// labels. A target-less nested package (only UTILITY targets, which the
+// carrying a file-label-bearing attribute — srcs / hdrs / textual_hdrs /
+// data — i.e. paths that would merge into the outer package as labels. A
+// build-dir-sourced nested target carries build-dir-resident paths in ALL
+// of them, so any non-empty one would merge a dangling label; covering them
+// all keeps the guard's invariant (no silent dangling file labels) matching
+// its name. A target-less nested package (only UTILITY targets, which the
 // converter skips — a downloader / superbuild bootstrap) has none, so it
 // merges nothing and is safe to lift as a no-op even when build-dir-sourced.
 func nestedHasCompiledSources(pkg *ir.Package) bool {
@@ -408,7 +412,8 @@ func nestedHasCompiledSources(pkg *ir.Package) bool {
 		return false
 	}
 	for i := range pkg.Targets {
-		if len(pkg.Targets[i].Srcs) > 0 || len(pkg.Targets[i].Hdrs) > 0 {
+		t := &pkg.Targets[i]
+		if len(t.Srcs) > 0 || len(t.Hdrs) > 0 || len(t.TextualHdrs) > 0 || len(t.Data) > 0 {
 			return true
 		}
 	}
