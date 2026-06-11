@@ -143,6 +143,15 @@ type codegenContext struct {
 	// the drop being silent.
 	FilteredInternalCmds map[string]string
 
+	// UnreadableConfigureOutputs collects configure_file outputs (keyed by
+	// build-relative path) the recovery couldn't read back in a LIVE convert
+	// — the configure ran but the rendered file isn't readable, so we'd
+	// silently drop an output a consumer needs. These note an uncertain skip
+	// (emitExecuteProcessRefusalTodos's configure_file sibling); the OFFLINE
+	// no-build-dir degradation (a fixture stash that doesn't include every
+	// output) is NOT recorded here, since that's a by-design trace-only skip.
+	UnreadableConfigureOutputs map[string]string
+
 	// MissingIncludeDirs collects absolute include-directory paths
 	// referenced by the codemodel that don't exist on disk. cmake
 	// permits these (LLVM's llvm-mca declares
@@ -326,20 +335,21 @@ func (cc *codegenContext) hasSynthesizedTarget(name string) bool {
 
 func newCodegenContext() *codegenContext {
 	return &codegenContext{
-		OutToGenrule:          map[string]string{},
-		CcEmbedSourceToHeader: map[string]string{},
-		StampVars:             map[string]string{},
-		bakeTodoDisposition:   map[string]todos.Disposition{},
-		SeenBuilds:            map[*ninja.Build]string{},
-		HeaderWalkCache:       map[string][]string{},
-		MissingIncludeDirs:    map[string]bool{},
-		FilteredInternalCmds:  map[string]string{},
-		SubParent:             map[string]string{},
-		NestedConfigureSink:   map[string]string{},
-		NestedArtifactDeps:    map[string]string{},
-		NestedLifted:          map[string]bool{},
-		BuildDirHdrWalked:     map[string]bool{},
-		BuildDirBakedHdrs:     map[string]string{},
+		OutToGenrule:               map[string]string{},
+		CcEmbedSourceToHeader:      map[string]string{},
+		StampVars:                  map[string]string{},
+		bakeTodoDisposition:        map[string]todos.Disposition{},
+		SeenBuilds:                 map[*ninja.Build]string{},
+		HeaderWalkCache:            map[string][]string{},
+		MissingIncludeDirs:         map[string]bool{},
+		FilteredInternalCmds:       map[string]string{},
+		UnreadableConfigureOutputs: map[string]string{},
+		SubParent:                  map[string]string{},
+		NestedConfigureSink:        map[string]string{},
+		NestedArtifactDeps:         map[string]string{},
+		NestedLifted:               map[string]bool{},
+		BuildDirHdrWalked:          map[string]bool{},
+		BuildDirBakedHdrs:          map[string]string{},
 	}
 }
 

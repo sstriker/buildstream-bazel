@@ -184,6 +184,32 @@ func TestEmitInternalDropTodos_Empty_NoOp(t *testing.T) {
 	emitInternalDropTodos(nil, map[string]string{"x": "install"}) // no panic
 }
 
+func TestEmitUnreadableConfigureOutputTodos(t *testing.T) {
+	c := todos.New()
+	emitUnreadableConfigureOutputTodos(c, map[string]string{
+		"gen/config.h":  "configure_file",
+		"gen/version.h": "configure_file",
+	})
+	rep := c.Report(todos.DefaultPreamble(), "")
+	if len(rep.Todos) != 1 {
+		t.Fatalf("expected 1 folded todo, got %d", len(rep.Todos))
+	}
+	td := rep.Todos[0]
+	if td.Kind != "configure-file-output-unreadable" || td.Disposition != todos.Actionable {
+		t.Fatalf("todo shape: kind=%q disposition=%q", td.Kind, td.Disposition)
+	}
+	if len(td.Anchors) != 2 {
+		t.Errorf("expected 2 anchors (one per output), got %d", len(td.Anchors))
+	}
+	// Empty / nil are no-ops (no panic).
+	c2 := todos.New()
+	emitUnreadableConfigureOutputTodos(c2, nil)
+	if c2.Len() != 0 {
+		t.Errorf("empty set should add nothing; got %d", c2.Len())
+	}
+	emitUnreadableConfigureOutputTodos(nil, map[string]string{"x": "configure_file"})
+}
+
 // TestEmitInstallScriptTodos_ScriptAndCode checks install(SCRIPT) /
 // install(CODE) become per-(site,scriptFile) todos with the backtrace
 // site resolved onto the anchor.

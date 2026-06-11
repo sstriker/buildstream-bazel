@@ -213,12 +213,19 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 
 		body, err := os.ReadFile(filepath.Join(hostBuildDir, rel))
 		if err != nil {
-			// Configured output not on disk — for offline
-			// fixtures the stash may not include every
-			// output, and for production the live build dir
-			// always has them. Skip with no error so
-			// missing fixtures degrade gracefully to the
-			// pre-trace shape.
+			// Configured output not on disk. OFFLINE (no live build dir):
+			// the fixture stash may not include every output → silent
+			// degradation to the pre-trace shape. But in a LIVE convert
+			// (hostBuildDir set) the configure ran and the output should
+			// exist; a read failure is an UNCERTAIN drop of a file a
+			// consumer needs, so NOTE it (an unreadable-configure-output
+			// todo) rather than silently doing nothing. Reason is a fixed
+			// string — never err.Error(), which carries the per-run
+			// /tmp/convert-element-build-XXXX path and would break the
+			// byte-identical-report contract.
+			if hostBuildDir != "" && cc.UnreadableConfigureOutputs != nil {
+				cc.UnreadableConfigureOutputs[rel] = "configure_file"
+			}
 			continue
 		}
 		// Scrub convert-time absolute build/source path prefixes cmake

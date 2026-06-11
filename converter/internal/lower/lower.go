@@ -2248,6 +2248,7 @@ func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts
 	// stderr breadcrumb above so the JSON is produced even when
 	// Warnings is nil.
 	emitInternalDropTodos(opts.Todos, cc.FilteredInternalCmds)
+	emitUnreadableConfigureOutputTodos(opts.Todos, cc.UnreadableConfigureOutputs)
 	warnUnconvertedTests(opts, cc)
 	// Nested cmake builds detected but not lifted (offline run, warm
 	// pass disabled, or a failed nested lowering): loud degradation —
