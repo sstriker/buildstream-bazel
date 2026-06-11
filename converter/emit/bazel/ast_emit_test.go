@@ -226,7 +226,10 @@ func TestStrListExpr_MatchesStrList(t *testing.T) {
 
 func TestASTEmit_WriteFile(t *testing.T) {
 	cases := []ir.Target{
-		{Kind: ir.KindWriteFile, Name: "w", WriteFileOut: "out.h", WriteFileContent: []string{"#define A 1", "#define B 2"}},
+		// NON-alphabetical content: write_file content is a semantic ordered
+		// body (not a set), so an accidental sort must change bytes and fail
+		// the byte-identity guard.
+		{Kind: ir.KindWriteFile, Name: "w", WriteFileOut: "out.h", WriteFileContent: []string{"#define B 2", "#define A 1"}},
 		{Kind: ir.KindWriteFile, Name: "w", WriteFileOut: "o.h", WriteFileContent: []string{"line"}, WriteFileNewline: "auto", Tags: []string{"manual"}},
 		// per-config select body
 		{Kind: ir.KindWriteFile, Name: "w", WriteFileOut: "o.h", WriteFileContent: []string{"#define D 0"},
