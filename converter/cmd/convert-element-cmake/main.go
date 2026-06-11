@@ -797,6 +797,28 @@ func writeRejectionsAndVerify(a cli.Args, rejections *rejection.Collector, hostB
 // when the flag is set — even an empty one — so the operator's load() doesn't
 // break when there was nothing to hoist (mirrors --out-sanitizer-features).
 func writeCommonCompileFlagsFeature(a cli.Args, pkg *ir.Package) error {
+	if a.OutCommonCompileFlagsFeature != "" && a.EmitCommonCompileFlagsBzl {
+		return fmt.Errorf("--out-common-compile-flags-feature and --emit-common-compile-flags-bzl are mutually exclusive (both hoist the shared copt prefix)")
+	}
+	// Self-contained `defs.bzl` mode: strip + rewrite copts as
+	// COMMON_COPTS + [delta], emitting common_compile_flags.bzl next to the
+	// root BUILD with a load label derived from --bazel-package-path so it
+	// matches where the file lands.
+	if a.EmitCommonCompileFlagsBzl {
+		const bzlName = "common_compile_flags.bzl"
+		pkgPath := strings.Trim(a.BazelPackagePath, "/")
+		label := "//:" + bzlName
+		if pkgPath != "" {
+			label = "//" + pkgPath + ":" + bzlName
+		}
+		copts := commonflags.HoistCommonCoptsToConstant(pkg, label)
+		body := commonflags.EmitConstant(copts)
+		dst := filepath.Join(filepath.Dir(a.OutBuild), bzlName)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(dst, body, 0o644)
+	}
 	if a.OutCommonCompileFlagsFeature == "" {
 		return nil
 	}
