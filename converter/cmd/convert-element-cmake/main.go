@@ -29,6 +29,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/coverage"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ctest"
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmakecfg"
+	"github.com/sstriker/buildstream-bazel/converter/internal/emit/commonflags"
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/sanitizerfeatures"
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
@@ -789,6 +790,24 @@ func writeRejectionsAndVerify(a cli.Args, rejections *rejection.Collector, hostB
 	return nil
 }
 
+// writeCommonCompileFlagsFeature hoists the longest copt prefix shared by
+// every converted cc target into a cc_toolchain feature .bzl and strips it
+// from the per-target copts (commonflags.HoistCommonCopts mutates pkg). No-op
+// unless --out-common-compile-flags-feature is set. Always writes the .bzl
+// when the flag is set — even an empty one — so the operator's load() doesn't
+// break when there was nothing to hoist (mirrors --out-sanitizer-features).
+func writeCommonCompileFlagsFeature(a cli.Args, pkg *ir.Package) error {
+	if a.OutCommonCompileFlagsFeature == "" {
+		return nil
+	}
+	copts := commonflags.HoistCommonCopts(pkg, commonflags.FeatureName)
+	body := commonflags.Emit(commonflags.FeatureName, copts)
+	if err := os.MkdirAll(filepath.Dir(a.OutCommonCompileFlagsFeature), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(a.OutCommonCompileFlagsFeature, body, 0o644)
+}
+
 // emitBuildOutputs renders the BUILD output (per-directory split tree or
 // the single BUILD.bazel) and returns every emitted blob for the
 // post-emission idiom audit.
@@ -1333,6 +1352,11 @@ func run(a cli.Args) error {
 		return err
 	}
 	if err := writeRejectionsAndVerify(a, in.rejections, hostBuildDir, pkg); err != nil {
+		return err
+	}
+	// Hoist the common copt prefix into a cc_toolchain feature (opt-in). Runs
+	// BEFORE emit so the strip + per-target features land in the BUILD output.
+	if err := writeCommonCompileFlagsFeature(a, pkg); err != nil {
 		return err
 	}
 	auditBlobs, err := emitBuildOutputs(a, pkg)

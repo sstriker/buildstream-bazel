@@ -461,6 +461,19 @@ type Args struct {
 	// that don't want the sidecar.
 	OutSanitizerFeatures string
 
+	// OutCommonCompileFlagsFeature, when non-empty, writes a .bzl
+	// file at this path carrying a cc_toolchain feature
+	// (cmake_common_compile_flags) with the longest copt PREFIX every
+	// converted cc target shares — typically cmake's project-wide
+	// CMAKE_<LANG>_FLAGS. Setting it ALSO strips that prefix from each
+	// target's copts and tags those targets
+	// features = ["cmake_common_compile_flags"], so the flags live in
+	// one place instead of repeating per target. Operators thread
+	// COMMON_COMPILE_FLAGS_FEATURES into their cc_toolchain config
+	// (same convention as OutSanitizerFeatures). Empty (the default)
+	// keeps the byte-stable inline per-target emission.
+	OutCommonCompileFlagsFeature string
+
 	// OutConfigSettings, when non-empty, writes a //config package
 	// BUILD file at this path: a string_flag `build_type` plus one
 	// config_setting per (non-sanitizer) cmake configuration in
@@ -749,6 +762,7 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.BoolVar(&a.EmitSourceComments, "emit-source-comments", true, "carry author comments from CMakeLists into the emitted BUILD: the leading `#` comment block above each target's declaration, plus the top-of-file header block. Default ON; pass --emit-source-comments=false to suppress (skips reading raw source — useful for byte-clean output or reply-dir-only runs where source isn't staged).")
 	fs.BoolVar(&a.EmitStandaloneCustomCommands, "emit-standalone-custom-commands", true, "Phase 4 of the generator-parity uplift: walk every CUSTOM_COMMAND edge in build.ninja and emit a genrule for each whose outputs aren't already covered by an existing recoverGenrule emission. On by default; covers add_custom_target / add_custom_command edges nothing consumes. Pass --emit-standalone-custom-commands=false to opt out.")
 	fs.StringVar(&a.OutSanitizerFeatures, "out-sanitizer-features", "", "write cc_toolchain sanitizer feature definitions (.bzl) extracted from cmake's CMAKE_<LANG>_FLAGS_<CONFIG> cache for sanitizer-shaped configs in --build-types. Phase 5 of the generator-parity uplift.")
+	fs.StringVar(&a.OutCommonCompileFlagsFeature, "out-common-compile-flags-feature", "", "write a cc_toolchain feature (.bzl) carrying the longest copt prefix shared by every converted cc target (cmake's project-wide CMAKE_<LANG>_FLAGS), strip that prefix from each target's copts, and tag those targets features=[\"cmake_common_compile_flags\"] so the flags aren't duplicated per target. Thread COMMON_COMPILE_FLAGS_FEATURES into your cc_toolchain config (same as --out-sanitizer-features). Off by default (byte-stable inline emission).")
 	fs.StringVar(&a.OutConfigSettings, "out-config-settings", "", "write a //config package BUILD (string_flag build_type + one config_setting per non-sanitizer config in --build-types) backing the multi-config fold's //config:<name> select() arms, making the converted output self-contained. Phase 5 of the generator-parity uplift.")
 	fs.StringVar(&a.AuditBazelIdiomReport, "audit-bazel-idiom-report", "", "write the structured bazelidiom audit findings (JSON) to this path. The audit pass itself runs unconditionally on every convert and surfaces findings on stderr.")
 	fs.StringVar(&a.AuditCoverageReport, "audit-coverage-report", "", "write the structured lens-3 dependency-coverage findings (JSON) to this path. The check runs unconditionally on every convert (findings to stderr); it flags trace target_link_libraries arms naming an in-codebase target that didn't land in any dep bucket.")
