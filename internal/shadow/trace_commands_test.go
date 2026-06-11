@@ -425,6 +425,40 @@ func TestExtractExecuteProcess_DecodeIntegration(t *testing.T) {
 	}
 }
 
+// TestDecode_OutOfTreeExecuteProcess confirms Decode splits
+// execute_process events by source-tree membership: in-tree calls land in
+// d.ExecuteProcesses (the lift path), out-of-tree calls land in
+// d.OutOfTreeExecuteProcesses (the surfacing path) — never both, never
+// silently dropped at extraction.
+func TestDecode_OutOfTreeExecuteProcess(t *testing.T) {
+	trace := strings.Join([]string{
+		// In-tree: the project's own call.
+		`{"args":["COMMAND","git","describe","OUTPUT_VARIABLE","V"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":7}`,
+		// Out-of-tree: a build-dir subproject's CMakeLists.
+		`{"args":["COMMAND","python3","gen.py","input"],"cmd":"execute_process","file":"/build/_deps/sub-src/CMakeLists.txt","line":3}`,
+		// Out-of-tree: a cmake bundled-module probe.
+		`{"args":["COMMAND","/usr/bin/cc","-dumpversion"],"cmd":"execute_process","file":"/usr/share/cmake-4.0/Modules/CMakeDetermineCompilerId.cmake","line":9}`,
+	}, "\n") + "\n"
+	d := Decode([]byte(trace), "/src", nil)
+	if len(d.ExecuteProcesses) != 1 || d.ExecuteProcesses[0].File != "/src/CMakeLists.txt" {
+		t.Fatalf("ExecuteProcesses: want 1 in-tree call, got %+v", d.ExecuteProcesses)
+	}
+	if len(d.OutOfTreeExecuteProcesses) != 2 {
+		t.Fatalf("OutOfTreeExecuteProcesses: want 2, got %d (%+v)", len(d.OutOfTreeExecuteProcesses), d.OutOfTreeExecuteProcesses)
+	}
+	files := []string{d.OutOfTreeExecuteProcesses[0].File, d.OutOfTreeExecuteProcesses[1].File}
+	wantFiles := []string{"/build/_deps/sub-src/CMakeLists.txt", "/usr/share/cmake-4.0/Modules/CMakeDetermineCompilerId.cmake"}
+	for i, w := range wantFiles {
+		if files[i] != w {
+			t.Errorf("OutOfTreeExecuteProcesses[%d].File = %q, want %q", i, files[i], w)
+		}
+	}
+	// argv parses identically through the shared parser.
+	if got := strings.Join(d.OutOfTreeExecuteProcesses[0].Commands[0], " "); got != "python3 gen.py input" {
+		t.Errorf("out-of-tree argv: %q want %q", got, "python3 gen.py input")
+	}
+}
+
 // TestExtract_RealCmakeTrace walks a hand-curated subset of
 // real cmake-3.28 trace lines (captured from the trace-test
 // fixture) to make sure the parser handles cmake's actual
