@@ -63,6 +63,20 @@ func runNestedCMakePass(ctx context.Context, a cli.Args, hostBuildDir string, si
 	var out []lower.NestedBuildInput
 	for _, rel := range rels {
 		nb := filepath.Join(hostBuildDir, filepath.FromSlash(rel))
+		// Traced re-configure (third nested run, warm): the outer pass
+		// above re-ran the nested cmake but couldn't instrument it —
+		// the argv belongs to the project's execute_process, and cmake
+		// has no env knob to force tracing on a child. Re-running the
+		// nested dir DIRECTLY with the trace flags (no -G/-D: the warm
+		// cache pins the project's own decisions) captures the trace
+		// that switches on the full recovery ladder inside the nested
+		// lowering — configure_file lifts, execute_process
+		// classification, stamp vars — instead of the trace-less
+		// fallback (generic on-disk bakes). It also refreshes the File
+		// API reply, so the reply loaded below describes the SAME run
+		// as the trace. Failure degrades to the trace-less lowering,
+		// not to losing the lift.
+		traceRaw := runNestedTraceReconfigure(ctx, a, rel, nb)
 		replyDir := filepath.Join(nb, ".cmake", "api", "v1", "reply")
 		r, err := fileapi.Load(replyDir)
 		if err != nil {
@@ -80,7 +94,27 @@ func runNestedCMakePass(ctx context.Context, a cli.Args, hostBuildDir string, si
 			Reply:        r,
 			Graph:        g,
 			HostBuildDir: nb,
+			TraceRaw:     traceRaw,
 		})
 	}
 	return out
+}
+
+// runNestedTraceReconfigure runs the instrumented re-configure of one
+// nested build dir and reads the trace back. Soft on every failure
+// (nil trace → the nested lowering runs trace-less, exactly as before
+// this pass existed) — a nested project that re-configures
+// non-idempotently or rejects the re-run must not cost the lift.
+func runNestedTraceReconfigure(ctx context.Context, a cli.Args, rel, nb string) []byte {
+	tracePath := filepath.Join(nb, "trace.jsonl")
+	if err := cmakerun.TraceReconfigure(ctx, nb, tracePath, a.PrefixDir, os.Stderr, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: traced re-configure of nested build %s failed (%v); lowering it without a trace.\n", rel, err)
+		return nil
+	}
+	raw, err := os.ReadFile(tracePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading nested build %s trace failed (%v); lowering it without a trace.\n", rel, err)
+		return nil
+	}
+	return raw
 }

@@ -1896,6 +1896,20 @@ func executeProcessAnchorSource(p string, anc execAnchors) (string, bool) {
 		return "", false
 	}
 	if rel, ok := relativeIfInside(anc.recordedSrcDir, p); ok {
+		// Umbrella re-anchor, mirroring lc.umbrellaReanchor for the
+		// exec recovery's anchors: when the label root sits ABOVE the
+		// cmake source dir (workspace promotion, --element-source-root
+		// overlays, the nested-cmake recursive lowering), a bare
+		// cmakeSrc-relative rel mis-anchors — the emitted genrule
+		// srcs/$(location) must carry the labelRoot-relative form
+		// ("sub/sub_extra.c.in", not "sub_extra.c.in"). Offline
+		// replays where hostSrcDir is a different machine's path
+		// don't relativize and keep the recorded-relative form.
+		if anc.hostSrcDir != "" && anc.hostSrcDir != anc.recordedSrcDir {
+			if prefix, inside := relativeIfInside(anc.hostSrcDir, anc.recordedSrcDir); inside && prefix != "" && prefix != "." {
+				return filepath.ToSlash(filepath.Join(prefix, rel)), true
+			}
+		}
 		return rel, true
 	}
 	if anc.hostSrcDir != "" && anc.hostSrcDir != anc.recordedSrcDir {

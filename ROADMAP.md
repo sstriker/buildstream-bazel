@@ -630,6 +630,38 @@ trees, optional-feature deps, codegen instances). Each member's
 
 ## Later (research / open questions)
 
+- **Nested-cmake recursion (superbuild chains).** The traced re-configure
+  of a nested build dir gives the nested lowering a full trace, so a
+  nested project's OWN nested-cmake calls are now detected — but they
+  land in the nested lowering's local sink and only surface as the loud
+  not-lifted warning. Lifting them needs a driver-side worklist (stage
+  queries into the grandchild dir, traced re-configure of the child,
+  recurse) with a depth cap and a build-dir cycle guard. Same-named
+  producer rules across SIBLING nested builds re-home with a
+  buildRel-prefixed rename already; cc_library/cc_binary name collisions
+  across nested builds still resolve by keep-the-first with a warning.
+
+- **configure_file LIFT tier inside nested lowerings.** With the nested
+  trace now in hand, a nested `configure_file` is *recoverable* as the
+  values-dict LIFT tier (`--lift-configure-file`, `KindCMakeConfigureFile`)
+  rather than the convert-time byte BAKE tier (`write_file`) it falls back
+  to today — but `lowerOneNestedBuild`'s `nestedOpts` deliberately does NOT
+  thread `LiftConfigureFile` yet, so every nested `configure_file` still
+  bakes (and the gate asserts the bake-tier facet). Threading it in needs a
+  **two-site re-home fix**, flagged by the guard comment in `producerOuts`
+  (nested_cmake.go): (1) `producerOuts` must learn `KindCMakeConfigureFile`
+  (`return []string{t.CMakeConfigureFile.Out}`, guarded non-nil) so the
+  lift-tier out enters the re-home map, AND (2) `applyNestedProducerReHome`
+  must gain a `CMakeConfigureFile.Out` re-anchor + rename branch alongside
+  the `WriteFile`/`Genrule` one — without (2) the out is mapped but never
+  applied, so it materializes at the outer package root with a rule name
+  that can collide across sibling nested builds, silently. Pin with a
+  nested-`configure_file`-LIFT fixture (the moment the lift tier fires, the
+  existing gate's bake-tier assertion flips, so the fixture must assert the
+  lift facet). The payoff is a dynamic `configure_file` values dict in the
+  nested target instead of a frozen convert-time body — the same fidelity
+  win the top-level lift tier already gives.
+
 - **execute_process file-producing lift — keyword expansion (fixture-driven).**
   `liftFileProducing` conservatively refuses WORKING_DIRECTORY / ENVIRONMENT /
   TIMEOUT / INPUT_FILE / ERROR_FILE (execute_process.go ~1620-1630); every

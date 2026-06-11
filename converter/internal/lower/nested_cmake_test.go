@@ -189,3 +189,52 @@ func TestMergeNestedPackage_IncludeRehoming(t *testing.T) {
 		}
 	}
 }
+
+// TestExecuteProcessAnchorSource_UmbrellaReanchor: when the label root
+// (hostSrcDir) sits ABOVE the cmake source dir — workspace promotion,
+// --element-source-root overlays, the nested-cmake recursive lowering —
+// a source operand under cmakeSrc must anchor label-root-relative
+// ("sub/x.in"), not bare ("x.in"): the emitted genrule's
+// srcs/$(location) resolve at the label root. Same-root (the common
+// outer case) and disjoint-root (offline replay) shapes keep the
+// recorded-relative form.
+func TestExecuteProcessAnchorSource_UmbrellaReanchor(t *testing.T) {
+	cases := []struct {
+		name string
+		anc  execAnchors
+		p    string
+		want string
+		ok   bool
+	}{
+		{
+			name: "nested: host root above recorded root",
+			anc:  execAnchors{hostSrcDir: "/repo/outer", recordedSrcDir: "/repo/outer/sub"},
+			p:    "/repo/outer/sub/x.in",
+			want: "sub/x.in", ok: true,
+		},
+		{
+			name: "same roots keep bare rel",
+			anc:  execAnchors{hostSrcDir: "/repo/proj", recordedSrcDir: "/repo/proj"},
+			p:    "/repo/proj/x.in",
+			want: "x.in", ok: true,
+		},
+		{
+			name: "disjoint roots (offline replay) keep recorded rel",
+			anc:  execAnchors{hostSrcDir: "/local/checkout", recordedSrcDir: "/recorder/proj"},
+			p:    "/recorder/proj/x.in",
+			want: "x.in", ok: true,
+		},
+		{
+			name: "outside both roots declines",
+			anc:  execAnchors{hostSrcDir: "/repo/outer", recordedSrcDir: "/repo/outer/sub"},
+			p:    "/elsewhere/x.in",
+			want: "", ok: false,
+		},
+	}
+	for _, tc := range cases {
+		got, ok := executeProcessAnchorSource(tc.p, tc.anc)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("%s: anchor(%q) = (%q, %v); want (%q, %v)", tc.name, tc.p, got, ok, tc.want, tc.ok)
+		}
+	}
+}
