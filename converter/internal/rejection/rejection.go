@@ -87,6 +87,20 @@ func (c *Collector) AddError(err *failure.Error) bool {
 	return true
 }
 
+// Reset clears the recorded rejections. ToIR can run more than once
+// against the same collector (two-pass genex / stamp / nested-cmake
+// recovery), re-emitting the same refusals each pass; callers Reset
+// before the final pass so the report reflects only that pass's result
+// rather than accumulating duplicates. Mirrors todos.Collector.Reset.
+func (c *Collector) Reset() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.items = nil
+	c.mu.Unlock()
+}
+
 // Items returns a copy of the recorded rejections in insertion order.
 func (c *Collector) Items() []Rejection {
 	if c == nil {

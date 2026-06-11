@@ -677,15 +677,21 @@ trees, optional-feature deps, codegen instances). Each member's
   side-effect WRITERS whose outputs are neither consumed (so no File-API
   demand) nor dir/stem-correlatable still refuse loudly — a
   `--cmake-script-trace`-style strace/fsmonitor capture for arbitrary
-  tools is the research item. NEW variant (marked by the **cryptoauthlib**
-  corpus member, `make fetch-cryptoauthlib`): a **download-only** nested
-  project — `project(mbedtls-download NONE)` whose `--build` step is an
-  `ExternalProject_Add` that materializes sources into the *outer* build dir,
-  which the outer then `file(GLOB)`s and compiles directly (no nested
-  codemodel/targets to merge). The warm recursive-merge path has nothing to
-  merge, so it currently surfaces as `1 unsupported-execute-process` (the
-  nested configure/build) + `5 unsupported-source-path` (the build-dir
-  GLOB'd sources). Lift shape: treat the materialized build-dir sources as a
+  tools is the research item. The `WORKING_DIRECTORY` + positional-source
+  form of the nested-cmake recognizer (`cmake -G … .` / `cmake --build .` run
+  IN the build dir, the dominant "download/build at configure" spelling) now
+  LIFTS — `nested_cmake.go` resolves relative/positional/in-source dirs
+  against `WORKING_DIRECTORY` instead of refusing; gate
+  `scripts/meta-cmake-nested-cmake-workdir.sh`. NEW residue (marked by the
+  **cryptoauthlib** corpus member, `make fetch-cryptoauthlib`): a
+  **download-only** nested project — `project(mbedtls-download NONE)` whose
+  `--build` step is an `ExternalProject_Add` that materializes sources into
+  the *outer* build dir, which the outer then `file(GLOB)`s and compiles
+  directly (no nested codemodel/targets to merge). The configure/build are
+  now recognized (the warm pass runs; with no nested targets it degrades to a
+  `nested-cmake-not-lifted` todo), but the materialized sources still surface
+  as `unsupported-source-path` (cryptoauthlib: 5, → 4 `empty-cc-library`).
+  Lift shape: treat the materialized build-dir sources as a
   genrule/repository-rule-vendored input set anchored at the outer root,
   rather than refusing them as out-of-tree. (The fetch script already pins +
   pre-fetches the tarball and repoints the ExternalProject `URL` at a local

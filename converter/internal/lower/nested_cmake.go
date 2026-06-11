@@ -45,11 +45,17 @@ type nestedCMakeShape struct {
 	buildDir string
 }
 
-// parseNestedCMakeArgv recognizes the three nested-cmake argv shapes:
+// parseNestedCMakeArgv recognizes the nested-cmake argv shapes:
 // `cmake -S <src> -B <build> …` (configure; -S/-B in either order,
-// separated or joined form), `cmake --build <build> …`, and
-// `cmake --install <build> …`. Returns ok=false for every other cmake
-// invocation (-E is handled earlier; -P stays on the refuse path).
+// separated or joined form), the positional-source configure
+// `cmake [-G <gen>] <src>` (the build dir comes from WORKING_DIRECTORY —
+// the dominant "download/build at configure" idiom, where the call runs
+// IN the build dir; resolved by the caller via resolveNestedCMakeDirs),
+// `cmake --build <build> …`, and `cmake --install <build> …`. Returns
+// ok=false for every other cmake invocation (-E is handled earlier; -P
+// stays on the refuse path). The returned dirs are raw (as the argv spells
+// them — possibly relative, ".", or, for the positional form, an empty
+// buildDir); resolveNestedCMakeDirs anchors them against WORKING_DIRECTORY.
 func parseNestedCMakeArgv(driver string, argv []string) (nestedCMakeShape, bool) {
 	if driver != "cmake" || len(argv) < 2 {
 		return nestedCMakeShape{}, false
@@ -64,6 +70,14 @@ func parseNestedCMakeArgv(driver string, argv []string) (nestedCMakeShape, bool)
 			kind = "install"
 		}
 		return nestedCMakeShape{kind: kind, buildDir: argv[2]}, true
+	}
+	// -E (command mode) and -P (script mode) are not configures — they're
+	// handled on other paths; never mistake their operands for a positional
+	// source dir in the fallback below.
+	for _, a := range argv[1:] {
+		if a == "-E" || a == "-P" {
+			return nestedCMakeShape{}, false
+		}
 	}
 	var src, build string
 	for i := 1; i < len(argv); i++ {
@@ -81,10 +95,82 @@ func parseNestedCMakeArgv(driver string, argv []string) (nestedCMakeShape, bool)
 			build = a[2:]
 		}
 	}
-	if src == "" || build == "" {
-		return nestedCMakeShape{}, false
+	if src != "" && build != "" {
+		return nestedCMakeShape{kind: "configure", srcDir: src, buildDir: build}, true
 	}
-	return nestedCMakeShape{kind: "configure", srcDir: src, buildDir: build}, true
+	// No explicit -S/-B pair. Recognize the positional-source configure
+	// (`cmake [-G <gen>] <src>`), leaving the build dir empty for the caller
+	// to fill from WORKING_DIRECTORY. An explicit-but-incomplete -S/-B (one
+	// without the other) stays unrecognized, as before.
+	if src == "" && build == "" {
+		if pos := nestedPositionalSourceArg(argv); pos != "" {
+			return nestedCMakeShape{kind: "configure", srcDir: pos}, true
+		}
+	}
+	return nestedCMakeShape{}, false
+}
+
+// nestedPositionalSourceArg returns the trailing positional source-dir
+// operand of a cmake configure argv — the last element that isn't a flag
+// and isn't the separate value of a preceding value-taking flag (-G/-D/…),
+// so `cmake -G Ninja .` reads "." (not "Ninja") and `cmake -G Ninja` reads
+// nothing. Empty when there's no positional operand.
+func nestedPositionalSourceArg(argv []string) string {
+	for i := len(argv) - 1; i >= 1; i-- {
+		a := argv[i]
+		if a == "" || strings.HasPrefix(a, "-") {
+			continue
+		}
+		if i-1 >= 1 && isCMakeSeparateValueFlag(argv[i-1]) {
+			continue
+		}
+		return a
+	}
+	return ""
+}
+
+// isCMakeSeparateValueFlag reports whether a cmake flag consumes the next
+// argv element as its value (so that element is not a positional operand).
+func isCMakeSeparateValueFlag(a string) bool {
+	switch a {
+	case "-G", "-S", "-B", "-D", "-U", "-C", "-T", "-A":
+		return true
+	}
+	return false
+}
+
+// resolveNestedCMakeDirs fills and resolves a parsed shape's dirs against
+// the call's WORKING_DIRECTORY. cmake resolves a relative -B/-S/positional
+// dir — and an in-source build with no -B — against the process cwd, which
+// a WORKING_DIRECTORY moves; so when it's set, an empty/"."/relative dir
+// anchors under it (an empty build dir is an in-source build AT the working
+// directory, the download-idiom shape). With no WORKING_DIRECTORY the dirs
+// are left as parsed: an absolute path anchors via executeProcessAnchorOutput,
+// a given relative one via relativeArgvBuildRel (the outer-build-root cwd),
+// and an empty build dir (the positional-source form) is unresolvable, so
+// ok=false (the caller declines rather than reconfiguring the outer cwd).
+func resolveNestedCMakeDirs(shape nestedCMakeShape, workingDir string) (nestedCMakeShape, bool) {
+	if workingDir == "" {
+		if shape.buildDir == "" {
+			return shape, false
+		}
+		return shape, true
+	}
+	resolve := func(d string) string {
+		if d == "" || d == "." {
+			return filepath.Clean(workingDir)
+		}
+		if filepath.IsAbs(d) {
+			return d
+		}
+		return filepath.Join(workingDir, d)
+	}
+	out := shape
+	out.buildDir = resolve(shape.buildDir)
+	if shape.kind == "configure" {
+		out.srcDir = resolve(shape.srcDir)
+	}
+	return out, true
 }
 
 // classifyNestedCMake recognizes the nested-cmake shapes for Classify.
@@ -98,6 +184,14 @@ func classifyNestedCMake(driver string, call shadow.ExecuteProcessCall) (Classif
 		return ClassifyResult{}, false
 	}
 	shape, ok := parseNestedCMakeArgv(driver, call.Commands[0])
+	if !ok {
+		return ClassifyResult{}, false
+	}
+	// Anchor relative/positional/in-source dirs against WORKING_DIRECTORY;
+	// an unresolvable shape (positional source with no WORKING_DIRECTORY)
+	// isn't a liftable nested build — decline so it falls through to the
+	// generic execute_process handling rather than reconfiguring the cwd.
+	shape, ok = resolveNestedCMakeDirs(shape, call.WorkingDirectory)
 	if !ok {
 		return ClassifyResult{}, false
 	}
@@ -138,17 +232,19 @@ type NestedBuildInput struct {
 // staged or re-run).
 func recoverNestedCMakeCall(call shadow.ExecuteProcessCall, anc execAnchors, cc *codegenContext) *executeProcessRefusal {
 	shape, _ := parseNestedCMakeArgv(executeProcessDriverBasename(call.Commands[0][0]), call.Commands[0])
-	// A RELATIVE -B resolves against the cmake process cwd — the outer
-	// build root under the runner's cmd.Dir contract — UNLESS the call
-	// sets WORKING_DIRECTORY, which moves the resolution base somewhere
-	// the anchor below would silently misname; refuse that combination
-	// explicitly rather than warning about a phantom directory.
-	if !filepath.IsAbs(shape.buildDir) && call.WorkingDirectory != "" {
+	// Anchor relative/positional/in-source dirs against WORKING_DIRECTORY
+	// (a relative -B/`--build .`/positional source resolves against the
+	// cmake process cwd, which WORKING_DIRECTORY moves). With no
+	// WORKING_DIRECTORY a given relative dir still anchors against the outer
+	// build root below; only an unresolvable positional-source configure
+	// (no -B and no WORKING_DIRECTORY) declines here.
+	shape, ok := resolveNestedCMakeDirs(shape, call.WorkingDirectory)
+	if !ok {
 		return &executeProcessRefusal{
 			File:   call.File,
 			Line:   call.Line,
 			Bucket: BucketNestedCMake,
-			Reason: "nested cmake " + shape.kind + " uses a relative build dir " + shape.buildDir + " with WORKING_DIRECTORY " + call.WorkingDirectory + "; the lift anchors relative dirs against the outer build root and can't honor the moved cwd",
+			Reason: "nested cmake " + shape.kind + " has no resolvable build dir (no -B and no WORKING_DIRECTORY to anchor against)",
 			Argv:   formatExecuteProcessArgv(call),
 		}
 	}
