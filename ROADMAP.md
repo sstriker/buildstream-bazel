@@ -439,12 +439,17 @@ transition cleanly.
     `common_compile_flags.bzl` defining `COMMON_COPTS`, `load()`ed by every BUILD
     as `copts = COMMON_COPTS + [delta]`. No toolchain wiring; works with the
     default toolchain (validated: `bazel build` green on the emitted output).
-  Off by default (byte-stable inline emission). **Remaining:** (1) extend the
-  hoist to the common `defines` prefix (today copts only); (2) a render gate in
-  the `meta-cmake-sanitizer-features` mold (assert strip + tag/load + `.bzl`
-  shape on a fixture) to put it under the gates-in-CI net, plus survey-lens
-  validation under a wired toolchain for the feature mode. Sibling to the
-  feature-flag lift above.
+  Off by default (byte-stable inline emission). The self-contained mode is
+  **lens-validated** on the corpus (`SURVEY_HOIST_COMMON_COPTS=1`): brotli, fmt,
+  and libxml2 `bazel build //...` green with the hoist on — libxml2 dedups a
+  12-flag `-Wall -Wextra -Wshadow …` prefix that repeated per target, fmt the
+  `-fvisibility*` pair. **Remaining:** (1) extend the hoist to the common
+  `defines` prefix (today copts only); (2) a render gate in the
+  `meta-cmake-sanitizer-features` mold (assert strip + tag/load + `.bzl` shape on
+  a fixture) to put it under the gates-in-CI net; (3) the FEATURE mode's lens
+  validation needs the survey to wire the emitted feature into a registered
+  toolchain (the self-contained mode needs none). Sibling to the feature-flag
+  lift above.
 
 - **Agent-actionable prompts — AI post-pass (consumer) remains.** The
   deterministic **producer** (`conversion-todos.json`, on by default, wired
