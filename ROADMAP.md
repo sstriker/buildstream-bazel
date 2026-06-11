@@ -15,12 +15,16 @@ transition cleanly.
   **blocking** — every function is held to the thresholds, so new complexity
   regressions fail the build. ONE function remains genuinely over threshold
   and carries the documented `//nolint` directive (keyed to this item):
-  `lower.lowerTarget` (now cognitive ~353, down from 754 across three
-  slices — link attribution, the per-source walk, and the
-  CTest/multi-language tail are extracted; the walk
-  (`lowerTargetSources`) carries the burndown's second directive and
-  shrinks next; the remaining inline mass is the include/compile-group
-  region and the header-staging family). (`emit/bazel`'s
+  `lower.lowerTarget` (now cognitive ~213, down from 754 across four
+  slices — link attribution, the per-source walk, the
+  CTest/multi-language tail, and the compile-group/include region are
+  extracted, the last decomposed to under-threshold helpers
+  (lowerCompileGroups → partitionTargetIncludeDirs /
+  recordBuildDirInclude / lowerInterfaceFileSetIncludes) with the
+  umbrella/reanchor derivation unified onto targetLowerCtx per the #562
+  review note; the walk (`lowerTargetSources`) carries the burndown's
+  second directive; the remaining inline mass is the consumer-attribution
+  family, the header-staging/discoverHeaders family, and the dep loop). (`emit/bazel`'s
   `planSplit` / `rewriteTarget`, `write-a`'s `main`,
   `convert-element-cmake`'s `run`, and `lower.ToIR` are done — extracted
   and de-nolinted.) **What's left:** break `lowerTarget` down via

@@ -3109,6 +3109,28 @@ func lowerLinkAttribution(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc 
 	}
 }
 
+// umbrellaReanchor derives the workspace-promotion umbrella prefix
+// (cmakeSrc-relative-to-labelRoot when the workspace root promoted
+// labelRoot above cmakeSrc; LLVM: labelRoot=llvm-project/,
+// cmakeSrc=llvm-project/llvm/ → "llvm") and the matching re-anchor
+// closure. The single home for the promotion logic — lowerTarget's
+// header and the source walk both consume it, so the two can't drift.
+func (lc targetLowerCtx) umbrellaReanchor() (string, func(string) string) {
+	umbrellaPrefix := ""
+	if lc.hostSrc != "" && lc.hostSrc != lc.cmakeSrc {
+		if rel, inside := relativeIfInside(lc.hostSrc, lc.cmakeSrc); inside && rel != "" && rel != "." {
+			umbrellaPrefix = rel
+		}
+	}
+	reanchor := func(rel string) string {
+		if umbrellaPrefix != "" && rel != "" {
+			return filepath.Join(umbrellaPrefix, rel)
+		}
+		return rel
+	}
+	return umbrellaPrefix, reanchor
+}
+
 // lowerTargetSources is lowerTarget's per-source walk: it classifies and
 // re-anchors every codemodel source onto irt (srcs / hdrs / per-platform
 // select() arms), recovers generated sources through the codegen
@@ -3133,18 +3155,7 @@ func lowerTargetSources(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 	idToName := lc.idToName
 	generatedSources, rejections := lc.generatedSources, lc.rejections
 	workspaceRoot := lc.workspaceRoot
-	umbrellaPrefix := ""
-	if hostSrc != "" && hostSrc != cmakeSrc {
-		if rel, inside := relativeIfInside(hostSrc, cmakeSrc); inside && rel != "" && rel != "." {
-			umbrellaPrefix = rel
-		}
-	}
-	reanchor := func(rel string) string {
-		if umbrellaPrefix != "" && rel != "" {
-			return filepath.Join(umbrellaPrefix, rel)
-		}
-		return rel
-	}
+	_, reanchor := lc.umbrellaReanchor()
 	// Build the source-index → in-compile-group set once per target.
 	// Walking t.CompileGroups[].SourceIndexes per source visit was
 	// O(N*M) where N is sources and M is compile-group entries; for
@@ -3745,145 +3756,340 @@ func finalizeLoweredTarget(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc
 	return irt, nil
 }
 
-// lowerTarget is a tracked complexity giant (cognitive ~353, down from 754 —
-// the highest in the tree). Breaking it down into focused, behavior-preserving
-// sub-pass extractions (link-fragment attribution, compile-group lowering,
-// generated-source handling) is its own ROADMAP "complexity lens" burndown
-// pass; grandfathered here so the lens can gate as blocking on every other
-// function. Remove the directive below as the function comes back under
-// threshold. See ROADMAP.md.
-//
-//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
-func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Target, error) {
-	// Unpack the bundled inputs into the locals the body uses: lc is
-	// invariant across the per-target loop, tt is this target's trace.
-	cmakeSrc, cmakeBuild, hostSrc, hostPrefix := lc.cmakeSrc, lc.cmakeBuild, lc.hostSrc, lc.hostPrefix
-	hostSrcOnDisk := lc.hostSrcOnDisk
-	// umbrellaPrefix is the cmakeSrc-relative-to-labelRoot segment when the
-	// workspace-root umbrella promoted labelRoot above cmakeSrc (LLVM:
-	// labelRoot=llvm-project/, cmakeSrc=llvm-project/llvm/ → "llvm"). srcs
-	// are already re-anchored to labelRoot in the source loop; hdrs and
-	// source-tree includes must get the same prefix so a BUILD at labelRoot
-	// resolves them consistently. Empty in the common (non-promoted) case —
-	// where hostSrc == cmakeSrc — so behavior there is unchanged.
-	umbrellaPrefix := ""
-	if hostSrc != "" && hostSrc != cmakeSrc {
-		if rel, inside := relativeIfInside(hostSrc, cmakeSrc); inside && rel != "" && rel != "." {
-			umbrellaPrefix = rel
+// lowerCompileGroups is lowerTarget's compile-group region: it lowers
+// the first compile group's flags / defines / language standard onto
+// irt, partitions PUBLIC vs PRIVATE include dirs (PRIVATE rides -I
+// copts), collects the build-dir-rooted includes the consumer
+// attribution below keys on, and mirrors the extraction for
+// INTERFACE_LIBRARY targets from their HEADERS FileSets. Returns the
+// build-dir include set, the walk-package-root signal, and the PRIVATE
+// include dirs the discoverHeaders walk must also cover. Bodies and
+// rationale comments are verbatim from the original inline region.
+// lowerInterfaceFileSetIncludes mirrors the compile-group include
+// extraction for INTERFACE_LIBRARY targets from their HEADERS FileSets'
+// BaseDirectories (they have no CompileGroups). Returns the updated
+// walk-package-root signal. Bodies and rationale comments are verbatim
+// from the original inline region.
+func lowerInterfaceFileSetIncludes(irt *ir.Target, t *fileapi.Target, cmakeSrc string, walkPkgRootForHdrs bool) bool {
+	// INTERFACE_LIBRARY include extraction (#308). Starting with
+	// cmake 3.19 INTERFACE_LIBRARY targets surface in the codemodel
+	// targets[] array, so they reach this codemodel path instead of
+	// the trace-based lowerInterfaceLibraries fallback. They have no
+	// CompileGroups (cmake never compiles them), so the include loop
+	// above — gated on len(t.CompileGroups) > 0 — produces nothing
+	// and the emitted cc_library lacks an `includes =` attribute.
+	// Consumers that `#include <foo.h>` then hit Bazel "undeclared
+	// inclusion" errors. The include dirs for these targets live in
+	// the HEADERS-typed FileSets' BaseDirectories (codemodel-v2
+	// minor 5, cmake 3.25+, `target_sources(... FILE_SET HEADERS
+	// BASE_DIRS ...)`). Mirror the CompileGroups extraction above but
+	// source the directory list from FileSets metadata: relativize
+	// each base dir against cmakeSrc, route the package-root case to
+	// the discoverHeaders walk via walkPkgRootForHdrs, and append the
+	// rest to irt.Includes.
+	if irt.Kind == ir.KindCCInterface && len(t.CompileGroups) == 0 {
+		seenIfaceInc := map[string]bool{}
+		addInclude := func(dir string) {
+			rel := dir
+			if filepath.IsAbs(rel) {
+				r, inside := relativeIfInside(cmakeSrc, rel)
+				if !inside {
+					return
+				}
+				rel = r
+			} else {
+				rel = filepath.Clean(rel)
+			}
+			if rel == "" || rel == "." {
+				// target_include_directories(${CMAKE_CURRENT_SOURCE_DIR}):
+				// Bazel rejects `includes = [""]`; record the
+				// signal so discoverHeaders walks the package root
+				// (same shape as the CompileGroups branch above).
+				walkPkgRootForHdrs = true
+				return
+			}
+			if pathHasDotDotSegment(rel) || seenIfaceInc[rel] {
+				return
+			}
+			seenIfaceInc[rel] = true
+			irt.Includes = append(irt.Includes, rel)
+		}
+		for _, fs := range t.FileSets {
+			if fs.Type != "HEADERS" {
+				continue
+			}
+			for _, bd := range fs.BaseDirectories {
+				addInclude(bd)
+			}
+		}
+		// Fallback: when the target declares a distinct source dir
+		// (a subdirectory target) that resolves inside cmakeSrc and
+		// FileSets surfaced no usable include, treat the target's own
+		// source dir as an include directory so package-root-relative
+		// #includes still resolve.
+		if len(irt.Includes) == 0 && !walkPkgRootForHdrs &&
+			t.Paths.Source != "" && t.Paths.Source != cmakeSrc {
+			addInclude(t.Paths.Source)
 		}
 	}
-	reanchor := func(rel string) string {
-		if umbrellaPrefix != "" && rel != "" {
-			return filepath.Join(umbrellaPrefix, rel)
-		}
-		return rel
+
+	return walkPkgRootForHdrs
+}
+
+// partitionTargetIncludeDirs walks one compile group's include dirs:
+// build-dir includes record into targetBuildIncs (consumer attribution),
+// source-tree includes dedup into irt.Includes or — when the trace marks
+// them PRIVATE — into -I copts, with the package-root case routed to the
+// discoverHeaders walk. Returns the updated walk-package-root signal and
+// the PRIVATE include dirs collected for that walk. Bodies and rationale
+// comments are verbatim from the original inline region.
+// recordBuildDirInclude handles one BUILD-dir include of the partition
+// loop: track it for consumer attribution, and surface it on
+// irt.Includes when the umbrella promotion or a generated-output root
+// requires the -I at Bazel time. Bodies and rationale comments are
+// verbatim from the original inline branch.
+func recordBuildDirInclude(irt *ir.Target, rel, umbrellaPrefix string, seenInc, targetBuildIncs map[string]bool, cc *codegenContext) {
+	// Build-dir include — codemodel records this
+	// for targets that target_include_directories'd
+	// $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
+	// (typical configure_file consumer pattern).
+	// Track for the configure_file consumer
+	// attribution below; don't surface in
+	// irt.Includes (source-tree-relative only).
+	targetBuildIncs[rel] = true
+	// Under the umbrella promotion the source-tree includes are
+	// re-anchored (e.g. "llvm/include"), so they no longer cover
+	// the generated headers, which land at the build-dir-relative
+	// path ("include/..."). Surface that build-dir include so
+	// `-Iinclude` finds the generated headers' bazel-out tree.
+	if umbrellaPrefix != "" && !seenInc[rel] {
+		seenInc[rel] = true
+		irt.Includes = append(irt.Includes, rel)
 	}
-	// pchCtx drives the target_precompile_headers forced-include lift
-	// (pch.go) for this target's compile groups — both the main path and
-	// the per-language splitCompileGroups subs.
-	pchCtx := pchLiftCtx{
-		resolve:    lc.pchResolve,
-		cmakeSrc:   cmakeSrc,
-		cmakeBuild: cmakeBuild,
-		reanchor:   reanchor,
-		pkgPath:    lc.bazelPackagePath,
+	// A build-dir include that is the ROOT of generated outputs
+	// (cmake's `-I<build>/gens` for grpc's protoc gens dir) must be
+	// surfaced on `includes` too: the generated `.pb.cc` does a
+	// full-path `#include "src/proto/.../x.pb.h"`, which only
+	// resolves with the gens root on the include path. The headers
+	// are declared in hdrs (staged), but Bazel still needs the
+	// `-I<root>` to find them. Gated on the dir actually holding a
+	// genrule output, so non-generated build-dir includes (tracked
+	// for configure_file consumer attribution above) aren't surfaced.
+	if !seenInc[rel] && cc != nil && isGeneratedOutputRoot(rel, cc.OutToGenrule) {
+		seenInc[rel] = true
+		irt.Includes = append(irt.Includes, rel)
 	}
-	cc := lc.cc
-	idToName, utilityIDs := lc.idToName, lc.utilityIDs
-	imports := lc.imports
-	configureFiles, fileGenerates, executeProcesses := lc.configureFiles, lc.fileGenerates, lc.executeProcesses
+}
+
+func partitionTargetIncludeDirs(irt *ir.Target, t *fileapi.Target, cg fileapi.CompileGroup, tt targetTrace, lc targetLowerCtx, targetBuildIncs map[string]bool, walkPkgRootForHdrs bool, privateIncDirs []string) (bool, []string) {
+	cmakeSrc, cmakeBuild, hostPrefix := lc.cmakeSrc, lc.cmakeBuild, lc.hostPrefix
 	workspaceRoot := lc.workspaceRoot
-	bazelPackagePath := lc.bazelPackagePath
-	rejections := lc.rejections
-	privateIncludeDirs, traceLinkScope := tt.privateIncludeDirs, tt.traceLinkScope
-	publicIncludeDirs, includeDirsGlobal := tt.publicIncludeDirs, tt.includeDirsGlobal
+	cc, imports := lc.cc, lc.imports
+	privateIncludeDirs, publicIncludeDirs, includeDirsGlobal := tt.privateIncludeDirs, tt.publicIncludeDirs, tt.includeDirsGlobal
 	interfaceIncludeDirs := tt.interfaceIncludeDirs
-
-	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
-	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
-	// integration and have no Bazel equivalent. Skip them silently.
-	if t.IsGeneratorProvided {
-		return nil, nil
-	}
-
-	irt := &ir.Target{Name: t.Name}
-
-	// Provenance: project the per-target Backtrace index into a
-	// {File, Line, Command} triple from the BacktraceGraph the
-	// target's JSON file carries. Phase 1 task 1 of the
-	// generator-parity uplift (ROADMAP.md). Emit-side gating
-	// renders this as a leading comment when EmitProvenance is
-	// on. CallSite additionally records the user-level macro/
-	// function invocation when the declaring command ran inside
-	// one (comment recovery prefers it).
-	irt.Provenance, irt.CallSite = targetProvenance(t, cmakeSrc, cmakeBuild)
-
-	switch t.Type {
-	case "STATIC_LIBRARY":
-		irt.Kind = ir.KindCCLibrary
-		irt.Linkstatic = true
-	case "OBJECT_LIBRARY":
-		// cmake OBJECT libs compile sources to .o without
-		// archiving. Consumers reference $<TARGET_OBJECTS:t>
-		// to inline the objects into a downstream artifact.
-		// Bazel analog: cc_library with alwayslink=True so
-		// the objects always link into transitive consumers
-		// (matches cmake's "every consumer drags every
-		// object" semantics). linkstatic stays false — there's
-		// no archive; alwayslink is what carries the inline
-		// behavior.
-		irt.Kind = ir.KindCCLibrary
-		irt.Alwayslink = true
-	case "SHARED_LIBRARY", "MODULE_LIBRARY":
-		irt.Kind = ir.KindCCLibrary
-		// Faithful-SHARED (opt-in): mark the impl so emit renders a sibling
-		// cc_shared_library producing the real .so. Use the FULL cmake artifact
-		// name (NameOnDisk, e.g. libbrotlidec.so.1.2.0) — both because that's
-		// what cmake actually produces (versioned soname) and because it must
-		// NOT collide with the impl cc_library's auto-generated lib<target>.so
-		// dynamic output (a cc_shared_library and a cc_library can't both emit
-		// the same path — the brotli collision). When the unversioned NameOnDisk
-		// WOULD equal lib<target>.so, suffix it so the two outputs stay distinct.
-		if lc.emitSharedLibraries {
-			so := t.NameOnDisk
-			if so == "" {
-				so = "lib" + t.Name + ".so"
-			}
-			if so == "lib"+t.Name+".so" {
-				// The unversioned name collides with the impl cc_library's auto
-				// lib<target>.so output. Append a soversion so the two outputs
-				// stay distinct AND the name stays a valid .so.<N> filetype
-				// (cc_shared_library rejects e.g. ".so.shared"). Prefer the
-				// cmake-recorded soversion tag; fall back to ".1".
-				so += "." + soversionFromTags(irt.Tags, "1")
-			}
-			irt.SharedLibName = so
+	umbrellaPrefix, reanchor := lc.umbrellaReanchor()
+	// Dedup includes: cmake's codemodel emits one entry per
+	// PUBLIC include propagation, so a target whose own
+	// target_include_directories names "include" plus a PUBLIC
+	// dep that also names "include" surfaces with two identical
+	// entries. The emitter sorts but doesn't dedup; bazel
+	// accepts duplicates but they're cosmetic noise. Dedup-while-
+	// preserving-order at IR-build time so any downstream
+	// consumer of irt.Includes sees a clean list.
+	//
+	// PRIVATE-include partition: when a trace record (loaded
+	// in ToIR) marks an absolute include path as PRIVATE for
+	// this target, the dir flows into the cc_library's compile-
+	// only `copts = ["-I<dir>"]` rather than the
+	// consumer-visible `includes` attribute. cmake's PUBLIC
+	// keyword propagates to consumers; PRIVATE doesn't —
+	// Bazel's `includes` is consumer-visible by default, so
+	// PRIVATE has to ride on -I in copts to preserve
+	// encapsulation.
+	seenInc := map[string]bool{}
+	for _, inc := range cg.Includes {
+		if rel, ok := relativeIfInsideRelaxed(cmakeBuild, inc.Path); ok {
+			recordBuildDirInclude(irt, rel, umbrellaPrefix, seenInc, targetBuildIncs, cc)
+			continue
 		}
-	case "EXECUTABLE":
-		irt.Kind = ir.KindCCBinary
-	case "INTERFACE_LIBRARY":
-		irt.Kind = ir.KindCCInterface
-	case "UTILITY":
-		// add_custom_target / add_dependencies grouping. The underlying
-		// add_custom_command is recovered separately via genrule lookup;
-		// the utility node itself has no Bazel equivalent.
-		return nil, nil
-	default:
-		if rejections != nil {
-			rejections.AddWithContext(failure.UnsupportedTargetType,
-				fmt.Sprintf("target %q has unsupported type %q", t.Name, t.Type),
-				t.Name, "")
-			return nil, nil
+		rel, ok := relativeIfInside(cmakeSrc, inc.Path)
+		if !ok && workspaceRoot != "" {
+			// In-element include that sits OUTSIDE the cmake source root but
+			// INSIDE the (promoted) label root — a sample under a wider
+			// overlay reaching a sibling subtree: cuda-samples'
+			// `include_directories(../../../Common)` from
+			// cpp/<group>/<sample>/ resolves to the repo-root `Common/`,
+			// which the overlay staged under the element. Anchor it
+			// labelRoot-relative (`Common`) and surface it as an include
+			// root so split synthesizes its header lib and this target deps
+			// on it. (find_package include trees live under hostPrefix, not
+			// the label root, so they fall through to the umbrella handling
+			// below.)
+			if wrel, inside := relativeIfInside(workspaceRoot, inc.Path); inside && wrel != "" && wrel != "." {
+				if !seenInc[wrel] {
+					seenInc[wrel] = true
+					irt.Includes = append(irt.Includes, wrel)
+				}
+				continue
+			}
 		}
-		return nil, failure.New(failure.UnsupportedTargetType,
-			"target %q has unsupported type %q", t.Name, t.Type)
+		if !ok {
+			// #219: include dir resolved outside both
+			// cmakeSrc and cmakeBuild. The path is one of
+			// three shapes:
+			//   - A producer-element's export tree under
+			//     hostPrefix (cross-element find_package
+			//     include). We can't directly translate
+			//     to a Bazel `includes` entry — the
+			//     producing element provides headers
+			//     through a cc_library dep rather than an
+			//     include path — but operators auditing
+			//     for unresolved cross-element imports
+			//     want to see this. Emit a payload-bearing
+			//     audit tag identifying the dropped path
+			//     (hostPrefix-relative so two synth-prefix
+			//     subdirs with the same trailing basename
+			//     don't collide on the dedup).
+			//   - A system include path
+			//     (/usr/include, etc.). Filtering these
+			//     silently is correct — the toolchain
+			//     supplies the same headers via its
+			//     default search path, and emitting them
+			//     as Bazel `includes` would leak host
+			//     state into the BUILD.
+			//   - A user-specified out-of-tree absolute
+			//     path with no hostPrefix relationship
+			//     (e.g. `/opt/vendor/include` hardcoded in
+			//     a CMakeLists). These currently fall
+			//     through silently — the audit tag is
+			//     scoped to the hostPrefix case where the
+			//     producer-element framing is well-defined.
+			//     Tagging the bare-hardcode case would
+			//     create noise on every project that
+			//     references /usr/include via find_package
+			//     propagation. A separate audit tag for
+			//     the hardcode case can land if a real
+			//     downstream surfaces the need.
+			// find_package whole-include-tree umbrella: a
+			// find_package(<Pkg>) puts Pkg's entire include
+			// dir on this target's compile line (the dir
+			// resolves outside the source/build tree, so we'd
+			// otherwise drop it here). If the imports manifest
+			// declared this dir as one of an element's
+			// UmbrellaIncludeRoots, add the element's umbrella
+			// label to deps instead — a cc_library re-exporting
+			// the package's full public header surface — so
+			// headers the consumer #includes but never linked a
+			// specific target for (absl/functional/overload.h
+			// from protobuf, never in protobuf_ABSL_USED_TARGETS)
+			// resolve under Bazel's strict per-target headers.
+			if umbrella := imports.UmbrellaForIncludeDir(inc.Path); umbrella != "" {
+				if !stringSliceContains(irt.Deps, umbrella) {
+					irt.Deps = append(irt.Deps, umbrella)
+				}
+			}
+			if hostPrefix != "" {
+				if relUnder, inside := relativeIfInside(hostPrefix, inc.Path); inside {
+					tag := "cmake-elided-prefix-include=" + relUnder
+					if !stringSliceContains(irt.Tags, tag) {
+						irt.Tags = append(irt.Tags, tag)
+					}
+				}
+			}
+			continue
+		}
+		// Re-anchor source-tree includes to labelRoot under the
+		// umbrella promotion (consistent with srcs/hdrs); no-op
+		// otherwise. Dedup on the emitted value so a build-dir include
+		// surfaced above (e.g. "include") and a re-anchored source
+		// include (e.g. "llvm/include") don't collide.
+		emit := reanchor(rel)
+		if seenInc[emit] {
+			continue
+		}
+		seenInc[emit] = true
+		// target_include_directories(${CMAKE_CURRENT_SOURCE_DIR})
+		// resolves to rel == "". Handle it BEFORE the private/system
+		// split below. Bazel rejects `includes = [""]` ("resolves to
+		// the workspace root, which would allow this rule and all of
+		// its transitive dependents to include any file in your
+		// workspace"); same-package consumers already see this target's
+		// headers via hdrs+deps, so dropping the entry from `includes =`
+		// is the idiomatic shape. The package root is still the
+		// authoritative source for hdrs discovery — walkPkgRootForHdrs
+		// makes discoverHeaders walk hostSrc (otherwise zlib-shape
+		// projects that declare ONLY target_include_directories(.) end
+		// up with empty hdrs) — and it sets RootInclude, which the split
+		// emitter turns into include_prefix=<package dir> so the
+		// target's own element-root-relative includes resolve.
+		//
+		// This MUST run before the privateIncludeDirs branch: a PRIVATE
+		// root include otherwise fell into the copt branch and emitted a
+		// bogus bare `-I` (reanchor("") == "") while leaving RootInclude
+		// false. abseil targets whose root include is PRIVATE
+		// (spinlock_wait, cctz — `#include
+		// "absl/base/internal/spinlock_wait.h"`) then lost the
+		// include_prefix that re-homes their headers, and their own
+		// compile couldn't find them. The PRIVATE-ness (don't propagate
+		// the -I to consumers) is moot once the headers carry the prefix.
+		if rel == "" {
+			walkPkgRootForHdrs = true
+			continue
+		}
+		// A directory-scoped include_directories() dir is PRIVATE (cmake
+		// never exports it via INTERFACE_INCLUDE_DIRECTORIES), so route it to a
+		// `-I` copt like a PRIVATE target_include_directories — UNLESS this
+		// target re-exports the same dir PUBLIC, which genuinely propagates.
+		// Without this, OpenBLAS's `include_directories(include …)` LAPACKE dir
+		// defaults to the transitive `includes` and over-propagates to ~1700
+		// consumer TUs cmake never gave it to.
+		dirScopedPrivate := includeDirsGlobal[inc.Path] && !publicIncludeDirs[inc.Path]
+		// B1: interface-driven scope. When the probe captured this target, an
+		// include in its resolved set but NOT in its
+		// INTERFACE_INCLUDE_DIRECTORIES is PRIVATE — route it to a `-I` copt
+		// (split → implementation_deps) so it doesn't propagate. Only reaches
+		// here for source-tree includes (build-dir / generated-header dirs are
+		// handled by earlier branches that `continue`), and a dir the target
+		// re-exports stays in `public`. Generalizes the trace-only
+		// dirScopedPrivate to every private-include mechanism.
+		ifacePrivate := interfaceIncludeDirs.active && !interfaceIncludeDirs.public[inc.Path]
+		if privateIncludeDirs[inc.Path] || dirScopedPrivate || ifacePrivate {
+			// Compile-only — don't propagate to consumers.
+			// target_include_directories(... SYSTEM PRIVATE ...)
+			// keeps its system flavour as -isystem so header
+			// warnings stay suppressed the way cmake suppresses
+			// them; plain PRIVATE stays -I. (PUBLIC includes ride
+			// irt.Includes / cc_library.includes, which Bazel
+			// already emits as -isystem + transitive, so the SYSTEM
+			// keyword is faithful there without extra handling.)
+			flag := "-I"
+			if inc.IsSystem {
+				flag = "-isystem"
+			}
+			// Emit the PRIVATE include dir in element-root-relative form
+			// (`-Iinclude`, not the exec-root `-Ielements/<pkg>/include`):
+			// split's rewriteTarget copt scan keys on this form to wire the
+			// synthesized header lib for the dir (staging its headers + the
+			// correct exec-root search path via the lib's `includes`) and drop
+			// the bare -I. Anchoring to exec-root here breaks that match and
+			// leaves the dir's headers unstaged (fmt's posix-mock-test:
+			// `#include <fmt/os.h>` "No such file"). NOTE: this only stages
+			// headers when the dir is ALSO a public include root somewhere (so
+			// a header lib exists for it); a PRIVATE-only dir whose headers
+			// aren't otherwise declared still needs the header-staging work
+			// tracked in ROADMAP (mbedtls / sdl).
+			irt.Copts = append(irt.Copts, flag+emit)
+			privateIncDirs = append(privateIncDirs, emit)
+			continue
+		}
+		irt.Includes = append(irt.Includes, emit)
 	}
+	return walkPkgRootForHdrs, privateIncDirs
+}
 
-	srcEmitPath, srcElided, err := lowerTargetSources(irt, t, tt, lc)
-	if err != nil {
-		return nil, err
-	}
-
+func lowerCompileGroups(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc targetLowerCtx, pchCtx pchLiftCtx) (map[string]bool, bool, []string) {
+	cmakeSrc, cmakeBuild := lc.cmakeSrc, lc.cmakeBuild
+	cc := lc.cc
 	// Build-dir-rooted includes (relative to the cmake build
 	// dir). Populated alongside the source-tree includes in
 	// the CompileGroup walk; used afterward for configure_file
@@ -3992,294 +4198,140 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			}
 		}
 
-		// Dedup includes: cmake's codemodel emits one entry per
-		// PUBLIC include propagation, so a target whose own
-		// target_include_directories names "include" plus a PUBLIC
-		// dep that also names "include" surfaces with two identical
-		// entries. The emitter sorts but doesn't dedup; bazel
-		// accepts duplicates but they're cosmetic noise. Dedup-while-
-		// preserving-order at IR-build time so any downstream
-		// consumer of irt.Includes sees a clean list.
-		//
-		// PRIVATE-include partition: when a trace record (loaded
-		// in ToIR) marks an absolute include path as PRIVATE for
-		// this target, the dir flows into the cc_library's compile-
-		// only `copts = ["-I<dir>"]` rather than the
-		// consumer-visible `includes` attribute. cmake's PUBLIC
-		// keyword propagates to consumers; PRIVATE doesn't —
-		// Bazel's `includes` is consumer-visible by default, so
-		// PRIVATE has to ride on -I in copts to preserve
-		// encapsulation.
-		seenInc := map[string]bool{}
-		for _, inc := range cg.Includes {
-			if rel, ok := relativeIfInsideRelaxed(cmakeBuild, inc.Path); ok {
-				// Build-dir include — codemodel records this
-				// for targets that target_include_directories'd
-				// $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>
-				// (typical configure_file consumer pattern).
-				// Track for the configure_file consumer
-				// attribution below; don't surface in
-				// irt.Includes (source-tree-relative only).
-				targetBuildIncs[rel] = true
-				// Under the umbrella promotion the source-tree includes are
-				// re-anchored (e.g. "llvm/include"), so they no longer cover
-				// the generated headers, which land at the build-dir-relative
-				// path ("include/..."). Surface that build-dir include so
-				// `-Iinclude` finds the generated headers' bazel-out tree.
-				if umbrellaPrefix != "" && !seenInc[rel] {
-					seenInc[rel] = true
-					irt.Includes = append(irt.Includes, rel)
-				}
-				// A build-dir include that is the ROOT of generated outputs
-				// (cmake's `-I<build>/gens` for grpc's protoc gens dir) must be
-				// surfaced on `includes` too: the generated `.pb.cc` does a
-				// full-path `#include "src/proto/.../x.pb.h"`, which only
-				// resolves with the gens root on the include path. The headers
-				// are declared in hdrs (staged), but Bazel still needs the
-				// `-I<root>` to find them. Gated on the dir actually holding a
-				// genrule output, so non-generated build-dir includes (tracked
-				// for configure_file consumer attribution above) aren't surfaced.
-				if !seenInc[rel] && cc != nil && isGeneratedOutputRoot(rel, cc.OutToGenrule) {
-					seenInc[rel] = true
-					irt.Includes = append(irt.Includes, rel)
-				}
-				continue
-			}
-			rel, ok := relativeIfInside(cmakeSrc, inc.Path)
-			if !ok && workspaceRoot != "" {
-				// In-element include that sits OUTSIDE the cmake source root but
-				// INSIDE the (promoted) label root — a sample under a wider
-				// overlay reaching a sibling subtree: cuda-samples'
-				// `include_directories(../../../Common)` from
-				// cpp/<group>/<sample>/ resolves to the repo-root `Common/`,
-				// which the overlay staged under the element. Anchor it
-				// labelRoot-relative (`Common`) and surface it as an include
-				// root so split synthesizes its header lib and this target deps
-				// on it. (find_package include trees live under hostPrefix, not
-				// the label root, so they fall through to the umbrella handling
-				// below.)
-				if wrel, inside := relativeIfInside(workspaceRoot, inc.Path); inside && wrel != "" && wrel != "." {
-					if !seenInc[wrel] {
-						seenInc[wrel] = true
-						irt.Includes = append(irt.Includes, wrel)
-					}
-					continue
-				}
-			}
-			if !ok {
-				// #219: include dir resolved outside both
-				// cmakeSrc and cmakeBuild. The path is one of
-				// three shapes:
-				//   - A producer-element's export tree under
-				//     hostPrefix (cross-element find_package
-				//     include). We can't directly translate
-				//     to a Bazel `includes` entry — the
-				//     producing element provides headers
-				//     through a cc_library dep rather than an
-				//     include path — but operators auditing
-				//     for unresolved cross-element imports
-				//     want to see this. Emit a payload-bearing
-				//     audit tag identifying the dropped path
-				//     (hostPrefix-relative so two synth-prefix
-				//     subdirs with the same trailing basename
-				//     don't collide on the dedup).
-				//   - A system include path
-				//     (/usr/include, etc.). Filtering these
-				//     silently is correct — the toolchain
-				//     supplies the same headers via its
-				//     default search path, and emitting them
-				//     as Bazel `includes` would leak host
-				//     state into the BUILD.
-				//   - A user-specified out-of-tree absolute
-				//     path with no hostPrefix relationship
-				//     (e.g. `/opt/vendor/include` hardcoded in
-				//     a CMakeLists). These currently fall
-				//     through silently — the audit tag is
-				//     scoped to the hostPrefix case where the
-				//     producer-element framing is well-defined.
-				//     Tagging the bare-hardcode case would
-				//     create noise on every project that
-				//     references /usr/include via find_package
-				//     propagation. A separate audit tag for
-				//     the hardcode case can land if a real
-				//     downstream surfaces the need.
-				// find_package whole-include-tree umbrella: a
-				// find_package(<Pkg>) puts Pkg's entire include
-				// dir on this target's compile line (the dir
-				// resolves outside the source/build tree, so we'd
-				// otherwise drop it here). If the imports manifest
-				// declared this dir as one of an element's
-				// UmbrellaIncludeRoots, add the element's umbrella
-				// label to deps instead — a cc_library re-exporting
-				// the package's full public header surface — so
-				// headers the consumer #includes but never linked a
-				// specific target for (absl/functional/overload.h
-				// from protobuf, never in protobuf_ABSL_USED_TARGETS)
-				// resolve under Bazel's strict per-target headers.
-				if umbrella := imports.UmbrellaForIncludeDir(inc.Path); umbrella != "" {
-					if !stringSliceContains(irt.Deps, umbrella) {
-						irt.Deps = append(irt.Deps, umbrella)
-					}
-				}
-				if hostPrefix != "" {
-					if relUnder, inside := relativeIfInside(hostPrefix, inc.Path); inside {
-						tag := "cmake-elided-prefix-include=" + relUnder
-						if !stringSliceContains(irt.Tags, tag) {
-							irt.Tags = append(irt.Tags, tag)
-						}
-					}
-				}
-				continue
-			}
-			// Re-anchor source-tree includes to labelRoot under the
-			// umbrella promotion (consistent with srcs/hdrs); no-op
-			// otherwise. Dedup on the emitted value so a build-dir include
-			// surfaced above (e.g. "include") and a re-anchored source
-			// include (e.g. "llvm/include") don't collide.
-			emit := reanchor(rel)
-			if seenInc[emit] {
-				continue
-			}
-			seenInc[emit] = true
-			// target_include_directories(${CMAKE_CURRENT_SOURCE_DIR})
-			// resolves to rel == "". Handle it BEFORE the private/system
-			// split below. Bazel rejects `includes = [""]` ("resolves to
-			// the workspace root, which would allow this rule and all of
-			// its transitive dependents to include any file in your
-			// workspace"); same-package consumers already see this target's
-			// headers via hdrs+deps, so dropping the entry from `includes =`
-			// is the idiomatic shape. The package root is still the
-			// authoritative source for hdrs discovery — walkPkgRootForHdrs
-			// makes discoverHeaders walk hostSrc (otherwise zlib-shape
-			// projects that declare ONLY target_include_directories(.) end
-			// up with empty hdrs) — and it sets RootInclude, which the split
-			// emitter turns into include_prefix=<package dir> so the
-			// target's own element-root-relative includes resolve.
-			//
-			// This MUST run before the privateIncludeDirs branch: a PRIVATE
-			// root include otherwise fell into the copt branch and emitted a
-			// bogus bare `-I` (reanchor("") == "") while leaving RootInclude
-			// false. abseil targets whose root include is PRIVATE
-			// (spinlock_wait, cctz — `#include
-			// "absl/base/internal/spinlock_wait.h"`) then lost the
-			// include_prefix that re-homes their headers, and their own
-			// compile couldn't find them. The PRIVATE-ness (don't propagate
-			// the -I to consumers) is moot once the headers carry the prefix.
-			if rel == "" {
-				walkPkgRootForHdrs = true
-				continue
-			}
-			// A directory-scoped include_directories() dir is PRIVATE (cmake
-			// never exports it via INTERFACE_INCLUDE_DIRECTORIES), so route it to a
-			// `-I` copt like a PRIVATE target_include_directories — UNLESS this
-			// target re-exports the same dir PUBLIC, which genuinely propagates.
-			// Without this, OpenBLAS's `include_directories(include …)` LAPACKE dir
-			// defaults to the transitive `includes` and over-propagates to ~1700
-			// consumer TUs cmake never gave it to.
-			dirScopedPrivate := includeDirsGlobal[inc.Path] && !publicIncludeDirs[inc.Path]
-			// B1: interface-driven scope. When the probe captured this target, an
-			// include in its resolved set but NOT in its
-			// INTERFACE_INCLUDE_DIRECTORIES is PRIVATE — route it to a `-I` copt
-			// (split → implementation_deps) so it doesn't propagate. Only reaches
-			// here for source-tree includes (build-dir / generated-header dirs are
-			// handled by earlier branches that `continue`), and a dir the target
-			// re-exports stays in `public`. Generalizes the trace-only
-			// dirScopedPrivate to every private-include mechanism.
-			ifacePrivate := interfaceIncludeDirs.active && !interfaceIncludeDirs.public[inc.Path]
-			if privateIncludeDirs[inc.Path] || dirScopedPrivate || ifacePrivate {
-				// Compile-only — don't propagate to consumers.
-				// target_include_directories(... SYSTEM PRIVATE ...)
-				// keeps its system flavour as -isystem so header
-				// warnings stay suppressed the way cmake suppresses
-				// them; plain PRIVATE stays -I. (PUBLIC includes ride
-				// irt.Includes / cc_library.includes, which Bazel
-				// already emits as -isystem + transitive, so the SYSTEM
-				// keyword is faithful there without extra handling.)
-				flag := "-I"
-				if inc.IsSystem {
-					flag = "-isystem"
-				}
-				// Emit the PRIVATE include dir in element-root-relative form
-				// (`-Iinclude`, not the exec-root `-Ielements/<pkg>/include`):
-				// split's rewriteTarget copt scan keys on this form to wire the
-				// synthesized header lib for the dir (staging its headers + the
-				// correct exec-root search path via the lib's `includes`) and drop
-				// the bare -I. Anchoring to exec-root here breaks that match and
-				// leaves the dir's headers unstaged (fmt's posix-mock-test:
-				// `#include <fmt/os.h>` "No such file"). NOTE: this only stages
-				// headers when the dir is ALSO a public include root somewhere (so
-				// a header lib exists for it); a PRIVATE-only dir whose headers
-				// aren't otherwise declared still needs the header-staging work
-				// tracked in ROADMAP (mbedtls / sdl).
-				irt.Copts = append(irt.Copts, flag+emit)
-				privateIncDirs = append(privateIncDirs, emit)
-				continue
-			}
-			irt.Includes = append(irt.Includes, emit)
-		}
+		walkPkgRootForHdrs, privateIncDirs = partitionTargetIncludeDirs(irt, t, cg, tt, lc, targetBuildIncs, walkPkgRootForHdrs, privateIncDirs)
 	}
 
-	// INTERFACE_LIBRARY include extraction (#308). Starting with
-	// cmake 3.19 INTERFACE_LIBRARY targets surface in the codemodel
-	// targets[] array, so they reach this codemodel path instead of
-	// the trace-based lowerInterfaceLibraries fallback. They have no
-	// CompileGroups (cmake never compiles them), so the include loop
-	// above — gated on len(t.CompileGroups) > 0 — produces nothing
-	// and the emitted cc_library lacks an `includes =` attribute.
-	// Consumers that `#include <foo.h>` then hit Bazel "undeclared
-	// inclusion" errors. The include dirs for these targets live in
-	// the HEADERS-typed FileSets' BaseDirectories (codemodel-v2
-	// minor 5, cmake 3.25+, `target_sources(... FILE_SET HEADERS
-	// BASE_DIRS ...)`). Mirror the CompileGroups extraction above but
-	// source the directory list from FileSets metadata: relativize
-	// each base dir against cmakeSrc, route the package-root case to
-	// the discoverHeaders walk via walkPkgRootForHdrs, and append the
-	// rest to irt.Includes.
-	if irt.Kind == ir.KindCCInterface && len(t.CompileGroups) == 0 {
-		seenIfaceInc := map[string]bool{}
-		addInclude := func(dir string) {
-			rel := dir
-			if filepath.IsAbs(rel) {
-				r, inside := relativeIfInside(cmakeSrc, rel)
-				if !inside {
-					return
-				}
-				rel = r
-			} else {
-				rel = filepath.Clean(rel)
-			}
-			if rel == "" || rel == "." {
-				// target_include_directories(${CMAKE_CURRENT_SOURCE_DIR}):
-				// Bazel rejects `includes = [""]`; record the
-				// signal so discoverHeaders walks the package root
-				// (same shape as the CompileGroups branch above).
-				walkPkgRootForHdrs = true
-				return
-			}
-			if pathHasDotDotSegment(rel) || seenIfaceInc[rel] {
-				return
-			}
-			seenIfaceInc[rel] = true
-			irt.Includes = append(irt.Includes, rel)
-		}
-		for _, fs := range t.FileSets {
-			if fs.Type != "HEADERS" {
-				continue
-			}
-			for _, bd := range fs.BaseDirectories {
-				addInclude(bd)
-			}
-		}
-		// Fallback: when the target declares a distinct source dir
-		// (a subdirectory target) that resolves inside cmakeSrc and
-		// FileSets surfaced no usable include, treat the target's own
-		// source dir as an include directory so package-root-relative
-		// #includes still resolve.
-		if len(irt.Includes) == 0 && !walkPkgRootForHdrs &&
-			t.Paths.Source != "" && t.Paths.Source != cmakeSrc {
-			addInclude(t.Paths.Source)
-		}
+	walkPkgRootForHdrs = lowerInterfaceFileSetIncludes(irt, t, cmakeSrc, walkPkgRootForHdrs)
+
+	return targetBuildIncs, walkPkgRootForHdrs, privateIncDirs
+}
+
+// lowerTarget is a tracked complexity giant (cognitive ~213, down from 754 —
+// the highest in the tree). Breaking it down into focused, behavior-preserving
+// sub-pass extractions (link-fragment attribution, compile-group lowering,
+// generated-source handling) is its own ROADMAP "complexity lens" burndown
+// pass; grandfathered here so the lens can gate as blocking on every other
+// function. Remove the directive below as the function comes back under
+// threshold. See ROADMAP.md.
+//
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
+func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Target, error) {
+	// Unpack the bundled inputs into the locals the body uses: lc is
+	// invariant across the per-target loop, tt is this target's trace.
+	cmakeSrc, cmakeBuild, hostSrc := lc.cmakeSrc, lc.cmakeBuild, lc.hostSrc
+	hostSrcOnDisk := lc.hostSrcOnDisk
+	// umbrellaPrefix is the cmakeSrc-relative-to-labelRoot segment when the
+	// workspace-root umbrella promoted labelRoot above cmakeSrc (LLVM:
+	// labelRoot=llvm-project/, cmakeSrc=llvm-project/llvm/ → "llvm"). srcs
+	// are already re-anchored to labelRoot in the source loop; hdrs and
+	// source-tree includes must get the same prefix so a BUILD at labelRoot
+	// resolves them consistently. Empty in the common (non-promoted) case —
+	// where hostSrc == cmakeSrc — so behavior there is unchanged.
+	_, reanchor := lc.umbrellaReanchor()
+	// pchCtx drives the target_precompile_headers forced-include lift
+	// (pch.go) for this target's compile groups — both the main path and
+	// the per-language splitCompileGroups subs.
+	pchCtx := pchLiftCtx{
+		resolve:    lc.pchResolve,
+		cmakeSrc:   cmakeSrc,
+		cmakeBuild: cmakeBuild,
+		reanchor:   reanchor,
+		pkgPath:    lc.bazelPackagePath,
 	}
+	cc := lc.cc
+	idToName, utilityIDs := lc.idToName, lc.utilityIDs
+	imports := lc.imports
+	configureFiles, fileGenerates, executeProcesses := lc.configureFiles, lc.fileGenerates, lc.executeProcesses
+	bazelPackagePath := lc.bazelPackagePath
+	rejections := lc.rejections
+	traceLinkScope := tt.traceLinkScope
+
+	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
+	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
+	// integration and have no Bazel equivalent. Skip them silently.
+	if t.IsGeneratorProvided {
+		return nil, nil
+	}
+
+	irt := &ir.Target{Name: t.Name}
+
+	// Provenance: project the per-target Backtrace index into a
+	// {File, Line, Command} triple from the BacktraceGraph the
+	// target's JSON file carries. Phase 1 task 1 of the
+	// generator-parity uplift (ROADMAP.md). Emit-side gating
+	// renders this as a leading comment when EmitProvenance is
+	// on. CallSite additionally records the user-level macro/
+	// function invocation when the declaring command ran inside
+	// one (comment recovery prefers it).
+	irt.Provenance, irt.CallSite = targetProvenance(t, cmakeSrc, cmakeBuild)
+
+	switch t.Type {
+	case "STATIC_LIBRARY":
+		irt.Kind = ir.KindCCLibrary
+		irt.Linkstatic = true
+	case "OBJECT_LIBRARY":
+		// cmake OBJECT libs compile sources to .o without
+		// archiving. Consumers reference $<TARGET_OBJECTS:t>
+		// to inline the objects into a downstream artifact.
+		// Bazel analog: cc_library with alwayslink=True so
+		// the objects always link into transitive consumers
+		// (matches cmake's "every consumer drags every
+		// object" semantics). linkstatic stays false — there's
+		// no archive; alwayslink is what carries the inline
+		// behavior.
+		irt.Kind = ir.KindCCLibrary
+		irt.Alwayslink = true
+	case "SHARED_LIBRARY", "MODULE_LIBRARY":
+		irt.Kind = ir.KindCCLibrary
+		// Faithful-SHARED (opt-in): mark the impl so emit renders a sibling
+		// cc_shared_library producing the real .so. Use the FULL cmake artifact
+		// name (NameOnDisk, e.g. libbrotlidec.so.1.2.0) — both because that's
+		// what cmake actually produces (versioned soname) and because it must
+		// NOT collide with the impl cc_library's auto-generated lib<target>.so
+		// dynamic output (a cc_shared_library and a cc_library can't both emit
+		// the same path — the brotli collision). When the unversioned NameOnDisk
+		// WOULD equal lib<target>.so, suffix it so the two outputs stay distinct.
+		if lc.emitSharedLibraries {
+			so := t.NameOnDisk
+			if so == "" {
+				so = "lib" + t.Name + ".so"
+			}
+			if so == "lib"+t.Name+".so" {
+				// The unversioned name collides with the impl cc_library's auto
+				// lib<target>.so output. Append a soversion so the two outputs
+				// stay distinct AND the name stays a valid .so.<N> filetype
+				// (cc_shared_library rejects e.g. ".so.shared"). Prefer the
+				// cmake-recorded soversion tag; fall back to ".1".
+				so += "." + soversionFromTags(irt.Tags, "1")
+			}
+			irt.SharedLibName = so
+		}
+	case "EXECUTABLE":
+		irt.Kind = ir.KindCCBinary
+	case "INTERFACE_LIBRARY":
+		irt.Kind = ir.KindCCInterface
+	case "UTILITY":
+		// add_custom_target / add_dependencies grouping. The underlying
+		// add_custom_command is recovered separately via genrule lookup;
+		// the utility node itself has no Bazel equivalent.
+		return nil, nil
+	default:
+		if rejections != nil {
+			rejections.AddWithContext(failure.UnsupportedTargetType,
+				fmt.Sprintf("target %q has unsupported type %q", t.Name, t.Type),
+				t.Name, "")
+			return nil, nil
+		}
+		return nil, failure.New(failure.UnsupportedTargetType,
+			"target %q has unsupported type %q", t.Name, t.Type)
+	}
+
+	srcEmitPath, srcElided, err := lowerTargetSources(irt, t, tt, lc)
+	if err != nil {
+		return nil, err
+	}
+
+	targetBuildIncs, walkPkgRootForHdrs, privateIncDirs := lowerCompileGroups(irt, t, tt, lc, pchCtx)
 
 	// configure_file consumer attribution. Any target whose
 	// codemodel-recorded includes contain the cmake build dir
