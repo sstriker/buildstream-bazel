@@ -367,6 +367,23 @@ func producerOuts(t *ir.Target) []string {
 	case ir.KindGenrule:
 		return t.GenruleOuts
 	}
+	// KindCMakeConfigureFile (the configure_file LIFT tier, whose
+	// CMakeConfigureFile.Out is equally nested-build-relative) is
+	// DELIBERATELY absent, not an oversight: it is unreachable in a nested
+	// lowering today because lowerOneNestedBuild's nestedOpts does not
+	// thread LiftConfigureFile, so every nested configure_file recovery
+	// takes the BAKE tier (KindWriteFile, covered above) — which is what
+	// the gate's "configure_file channel facet, not the build-dir-bake
+	// fallback" assertion exercises. If LiftConfigureFile is ever threaded
+	// into the nested options (a natural next step now that the nested
+	// trace makes the lift recoverable there), re-homing must learn this
+	// kind in BOTH sites or the lift-tier outs silently materialize at the
+	// outer package root with collidable rule names: add the
+	// `return []string{t.CMakeConfigureFile.Out}` case here (guarded
+	// non-nil) AND a CMakeConfigureFile.Out re-anchor branch in
+	// applyNestedProducerReHome alongside the WriteFile/Genrule rename — a
+	// one-liner here alone would re-home-map the out but never apply it —
+	// then pin it with a nested-configure_file-lift fixture.
 	return nil
 }
 
