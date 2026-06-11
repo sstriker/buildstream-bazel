@@ -622,104 +622,17 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	// genexResolutions carries the genex two-pass result forward to the
 	// stamp set()-indirection pass below, so a project that needs BOTH
 	// re-lifts keeps the genex resolutions in the final result.
-	var genexResolutions map[string]cmakerun.LiteralResolution
-
-	// Coalesced warm second pass (conditional). Pass 1 can leave up to three
-	// INDEPENDENT recovery demands, each fixed by re-running the WARM outer
-	// configure (try_compile/find_package cached) with its own hook + a
-	// re-lower: unresolved genex literals (a file(GENERATE) literal probe),
-	// VCS-stamp set()-copy indirection (a NON-EXPANDED trace), and
-	// configure-time nested cmake builds (staged File API queries). Rather than
-	// pay a separate configure + full re-lower PER demand (a project hitting all
-	// three reconfigured + re-lowered three times), inject the UNION of hooks
-	// into ONE warm configure and re-lower ONCE. The hooks are orthogonal — the
-	// literal-probe file, the non-expanded trace, and the nested replies are
-	// independent outputs and none invalidates the warm cache. Each demand is
-	// skipped when absent (the common no-demand case → zero overhead), opted out
-	// (--two-pass-genex=false), or offline (no live build dir).
-	warm := a.TwoPassGenex && hostBuildDir != ""
-	needGenex := warm && literalSink.Len() > 0
-	needStamp := warm && len(stampSink) > 0 && len(recoveredStampSets) == 0
-	needNested := warm && len(nestedSink) > 0
-	var nestedRels []string
-	if needNested {
-		var staged int
-		nestedRels, staged = stageNestedFileAPIQueries(hostBuildDir, nestedSink)
-		needNested = staged > 0
-	}
-	if needGenex || needStamp || needNested {
-		opts := cmakerun.Options{
-			SourceRoot:         a.SourceRoot,
-			BuildDir:           hostBuildDir,
-			PrefixDir:          a.PrefixDir,
-			ToolchainCMakeFile: a.ToolchainCMakeFile,
-			BuildType:          a.BuildType,
-			BuildTypes:         a.BuildTypes,
-			Stdout:             os.Stderr,
-			Stderr:             os.Stderr,
+	// Coalesced warm second pass: pass 1's up-to-three independent recovery
+	// demands (unresolved genex literals, VCS-stamp set()-indirection,
+	// configure-time nested cmake) share ONE warm reconfigure + ONE re-lower
+	// instead of one each. See warm_pass.go.
+	if wr := runCoalescedWarmPass(ctx, a, hostBuildDir, literalSink, stampSink, nestedSink, recoveredStampSets, recoveredStampForwards); wr.recovered {
+		nestedBuilds = wr.nestedBuilds // read by runToIR via closure capture
+		pkg2, err2 := runToIR(nil, wr.genexResolutions, wr.sets, wr.forwards)
+		if err2 != nil {
+			return nil, err2
 		}
-		var plainTrace string
-		var demands []string
-		if needGenex {
-			opts.LiteralProbes = literalSink.Requests()
-			demands = append(demands, fmt.Sprintf("%d unresolved genex literal(s)", literalSink.Len()))
-		}
-		if needStamp {
-			plainTrace = filepath.Join(hostBuildDir, "trace-plain.jsonl")
-			opts.TracePath = plainTrace
-			opts.TraceNonExpanded = true
-			demands = append(demands, fmt.Sprintf("%d VCS-stamp var(s)", len(stampSink)))
-		}
-		if needNested {
-			demands = append(demands, fmt.Sprintf("%d nested cmake build(s)", len(nestedRels)))
-		}
-		fmt.Fprintf(os.Stderr, "convert-element-cmake: warm second configure for: %s.\n", strings.Join(demands, ", "))
-		if _, cfgErr := cmakerun.Configure(ctx, opts); cfgErr != nil {
-			// Non-fatal: keep pass-1's result for every demand (exactly as
-			// without the two-pass feature). The failure is loud, not silent.
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: warm second configure failed (%v); keeping pass-1 result.\n", cfgErr)
-		} else {
-			recovered := false
-			if needGenex {
-				if resolutions, readErr := cmakerun.ReadLiteralProbe(hostBuildDir); readErr != nil {
-					fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading literal-probe output failed (%v); genex literals stay unresolved.\n", readErr)
-				} else if len(resolutions) > 0 {
-					genexResolutions = resolutions
-					recovered = true
-				}
-			}
-			// Stamp sets: the freshly recovered non-expanded-trace copies when
-			// the stamp demand fired, else the pass-1-abort recovery's copies
-			// (mutually exclusive: needStamp requires recoveredStampSets empty).
-			setsToUse := recoveredStampSets
-			forwardsToUse := recoveredStampForwards
-			if needStamp {
-				if raw, readErr := os.ReadFile(plainTrace); readErr != nil {
-					fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading non-expanded trace failed (%v); keeping direct stamp vars only.\n", readErr)
-				} else {
-					sets := shadow.ExtractSetAssignments(raw, a.SourceRoot)
-					forwards := shadow.ExtractParentScopeForwards(raw, a.SourceRoot)
-					if len(sets) > 0 || len(forwards) > 0 {
-						setsToUse = sets
-						forwardsToUse = forwards
-						recovered = true
-					}
-				}
-			}
-			if needNested {
-				if nbs := harvestNestedBuilds(ctx, a, hostBuildDir, nestedRels, nestedSink); len(nbs) > 0 {
-					nestedBuilds = nbs
-					recovered = true
-				}
-			}
-			if recovered {
-				pkg2, err2 := runToIR(nil, genexResolutions, setsToUse, forwardsToUse)
-				if err2 != nil {
-					return nil, err2
-				}
-				pkg = pkg2
-			}
-		}
+		pkg = pkg2
 	}
 
 	// Per-config bake passes (conditional, cold): a multi-config configure
