@@ -33,19 +33,6 @@ transition cleanly.
   Ubuntu 24.04 runners; bazel 9 toolchain expectations). These don't reflect
   product issues but they make PR review noisier than it should be.
 
-- **Wire the broader cmake render gates into CI.** The core render gates run in
-  the CI `bazel-e2e` job via the `e2e-meta-cmake-render-gates` aggregate
-  (Makefile `RENDER_GATES`): `meta-cmake-genex-probe`, `meta-file-generate`,
-  `meta-cmake-genex-literal-twopass`, `meta-cmake-fileset-compiled-lib`,
-  `meta-cmake-stamp-volatile`, and the two `meta-cmake-vcs-stamp{,-indirect}`
-  gates. The aggregate guards on cmake + ninja up front (each gate self-skips
-  its bazel≥9 build half), so it no-ops cleanly without the toolchain.
-  **Follow-up:** the broader `meta-cmake-*.sh` family (install-export
-  declarative, sanitizer-features, interface-genex-defines,
-  probe-genex-object/utility, platform-partition-tier2, …) is still local-only;
-  add each to `RENDER_GATES` once verified CI-safe (skip-clean + no
-  heavy/special-toolchain or flaky-fetch dependence). Surfaced in #366 review.
-
 ## Next
 
 - **Reproducible `find_package` host-installs.** The grpc/protobuf build-lens
