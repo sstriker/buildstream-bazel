@@ -662,6 +662,32 @@ trees, optional-feature deps, codegen instances). Each member's
 
 ## Later (research / open questions)
 
+- **Conversion-latency: AST-direct BUILD emit (drop the text→Parse→Format
+  round-trip).** Profiling real corpus converts (`--cpuprofile` + `--out-timings`)
+  showed cmake's own configure dominates wall-clock (80–90% on small projects,
+  and for probe-heavy giants like SDL the `try_compile` configure is ~80% — both
+  external/unaddressable converter-side). Of the converter's *own* Go time, two
+  costs were addressed: redundant trace re-parsing (`ParseTrace` memoize, ~37%
+  off translation) and the generated-wrapper include regexp (substring
+  pre-filter, ~0.3s on wrapper/config-heavy projects). The remaining universal
+  Go cost is the BUILD emitter: `emit/bazel/emit.go` renders text via
+  `text/template`, then runs it back through buildtools `Parse + Format` to
+  canonicalize — so `build.Parse` re-parses text the converter just generated,
+  ~20% of Go translation on every project (more on emit-heavy ones, ~37% on
+  cryptoauthlib). The fix is the buildtools-AST-direct emit the package header
+  comment already anticipates ("the plan calls for a buildtools-AST spike… it
+  replaces the template here without changing the Emit signature"): build the
+  `*build.File` AST and `Format` it, skipping the re-parse. Bounded to one
+  package with a stable `Emit` signature, and the render gates pin BUILD output
+  byte-for-byte, so any formatting drift fails a gate immediately — the safety
+  net that makes an emitter rewrite tractable. Sibling, deferred: **coalescing
+  the warm second passes** (genex-literal / stamp-set-trace / nested-cmake) into
+  one combined warm configure + one re-lower — feasible (the hooks are
+  orthogonal and none invalidates the try_compile cache) but only pays off when
+  ≥2 warm passes co-fire on one project, which is likely rare; revisit only with
+  a corpus survey showing multi-pass co-fire is common enough to justify the
+  orchestration risk.
+
 - **execute_process file-producing lift — keyword expansion (fixture-driven).**
   `liftFileProducing` conservatively refuses WORKING_DIRECTORY / ENVIRONMENT /
   TIMEOUT / INPUT_FILE / ERROR_FILE (execute_process.go ~1620-1630); every
