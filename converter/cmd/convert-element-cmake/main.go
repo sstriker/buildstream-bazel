@@ -1332,6 +1332,15 @@ func run(a cli.Args) error {
 	if err != nil {
 		return err
 	}
+	// --out-debug-bundle: capture the converter's primary inputs (File API
+	// query+reply, trace, ninja, compile db, vars dump, cache, configure
+	// log) for the outer AND every nested/recursive configure, for offline
+	// debugging/replay. Placed after the lower passes so the warm nested
+	// re-configures have written their replies + traces; soft — a capture
+	// failure warns but never fails an otherwise-successful conversion.
+	if a.OutDebugBundle != "" {
+		captureDebugBundle(a.OutDebugBundle, hostBuildDir, replyDir)
+	}
 	if err := writeRejectionsAndVerify(a, in.rejections, hostBuildDir, pkg); err != nil {
 		return err
 	}
