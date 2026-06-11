@@ -93,6 +93,42 @@ grep -q 'detected but not lifted.*subsubbuild' "$work_dir/convert.stderr" \
 
 echo "ok  meta-cmake-nested-cmake: nested configure+build lifted — targets merged, archive wired, generated header baked (chain depth 2 incl.)"
 
+# --- configure_file LIFT tier inside nested lowerings ---
+# A second convert under --lift-configure-file (the operator opt-in,
+# threaded into the nested options): the nested and GRANDCHILD
+# configure_file recoveries emit the dynamic values-dict
+# cmake_configure_file rule instead of the convert-time byte bake, with
+# the template umbrella-re-anchored at the outer label root and the out
+# re-homed through the chain. Render-only assertions — the build half
+# below stays on the default (bake) pass; lift-tier builds (which need
+# //tools:cmake-configure-file staged) are exercised by the write-a
+# gates.
+"$bin_dir/convert-element-cmake" \
+    --source-root "$fixture" \
+    --lift-configure-file \
+    --out-build "$work_dir/lift/BUILD.bazel" \
+    >"$work_dir/lift-convert.stdout" 2>"$work_dir/lift-convert.stderr" || {
+    echo "FAIL: convert-element-cmake --lift-configure-file exited non-zero"
+    sed 's/^/   stderr: /' "$work_dir/lift-convert.stderr"
+    exit 1
+}
+lift_build="$work_dir/lift/BUILD.bazel"
+lfail() {
+    echo "FAIL: $1"
+    echo "   --- lift BUILD.bazel ---"
+    sed 's/^/   /' "$lift_build" 2>/dev/null || true
+    exit 1
+}
+grep -qF 'cmake_configure_file(' "$lift_build" || lfail "lift tier didn't fire inside the nested lowering"
+grep -qF 'out = "subbuild/sub_config.h"' "$lift_build" || lfail "nested lift-tier out not re-homed under subbuild/"
+grep -qF 'template = "sub/sub_config.h.in"' "$lift_build" || lfail "nested lift-tier template not umbrella-re-anchored at the outer label root"
+grep -qF 'values = {"SUB_VALUE": "7"}' "$lift_build" || lfail "nested lift-tier values dict missing — the dynamic substitution payoff"
+grep -qF 'out = "subbuild/subsubbuild/subsub_config.h"' "$lift_build" || lfail "grandchild lift-tier out not re-homed through the chain"
+grep -qF 'template = "sub/subsub/subsub_config.h.in"' "$lift_build" || lfail "grandchild lift-tier template not umbrella-re-anchored"
+grep -qF 'values = {"SUBSUB_VALUE": "11"}' "$lift_build" || lfail "grandchild lift-tier values dict missing"
+
+echo "ok  meta-cmake-nested-cmake: configure_file LIFT tier fires inside nested lowerings (chain depth 2 incl.)"
+
 # --- Bazel-build half ---
 if command -v bazel >/dev/null; then
     BZL=bazel
