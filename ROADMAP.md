@@ -15,10 +15,12 @@ transition cleanly.
   **blocking** — every function is held to the thresholds, so new complexity
   regressions fail the build. ONE function remains genuinely over threshold
   and carries the documented `//nolint` directive (keyed to this item):
-  `lower.lowerTarget` (cognitive **754** / cyclomatic 322 — the outlier; its
-  locals interleave across sections rather than flowing linearly, so the
-  verbatim-extraction pattern the other five yielded to needs more
-  deliberate seam-picking — budget multiple slices). (`emit/bazel`'s
+  `lower.lowerTarget` (now cognitive ~353, down from 754 across three
+  slices — link attribution, the per-source walk, and the
+  CTest/multi-language tail are extracted; the walk
+  (`lowerTargetSources`) carries the burndown's second directive and
+  shrinks next; the remaining inline mass is the include/compile-group
+  region and the header-staging family). (`emit/bazel`'s
   `planSplit` / `rewriteTarget`, `write-a`'s `main`,
   `convert-element-cmake`'s `run`, and `lower.ToIR` are done — extracted
   and de-nolinted.) **What's left:** break `lowerTarget` down via

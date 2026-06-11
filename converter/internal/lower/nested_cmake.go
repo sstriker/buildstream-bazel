@@ -262,7 +262,9 @@ func mergeNestedPackage(pkg *ir.Package, nestedPkg *ir.Package, nb NestedBuildIn
 		// include a sibling source dir under the outer root. On-disk
 		// existence is the discriminator: a dir present under the outer
 		// source root is a source include and stays; one present under
-		// the nested build dir re-homes to its <buildRel>/ form.
+		// the nested build dir re-homes to its <buildRel>/ form. A name
+		// present under BOTH resolves as the source include (the check
+		// order's tie-break — the conservative default).
 		for i, inc := range t.Includes {
 			if inc == "." {
 				t.Includes[i] = nb.BuildRel

@@ -3109,27 +3109,30 @@ func lowerLinkAttribution(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc 
 	}
 }
 
-// lowerTarget is a tracked complexity giant (cognitive ~548, down from 754 —
-// the highest in the tree). Breaking it down into focused, behavior-preserving
-// sub-pass extractions (link-fragment attribution, compile-group lowering,
-// generated-source handling) is its own ROADMAP "complexity lens" burndown
-// pass; grandfathered here so the lens can gate as blocking on every other
-// function. Remove the directive below as the function comes back under
-// threshold. See ROADMAP.md.
+// lowerTargetSources is lowerTarget's per-source walk: it classifies and
+// re-anchors every codemodel source onto irt (srcs / hdrs / per-platform
+// select() arms), recovers generated sources through the codegen
+// machinery, applies the missing-source elision and the non-cc-extension
+// catch-all, and stamps the per-class audit tags. Returns the codemodel
+// source-index → emitted-srcs-path map (splitCompileGroups partitions the
+// wrapper's srcs back into per-compile-group sub-libraries with it) and
+// whether any compiled source was ELIDED (the srcs-less binary/test
+// refusal gate). Bodies and rationale comments are verbatim from the
+// original inline region; the lc/tt destructure and the umbrella/reanchor
+// derivation mirror lowerTarget's header so the code reads identically.
 //
-//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
-func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Target, error) {
-	// Unpack the bundled inputs into the locals the body uses: lc is
-	// invariant across the per-target loop, tt is this target's trace.
-	cmakeSrc, cmakeBuild, hostSrc, hostPrefix := lc.cmakeSrc, lc.cmakeBuild, lc.hostSrc, lc.hostPrefix
+// The walk is itself still over the lens thresholds (deep per-source
+// classification nesting) — it carries the lowerTarget burndown's
+// directive and shrinks in subsequent slices.
+//
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant (lowerTarget burndown); see ROADMAP "complexity lens".
+func lowerTargetSources(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (map[int]string, bool, error) {
+	cmakeSrc, cmakeBuild, hostSrc := lc.cmakeSrc, lc.cmakeBuild, lc.hostSrc
 	hostSrcOnDisk := lc.hostSrcOnDisk
-	// umbrellaPrefix is the cmakeSrc-relative-to-labelRoot segment when the
-	// workspace-root umbrella promoted labelRoot above cmakeSrc (LLVM:
-	// labelRoot=llvm-project/, cmakeSrc=llvm-project/llvm/ → "llvm"). srcs
-	// are already re-anchored to labelRoot in the source loop; hdrs and
-	// source-tree includes must get the same prefix so a BUILD at labelRoot
-	// resolves them consistently. Empty in the common (non-promoted) case —
-	// where hostSrc == cmakeSrc — so behavior there is unchanged.
+	g, cc := lc.g, lc.cc
+	idToName := lc.idToName
+	generatedSources, rejections := lc.generatedSources, lc.rejections
+	workspaceRoot := lc.workspaceRoot
 	umbrellaPrefix := ""
 	if hostSrc != "" && hostSrc != cmakeSrc {
 		if rel, inside := relativeIfInside(hostSrc, cmakeSrc); inside && rel != "" && rel != "." {
@@ -3142,108 +3145,6 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		}
 		return rel
 	}
-	// pchCtx drives the target_precompile_headers forced-include lift
-	// (pch.go) for this target's compile groups — both the main path and
-	// the per-language splitCompileGroups subs.
-	pchCtx := pchLiftCtx{
-		resolve:    lc.pchResolve,
-		cmakeSrc:   cmakeSrc,
-		cmakeBuild: cmakeBuild,
-		reanchor:   reanchor,
-		pkgPath:    lc.bazelPackagePath,
-	}
-	g, cc := lc.g, lc.cc
-	idToName, utilityIDs := lc.idToName, lc.utilityIDs
-	imports, tests := lc.imports, lc.tests
-	configureFiles, fileGenerates, executeProcesses := lc.configureFiles, lc.fileGenerates, lc.executeProcesses
-	workspaceRoot := lc.workspaceRoot
-	bazelPackagePath := lc.bazelPackagePath
-	generatedSources, rejections := lc.generatedSources, lc.rejections
-	privateIncludeDirs, traceLinkScope := tt.privateIncludeDirs, tt.traceLinkScope
-	publicIncludeDirs, includeDirsGlobal := tt.publicIncludeDirs, tt.includeDirsGlobal
-	interfaceIncludeDirs := tt.interfaceIncludeDirs
-	platformConditionalSrcs, platformConditionalSrcsToAdd := tt.platformConditionalSrcs, tt.platformConditionalSrcsToAdd
-
-	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
-	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
-	// integration and have no Bazel equivalent. Skip them silently.
-	if t.IsGeneratorProvided {
-		return nil, nil
-	}
-
-	irt := &ir.Target{Name: t.Name}
-
-	// Provenance: project the per-target Backtrace index into a
-	// {File, Line, Command} triple from the BacktraceGraph the
-	// target's JSON file carries. Phase 1 task 1 of the
-	// generator-parity uplift (ROADMAP.md). Emit-side gating
-	// renders this as a leading comment when EmitProvenance is
-	// on. CallSite additionally records the user-level macro/
-	// function invocation when the declaring command ran inside
-	// one (comment recovery prefers it).
-	irt.Provenance, irt.CallSite = targetProvenance(t, cmakeSrc, cmakeBuild)
-
-	switch t.Type {
-	case "STATIC_LIBRARY":
-		irt.Kind = ir.KindCCLibrary
-		irt.Linkstatic = true
-	case "OBJECT_LIBRARY":
-		// cmake OBJECT libs compile sources to .o without
-		// archiving. Consumers reference $<TARGET_OBJECTS:t>
-		// to inline the objects into a downstream artifact.
-		// Bazel analog: cc_library with alwayslink=True so
-		// the objects always link into transitive consumers
-		// (matches cmake's "every consumer drags every
-		// object" semantics). linkstatic stays false — there's
-		// no archive; alwayslink is what carries the inline
-		// behavior.
-		irt.Kind = ir.KindCCLibrary
-		irt.Alwayslink = true
-	case "SHARED_LIBRARY", "MODULE_LIBRARY":
-		irt.Kind = ir.KindCCLibrary
-		// Faithful-SHARED (opt-in): mark the impl so emit renders a sibling
-		// cc_shared_library producing the real .so. Use the FULL cmake artifact
-		// name (NameOnDisk, e.g. libbrotlidec.so.1.2.0) — both because that's
-		// what cmake actually produces (versioned soname) and because it must
-		// NOT collide with the impl cc_library's auto-generated lib<target>.so
-		// dynamic output (a cc_shared_library and a cc_library can't both emit
-		// the same path — the brotli collision). When the unversioned NameOnDisk
-		// WOULD equal lib<target>.so, suffix it so the two outputs stay distinct.
-		if lc.emitSharedLibraries {
-			so := t.NameOnDisk
-			if so == "" {
-				so = "lib" + t.Name + ".so"
-			}
-			if so == "lib"+t.Name+".so" {
-				// The unversioned name collides with the impl cc_library's auto
-				// lib<target>.so output. Append a soversion so the two outputs
-				// stay distinct AND the name stays a valid .so.<N> filetype
-				// (cc_shared_library rejects e.g. ".so.shared"). Prefer the
-				// cmake-recorded soversion tag; fall back to ".1".
-				so += "." + soversionFromTags(irt.Tags, "1")
-			}
-			irt.SharedLibName = so
-		}
-	case "EXECUTABLE":
-		irt.Kind = ir.KindCCBinary
-	case "INTERFACE_LIBRARY":
-		irt.Kind = ir.KindCCInterface
-	case "UTILITY":
-		// add_custom_target / add_dependencies grouping. The underlying
-		// add_custom_command is recovered separately via genrule lookup;
-		// the utility node itself has no Bazel equivalent.
-		return nil, nil
-	default:
-		if rejections != nil {
-			rejections.AddWithContext(failure.UnsupportedTargetType,
-				fmt.Sprintf("target %q has unsupported type %q", t.Name, t.Type),
-				t.Name, "")
-			return nil, nil
-		}
-		return nil, failure.New(failure.UnsupportedTargetType,
-			"target %q has unsupported type %q", t.Name, t.Type)
-	}
-
 	// Build the source-index → in-compile-group set once per target.
 	// Walking t.CompileGroups[].SourceIndexes per source visit was
 	// O(N*M) where N is sources and M is compile-group entries; for
@@ -3387,7 +3288,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					}
 					continue
 				}
-				return nil, err
+				return nil, false, err
 			}
 			consumesCodegen = true
 			// Generated output: drop a non-cc build artifact (VTK wrap-hierarchy
@@ -3561,7 +3462,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					t.Name, srcPath)
 				continue
 			}
-			return nil, failure.New(failure.UnsupportedSourcePath,
+			return nil, false, failure.New(failure.UnsupportedSourcePath,
 				"target %q references source %q at an absolute path outside the project source tree (%s) and the build tree (%s); Bazel labels must be package-relative",
 				t.Name, srcPath, labelRoot, cmakeBuild)
 		}
@@ -3587,7 +3488,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					t.Name, src.Path)
 				continue
 			}
-			return nil, failure.New(failure.UnsupportedSourcePath,
+			return nil, false, failure.New(failure.UnsupportedSourcePath,
 				"target %q references source %q whose path escapes the project source tree via `..` segments; Bazel labels must stay within the package",
 				t.Name, src.Path)
 		}
@@ -3602,7 +3503,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 					t.Name, src.Path)
 				continue
 			}
-			return nil, failure.New(failure.UnsupportedSourcePath,
+			return nil, false, failure.New(failure.UnsupportedSourcePath,
 				"target %q references source %q which normalizes to an empty Bazel label",
 				t.Name, src.Path)
 		}
@@ -3721,6 +3622,266 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		// A non-cc-input source (e.g. a VTK wrap-hierarchy .args/.data build-order
 		// artifact cmake filed under the module target) was dropped from cc srcs.
 		irt.Tags = append(irt.Tags, "cmake-dropped-non-cc-src")
+	}
+
+	return srcEmitPath, elidedBuildDirSrc || elidedMissingSrc || elidedCompilerArtifact, nil
+}
+
+// finalizeLoweredTarget is lowerTarget's tail: the CTest classification
+// (an EXECUTABLE registered via add_test() rewrites into cc_test rules
+// and drops the binary), the multi-language compile-group split, the
+// platform-conditional source partition (Tier 1 move + Tier 2
+// injection), and the OpenMP link-flag mirror. Bodies and rationale
+// comments are verbatim from the original inline region.
+func finalizeLoweredTarget(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc targetLowerCtx, srcEmitPath map[int]string, pchCtx pchLiftCtx) (*ir.Target, error) {
+	cmakeSrc, cmakeBuild := lc.cmakeSrc, lc.cmakeBuild
+	cc, tests := lc.cc, lc.tests
+	platformConditionalSrcs, platformConditionalSrcsToAdd := tt.platformConditionalSrcs, tt.platformConditionalSrcsToAdd
+	// CTest classification. An EXECUTABLE registered via add_test() is
+	// rewritten as one or more cc_test rules — one per registration —
+	// each sharing the cc_binary's srcs/hdrs/copts/deps. The cc_binary
+	// itself is dropped (return nil) since the test executable is
+	// addressable as a cc_test label after rewriting.
+	if irt.Kind == ir.KindCCBinary && tests != nil {
+		regs := tests.Lookup(t.Name)
+		if len(regs) > 0 {
+			for _, reg := range regs {
+				cct := *irt
+				cct.Name = reg.Name
+				cct.Kind = ir.KindCCTest
+				cct.TestArgs = append([]string(nil), reg.Args...)
+				cct.TestEnv = append([]string(nil), reg.Env...)
+				cct.TestData = append([]string(nil), reg.Data...)
+				cct.TestTimeout = reg.Timeout
+				if len(reg.Tags) > 0 {
+					seen := make(map[string]bool, len(cct.Tags)+len(reg.Tags))
+					merged := append([]string(nil), cct.Tags...)
+					for _, x := range cct.Tags {
+						seen[x] = true
+					}
+					for _, x := range reg.Tags {
+						if seen[x] {
+							continue
+						}
+						seen[x] = true
+						merged = append(merged, x)
+					}
+					cct.Tags = merged
+				}
+				cc.Tests = append(cc.Tests, cct)
+			}
+			return nil, nil
+		}
+	}
+
+	// Multi-language structural split: cmake records one
+	// CompileGroup per language with that language's flags. A
+	// single Bazel cc_library can't carry per-source-language
+	// copts, so split into a wrapper cc_library (the user-
+	// visible target name, deps-only) plus one private
+	// sub-library per language with that language's srcs +
+	// flags. Single-language targets stay one cc_library; this
+	// branch fires for either multi-language CGs OR multi-CG-
+	// per-language with differing Defines / CompileCommandFragments
+	// (Phase 1 task 3: per-source-defines case where cmake's
+	// codemodel partitions sources via CompileGroupIndex).
+	subsBefore := len(cc.Subs)
+	if shouldSplitCompileGroups(t) {
+		if err := splitCompileGroups(t, irt, cc, cmakeSrc, cmakeBuild, srcEmitPath, pchCtx); err != nil {
+			return nil, err
+		}
+	}
+
+	// #217 Tier 1: partition flat Srcs by trace-recovered
+	// platform conditionality. For each src whose trace
+	// attribution names a Bazel constraint label, move it from
+	// .Srcs to .PerPlatform["srcs"][selectKey] so the emitter
+	// renders a select() arm. Sources without an attribution
+	// stay in flat srcs, preserving byte-stable emission for
+	// projects without platform conditionals.
+	//
+	// Apply to the wrapper AND to any sub-libraries that
+	// splitCompileGroups just appended to cc.Subs. The wrapper
+	// case covers single-language targets (where irt.Srcs
+	// carries everything); the sub-library case covers
+	// multi-language targets (where splitCompileGroups cleared
+	// irt.Srcs and distributed sources across per-language sub-
+	// libraries — those subs carry the conditional sources now
+	// and need partitioning too).
+	if len(platformConditionalSrcs) > 0 {
+		partitionPlatformConditionalSrcs(irt, platformConditionalSrcs)
+		for i := subsBefore; i < len(cc.Subs); i++ {
+			partitionPlatformConditionalSrcs(&cc.Subs[i], platformConditionalSrcs)
+		}
+	}
+	// Tier 2 injection: append sources Tier 2 recovered from
+	// the skipped arms of platform-conditional if-blocks. These
+	// don't live in irt.Srcs (cmake never traced them), so the
+	// partition pass above leaves them un-handled — addPlatform
+	// ConditionalSrcsToAdd writes them straight into
+	// PerPlatform["srcs"][selectKey] for each affected target.
+	//
+	// We add only to the wrapper target — multi-language splits
+	// distribute Tier-1 sources across per-language sub-libs by
+	// CompileGroupIndex (which cmake's codemodel populates from
+	// the executed configure). Tier 2 sources have no compile-
+	// group attribution by definition, so the wrapper is the
+	// only consistent home for them. If a downstream needs
+	// per-language Tier 2 attribution, a Tier 3 pass would have
+	// to re-derive the language from source extension.
+	if len(platformConditionalSrcsToAdd) > 0 {
+		addPlatformConditionalSrcs(irt, platformConditionalSrcsToAdd)
+	}
+
+	// OpenMP (issue #313): `-fopenmp` is both a compile AND a link flag —
+	// gcc/clang need it at link time to pull in the OpenMP runtime
+	// (libgomp / libomp), or consumers hit undefined references
+	// (GOMP_parallel, __kmpc_fork_call, ...). cmake records it in the
+	// compile group's flags (→ copts) but threads the link side through the
+	// OpenMP::OpenMP_CXX IMPORTED target; when that import isn't resolved
+	// (no manifest entry) the link flag is lost. Mirror it onto linkopts.
+	propagateOpenMPLinkFlag(irt)
+
+	return irt, nil
+}
+
+// lowerTarget is a tracked complexity giant (cognitive ~353, down from 754 —
+// the highest in the tree). Breaking it down into focused, behavior-preserving
+// sub-pass extractions (link-fragment attribution, compile-group lowering,
+// generated-source handling) is its own ROADMAP "complexity lens" burndown
+// pass; grandfathered here so the lens can gate as blocking on every other
+// function. Remove the directive below as the function comes back under
+// threshold. See ROADMAP.md.
+//
+//nolint:gocognit,gocyclo,cyclop,maintidx,funlen // tracked giant; see doc above + ROADMAP "complexity lens".
+func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Target, error) {
+	// Unpack the bundled inputs into the locals the body uses: lc is
+	// invariant across the per-target loop, tt is this target's trace.
+	cmakeSrc, cmakeBuild, hostSrc, hostPrefix := lc.cmakeSrc, lc.cmakeBuild, lc.hostSrc, lc.hostPrefix
+	hostSrcOnDisk := lc.hostSrcOnDisk
+	// umbrellaPrefix is the cmakeSrc-relative-to-labelRoot segment when the
+	// workspace-root umbrella promoted labelRoot above cmakeSrc (LLVM:
+	// labelRoot=llvm-project/, cmakeSrc=llvm-project/llvm/ → "llvm"). srcs
+	// are already re-anchored to labelRoot in the source loop; hdrs and
+	// source-tree includes must get the same prefix so a BUILD at labelRoot
+	// resolves them consistently. Empty in the common (non-promoted) case —
+	// where hostSrc == cmakeSrc — so behavior there is unchanged.
+	umbrellaPrefix := ""
+	if hostSrc != "" && hostSrc != cmakeSrc {
+		if rel, inside := relativeIfInside(hostSrc, cmakeSrc); inside && rel != "" && rel != "." {
+			umbrellaPrefix = rel
+		}
+	}
+	reanchor := func(rel string) string {
+		if umbrellaPrefix != "" && rel != "" {
+			return filepath.Join(umbrellaPrefix, rel)
+		}
+		return rel
+	}
+	// pchCtx drives the target_precompile_headers forced-include lift
+	// (pch.go) for this target's compile groups — both the main path and
+	// the per-language splitCompileGroups subs.
+	pchCtx := pchLiftCtx{
+		resolve:    lc.pchResolve,
+		cmakeSrc:   cmakeSrc,
+		cmakeBuild: cmakeBuild,
+		reanchor:   reanchor,
+		pkgPath:    lc.bazelPackagePath,
+	}
+	cc := lc.cc
+	idToName, utilityIDs := lc.idToName, lc.utilityIDs
+	imports := lc.imports
+	configureFiles, fileGenerates, executeProcesses := lc.configureFiles, lc.fileGenerates, lc.executeProcesses
+	workspaceRoot := lc.workspaceRoot
+	bazelPackagePath := lc.bazelPackagePath
+	rejections := lc.rejections
+	privateIncludeDirs, traceLinkScope := tt.privateIncludeDirs, tt.traceLinkScope
+	publicIncludeDirs, includeDirsGlobal := tt.publicIncludeDirs, tt.includeDirsGlobal
+	interfaceIncludeDirs := tt.interfaceIncludeDirs
+
+	// Generator-provided targets (ZERO_CHECK, INSTALL, PACKAGE,
+	// RUN_TESTS, etc.) are inserted by cmake itself for IDE
+	// integration and have no Bazel equivalent. Skip them silently.
+	if t.IsGeneratorProvided {
+		return nil, nil
+	}
+
+	irt := &ir.Target{Name: t.Name}
+
+	// Provenance: project the per-target Backtrace index into a
+	// {File, Line, Command} triple from the BacktraceGraph the
+	// target's JSON file carries. Phase 1 task 1 of the
+	// generator-parity uplift (ROADMAP.md). Emit-side gating
+	// renders this as a leading comment when EmitProvenance is
+	// on. CallSite additionally records the user-level macro/
+	// function invocation when the declaring command ran inside
+	// one (comment recovery prefers it).
+	irt.Provenance, irt.CallSite = targetProvenance(t, cmakeSrc, cmakeBuild)
+
+	switch t.Type {
+	case "STATIC_LIBRARY":
+		irt.Kind = ir.KindCCLibrary
+		irt.Linkstatic = true
+	case "OBJECT_LIBRARY":
+		// cmake OBJECT libs compile sources to .o without
+		// archiving. Consumers reference $<TARGET_OBJECTS:t>
+		// to inline the objects into a downstream artifact.
+		// Bazel analog: cc_library with alwayslink=True so
+		// the objects always link into transitive consumers
+		// (matches cmake's "every consumer drags every
+		// object" semantics). linkstatic stays false — there's
+		// no archive; alwayslink is what carries the inline
+		// behavior.
+		irt.Kind = ir.KindCCLibrary
+		irt.Alwayslink = true
+	case "SHARED_LIBRARY", "MODULE_LIBRARY":
+		irt.Kind = ir.KindCCLibrary
+		// Faithful-SHARED (opt-in): mark the impl so emit renders a sibling
+		// cc_shared_library producing the real .so. Use the FULL cmake artifact
+		// name (NameOnDisk, e.g. libbrotlidec.so.1.2.0) — both because that's
+		// what cmake actually produces (versioned soname) and because it must
+		// NOT collide with the impl cc_library's auto-generated lib<target>.so
+		// dynamic output (a cc_shared_library and a cc_library can't both emit
+		// the same path — the brotli collision). When the unversioned NameOnDisk
+		// WOULD equal lib<target>.so, suffix it so the two outputs stay distinct.
+		if lc.emitSharedLibraries {
+			so := t.NameOnDisk
+			if so == "" {
+				so = "lib" + t.Name + ".so"
+			}
+			if so == "lib"+t.Name+".so" {
+				// The unversioned name collides with the impl cc_library's auto
+				// lib<target>.so output. Append a soversion so the two outputs
+				// stay distinct AND the name stays a valid .so.<N> filetype
+				// (cc_shared_library rejects e.g. ".so.shared"). Prefer the
+				// cmake-recorded soversion tag; fall back to ".1".
+				so += "." + soversionFromTags(irt.Tags, "1")
+			}
+			irt.SharedLibName = so
+		}
+	case "EXECUTABLE":
+		irt.Kind = ir.KindCCBinary
+	case "INTERFACE_LIBRARY":
+		irt.Kind = ir.KindCCInterface
+	case "UTILITY":
+		// add_custom_target / add_dependencies grouping. The underlying
+		// add_custom_command is recovered separately via genrule lookup;
+		// the utility node itself has no Bazel equivalent.
+		return nil, nil
+	default:
+		if rejections != nil {
+			rejections.AddWithContext(failure.UnsupportedTargetType,
+				fmt.Sprintf("target %q has unsupported type %q", t.Name, t.Type),
+				t.Name, "")
+			return nil, nil
+		}
+		return nil, failure.New(failure.UnsupportedTargetType,
+			"target %q has unsupported type %q", t.Name, t.Type)
+	}
+
+	srcEmitPath, srcElided, err := lowerTargetSources(irt, t, tt, lc)
+	if err != nil {
+		return nil, err
 	}
 
 	// Build-dir-rooted includes (relative to the cmake build
@@ -4524,8 +4685,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	// binary (one that links a dep providing main, with nothing
 	// elided) is left untouched.
 	if (irt.Kind == ir.KindCCBinary || irt.Kind == ir.KindCCTest) &&
-		len(irt.Srcs) == 0 &&
-		(elidedBuildDirSrc || elidedMissingSrc || elidedCompilerArtifact) {
+		len(irt.Srcs) == 0 && srcElided {
 		msg := fmt.Sprintf("target %q (%s) has no srcs after lowering — every compiled source was elided (build-dir-only generated file with no recovered generator edge, missing-on-disk source, or compiler artifact); emitting it would produce a Bazel-invalid srcs-less rule", t.Name, t.Type)
 		if rejections != nil {
 			rejections.AddWithContext(failure.AllSourcesElided, msg, t.Name, "")
@@ -4661,112 +4821,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		irt.LinkLanguage = t.CompileGroups[0].Language
 	}
 
-	// CTest classification. An EXECUTABLE registered via add_test() is
-	// rewritten as one or more cc_test rules — one per registration —
-	// each sharing the cc_binary's srcs/hdrs/copts/deps. The cc_binary
-	// itself is dropped (return nil) since the test executable is
-	// addressable as a cc_test label after rewriting.
-	if irt.Kind == ir.KindCCBinary && tests != nil {
-		regs := tests.Lookup(t.Name)
-		if len(regs) > 0 {
-			for _, reg := range regs {
-				cct := *irt
-				cct.Name = reg.Name
-				cct.Kind = ir.KindCCTest
-				cct.TestArgs = append([]string(nil), reg.Args...)
-				cct.TestEnv = append([]string(nil), reg.Env...)
-				cct.TestData = append([]string(nil), reg.Data...)
-				cct.TestTimeout = reg.Timeout
-				if len(reg.Tags) > 0 {
-					seen := make(map[string]bool, len(cct.Tags)+len(reg.Tags))
-					merged := append([]string(nil), cct.Tags...)
-					for _, x := range cct.Tags {
-						seen[x] = true
-					}
-					for _, x := range reg.Tags {
-						if seen[x] {
-							continue
-						}
-						seen[x] = true
-						merged = append(merged, x)
-					}
-					cct.Tags = merged
-				}
-				cc.Tests = append(cc.Tests, cct)
-			}
-			return nil, nil
-		}
-	}
-
-	// Multi-language structural split: cmake records one
-	// CompileGroup per language with that language's flags. A
-	// single Bazel cc_library can't carry per-source-language
-	// copts, so split into a wrapper cc_library (the user-
-	// visible target name, deps-only) plus one private
-	// sub-library per language with that language's srcs +
-	// flags. Single-language targets stay one cc_library; this
-	// branch fires for either multi-language CGs OR multi-CG-
-	// per-language with differing Defines / CompileCommandFragments
-	// (Phase 1 task 3: per-source-defines case where cmake's
-	// codemodel partitions sources via CompileGroupIndex).
-	subsBefore := len(cc.Subs)
-	if shouldSplitCompileGroups(t) {
-		if err := splitCompileGroups(t, irt, cc, cmakeSrc, cmakeBuild, srcEmitPath, pchCtx); err != nil {
-			return nil, err
-		}
-	}
-
-	// #217 Tier 1: partition flat Srcs by trace-recovered
-	// platform conditionality. For each src whose trace
-	// attribution names a Bazel constraint label, move it from
-	// .Srcs to .PerPlatform["srcs"][selectKey] so the emitter
-	// renders a select() arm. Sources without an attribution
-	// stay in flat srcs, preserving byte-stable emission for
-	// projects without platform conditionals.
-	//
-	// Apply to the wrapper AND to any sub-libraries that
-	// splitCompileGroups just appended to cc.Subs. The wrapper
-	// case covers single-language targets (where irt.Srcs
-	// carries everything); the sub-library case covers
-	// multi-language targets (where splitCompileGroups cleared
-	// irt.Srcs and distributed sources across per-language sub-
-	// libraries — those subs carry the conditional sources now
-	// and need partitioning too).
-	if len(platformConditionalSrcs) > 0 {
-		partitionPlatformConditionalSrcs(irt, platformConditionalSrcs)
-		for i := subsBefore; i < len(cc.Subs); i++ {
-			partitionPlatformConditionalSrcs(&cc.Subs[i], platformConditionalSrcs)
-		}
-	}
-	// Tier 2 injection: append sources Tier 2 recovered from
-	// the skipped arms of platform-conditional if-blocks. These
-	// don't live in irt.Srcs (cmake never traced them), so the
-	// partition pass above leaves them un-handled — addPlatform
-	// ConditionalSrcsToAdd writes them straight into
-	// PerPlatform["srcs"][selectKey] for each affected target.
-	//
-	// We add only to the wrapper target — multi-language splits
-	// distribute Tier-1 sources across per-language sub-libs by
-	// CompileGroupIndex (which cmake's codemodel populates from
-	// the executed configure). Tier 2 sources have no compile-
-	// group attribution by definition, so the wrapper is the
-	// only consistent home for them. If a downstream needs
-	// per-language Tier 2 attribution, a Tier 3 pass would have
-	// to re-derive the language from source extension.
-	if len(platformConditionalSrcsToAdd) > 0 {
-		addPlatformConditionalSrcs(irt, platformConditionalSrcsToAdd)
-	}
-
-	// OpenMP (issue #313): `-fopenmp` is both a compile AND a link flag —
-	// gcc/clang need it at link time to pull in the OpenMP runtime
-	// (libgomp / libomp), or consumers hit undefined references
-	// (GOMP_parallel, __kmpc_fork_call, ...). cmake records it in the
-	// compile group's flags (→ copts) but threads the link side through the
-	// OpenMP::OpenMP_CXX IMPORTED target; when that import isn't resolved
-	// (no manifest entry) the link flag is lost. Mirror it onto linkopts.
-	propagateOpenMPLinkFlag(irt)
-
-	return irt, nil
+	return finalizeLoweredTarget(irt, t, tt, lc, srcEmitPath, pchCtx)
 }
 
 // addPlatformConditionalSrcs appends sources Tier 2 recovered
