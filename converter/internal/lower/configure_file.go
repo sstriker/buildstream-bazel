@@ -558,7 +558,23 @@ func resolveTemplatePath(input, hostSrcDir, recordedSrcDir string, call shadow.C
 	if !ok {
 		return "", "", false
 	}
-	return filepath.Join(hostSrcDir, rel), filepath.ToSlash(rel), true
+	// Umbrella re-anchor — the configure_file twin of
+	// executeProcessAnchorSource's: when the label root sits ABOVE the
+	// cmake source dir (workspace promotion, --element-source-root
+	// overlays, the nested-cmake recursive lowering), hostSrcDir is the
+	// LABEL root, so the on-disk template lives at
+	// hostSrcDir/<prefix>/rel and the emitted template label must carry
+	// the prefixed form ("sub/cfg.h.in", not "cfg.h.in") — without it
+	// the lift's template read misses and every nested configure_file
+	// silently bakes. Offline replays (hostSrcDir a different machine's
+	// path, not an ancestor of recordedSrcDir) keep the
+	// recorded-relative form, as before.
+	if hostSrcDir != "" && hostSrcDir != recordedSrcDir {
+		if prefix, inside := relativeIfInside(hostSrcDir, recordedSrcDir); inside && prefix != "" && prefix != "." {
+			rel = filepath.ToSlash(filepath.Join(prefix, rel))
+		}
+	}
+	return filepath.Join(hostSrcDir, filepath.FromSlash(rel)), filepath.ToSlash(rel), true
 }
 
 // templateSourceAnchor returns the source-root-relative directory a relative

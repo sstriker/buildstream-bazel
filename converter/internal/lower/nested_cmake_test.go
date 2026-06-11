@@ -348,3 +348,44 @@ func TestLowerOneNestedBuild_ThreadsChildren(t *testing.T) {
 		t.Fatalf("grandchild header not baked at its child-relative home; targets: %+v", pkg.Targets)
 	}
 }
+
+// TestApplyNestedProducerReHome_ConfigureFileLift pins the two-site
+// re-home pairing for the configure_file LIFT tier (the guard
+// producerOuts' comment used to flag): the lift rule's Out enters the
+// re-home map via producerOuts AND applyNestedProducerReHome re-anchors
+// it with the chain-composed rename — site (1) without site (2) would
+// map the out but never apply it, materializing the file at the outer
+// package root under a collidable name. Copy-on-write on the spec: the
+// nested package's original must not mutate.
+func TestApplyNestedProducerReHome_ConfigureFileLift(t *testing.T) {
+	spec := &ir.CMakeConfigureFileSpec{
+		Out:      "sub_config.h",
+		Template: "sub/sub_config.h.in",
+		Values:   map[string]string{"SUB_VALUE": "7"},
+	}
+	lift := ir.Target{
+		Name:               "gen_sub_config_h",
+		Kind:               ir.KindCMakeConfigureFile,
+		CMakeConfigureFile: spec,
+	}
+	if got := producerOuts(&lift); len(got) != 1 || got[0] != "sub_config.h" {
+		t.Fatalf("producerOuts(lift) = %v, want [sub_config.h]", got)
+	}
+	rehome := map[string]string{"sub_config.h": "subbuild/sub_config.h"}
+	applyNestedProducerReHome(&lift, rehome, "subbuild")
+	if lift.CMakeConfigureFile.Out != "subbuild/sub_config.h" {
+		t.Errorf("lift Out = %q, want subbuild/sub_config.h", lift.CMakeConfigureFile.Out)
+	}
+	if lift.Name != "subbuild_gen_sub_config_h" {
+		t.Errorf("lift name = %q, want chain-composed subbuild_gen_sub_config_h", lift.Name)
+	}
+	if spec.Out != "sub_config.h" {
+		t.Errorf("original spec mutated to %q — the re-home must copy-on-write", spec.Out)
+	}
+	// A consumer's hdrs entry pointing at the re-homed rel re-points too.
+	consumer := ir.Target{Kind: ir.KindCCLibrary, Hdrs: []string{"sub_config.h"}}
+	applyNestedProducerReHome(&consumer, rehome, "subbuild")
+	if consumer.Hdrs[0] != "subbuild/sub_config.h" {
+		t.Errorf("consumer hdrs = %v, want the re-homed rel", consumer.Hdrs)
+	}
+}

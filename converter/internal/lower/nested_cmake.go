@@ -314,14 +314,22 @@ func lowerOneNestedBuild(nb NestedBuildInput, opts Options, hostSrc string) (*ir
 		// recursive ToIR exactly as this one lowers inside its
 		// parent. Lifted children mark the local sink's NestedLifted,
 		// so only genuinely-unlifted grandchildren warn.
-		NestedBuilds:     nb.Children,
-		Imports:          opts.Imports,
-		BazelPackagePath: opts.BazelPackagePath,
-		CMakeVars:        opts.CMakeVars,
-		Coverage:         opts.Coverage,
-		Todos:            opts.Todos,
-		Warnings:         opts.Warnings,
-		BakeIn:           opts.BakeIn,
+		NestedBuilds: nb.Children,
+		// The operator's lift opt-in applies inside the nested
+		// lowering too: with the nested trace in hand, a nested
+		// configure_file recovers as the dynamic values-dict LIFT
+		// tier (KindCMakeConfigureFile) instead of the convert-time
+		// byte bake — the same fidelity win the top-level tier gives.
+		// The merge re-homes the lift-tier out like any producer out
+		// (see producerOuts / applyNestedProducerReHome).
+		LiftConfigureFile: opts.LiftConfigureFile,
+		Imports:           opts.Imports,
+		BazelPackagePath:  opts.BazelPackagePath,
+		CMakeVars:         opts.CMakeVars,
+		Coverage:          opts.Coverage,
+		Todos:             opts.Todos,
+		Warnings:          opts.Warnings,
+		BakeIn:            opts.BakeIn,
 	}
 	return ToIR(nb.Reply, nb.Graph, nestedOpts)
 }
@@ -433,31 +441,25 @@ func nestedProducerReHomes(nestedPkg *ir.Package, nb NestedBuildInput, hostSrc s
 }
 
 // producerOuts lists a producer rule's output paths; empty for
-// non-producer kinds.
+// non-producer kinds. The three kinds here and the rename branch in
+// applyNestedProducerReHome are a matched pair: a kind listed here
+// without a re-home application there would map its out but never
+// apply it, silently materializing the file at the outer package root
+// with a collidable rule name.
 func producerOuts(t *ir.Target) []string {
 	switch t.Kind {
 	case ir.KindWriteFile:
 		return []string{t.WriteFileOut}
 	case ir.KindGenrule:
 		return t.GenruleOuts
+	case ir.KindCMakeConfigureFile:
+		// The configure_file LIFT tier (nestedOpts threads the
+		// operator's LiftConfigureFile opt-in): Out is equally
+		// nested-build-relative.
+		if t.CMakeConfigureFile != nil {
+			return []string{t.CMakeConfigureFile.Out}
+		}
 	}
-	// KindCMakeConfigureFile (the configure_file LIFT tier, whose
-	// CMakeConfigureFile.Out is equally nested-build-relative) is
-	// DELIBERATELY absent, not an oversight: it is unreachable in a nested
-	// lowering today because lowerOneNestedBuild's nestedOpts does not
-	// thread LiftConfigureFile, so every nested configure_file recovery
-	// takes the BAKE tier (KindWriteFile, covered above) — which is what
-	// the gate's "configure_file channel facet, not the build-dir-bake
-	// fallback" assertion exercises. If LiftConfigureFile is ever threaded
-	// into the nested options (a natural next step now that the nested
-	// trace makes the lift recoverable there), re-homing must learn this
-	// kind in BOTH sites or the lift-tier outs silently materialize at the
-	// outer package root with collidable rule names: add the
-	// `return []string{t.CMakeConfigureFile.Out}` case here (guarded
-	// non-nil) AND a CMakeConfigureFile.Out re-anchor branch in
-	// applyNestedProducerReHome alongside the WriteFile/Genrule rename — a
-	// one-liner here alone would re-home-map the out but never apply it —
-	// then pin it with a nested-configure_file-lift fixture.
 	return nil
 }
 
@@ -471,7 +473,8 @@ func applyNestedProducerReHome(t *ir.Target, rehome map[string]string, namePrefi
 	if len(rehome) == 0 {
 		return
 	}
-	if t.Kind == ir.KindWriteFile || t.Kind == ir.KindGenrule {
+	if t.Kind == ir.KindWriteFile || t.Kind == ir.KindGenrule ||
+		(t.Kind == ir.KindCMakeConfigureFile && t.CMakeConfigureFile != nil) {
 		renamed := false
 		if newRel, ok := rehome[t.WriteFileOut]; ok {
 			t.WriteFileOut = newRel
@@ -480,6 +483,17 @@ func applyNestedProducerReHome(t *ir.Target, rehome map[string]string, namePrefi
 		for i, out := range t.GenruleOuts {
 			if newRel, ok := rehome[out]; ok {
 				t.GenruleOuts[i] = newRel
+				renamed = true
+			}
+		}
+		if t.Kind == ir.KindCMakeConfigureFile {
+			if newRel, ok := rehome[t.CMakeConfigureFile.Out]; ok {
+				// Copy-on-write: the spec pointer may be shared; the
+				// re-homed rule must not mutate the nested package's
+				// original.
+				spec := *t.CMakeConfigureFile
+				spec.Out = newRel
+				t.CMakeConfigureFile = &spec
 				renamed = true
 			}
 		}
