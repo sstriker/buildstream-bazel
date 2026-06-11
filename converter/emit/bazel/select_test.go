@@ -45,12 +45,8 @@ func TestEmit_PerPlatform_BaselinePlusSelect(t *testing.T) {
 	// closing with conditions:default. The arm contents are
 	// indented at the 12-column rule-attribute level.
 	wantSrcs := `srcs = ["common.c"] + select({
-        "@platforms//os:darwin": [
-            "darwin/foo.c",
-        ],
-        "@platforms//os:linux": [
-            "linux/foo.c",
-        ],
+        "@platforms//os:darwin": ["darwin/foo.c"],
+        "@platforms//os:linux": ["linux/foo.c"],
         "//conditions:default": [],
     }),`
 	if !strings.Contains(gotStr, wantSrcs) {
@@ -59,9 +55,7 @@ func TestEmit_PerPlatform_BaselinePlusSelect(t *testing.T) {
 
 	// copts: only one arm, so we still get the default arm.
 	wantCopts := `copts = ["-Wall"] + select({
-        "@platforms//cpu:arm64": [
-            "-mcpu=apple-m1",
-        ],
+        "@platforms//cpu:arm64": ["-mcpu=apple-m1"],
         "//conditions:default": [],
     }),`
 	if !strings.Contains(gotStr, wantCopts) {
@@ -106,12 +100,8 @@ func TestEmit_PerPlatform_ExplicitDefaultArm(t *testing.T) {
 	}
 	gotStr := string(got)
 	wantSrcs := `srcs = ["common.c"] + select({
-        "@platforms//os:windows": [
-            "win.c",
-        ],
-        "//conditions:default": [
-            "posix.c",
-        ],
+        "@platforms//os:windows": ["win.c"],
+        "//conditions:default": ["posix.c"],
     }),`
 	if !strings.Contains(gotStr, wantSrcs) {
 		t.Errorf("srcs missing merged default-arm shape; got:\n%s\n\nwant substring:\n%s", gotStr, wantSrcs)
@@ -144,9 +134,7 @@ func TestEmit_PerPlatform_OnlySelect(t *testing.T) {
 	}
 	gotStr := string(got)
 	want := `srcs = select({
-        "@platforms//os:darwin": [
-            "darwin/only.c",
-        ],
+        "@platforms//os:darwin": ["darwin/only.c"],
         "//conditions:default": [],
     }),`
 	if !strings.Contains(gotStr, want) {
@@ -342,12 +330,8 @@ func TestEmit_PerPlatform_ShBinarySrcsDiverge(t *testing.T) {
 	}
 	gotStr := string(got)
 	want := `srcs = select({
-        "@platforms//os:darwin": [
-            "bin/tool-darwin",
-        ],
-        "@platforms//os:linux": [
-            "bin/tool-linux",
-        ],
+        "@platforms//os:darwin": ["bin/tool-darwin"],
+        "@platforms//os:linux": ["bin/tool-linux"],
         "//conditions:default": [],
     }),`
 	if !strings.Contains(gotStr, want) {
@@ -380,9 +364,7 @@ func TestEmit_PhantomTarget_ListAttr(t *testing.T) {
 	}
 	gotStr := string(got)
 	want := `srcs = select({
-        "@platforms//os:linux": [
-            "main.c",
-        ],
+        "@platforms//os:linux": ["main.c"],
         "//conditions:default": [],
     }),`
 	if !strings.Contains(gotStr, want) {

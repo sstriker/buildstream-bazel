@@ -490,19 +490,77 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	emitCommonCoptsLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
 
-	for i, t := range pkg.Targets {
-		if i > 0 {
-			buf.WriteString("\n")
-		}
-		if err := emitTarget(&buf, t, opts); err != nil {
-			return nil, err
-		}
-	}
 	var trailing map[string]string
 	if opts.EmitSourceComments {
 		trailing = trailingCommentMap(pkg)
 	}
-	return canonicalize(buf.Bytes(), trailing)
+	// Assemble the BUILD as a buildtools AST File rather than parsing one
+	// concatenated text blob: the prelude (header comments + loads + package)
+	// is parsed once, then each target is appended as statement(s) — AST-built
+	// where a kind has an AST emitter, else parsed from its own text snippet
+	// (the in-progress text->AST migration; see ROADMAP "AST-direct BUILD
+	// emit"). formatFile then canonicalizes the assembled File (addKeepMarkers
+	// + addTrailingComments + build.Format), byte-identical to feeding
+	// buildifier the concatenated text — but AST-built targets skip the
+	// build.Parse that dominated emit profiling. Splitting the parse per
+	// statement lexes the same total bytes as one whole-file parse, so it's
+	// not a regression while kinds are still on the text path.
+	file, err := build.Parse("BUILD.bazel", buf.Bytes())
+	if err != nil {
+		return nil, failure.New(failure.BazelCanonicalizeFailed,
+			"bazel.canonicalize: prelude emitted unparseable BUILD bytes: %v\n%s", err, buf.Bytes())
+	}
+	for _, t := range pkg.Targets {
+		stmts, err := targetStmts(t, opts)
+		if err != nil {
+			return nil, err
+		}
+		file.Stmt = append(file.Stmt, stmts...)
+	}
+	return formatFile(file, trailing), nil
+}
+
+// targetStmts returns one target's BUILD statement(s) for the assembled File.
+// During the text->AST migration this emits the target's text (leading
+// comment + provenance + rule body) and parses it back; a kind with a native
+// AST emitter returns its CallExpr directly and skips the parse. Multiple
+// statements are possible (a cc target with a SharedLibName companion).
+func targetStmts(t ir.Target, opts Options) ([]build.Expr, error) {
+	// AST-native kinds build their CallExpr directly and skip the parse; the
+	// leading/provenance comments (emitted as text on the fallback path) attach
+	// as Before-comments here.
+	if stmts, ok, err := astTargetStmts(t, opts); ok {
+		if err != nil {
+			return nil, err
+		}
+		// Leading/provenance comments attach to the first statement (the main
+		// rule; a cc target's cc_shared_library companion follows uncommented).
+		if len(stmts) > 0 {
+			c := stmts[0].Comment()
+			c.Before = append(leadingCommentTokens(t, opts), c.Before...)
+		}
+		return stmts, nil
+	}
+	var buf bytes.Buffer
+	if err := emitTarget(&buf, t, opts); err != nil {
+		return nil, err
+	}
+	f, err := build.Parse("BUILD.bazel", buf.Bytes())
+	if err != nil {
+		return nil, failure.New(failure.BazelCanonicalizeFailed,
+			"bazel.canonicalize: target %q emitted unparseable BUILD bytes: %v\n%s", t.Name, err, buf.Bytes())
+	}
+	return f.Stmt, nil
+}
+
+// formatFile canonicalizes an assembled BUILD AST: keep-markers + recovered
+// trailing comments, then build.Format (the buildifier formatter). The shared
+// tail of both the assembled-File path (EmitWithOptions) and the
+// parse-a-text-blob path (canonicalize).
+func formatFile(f *build.File, trailing map[string]string) []byte {
+	addKeepMarkers(f)
+	addTrailingComments(f, trailing)
+	return build.Format(f)
 }
 
 // emitTarget writes one target's rendered rule to buf: its recovered leading
@@ -547,13 +605,10 @@ func emitTarget(buf *bytes.Buffer, t ir.Target, opts Options) error {
 	case ir.KindConfigSetting:
 		return emitConfigSetting(buf, t)
 	default:
-		if err := emitCCTargetWithOptions(buf, t, opts); err != nil {
-			return err
-		}
-		if t.SharedLibName != "" {
-			emitSharedLibrary(buf, t)
-		}
-		return nil
+		// cc-family kinds (cc_library/binary/test, cuda_*, fortran_library)
+		// render AST-direct via ccTargetCall in astTargetStmts, so they never
+		// reach this text path.
+		return fmt.Errorf("emit: kind %s should render via astTargetStmts, not emitTarget", t.Kind)
 	}
 }
 
@@ -571,30 +626,6 @@ func trailingCommentMap(pkg *ir.Package) map[string]string {
 		m[t.Name] = t.TrailingComment
 	}
 	return m
-}
-
-// emitSharedLibrary writes the cc_shared_library that wraps a SHARED/MODULE
-// library's static cc_library impl into a real .so (faithful-SHARED). roots is
-// the impl target; shared_lib_name is the cmake artifact name (libfoo.so).
-// Consumers that should link it dynamically add it to their dynamic_deps — a
-// later phase wires that; on its own the .so just builds alongside the impl.
-func emitSharedLibrary(buf *bytes.Buffer, t ir.Target) {
-	buf.WriteString("\ncc_shared_library(\n")
-	fmt.Fprintf(buf, "    name = %q,\n", t.Name+"_shared")
-	fmt.Fprintf(buf, "    shared_lib_name = %q,\n", t.SharedLibName)
-	// dynamic_deps: sibling shared libs this one links dynamically (so it
-	// doesn't statically re-link a cc_library another shared lib owns).
-	if len(t.SharedLibDynamicDeps) > 0 {
-		buf.WriteString("    dynamic_deps = [\n")
-		for _, d := range sortedCopy(t.SharedLibDynamicDeps) {
-			fmt.Fprintf(buf, "        %q,\n", d)
-		}
-		buf.WriteString("    ],\n")
-	}
-	// `deps` is the modern rules_cc spelling of the former `roots` attribute —
-	// the libraries linked INTO the .so.
-	fmt.Fprintf(buf, "    deps = [\":%s\"],\n", t.Name)
-	buf.WriteString(")\n")
 }
 
 // canonicalize routes the template-assembled BUILD text
@@ -632,9 +663,7 @@ func canonicalize(body []byte, trailing map[string]string) ([]byte, error) {
 		return nil, failure.New(failure.BazelCanonicalizeFailed,
 			"bazel.canonicalize: template emitted unparseable BUILD bytes: %v\n%s", err, body)
 	}
-	addKeepMarkers(f)
-	addTrailingComments(f, trailing)
-	return build.Format(f), nil
+	return formatFile(f, trailing), nil
 }
 
 // addTrailingComments attaches each rule's recovered trailing author comment
@@ -908,86 +937,6 @@ func ccKeepAttrs(kind string) map[string]bool {
 	}
 	return base
 }
-
-var ccRuleTmpl = template.Must(template.New("rule").Funcs(template.FuncMap{
-	"strList": strList,
-	"strDict": strDict,
-}).Parse(`{{.RuleKind}}(
-    name = "{{.Name}}",
-{{- if .SrcsExpr}}
-    srcs = {{.SrcsExpr}},
-{{- end}}
-{{- if .ModuleSrcsExpr}}
-    module_srcs = {{.ModuleSrcsExpr}},
-{{- end}}
-{{- if .HdrsExpr}}
-    hdrs = {{.HdrsExpr}},
-{{- end}}
-{{- if .TextualHdrsExpr}}
-    textual_hdrs = {{.TextualHdrsExpr}},
-{{- end}}
-{{- if .IncludesExpr}}
-    includes = {{.IncludesExpr}},
-{{- end}}
-{{- if .IncludePrefix}}
-    include_prefix = "{{.IncludePrefix}}",
-{{- end}}
-{{- if .StripIncludePrefix}}
-    strip_include_prefix = "{{.StripIncludePrefix}}",
-{{- end}}
-{{- if .CoptsExpr}}
-    copts = {{.CoptsExpr}},
-{{- end}}
-{{- if .DefinesExpr}}
-    defines = {{.DefinesExpr}},
-{{- end}}
-{{- if .LocalDefinesExpr}}
-    local_defines = {{.LocalDefinesExpr}},
-{{- end}}
-{{- if .LinkoptsExpr}}
-    linkopts = {{.LinkoptsExpr}},
-{{- end}}
-{{- if .AdditionalLinkerInputsExpr}}
-    additional_linker_inputs = {{.AdditionalLinkerInputsExpr}},
-{{- end}}
-{{- if .DepsExpr}}
-    deps = {{.DepsExpr}},
-{{- end}}
-{{- if .DynamicDepsExpr}}
-    dynamic_deps = {{.DynamicDepsExpr}},
-{{- end}}
-{{- if .ImplementationDepsExpr}}
-    implementation_deps = {{.ImplementationDepsExpr}},
-{{- end}}
-{{- if .Data}}
-    data = {{strList .Data}},
-{{- end}}
-{{- if .Args}}
-    args = {{strList .Args}},
-{{- end}}
-{{- if .Env}}
-    env = {{strDict .Env}},
-{{- end}}
-{{- if .Timeout}}
-    timeout = "{{.Timeout}}",
-{{- end}}
-{{- if .Linkstatic}}
-    linkstatic = True,
-{{- end}}
-{{- if .Alwayslink}}
-    alwayslink = True,
-{{- end}}
-{{- if .Features}}
-    features = {{strList .Features}},
-{{- end}}
-{{- if .Tags}}
-    tags = {{strList .Tags}},
-{{- end}}
-{{- if .Visibility}}
-    visibility = {{strList .Visibility}},
-{{- end}}
-)
-`))
 
 // ccImportTmpl renders cc_import. Distinct from the generic
 // cc_library / cc_binary template because cc_import's
@@ -1343,21 +1292,21 @@ func renderConfigDictSelect(perConfig map[string]map[string]string) string {
 type ccView struct {
 	RuleKind                   string
 	Name                       string
-	SrcsExpr                   string
-	ModuleSrcsExpr             string
-	HdrsExpr                   string
-	TextualHdrsExpr            string
-	IncludesExpr               string
+	SrcsExpr                   build.Expr
+	ModuleSrcsExpr             build.Expr
+	HdrsExpr                   build.Expr
+	TextualHdrsExpr            build.Expr
+	IncludesExpr               build.Expr
 	IncludePrefix              string
 	StripIncludePrefix         string
-	CoptsExpr                  string
-	DefinesExpr                string
-	LocalDefinesExpr           string
-	LinkoptsExpr               string
-	AdditionalLinkerInputsExpr string
-	DepsExpr                   string
-	DynamicDepsExpr            string
-	ImplementationDepsExpr     string
+	CoptsExpr                  build.Expr
+	DefinesExpr                build.Expr
+	LocalDefinesExpr           build.Expr
+	LinkoptsExpr               build.Expr
+	AdditionalLinkerInputsExpr build.Expr
+	DepsExpr                   build.Expr
+	DynamicDepsExpr            build.Expr
+	ImplementationDepsExpr     build.Expr
 	Linkstatic                 bool
 	Alwayslink                 bool
 	Features                   []string
@@ -1942,7 +1891,7 @@ func emitBoolFlagLoad(buf *bytes.Buffer, pkg *ir.Package) {
 	}
 }
 
-func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
+func ccTargetCall(t ir.Target, opts Options) (*build.CallExpr, error) {
 	// Compute the per-attribute baselines first (matching the
 	// existing single-platform sort/order conventions), then fold
 	// in any per-platform deltas. cc_binary / cc_test fold their
@@ -2011,24 +1960,24 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	v := ccView{
 		RuleKind: t.Kind.String(),
 		Name:     t.Name,
-		SrcsExpr: attrExpr(srcs, srcsSel),
+		SrcsExpr: attrExprAST(srcs, srcsSel),
 		// module_srcs (fortran_library only): the module-defining Fortran
 		// sources, kept in the converter's topological order (NOT sorted — a
 		// module's provider must precede any provider that uses it).
-		ModuleSrcsExpr:             attrExpr(append([]string(nil), t.ModuleSrcs...), nil),
-		HdrsExpr:                   attrExpr(hdrs, hdrsSel),
-		TextualHdrsExpr:            attrExpr(sortedCopy(t.TextualHdrs), perPlatformAttr(t, "textual_hdrs")),
-		IncludesExpr:               attrExpr(includes, perPlatformAttr(t, "includes")),
+		ModuleSrcsExpr:             attrExprAST(append([]string(nil), t.ModuleSrcs...), nil),
+		HdrsExpr:                   attrExprAST(hdrs, hdrsSel),
+		TextualHdrsExpr:            attrExprAST(sortedCopy(t.TextualHdrs), perPlatformAttr(t, "textual_hdrs")),
+		IncludesExpr:               attrExprAST(includes, perPlatformAttr(t, "includes")),
 		IncludePrefix:              t.IncludePrefix,
 		StripIncludePrefix:         t.StripIncludePrefix,
-		CoptsExpr:                  attrExpr(copts, escapeTokenizedPerPlatform(perPlatformAttr(t, "copts"))),
-		DefinesExpr:                attrExpr(defines, escapeTokenizedPerPlatform(perPlatformAttr(t, "defines"))),
-		LocalDefinesExpr:           attrExpr(escapeTokenizedList(sortedCopy(t.LocalDefines)), escapeTokenizedPerPlatform(perPlatformAttr(t, "local_defines"))),
-		LinkoptsExpr:               attrExpr(linkopts, escapeTokenizedPerPlatform(perPlatformAttr(t, "linkopts"))),
-		AdditionalLinkerInputsExpr: attrExpr(t.AdditionalLinkerInputs, nil),
-		DepsExpr:                   attrExpr(deps, perPlatformAttr(t, "deps")),
-		DynamicDepsExpr:            attrExpr(sortedCopy(t.DynamicDeps), nil),
-		ImplementationDepsExpr:     attrExpr(implementationDeps, perPlatformAttr(t, "implementation_deps")),
+		CoptsExpr:                  attrExprAST(copts, escapeTokenizedPerPlatform(perPlatformAttr(t, "copts"))),
+		DefinesExpr:                attrExprAST(defines, escapeTokenizedPerPlatform(perPlatformAttr(t, "defines"))),
+		LocalDefinesExpr:           attrExprAST(escapeTokenizedList(sortedCopy(t.LocalDefines)), escapeTokenizedPerPlatform(perPlatformAttr(t, "local_defines"))),
+		LinkoptsExpr:               attrExprAST(linkopts, escapeTokenizedPerPlatform(perPlatformAttr(t, "linkopts"))),
+		AdditionalLinkerInputsExpr: attrExprAST(t.AdditionalLinkerInputs, nil),
+		DepsExpr:                   attrExprAST(deps, perPlatformAttr(t, "deps")),
+		DynamicDepsExpr:            attrExprAST(sortedCopy(t.DynamicDeps), nil),
+		ImplementationDepsExpr:     attrExprAST(implementationDeps, perPlatformAttr(t, "implementation_deps")),
 		Linkstatic:                 t.Linkstatic,
 		Alwayslink:                 t.Alwayslink,
 		Features:                   sortedCopy(t.Features),
@@ -2079,13 +2028,14 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	// `COMMON_COPTS + <rest>` keeps the toolchain-feature mode's order: the
 	// shared flags come first, then the per-target delta / select arms.
 	if t.PrependCommonCopts {
-		if v.CoptsExpr == "" {
-			v.CoptsExpr = "COMMON_COPTS"
+		common := &build.Ident{Name: "COMMON_COPTS"}
+		if v.CoptsExpr == nil {
+			v.CoptsExpr = common
 		} else {
-			v.CoptsExpr = "COMMON_COPTS + " + v.CoptsExpr
+			v.CoptsExpr = &build.BinaryExpr{Op: "+", X: common, Y: v.CoptsExpr}
 		}
 	}
-	return ccRuleTmpl.Execute(w, v)
+	return ccViewToCall(v), nil
 }
 
 // adaptFortranView rewrites a ccView assembled for a Fortran target so it only
@@ -2098,13 +2048,13 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 // fortran_library analogue (Fortran sources don't declare a public header
 // surface the rule consumes) and are dropped.
 func adaptFortranView(v *ccView) {
-	v.HdrsExpr = ""
-	v.TextualHdrsExpr = ""
-	v.DefinesExpr = ""
-	v.LocalDefinesExpr = ""
-	v.ImplementationDepsExpr = ""
-	v.AdditionalLinkerInputsExpr = ""
-	v.DynamicDepsExpr = ""
+	v.HdrsExpr = nil
+	v.TextualHdrsExpr = nil
+	v.DefinesExpr = nil
+	v.LocalDefinesExpr = nil
+	v.ImplementationDepsExpr = nil
+	v.AdditionalLinkerInputsExpr = nil
+	v.DynamicDepsExpr = nil
 	v.IncludePrefix = ""
 	v.StripIncludePrefix = ""
 	v.Linkstatic = false
@@ -2129,16 +2079,16 @@ func isCudaKind(k ir.Kind) bool {
 // lens's CUDA shapes (a `.cu` object library / device-code executable doesn't
 // rehome its own include root the way a split-package header lib does).
 func adaptCudaView(v *ccView) {
-	// textual_hdrs → hdrs (concatenate the rendered list exprs).
-	v.HdrsExpr = concatListExprs(v.HdrsExpr, v.TextualHdrsExpr)
-	v.TextualHdrsExpr = ""
+	// textual_hdrs → hdrs (concatenate the list exprs).
+	v.HdrsExpr = concatExprs(v.HdrsExpr, v.TextualHdrsExpr)
+	v.TextualHdrsExpr = nil
 	// implementation_deps → deps.
-	v.DepsExpr = concatListExprs(v.DepsExpr, v.ImplementationDepsExpr)
-	v.ImplementationDepsExpr = ""
+	v.DepsExpr = concatExprs(v.DepsExpr, v.ImplementationDepsExpr)
+	v.ImplementationDepsExpr = nil
 	// Unsupported on rules_cuda rules — drop.
 	v.IncludePrefix = ""
 	v.StripIncludePrefix = ""
-	v.AdditionalLinkerInputsExpr = ""
+	v.AdditionalLinkerInputsExpr = nil
 	v.Linkstatic = false
 	v.Features = nil
 }
@@ -2516,24 +2466,6 @@ func attrExpr(flat []string, sel map[string][]string) string {
 		return flatPart + " + " + b.String()
 	}
 	return b.String()
-}
-
-// concatListExprs joins two already-rendered list-attribute exprs (each a
-// list literal, a select() block, or `<list> + select(...)`, or "") into one.
-// Used by adaptCudaView to fold textual_hdrs→hdrs and implementation_deps→deps
-// for CUDA rules, which lack the source attribute. If either side is empty the
-// other is returned verbatim (preserving byte-identical single-attr output);
-// otherwise they're joined with " + ", which is valid Starlark list
-// concatenation and survives the buildifier canonicalize pass.
-func concatListExprs(a, b string) string {
-	switch {
-	case a == "":
-		return b
-	case b == "":
-		return a
-	default:
-		return a + " + " + b
-	}
 }
 
 // indentArmList renders a select() arm's value as a Starlark
