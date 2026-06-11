@@ -2,12 +2,34 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 )
+
+// streamCopyFile copies src to dst (created with perm) via io.Copy, so a
+// large captured input (a VTK-scale trace.jsonl) isn't read fully into
+// memory. The destination's parent must already exist.
+func streamCopyFile(src, dst string, perm os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
+}
 
 // debugBundleInput reports whether a build-dir-relative path names one of
 // the converter's PRIMARY INPUT artifacts worth capturing in the
@@ -76,7 +98,8 @@ func saveDebugBundle(buildDir, bundleDir string) error {
 	if err := os.MkdirAll(bundleDir, 0o755); err != nil {
 		return err
 	}
-	var copied, byteCount int
+	copied := 0
+	var byteCount int64
 	if err := filepath.Walk(buildDir, func(p string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -91,19 +114,19 @@ func saveDebugBundle(buildDir, bundleDir string) error {
 		if !debugBundleInput(rel) {
 			return nil
 		}
-		body, rerr := os.ReadFile(p)
-		if rerr != nil {
-			return rerr
-		}
 		dst := filepath.Join(bundleDir, rel)
 		if rerr := os.MkdirAll(filepath.Dir(dst), 0o755); rerr != nil {
 			return rerr
 		}
-		if rerr := os.WriteFile(dst, body, info.Mode().Perm()); rerr != nil {
+		// Stream the copy rather than os.ReadFile-into-memory: a
+		// VTK-scale trace.jsonl runs to hundreds of MB, and this flag's
+		// whole point is debugging large/gnarly projects, so don't load
+		// the largest captured input fully into memory.
+		if rerr := streamCopyFile(p, dst, info.Mode().Perm()); rerr != nil {
 			return rerr
 		}
 		copied++
-		byteCount += len(body)
+		byteCount += info.Size()
 		return nil
 	}); err != nil {
 		return err
