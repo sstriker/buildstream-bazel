@@ -7,32 +7,6 @@ transition cleanly.
 
 ## Now
 
-- **Complexity lens — break down the grandfathered giants.**
-  `make lint-complexity` (golangci-lint, complexity-only config in
-  `.golangci.yml`: gocyclo / gocognit / cyclop / nestif / funlen / maintidx) is
-  the code-complexity axis `go vet` / `gofmt` / `staticcheck` don't cover. The
-  soft-launch burndown reached green (launch flagged 55) and the CI step is now
-  **blocking** — every function is held to the thresholds, so new complexity
-  regressions fail the build. ONE function remains genuinely over threshold
-  and carries the documented `//nolint` directive (keyed to this item):
-  `lower.lowerTarget` (now cognitive ~213, down from 754 across four
-  slices — link attribution, the per-source walk, the
-  CTest/multi-language tail, and the compile-group/include region are
-  extracted, the last decomposed to under-threshold helpers
-  (lowerCompileGroups → partitionTargetIncludeDirs /
-  recordBuildDirInclude / lowerInterfaceFileSetIncludes) with the
-  umbrella/reanchor derivation unified onto targetLowerCtx per the #562
-  review note; the walk (`lowerTargetSources`) carries the burndown's
-  second directive; the remaining inline mass is the consumer-attribution
-  family, the header-staging/discoverHeaders family, and the dep loop). (`emit/bazel`'s
-  `planSplit` / `rewriteTarget`, `write-a`'s `main`,
-  `convert-element-cmake`'s `run`, and `lower.ToIR` are done — extracted
-  and de-nolinted.) **What's left:** break `lowerTarget` down via
-  behavior-preserving extraction of cohesive sub-passes (link-fragment
-  attribution / compile-group lowering / generated-source handling are the
-  obvious sub-passes), then **remove its `//nolint`** so it gates like the
-  rest. Tune thresholds in `.golangci.yml` if a class proves low-yield.
-
 - **CI baseline.** A handful of e2e jobs (`cmake + bwrap`,
   `bazel build downstream`) fail intermittently for environment reasons
   (cmake-config bundle staging on the CI runner; userns / fuse permissions on
