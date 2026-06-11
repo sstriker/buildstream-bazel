@@ -2,6 +2,7 @@ package lower
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -183,7 +184,7 @@ func warnOutOfTreeExecuteProcess(opts Options, cc *codegenContext) {
 			"lower: %d execute_process call(s) issued from outside the source tree with no codemodel sources to anchor a lift (a build-dir location or find_package prefix-tree probe) — surfaced as conversion-todos rather than dropped silently\n",
 			len(notes))
 	}
-	emitOutOfTreeExecuteProcessTodos(opts.Todos, notes, opts.HostSourceRoot, opts.BuildDir)
+	emitOutOfTreeExecuteProcessTodos(opts.Todos, notes, opts.HostSourceRoot, opts.BuildDir, opts.HostPrefixDir)
 }
 
 // emitOutOfTreeExecuteProcessTodos mirrors the uncertain out-of-tree
@@ -193,7 +194,7 @@ func warnOutOfTreeExecuteProcess(opts Options, cc *codegenContext) {
 // triples; every path passes the report-path normalization so the build dir
 // (a per-run mktemp path) never leaks and the byte-identical-report contract
 // holds.
-func emitOutOfTreeExecuteProcessTodos(c *todos.Collector, notes []outOfTreeExecNote, sourceRoot, buildDir string) {
+func emitOutOfTreeExecuteProcessTodos(c *todos.Collector, notes []outOfTreeExecNote, sourceRoot, buildDir, prefixDir string) {
 	if c == nil || len(notes) == 0 {
 		return
 	}
@@ -213,8 +214,8 @@ func emitOutOfTreeExecuteProcessTodos(c *todos.Collector, notes []outOfTreeExecN
 		var invocations []string
 		seenArgv := map[string]bool{}
 		for _, n := range ns {
-			file := normalizeReportPath(n.File, sourceRoot, buildDir)
-			argv := strings.Join(normalizeReportPaths(n.Argv, sourceRoot, buildDir), " ")
+			file := normalizeOOTReportPath(n.File, sourceRoot, buildDir, prefixDir)
+			argv := strings.Join(normalizeOOTReportPaths(n.Argv, sourceRoot, buildDir, prefixDir), " ")
 			ak := file + "\x00" + strconv.Itoa(n.Line) + "\x00" + argv
 			if seenAnchor[ak] {
 				continue
@@ -247,6 +248,43 @@ func emitOutOfTreeExecuteProcessTodos(c *todos.Collector, notes []outOfTreeExecN
 				"or author the idiomatic Bazel equivalent.",
 		})
 	}
+}
+
+// normalizeOOTReportPaths applies normalizeOOTReportPath to each arg.
+func normalizeOOTReportPaths(args []string, sourceRoot, buildDir, prefixDir string) []string {
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = normalizeOOTReportPath(a, sourceRoot, buildDir, prefixDir)
+	}
+	return out
+}
+
+// normalizeOOTReportPath is normalizeReportPath plus a <PREFIX> arm for the
+// synthesized find_package prefix tree. The prefix-tree signal's anchors and
+// argv live UNDER prefixDir, which normalizeReportPath (sourceRoot/buildDir
+// only) doesn't rewrite — so a prefix-anchored path would land raw in the
+// todo and, since the prefix is per-run staging, byte-vary the report (the
+// same byte-identity break class as #580's template-error finding, and
+// unpinnable by the todos-coverage gate because no fixture emits out-of-tree
+// calls). The prefix is checked first; non-prefix args fall through to
+// normalizeReportPath unchanged. Mirrors normalizeReportPath's "-DKEY=<path>"
+// value handling.
+func normalizeOOTReportPath(arg, sourceRoot, buildDir, prefixDir string) string {
+	if prefixDir != "" {
+		key, val, hasEq := strings.Cut(arg, "=")
+		target := arg
+		if hasEq {
+			target = val
+		}
+		if pathHasPrefix(target, prefixDir) {
+			norm := "<PREFIX>" + filepath.ToSlash(target[len(prefixDir):])
+			if hasEq {
+				return key + "=" + norm
+			}
+			return norm
+		}
+	}
+	return normalizeReportPath(arg, sourceRoot, buildDir)
 }
 
 // outOfTreeExecReason renders the human-readable WHY for a signal.

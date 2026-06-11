@@ -84,7 +84,7 @@ func TestEmitOutOfTreeExecuteProcessTodos_GroupingAndNormalize(t *testing.T) {
 		{File: "/b/other/CMakeLists.txt", Line: 9, Argv: []string{"sh", "x.sh"}, Signal: signalBuildSubproject},
 		{File: "/synth/FooConfig.cmake", Line: 1, Argv: []string{"foo", "--v"}, Signal: signalPrefixTree},
 	}
-	emitOutOfTreeExecuteProcessTodos(c, notes, "/src", "/b")
+	emitOutOfTreeExecuteProcessTodos(c, notes, "/src", "/b", "/synth")
 	rep := c.Report(todos.Preamble{}, "")
 	if len(rep.Todos) != 2 {
 		t.Fatalf("want 2 todos (one per signal); got %d: %+v", len(rep.Todos), rep.Todos)
@@ -114,9 +114,9 @@ func TestEmitOutOfTreeExecuteProcessTodos_GroupingAndNormalize(t *testing.T) {
 // Nil collector / empty notes are no-ops; the id is line-independent so it
 // stays stable across unrelated edits.
 func TestEmitOutOfTreeExecuteProcessTodos_NoOpsAndIDStability(t *testing.T) {
-	emitOutOfTreeExecuteProcessTodos(nil, []outOfTreeExecNote{{File: "f", Line: 1, Argv: []string{"a"}, Signal: signalPrefixTree}}, "", "")
+	emitOutOfTreeExecuteProcessTodos(nil, []outOfTreeExecNote{{File: "f", Line: 1, Argv: []string{"a"}, Signal: signalPrefixTree}}, "", "", "")
 	c := todos.New()
-	emitOutOfTreeExecuteProcessTodos(c, nil, "", "")
+	emitOutOfTreeExecuteProcessTodos(c, nil, "", "", "")
 	if c.Len() != 0 {
 		t.Errorf("empty notes should add nothing")
 	}
@@ -124,7 +124,7 @@ func TestEmitOutOfTreeExecuteProcessTodos_NoOpsAndIDStability(t *testing.T) {
 		cc := todos.New()
 		emitOutOfTreeExecuteProcessTodos(cc, []outOfTreeExecNote{
 			{File: "/synth/FooConfig.cmake", Line: line, Argv: []string{"foo", "--v"}, Signal: signalPrefixTree},
-		}, "/src", "/b")
+		}, "/src", "/b", "/synth")
 		rep := cc.Report(todos.Preamble{}, "")
 		if len(rep.Todos) != 1 {
 			t.Fatalf("want 1 todo, got %d", len(rep.Todos))
@@ -133,5 +133,29 @@ func TestEmitOutOfTreeExecuteProcessTodos_NoOpsAndIDStability(t *testing.T) {
 	}
 	if id(3) != id(99) {
 		t.Errorf("todo id must be line-independent")
+	}
+}
+
+// Prefix-tree anchors and argv must rewrite to <PREFIX>/… so the per-run
+// staged find_package prefix never leaks into the report (the byte-identity
+// contract normalizeReportPath alone doesn't cover for prefix paths).
+func TestEmitOutOfTreeExecuteProcessTodos_PrefixNormalized(t *testing.T) {
+	c := todos.New()
+	emitOutOfTreeExecuteProcessTodos(c, []outOfTreeExecNote{
+		{File: "/synth/lib/cmake/Foo/FooConfig.cmake", Line: 5, Argv: []string{"/synth/bin/foo-config", "--cflags"}, Signal: signalPrefixTree},
+	}, "/src", "/b", "/synth")
+	rep := c.Report(todos.Preamble{}, "")
+	if len(rep.Todos) != 1 || len(rep.Todos[0].Anchors) != 1 {
+		t.Fatalf("want 1 todo with 1 anchor; got %+v", rep.Todos)
+	}
+	a := rep.Todos[0].Anchors[0]
+	if strings.Contains(a.File, "/synth") || strings.Contains(a.Construct, "/synth") {
+		t.Errorf("prefix leaked: file=%q construct=%q", a.File, a.Construct)
+	}
+	if a.File != "<PREFIX>/lib/cmake/Foo/FooConfig.cmake" {
+		t.Errorf("anchor file = %q, want <PREFIX>/lib/cmake/Foo/FooConfig.cmake", a.File)
+	}
+	if !strings.Contains(a.Construct, "<PREFIX>/bin/foo-config") {
+		t.Errorf("argv not prefix-normalized: %q", a.Construct)
 	}
 }
