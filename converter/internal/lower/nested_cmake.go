@@ -138,7 +138,24 @@ type NestedBuildInput struct {
 // staged or re-run).
 func recoverNestedCMakeCall(call shadow.ExecuteProcessCall, anc execAnchors, cc *codegenContext) *executeProcessRefusal {
 	shape, _ := parseNestedCMakeArgv(executeProcessDriverBasename(call.Commands[0][0]), call.Commands[0])
+	// A RELATIVE -B resolves against the cmake process cwd — the outer
+	// build root under the runner's cmd.Dir contract — UNLESS the call
+	// sets WORKING_DIRECTORY, which moves the resolution base somewhere
+	// the anchor below would silently misname; refuse that combination
+	// explicitly rather than warning about a phantom directory.
+	if !filepath.IsAbs(shape.buildDir) && call.WorkingDirectory != "" {
+		return &executeProcessRefusal{
+			File:   call.File,
+			Line:   call.Line,
+			Bucket: BucketNestedCMake,
+			Reason: "nested cmake " + shape.kind + " uses a relative build dir " + shape.buildDir + " with WORKING_DIRECTORY " + call.WorkingDirectory + "; the lift anchors relative dirs against the outer build root and can't honor the moved cwd",
+			Argv:   formatExecuteProcessArgv(call),
+		}
+	}
 	rel, anchored := executeProcessAnchorOutput(shape.buildDir, anc)
+	if !anchored {
+		rel, anchored = relativeArgvBuildRel(shape.buildDir)
+	}
 	if !anchored || rel == "" {
 		return &executeProcessRefusal{
 			File:   call.File,
@@ -180,7 +197,7 @@ func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSr
 			continue
 		}
 		cc.NestedLifted[nb.BuildRel] = true
-		mergeNestedPackage(pkg, nestedPkg, nb, cc, opts)
+		mergeNestedPackage(pkg, nestedPkg, nb, cc, opts, hostSrc)
 		outs = append(outs, bakeNestedGeneratedHeaders(nb, cc, opts)...)
 	}
 	return outs, nil
@@ -220,7 +237,7 @@ func lowerOneNestedBuild(nb NestedBuildInput, opts Options, hostSrc string) (*ir
 // a codemodel artifact registers `<nestedBuildRel>/<artifact>` →
 // `:<name>` in cc.NestedArtifactDeps so outer link fragments naming the
 // nested archive wire to the real label.
-func mergeNestedPackage(pkg *ir.Package, nestedPkg *ir.Package, nb NestedBuildInput, cc *codegenContext, opts Options) {
+func mergeNestedPackage(pkg *ir.Package, nestedPkg *ir.Package, nb NestedBuildInput, cc *codegenContext, opts Options, hostSrc string) {
 	present := map[string]bool{}
 	for _, t := range pkg.Targets {
 		present[t.Name] = true
@@ -235,14 +252,30 @@ func mergeNestedPackage(pkg *ir.Package, nestedPkg *ir.Package, nb NestedBuildIn
 		sort.Strings(t.Tags)
 		// Re-home the nested target's BUILD-dir includes: inside the
 		// nested lowering, an include of the nested build root
-		// relativizes to "." — which in the OUTER package is the
-		// workspace root (Bazel rejects it outright). A nested source
-		// include can never produce "." here (the nested source root is
-		// a strict subdir under ElementSourceRoot anchoring), so "."
-		// unambiguously means the nested build dir.
+		// relativizes to "." and a subdir to its bare nested-build-
+		// relative form ("gen") — both of which mis-anchor in the OUTER
+		// package ("." is the workspace root, which Bazel rejects
+		// outright; "gen" points at the outer root). A nested SOURCE
+		// include can never produce "." (the nested source root is a
+		// strict subdir under ElementSourceRoot anchoring), but a bare
+		// subdir form is ambiguous — the nested target may legitimately
+		// include a sibling source dir under the outer root. On-disk
+		// existence is the discriminator: a dir present under the outer
+		// source root is a source include and stays; one present under
+		// the nested build dir re-homes to its <buildRel>/ form.
 		for i, inc := range t.Includes {
 			if inc == "." {
 				t.Includes[i] = nb.BuildRel
+				continue
+			}
+			if filepath.IsAbs(inc) {
+				continue
+			}
+			if isExistingDir(filepath.Join(hostSrc, filepath.FromSlash(inc))) {
+				continue
+			}
+			if isExistingDir(filepath.Join(nb.HostBuildDir, filepath.FromSlash(inc))) {
+				t.Includes[i] = nb.BuildRel + "/" + inc
 			}
 		}
 		pkg.Targets = append(pkg.Targets, t)

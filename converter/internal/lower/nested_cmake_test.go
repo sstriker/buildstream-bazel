@@ -1,9 +1,12 @@
 package lower
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -132,5 +135,57 @@ func TestEmitNestedCMakeTodos(t *testing.T) {
 	}
 	if got := td.Evidence["nested_source"]; got != "<SRC>/sub" {
 		t.Fatalf("nested_source = %v, want normalized <SRC>/sub", got)
+	}
+}
+
+func TestRecoverNestedCMakeCall_RelativeBuildDir(t *testing.T) {
+	anc := execAnchors{hostBuildDir: "/b", recordedBuildDir: "/b", hostSrcDir: "/s", recordedSrcDir: "/s"}
+	// Plain relative -B anchors against the outer build root (the cmake
+	// process cwd under the runner's cmd.Dir contract).
+	cc := newCodegenContext()
+	relative := shadow.ExecuteProcessCall{
+		File: "/s/CMakeLists.txt", Line: 4,
+		Commands: [][]string{{"cmake", "-S", "/s/sub", "-B", "subbuild"}},
+	}
+	if ref := recoverNestedCMakeCall(relative, anc, cc); ref != nil {
+		t.Fatalf("relative -B refused: %+v", ref)
+	}
+	if got := cc.NestedConfigureSink["subbuild"]; got != "/s/sub" {
+		t.Fatalf("sink[subbuild] = %q, want /s/sub", got)
+	}
+	// Relative -B with WORKING_DIRECTORY moves the resolution base —
+	// refuse explicitly rather than anchoring a phantom directory.
+	moved := relative
+	moved.WorkingDirectory = "/b/deps"
+	if ref := recoverNestedCMakeCall(moved, anc, cc); ref == nil {
+		t.Fatal("relative -B with WORKING_DIRECTORY must refuse")
+	}
+}
+
+func TestMergeNestedPackage_IncludeRehoming(t *testing.T) {
+	srcDir := t.TempDir()
+	buildDir := t.TempDir()
+	mkdir := func(root, rel string) {
+		if err := os.MkdirAll(filepath.Join(root, rel), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkdir(srcDir, "common") // sibling SOURCE include under the outer root
+	mkdir(buildDir, "gen")  // nested BUILD-dir include subdir
+	nb := NestedBuildInput{BuildRel: "subbuild", HostBuildDir: buildDir}
+	nested := &ir.Package{Targets: []ir.Target{{
+		Name:     "sublib",
+		Kind:     ir.KindCCLibrary,
+		Includes: []string{".", "gen", "common", "sub/include"},
+	}}}
+	pkg := &ir.Package{}
+	cc := newCodegenContext()
+	mergeNestedPackage(pkg, nested, nb, cc, Options{}, srcDir)
+	got := pkg.Targets[0].Includes
+	want := []string{"subbuild", "subbuild/gen", "common", "sub/include"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("includes = %v, want %v", got, want)
+		}
 	}
 }
