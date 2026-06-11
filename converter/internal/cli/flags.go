@@ -678,13 +678,18 @@ type Args struct {
 	EmitSharedLibraries bool
 
 	// OutDebugBundle, when non-empty, is a directory into which the
-	// converter copies its PRIMARY INPUT artifacts after the lower passes —
-	// the cmake File API query+reply objects, the --trace-expand log
-	// (trace.jsonl), the ninja graph (build.ninja + the CMakeFiles/*.ninja
-	// includes), the compile database (compile_commands.json), the variable
-	// dump (cmake-to-bazel.vars.dump), CMakeCache.txt, and the configure log
-	// — for the OUTER configure AND every NESTED/recursive configure beneath
-	// it (each lives as a build-dir subdir with its own reply + trace). The
+	// converter copies its PRIMARY INPUT artifacts for offline
+	// debugging/replay — the cmake File API query+reply objects, the
+	// --trace-expand log (trace.jsonl), the ninja graph (build.ninja + the
+	// CMakeFiles/*.ninja includes), the compile database
+	// (compile_commands.json), the variable dump (cmake-to-bazel.vars.dump),
+	// CMakeCache.txt, and the configure log — for the OUTER configure AND
+	// every NESTED/recursive configure beneath it (each lives as a build-dir
+	// subdir with its own reply + trace). The capture is registered as a
+	// defer right after configure, so it fires on EVERY return path —
+	// including the lowering FAILURES that are the primary debugging case —
+	// before the fresh-configure temp build dir is deleted (LIFO ordering
+	// puts it ahead of that cleanup, so the inputs survive). The
 	// build-dir-relative layout is preserved, so the bundle is directly
 	// replayable: `--cmake-build-dir <bundle>` re-runs the offline path
 	// against the captured inputs. A debug aid only — a capture failure
