@@ -529,7 +529,10 @@ func targetStmts(t ir.Target, opts Options) ([]build.Expr, error) {
 	// AST-native kinds build their CallExpr directly and skip the parse; the
 	// leading/provenance comments (emitted as text on the fallback path) attach
 	// as Before-comments here.
-	if call, ok := astTargetCall(t); ok {
+	if call, ok, err := astTargetCall(t); ok {
+		if err != nil {
+			return nil, err
+		}
 		call.Comments.Before = append(leadingCommentTokens(t, opts), call.Comments.Before...)
 		return []build.Expr{call}, nil
 	}
