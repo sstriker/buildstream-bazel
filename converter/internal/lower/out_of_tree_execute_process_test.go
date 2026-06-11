@@ -57,9 +57,12 @@ func TestPartitionOutOfTreeExec_Buckets(t *testing.T) {
 func TestPartitionOutOfTreeExec_WorkingDirCodemodelPrecedence(t *testing.T) {
 	build := "/build"
 	prefix := "/synth"
-	consumed := map[string]bool{"_deps/sub-build/foo.c": true}
+	// Single-LEVEL sub-build dir: sources sit directly under it. This pins the
+	// WORKING_DIRECTORY anchoring at the dir itself — a slashDir() off-by-one
+	// would strip "subbuild" to "" and miss the lift.
+	consumed := map[string]bool{"subbuild/foo.c": true}
 	driveSubBuild := ootCall("/synth/lib/cmake/Foo/FooConfig.cmake", 1, "cmake", "--build", ".")
-	driveSubBuild.WorkingDirectory = "/build/_deps/sub-build" // operates on build dir w/ codemodel srcs
+	driveSubBuild.WorkingDirectory = "/build/subbuild" // operates on build dir w/ codemodel srcs
 	pureProbe := ootCall("/synth/lib/cmake/Foo/FooConfig.cmake", 2, "foo-config", "--cflags")
 	pureProbe.WorkingDirectory = "/synth/lib/cmake/Foo" // stays in the prefix tree
 	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{driveSubBuild, pureProbe}, build, prefix, consumed)
@@ -68,6 +71,22 @@ func TestPartitionOutOfTreeExec_WorkingDirCodemodelPrecedence(t *testing.T) {
 	}
 	if len(note) != 1 || note[0].Signal != signalPrefixTree || note[0].Line != 2 {
 		t.Fatalf("note: want the pure prefix probe (line 2, prefix-tree); got %+v", note)
+	}
+}
+
+// A WORKING_DIRECTORY one level deep whose OWN subtree has no codemodel
+// sources is NOT a subproject, even when a SIBLING dir under the shared parent
+// does — guards against the slashDir-parent-widening the previous shape hid.
+func TestPartitionOutOfTreeExec_WorkingDirSiblingNotOverMatched(t *testing.T) {
+	consumed := map[string]bool{"_deps/other-src/x.c": true} // sibling, not under sub-build
+	c := ootCall("/synth/lib/cmake/Foo/FooConfig.cmake", 1, "cmake", "--build", ".")
+	c.WorkingDirectory = "/build/_deps/sub-build" // its own subtree has no consumed sources
+	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{c}, "/build", "/synth", consumed)
+	if len(lift) != 0 {
+		t.Fatalf("sibling sources under the shared parent must NOT lift; got %+v", lift)
+	}
+	if len(note) != 1 || note[0].Signal != signalPrefixTree {
+		t.Fatalf("want a prefix-tree note; got %+v", note)
 	}
 }
 

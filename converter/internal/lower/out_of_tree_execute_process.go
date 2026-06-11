@@ -121,24 +121,31 @@ func classifyOneOutOfTreeExec(file, workingDir, recordedBuildDir, prefixDir stri
 	// is the reliable noise signal — a scratch CMakeLists is never project
 	// intent, whatever it does.
 	fileRel, fileUnderBuild := buildRelAbs(recordedBuildDir, file)
-	if fileUnderBuild && (pathHasSegment(fileRel, "CMakeFiles") || pathHasSegment(fileRel, "CMakeScratch")) {
+	if fileUnderBuild && hasScratchSegment(fileRel) {
 		return "", false
 	}
 
 	// (2) Strongest signal, regardless of where the call was ISSUED from: does
-	// it OPERATE on a build-dir location the codemodel lists sources under?
-	// Check the issuing file's dir AND the WORKING_DIRECTORY — a find_package
-	// prefix-tree config file can drive a real sub-build whose sources land in
-	// the build dir (codemodel-backed), which is a subproject to LIFT, not a
-	// prefix probe to note. Scratch locations don't count (cmake's own).
-	for _, loc := range []string{file, workingDir} {
-		if rel, ok := buildRelAbs(recordedBuildDir, loc); ok {
-			if pathHasSegment(rel, "CMakeFiles") || pathHasSegment(rel, "CMakeScratch") {
-				continue
-			}
-			if buildSubtreeHasConsumedSources(slashDir(rel), consumedBuildRel) {
-				return signalBuildSubproject, true
-			}
+	// it OPERATE on a build-dir DIRECTORY the codemodel lists sources under? A
+	// find_package prefix-tree config file can drive a real sub-build whose
+	// sources land in the build dir (codemodel-backed), which is a subproject
+	// to LIFT, not a prefix probe to note. The two locations anchor
+	// asymmetrically: the issuing FILE is a path, so its containing directory
+	// (slashDir) is the operative dir; the WORKING_DIRECTORY already IS a
+	// directory, so it's used as-is — applying slashDir to it would strip a
+	// real component and check the PARENT subtree (missing a one-level
+	// sub-build, and over-matching a sibling's sources). Scratch dirs don't
+	// count (cmake's own).
+	opDirs := make([]string, 0, 2)
+	if fileUnderBuild && !hasScratchSegment(fileRel) {
+		opDirs = append(opDirs, slashDir(fileRel))
+	}
+	if wdRel, ok := buildRelAbs(recordedBuildDir, workingDir); ok && !hasScratchSegment(wdRel) {
+		opDirs = append(opDirs, wdRel)
+	}
+	for _, dir := range opDirs {
+		if buildSubtreeHasConsumedSources(dir, consumedBuildRel) {
+			return signalBuildSubproject, true
 		}
 	}
 
@@ -153,6 +160,13 @@ func classifyOneOutOfTreeExec(file, workingDir, recordedBuildDir, prefixDir stri
 	// (5) Neither the build dir nor the prefix tree — a bundled cmake module
 	// (/usr/share/cmake-*) or other system path. Confident noise: silent.
 	return "", false
+}
+
+// hasScratchSegment reports whether a build-relative path lies under cmake's
+// own try_compile / compiler-id scratch (a CMakeFiles or CMakeScratch path
+// component) — never project intent.
+func hasScratchSegment(rel string) bool {
+	return pathHasSegment(rel, "CMakeFiles") || pathHasSegment(rel, "CMakeScratch")
 }
 
 // buildRelAbs returns the slash-form path of abs relative to root when abs is
@@ -191,11 +205,12 @@ func slashDir(rel string) string {
 // buildSubtreeHasConsumedSources reports whether any codemodel-consumed
 // build-relative source lives under dir (the build-relative directory of the
 // call's operative location — its issuing CMakeLists or its WORKING_DIRECTORY).
-// An empty dir (the location at the build root) never matches — the codemodel
-// sources of a real subproject live under its own build-dir subtree, not at
-// the root.
+// An empty or "." dir (the location at the build root) never matches — the
+// codemodel sources of a real subproject live under its own build-dir subtree,
+// not at the root (and a WORKING_DIRECTORY equal to the build dir would
+// otherwise match every project that has any source).
 func buildSubtreeHasConsumedSources(dir string, consumedBuildRel map[string]bool) bool {
-	if dir == "" {
+	if dir == "" || dir == "." {
 		return false
 	}
 	prefix := dir + "/"
