@@ -971,7 +971,7 @@ func fileGenerateTags(s fileGenerateTagSet) []string {
 // Returns nil when r is nil or has no usable targets — the
 // evaluator's UnsupportedError on missing-target surfaces
 // cleanly and routes the lift to (b) / legacy.
-func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmakerun.GenexProbe, decoded *shadow.Decoded, imports *manifest.Resolver) map[string]genexeval.TargetInfo {
+func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmakerun.GenexProbe, decoded *shadow.Decoded, imports *manifest.Resolver, hostPrefixDir string) map[string]genexeval.TargetInfo {
 	if r == nil || len(r.Targets) == 0 {
 		// No local codemodel. Two sources can still populate the
 		// dict: imported targets (a template referencing
@@ -983,7 +983,7 @@ func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmake
 		// needs).
 		out := map[string]genexeval.TargetInfo{}
 		foldInterfaceLibraryProbes(out, probes)
-		foldImportedTargets(out, imports)
+		foldImportedTargets(out, imports, hostPrefixDir)
 		if len(out) == 0 {
 			return nil
 		}
@@ -1059,7 +1059,7 @@ func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmake
 	// IMPORTED_LOCATION-captured LinkPaths. Local-codemodel
 	// entries win on name collision (the manifest is a fallback
 	// for cmake names not in the codemodel).
-	foldImportedTargets(out, imports)
+	foldImportedTargets(out, imports, hostPrefixDir)
 	return out
 }
 
@@ -1114,13 +1114,19 @@ func foldInterfaceLibraryProbes(out map[string]genexeval.TargetInfo, probes []cm
 // populated from the export's first LinkPath when present:
 // cmake's `$<TARGET_FILE:Foo::bar>` at recording time resolves
 // to IMPORTED_LOCATION_<CONFIG>, which the orchestrator side
-// captured in LinkPaths. An empty LinkPaths leaves FileLocation
-// empty; the byte-equal check fails for those, the (a) lift
-// refuses, and the call falls through to (b)/legacy via the
-// existing fallthrough rules. (The upstream
+// captured in LinkPaths. Manifest link paths are host-independent —
+// anchored with ManifestPrefixAnchor or cmake's export-file
+// `${_IMPORT_PREFIX}` placeholder — while cmake renders the
+// EXPANDED staged-prefix path, so the anchor is expanded against
+// hostPrefixDir (the synthesized prefix cmake configured against)
+// before seeding; without that expansion the (a) lift's byte-equal
+// check can never match an imported target's render. An empty
+// LinkPaths leaves FileLocation empty; the byte-equal check fails
+// for those, the (a) lift refuses, and the call falls through to
+// (b)/legacy via the existing fallthrough rules. (The upstream
 // unresolvedCrossPackageTargetFiles gate doesn't fire because
 // the manifest does carry the name — just not its location.)
-func foldImportedTargets(out map[string]genexeval.TargetInfo, imports *manifest.Resolver) {
+func foldImportedTargets(out map[string]genexeval.TargetInfo, imports *manifest.Resolver, hostPrefixDir string) {
 	if imports == nil {
 		return
 	}
@@ -1133,13 +1139,37 @@ func foldImportedTargets(out map[string]genexeval.TargetInfo, imports *manifest.
 		}
 		var fileLoc string
 		if len(ex.LinkPaths) > 0 {
-			fileLoc = ex.LinkPaths[0]
+			fileLoc = expandPrefixAnchor(ex.LinkPaths[0], hostPrefixDir)
 		}
 		out[ex.CMakeTarget] = genexeval.TargetInfo{
 			Imported:     true,
 			FileLocation: fileLoc,
 		}
 	}
+}
+
+// expandPrefixAnchor resolves a manifest link path's prefix anchor to the
+// consumer-side staged prefix. Producers anchor cross-element link_paths
+// with ManifestPrefixAnchor (`/opt/prefix/` — a virtual token, no such
+// path exists) or cmake's own export-file placeholder
+// (`${_IMPORT_PREFIX}/`, write-a's convention-bound imports.json shape);
+// cmake's `$<TARGET_FILE:Foo::bar>` at recording time expands
+// IMPORTED_LOCATION against the STAGED bundle prefix, so matching its
+// rendered bytes needs the same expansion. Unanchored paths and an empty
+// hostPrefixDir pass through unchanged (the byte-equal check then fails
+// and the lift falls through, exactly as before).
+func expandPrefixAnchor(path, hostPrefixDir string) string {
+	if hostPrefixDir == "" {
+		return path
+	}
+	const importPrefixAnchor = "${_IMPORT_PREFIX}/"
+	switch {
+	case strings.HasPrefix(path, manifestPrefixAnchor):
+		return filepath.Join(hostPrefixDir, path[len(manifestPrefixAnchor):])
+	case strings.HasPrefix(path, importPrefixAnchor):
+		return filepath.Join(hostPrefixDir, path[len(importPrefixAnchor):])
+	}
+	return path
 }
 
 // aggregatedInterface holds the post-walk values for one

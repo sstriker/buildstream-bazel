@@ -1654,7 +1654,7 @@ func TestBuildGenexTargets_FoldsProbeData(t *testing.T) {
 			Type: "EXECUTABLE",
 		},
 	}
-	got := buildGenexTargets(reply, "/build", probes, nil, nil)
+	got := buildGenexTargets(reply, "/build", probes, nil, nil, "")
 
 	if got["foo"].InterfaceIncludeDirectories != "/src/include" {
 		t.Errorf("foo InterfaceIncludeDirectories = %q", got["foo"].InterfaceIncludeDirectories)
@@ -1688,7 +1688,7 @@ func TestBuildGenexTargets_NoProbes(t *testing.T) {
 			"foo": {Name: "foo", Type: "STATIC_LIBRARY"},
 		},
 	}
-	got := buildGenexTargets(reply, "/build", nil, nil, nil)
+	got := buildGenexTargets(reply, "/build", nil, nil, nil, "")
 	if got["foo"].InterfaceIncludeDirectories != "" {
 		t.Errorf("InterfaceIncludeDirectories should be empty without probe; got %q", got["foo"].InterfaceIncludeDirectories)
 	}
@@ -1723,7 +1723,7 @@ func TestBuildGenexTargets_FoldsImportedTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("manifest.Index: %v", err)
 	}
-	got := buildGenexTargets(reply, "/build", nil, nil, imports)
+	got := buildGenexTargets(reply, "/build", nil, nil, imports, "")
 	// Local target survives untouched.
 	if got["local"].Type != "STATIC_LIBRARY" {
 		t.Errorf("local Type lost: %q", got["local"].Type)
@@ -1773,7 +1773,7 @@ func TestBuildGenexTargets_ImportsFold_NoLinkPathsLeavesFileLocationEmpty(t *tes
 	if err != nil {
 		t.Fatalf("manifest.Index: %v", err)
 	}
-	got := buildGenexTargets(reply, "/build", nil, nil, imports)
+	got := buildGenexTargets(reply, "/build", nil, nil, imports, "")
 	imp, ok := got["Foo::bar"]
 	if !ok {
 		t.Fatalf("imported Foo::bar missing from genexTargets: %+v", got)
@@ -1812,7 +1812,7 @@ func TestBuildGenexTargets_LocalWinsOnNameCollision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("manifest.Index: %v", err)
 	}
-	got := buildGenexTargets(reply, "/build", nil, nil, imports)
+	got := buildGenexTargets(reply, "/build", nil, nil, imports, "")
 	ti := got["Foo::bar"]
 	if ti.Imported {
 		t.Errorf("local codemodel entry should win — Imported=false expected; got %+v", ti)
@@ -1844,7 +1844,7 @@ func TestBuildGenexTargets_ImportsOnly_NoLocalCodemodel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("manifest.Index: %v", err)
 	}
-	got := buildGenexTargets(reply, "/build", nil, nil, imports)
+	got := buildGenexTargets(reply, "/build", nil, nil, imports, "")
 	imp, ok := got["Foo::bar"]
 	if !ok {
 		t.Fatalf("imports-only fold lost Foo::bar: %+v", got)
@@ -1897,7 +1897,7 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_ResolvedLift(t *testing.T) {
 	// buildGenexTargets — which in PR 2's flow includes the
 	// imports fold.
 	reply := &fileapi.Reply{Targets: map[string]fileapi.Target{}}
-	genexTargets := buildGenexTargets(reply, hostBuild, nil, nil, imports)
+	genexTargets := buildGenexTargets(reply, hostBuild, nil, nil, imports, "")
 	cmakeVars := map[string]string{"CMAKE_BUILD_TYPE": "Release"}
 	cc := newCodegenContext()
 	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, nil, true, cmakeVars, genexTargets, imports, cc); err != nil {
@@ -1936,6 +1936,88 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_ResolvedLift(t *testing.T) {
 	}
 }
 
+// TestExpandPrefixAnchor pins the manifest-link-path anchor expansion both
+// anchor spellings resolve against the staged prefix; unanchored paths and
+// an empty prefix pass through.
+func TestExpandPrefixAnchor(t *testing.T) {
+	cases := []struct {
+		name, path, prefix, want string
+	}{
+		{"ManifestPrefixAnchor expands", "/opt/prefix/lib/libbar.a", "/tmp/stage", "/tmp/stage/lib/libbar.a"},
+		{"_IMPORT_PREFIX expands", "${_IMPORT_PREFIX}/lib/libbar.a", "/tmp/stage", "/tmp/stage/lib/libbar.a"},
+		{"unanchored absolute unchanged", "/prefix/lib/libbar.a", "/tmp/stage", "/prefix/lib/libbar.a"},
+		{"empty prefix unchanged", "${_IMPORT_PREFIX}/lib/libbar.a", "", "${_IMPORT_PREFIX}/lib/libbar.a"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := expandPrefixAnchor(tc.path, tc.prefix); got != tc.want {
+				t.Errorf("expandPrefixAnchor(%q, %q) = %q, want %q", tc.path, tc.prefix, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRecoverFileGenerate_CrossPackageTargetFile_AnchoredLinkPath pins the
+// REAL orchestrated manifest shape: link_paths anchored with cmake's
+// `${_IMPORT_PREFIX}` placeholder (write-a's convention imports.json) while
+// cmake rendered the EXPANDED staged-prefix path. The hostPrefixDir
+// expansion makes the (a) lift's byte-equal check match — without it the
+// lift fell to the (b) capture, baking the staged absolute path into
+// genex_values (the meta-cmake-cross-package-target-file gate's failure).
+func TestRecoverFileGenerate_CrossPackageTargetFile_AnchoredLinkPath(t *testing.T) {
+	template := "// tool=$<TARGET_FILE:Foo::bar>\n"
+	rendered := []byte("// tool=/staged/prefix/lib/libbar.a\n")
+	hostSrc, hostBuild := fileGenerateTestSetup(t, "src/g.in", template, "g.out", rendered)
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(hostBuild, "g.out"),
+		Input:    filepath.Join(hostSrc, "src/g.in"),
+		HasInput: true,
+	}}
+	imports, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "producer",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "Foo::bar",
+				BazelLabel:  "//elements/producer:bar",
+				LinkPaths:   []string{"${_IMPORT_PREFIX}/lib/libbar.a"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("manifest.Index: %v", err)
+	}
+	reply := &fileapi.Reply{Targets: map[string]fileapi.Target{}}
+	genexTargets := buildGenexTargets(reply, hostBuild, nil, nil, imports, "/staged/prefix")
+	cc := newCodegenContext()
+	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, nil, true, nil, genexTargets, imports, cc); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules: %+v", cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	if !hasTag(g.Tags, "cmake-codegen-genex-resolved") {
+		t.Errorf("expected (a) tag in %v — anchored link_paths must expand against hostPrefixDir", g.Tags)
+	}
+	if g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+		t.Fatalf("kind = %v (spec nil? %v); want KindCMakeConfigureFile", g.Kind, g.CMakeConfigureFile == nil)
+	}
+	spec := g.CMakeConfigureFile
+	if got := spec.TargetFiles["//elements/producer:bar"]; got != "Foo::bar" {
+		t.Errorf("TargetFiles[//elements/producer:bar] = %q, want Foo::bar; map=%v", got, spec.TargetFiles)
+	}
+	// Neither the staged path nor the genex_values capture may appear:
+	// the staged absolute path doesn't exist on Bazel's executor.
+	if strings.Contains(spec.GenexContext, "/staged/prefix") {
+		t.Errorf("staged path leaked into marshaled Context: %s", spec.GenexContext)
+	}
+	if len(spec.GenexValues) != 0 {
+		t.Errorf("(b) capture fired (genex_values=%v); want the (a) label wire", spec.GenexValues)
+	}
+}
+
 // TestRecoverFileGenerate_CrossPackageTargetFile_MixedSameAndCrossPackage
 // covers a template referencing BOTH a same-package target
 // AND a manifest-resolved target. The lifter's TargetFiles map
@@ -1971,7 +2053,7 @@ func TestRecoverFileGenerate_CrossPackageTargetFile_MixedSameAndCrossPackage(t *
 	genexTargets := map[string]genexeval.TargetInfo{
 		"foo": {Type: "STATIC_LIBRARY", FileLocation: "/recording/build/libfoo.a"},
 	}
-	foldImportedTargets(genexTargets, imports)
+	foldImportedTargets(genexTargets, imports, "")
 	cc := newCodegenContext()
 	if _, err := recoverFileGenerate(calls, hostSrc, hostSrc, hostBuild, hostBuild, nil, true, nil, genexTargets, imports, cc); err != nil {
 		t.Fatalf("recover: %v", err)
@@ -2060,7 +2142,7 @@ func TestAggregateInterface_SingleDep(t *testing.T) {
 			}},
 		}},
 	}
-	got := buildGenexTargets(reply, "/build", nil, decoded, nil)
+	got := buildGenexTargets(reply, "/build", nil, decoded, nil, "")
 	if got["leaf"].InterfaceIncludeDirectories != "/src/include" {
 		t.Errorf("leaf InterfaceIncludeDirectories = %q, want %q", got["leaf"].InterfaceIncludeDirectories, "/src/include")
 	}
@@ -2103,7 +2185,7 @@ func TestAggregateInterface_MultiDepOrdering(t *testing.T) {
 			},
 		},
 	}
-	got := buildGenexTargets(reply, "/build", nil, decoded, nil)
+	got := buildGenexTargets(reply, "/build", nil, decoded, nil, "")
 	want := "/a;/b"
 	if got["consumer"].InterfaceIncludeDirectories != want {
 		t.Errorf("consumer InterfaceIncludeDirectories = %q, want %q", got["consumer"].InterfaceIncludeDirectories, want)
@@ -2132,7 +2214,7 @@ func TestAggregateInterface_TransitiveChain(t *testing.T) {
 			{Target: "c", Groups: []shadow.TargetIncludeGroup{{Visibility: "INTERFACE", Dirs: []string{"/c"}}}},
 		},
 	}
-	got := buildGenexTargets(reply, "/build", nil, decoded, nil)
+	got := buildGenexTargets(reply, "/build", nil, decoded, nil, "")
 	if got["a"].InterfaceIncludeDirectories != "/c" {
 		t.Errorf("a InterfaceIncludeDirectories = %q, want %q", got["a"].InterfaceIncludeDirectories, "/c")
 	}
@@ -2175,7 +2257,7 @@ func TestAggregateInterface_Dedup(t *testing.T) {
 			{Target: "base", Groups: []shadow.TargetIncludeGroup{{Visibility: "INTERFACE", Dirs: []string{"/base"}}}},
 		},
 	}
-	got := buildGenexTargets(reply, "/build", nil, decoded, nil)
+	got := buildGenexTargets(reply, "/build", nil, decoded, nil, "")
 	if got["consumer"].InterfaceIncludeDirectories != "/base" {
 		t.Errorf("consumer InterfaceIncludeDirectories = %q, want %q (single occurrence)", got["consumer"].InterfaceIncludeDirectories, "/base")
 	}
@@ -2211,7 +2293,7 @@ func TestAggregateInterface_Cycle(t *testing.T) {
 	// require each target's own direct contribution to land
 	// (the cycle break only drops the re-entered branch, not
 	// the start frame's own bytes).
-	got := buildGenexTargets(reply, "/build", nil, decoded, nil)
+	got := buildGenexTargets(reply, "/build", nil, decoded, nil, "")
 	for _, name := range []string{"a", "b"} {
 		want := "/" + name
 		parts := strings.Split(got[name].InterfaceIncludeDirectories, ";")
@@ -2258,7 +2340,7 @@ func TestAggregateInterface_AllFourProperties(t *testing.T) {
 			{Target: "mid", Groups: []shadow.TargetLinkGroup{{Visibility: "INTERFACE", Libs: []string{"base"}}}},
 		},
 	}
-	got := buildGenexTargets(reply, "/build", nil, decoded, nil)
+	got := buildGenexTargets(reply, "/build", nil, decoded, nil, "")
 	if got["leaf"].InterfaceIncludeDirectories != "/include" {
 		t.Errorf("leaf InterfaceIncludeDirectories = %q", got["leaf"].InterfaceIncludeDirectories)
 	}
@@ -2294,7 +2376,7 @@ func TestAggregateInterface_PrivateExcluded(t *testing.T) {
 			}},
 		},
 	}
-	got := buildGenexTargets(reply, "/build", nil, decoded, nil)
+	got := buildGenexTargets(reply, "/build", nil, decoded, nil, "")
 	want := "/public/include"
 	if got["leaf"].InterfaceIncludeDirectories != want {
 		t.Errorf("leaf InterfaceIncludeDirectories = %q, want %q", got["leaf"].InterfaceIncludeDirectories, want)
@@ -2315,7 +2397,7 @@ func TestAggregateInterface_MissingTargetSurfacesUnsupported(t *testing.T) {
 			"foo": {Name: "foo", Id: "foo::@x", Type: "STATIC_LIBRARY"},
 		},
 	}
-	got := buildGenexTargets(reply, "/build", nil, &shadow.Decoded{}, nil)
+	got := buildGenexTargets(reply, "/build", nil, &shadow.Decoded{}, nil, "")
 	if _, ok := got["ghost"]; ok {
 		t.Errorf("unknown target 'ghost' should not have an entry; got %+v", got["ghost"])
 	}
@@ -2340,7 +2422,7 @@ func TestAggregateInterface_ProbeOverridesAggregate(t *testing.T) {
 		Name:      "foo",
 		Interface: map[string]string{"INCLUDE_DIRECTORIES": "/from-probe"},
 	}}
-	got := buildGenexTargets(reply, "/build", probes, decoded, nil)
+	got := buildGenexTargets(reply, "/build", probes, decoded, nil, "")
 	if got["foo"].InterfaceIncludeDirectories != "/from-probe" {
 		t.Errorf("probe must override aggregate; got %q want %q", got["foo"].InterfaceIncludeDirectories, "/from-probe")
 	}

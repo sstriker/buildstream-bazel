@@ -361,7 +361,22 @@ RENDER_GATES = \
 	scripts/meta-cmake-cc-hash.sh \
 	scripts/meta-cmake-todos-coverage.sh \
 	scripts/meta-intent-capture-lens.sh \
-	scripts/meta-cmake-comment-carrying.sh
+	scripts/meta-cmake-comment-carrying.sh \
+	scripts/meta-cmake-cross-package-target-file.sh \
+	scripts/meta-cmake-enable-exports.sh \
+	scripts/meta-cmake-execute-process-rescue.sh \
+	scripts/meta-cmake-find-package-variable-form.sh \
+	scripts/meta-cmake-install-export-declarative.sh \
+	scripts/meta-cmake-install-files-pkg.sh \
+	scripts/meta-cmake-interface-genex-defines.sh \
+	scripts/meta-cmake-platform-partition-tier2.sh \
+	scripts/meta-cmake-probe-genex-object-library.sh \
+	scripts/meta-cmake-probe-genex-utility.sh \
+	scripts/meta-cmake-round2-fallback.sh \
+	scripts/meta-cmake-sanitizer-features.sh \
+	scripts/meta-cmake-split-packages.sh \
+	scripts/meta-cmake-standalone-custom-command.sh \
+	scripts/meta-cmake-workspace-root.sh
 
 # No `converter` prerequisite: each gate builds convert-element-cmake itself,
 # so the skip branches below truly skip (no forced converter build). Some
