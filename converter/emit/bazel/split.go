@@ -256,9 +256,12 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 	return out, nil
 }
 
-// splitEmitWorkers bounds EmitSplit's per-package render concurrency. Defaults
-// to the core count (the per-package build.Format is CPU-bound); a benchmark or
-// a caller that wants deterministic single-threaded rendering can lower it.
+// splitEmitWorkers bounds EmitSplit's per-package render concurrency. The
+// per-package build.Format is CPU-bound, so this tracks the core count — with a
+// deliberate floor of 2 so the concurrent path is always exercised (a 1-core CI
+// runner still spawns 2 workers, never silently falling back to a serial loop).
+// A benchmark or a caller that wants deterministic single-threaded rendering can
+// lower it.
 var splitEmitWorkers = max(runtime.NumCPU(), 2)
 
 // renderSplitPackage renders one directory's BUILD body: the sub-package
