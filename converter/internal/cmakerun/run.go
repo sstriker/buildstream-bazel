@@ -250,6 +250,27 @@ type Reply struct {
 	Vars map[string]string
 }
 
+// StageFileAPIQueries pre-stages the converter's File API query set into
+// buildDir so the next cmake run against it writes the reply objects.
+// Used for the main configure and for NESTED build dirs detected by the
+// nested-cmake lift (the warm second pass stages queries there, then the
+// re-run outer configure's execute_process re-runs the nested cmake,
+// which sees the query and writes its codemodel).
+func StageFileAPIQueries(buildDir string) error {
+	queryDir := filepath.Join(buildDir, ".cmake", "api", "v1", "query")
+	if err := os.MkdirAll(queryDir, 0o755); err != nil {
+		return fmt.Errorf("cmakerun: stage query dir: %w", err)
+	}
+	for _, kind := range []string{"codemodel-v2", "toolchains-v1", "cmakeFiles-v1", "cache-v2", "configureLog-v1"} {
+		f, err := os.Create(filepath.Join(queryDir, kind))
+		if err != nil {
+			return fmt.Errorf("cmakerun: stage query %s: %w", kind, err)
+		}
+		_ = f.Close()
+	}
+	return nil
+}
+
 // Configure runs cmake -B <build> -S <source>, with File API queries
 // pre-staged for codemodel-v2, toolchains-v1, cmakeFiles-v1, and cache-v2.
 // Returns the reply directory location on success.
@@ -280,22 +301,14 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		opts.BuildType = "Release"
 	}
 
-	queryDir := filepath.Join(opts.BuildDir, ".cmake", "api", "v1", "query")
-	if err := os.MkdirAll(queryDir, 0o755); err != nil {
-		return Reply{}, fmt.Errorf("cmakerun: stage query dir: %w", err)
-	}
 	// configureLog-v1 is cmake 3.26+. cmake < 3.26 silently ignores
 	// the staged query (no reply object generated); newer cmakes
 	// produce a sidecar pointing at CMakeConfigureLog.yaml. Phase 2
 	// of the generator-parity uplift (ROADMAP.md) reads the YAML
 	// when probe-bucket execute_process refusals need a try_compile
 	// answer to lift.
-	for _, kind := range []string{"codemodel-v2", "toolchains-v1", "cmakeFiles-v1", "cache-v2", "configureLog-v1"} {
-		f, err := os.Create(filepath.Join(queryDir, kind))
-		if err != nil {
-			return Reply{}, fmt.Errorf("cmakerun: stage query %s: %w", kind, err)
-		}
-		_ = f.Close()
+	if err := StageFileAPIQueries(opts.BuildDir); err != nil {
+		return Reply{}, err
 	}
 
 	// Stage the dump-vars hook into the build dir when the

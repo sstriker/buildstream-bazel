@@ -527,6 +527,12 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	rejections, execFallback := in.rejections, in.execFallback
 	coverageCollector, todosCollector := in.coverageCollector, in.todosCollector
 	stampSink, backedFeatures := in.stampSink, in.backedFeatures
+	// Nested-cmake lift state: pass 1 fills nestedSink (detected nested
+	// build dirs); runNestedCMakePass harvests replies into nestedBuilds,
+	// which the closure below threads into the re-lower (closure capture:
+	// earlier passes see it nil/empty).
+	nestedSink := map[string]string{}
+	var nestedBuilds []lower.NestedBuildInput
 	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment, parentScopeForwards []shadow.ParentScopeForward) (*ir.Package, error) {
 		// Reset the todos collector each pass: ToIR can run more than once
 		// (two-pass genex / stamp recovery) against the same collector, and
@@ -569,6 +575,8 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 			SetAssignments:                    setAssignments,
 			ParentScopeForwards:               parentScopeForwards,
 			StampVarSink:                      stampSink,
+			NestedConfigureSink:               nestedSink,
+			NestedBuilds:                      nestedBuilds,
 		})
 	}
 
@@ -705,6 +713,25 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 			}
 		}
 	}
+	// Nested-cmake second pass (conditional, warm): pass 1 detected
+	// configure-time nested cmake builds (the superbuild-at-configure
+	// idiom). Stage File API queries into each nested build dir, re-run
+	// the warm outer configure (the nested cmake re-runs and writes its
+	// codemodel reply), and re-lower with the harvested nested builds so
+	// their targets merge into the outer package. Skipped when nothing
+	// was detected (zero overhead), when opted out, or offline. Failures
+	// degrade to the loud not-lifted warning + structured todo.
+	if a.TwoPassGenex && hostBuildDir != "" && len(nestedSink) > 0 {
+		if nbs := runNestedCMakePass(ctx, a, hostBuildDir, nestedSink); len(nbs) > 0 {
+			nestedBuilds = nbs
+			pkgN, errN := runToIR(nil, genexResolutions, recoveredStampSets, recoveredStampForwards)
+			if errN != nil {
+				return nil, errN
+			}
+			pkg = pkgN
+		}
+	}
+
 	// Per-config bake passes (conditional, cold): a multi-config configure
 	// runs ONCE with no CMAKE_BUILD_TYPE, so a baked configure_file body the
 	// project derives from CMAKE_BUILD_TYPE (LLVM's abi-breaking.h) carries

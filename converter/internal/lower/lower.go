@@ -154,6 +154,18 @@ type Options struct {
 	// worth running (non-empty => the project has VCS-stamp vars).
 	StampVarSink map[string]string
 
+	// NestedConfigureSink, when non-nil, receives the nested cmake
+	// builds pass 1 detected (outer-build-relative nested build dir →
+	// trace-recorded nested source dir). The driver reads it after
+	// pass 1 to stage File API queries into each nested build dir and
+	// run the warm second pass; see nested_cmake.go.
+	NestedConfigureSink map[string]string
+
+	// NestedBuilds is the warm second pass's harvest: each detected
+	// nested build's File API reply + ninja graph, recursively lowered
+	// and merged into the outer package by lowerNestedBuilds.
+	NestedBuilds []NestedBuildInput
+
 	// UnsupportedExecuteProcessFallback toggles
 	// recoverExecuteProcess's refusal handling. When false
 	// (the default — preserves Phase A behaviour),
@@ -2237,6 +2249,11 @@ func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts
 	// Warnings is nil.
 	emitInternalDropTodos(opts.Todos, cc.FilteredInternalCmds)
 	warnUnconvertedTests(opts, cc)
+	// Nested cmake builds detected but not lifted (offline run, warm
+	// pass disabled, or a failed nested lowering): loud degradation —
+	// stderr warning + structured todo — replacing the historical
+	// Tier-1 refusal. See nested_cmake.go.
+	warnUnliftedNestedBuilds(opts, cc)
 	// Same unconverted add_test registrations, as structured
 	// conversion-todos (one per COMMAND runner). No-op on a nil
 	// collector; independent of the stderr breadcrumb above.
@@ -2441,6 +2458,19 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		prewarmScriptBakes(cc, g, opts.BuildDir)
 	}
 
+	// Nested-cmake lift (see nested_cmake.go): route the driver's
+	// detection sink into the recovery context, and merge the warm
+	// second pass's harvested nested builds BEFORE the recovery +
+	// target loop so their artifacts and baked headers are registered
+	// for consumer attribution.
+	if opts.NestedConfigureSink != nil {
+		cc.NestedConfigureSink = opts.NestedConfigureSink
+	}
+	nestedOuts, err := lowerNestedBuilds(pkg, opts, cc, hostSrc)
+	if err != nil {
+		return nil, err
+	}
+
 	ra, fallbackPkg, err := recoverConfigureTimeArtifacts(r, g, opts, cfg, tf, cmakeSrc, cmakeBuild, hostSrc, cc)
 	if err != nil {
 		return nil, err
@@ -2448,6 +2478,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	if fallbackPkg != nil {
 		return fallbackPkg, nil
 	}
+	ra.executeProcesses = append(ra.executeProcesses, nestedOuts...)
 	executeProcesses, configureFiles, fileGenerates := ra.executeProcesses, ra.configureFiles, ra.fileGenerates
 	genexTargets, findPkgAttrib := ra.genexTargets, ra.findPkgAttrib
 
@@ -2967,8 +2998,30 @@ func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 			continue
 		}
 		if !filepath.IsAbs(path) {
+			// Nested-cmake artifact (relative form): cmake's ninja
+			// generator records the archive build-relative
+			// (`subbuild/libsublib.a`); route it to the merged nested
+			// target's label. See nested_cmake.go.
+			if label, hit := lc.cc.NestedArtifactDeps[path]; hit {
+				rt.add(label, false)
+				continue
+			}
 			routeNonAbsLibraryFragment(irt, rt, path, imports, traceLinkScope)
 			continue
+		}
+		// Nested-cmake artifact wiring: a fragment naming an archive the
+		// merged nested build produces (`<build>/subbuild/libX.a`) routes
+		// to the nested target's label — the codemodel records it as a
+		// raw path because the outer project links the FILE, not a
+		// target. Checked before the imports manifest (a nested artifact
+		// never matches one). See nested_cmake.go.
+		if len(lc.cc.NestedArtifactDeps) > 0 {
+			if rel, inside := relativeIfInside(lc.cmakeBuild, path); inside {
+				if label, hit := lc.cc.NestedArtifactDeps[rel]; hit {
+					rt.add(label, false)
+					continue
+				}
+			}
 		}
 		if hostPrefix != "" && strings.HasPrefix(path, hostPrefix+string(filepath.Separator)) {
 			path = manifestPrefixAnchor + path[len(hostPrefix)+1:]
