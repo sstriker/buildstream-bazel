@@ -2254,6 +2254,10 @@ func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts
 	// stderr warning + structured todo — replacing the historical
 	// Tier-1 refusal. See nested_cmake.go.
 	warnUnliftedNestedBuilds(opts, cc)
+	// Codemodel sources dropped without recovery (no silent drops):
+	// aggregate stderr warning + structured source-elided todos. See
+	// build_dir_source_bake.go.
+	warnElidedSources(opts, cc)
 	// Same unconverted add_test registrations, as structured
 	// conversion-todos (one per COMMAND runner). No-op on a nil
 	// collector; independent of the stderr breadcrumb above.
@@ -2497,6 +2501,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		cmakeSrc:            cmakeSrc,
 		cmakeBuild:          cmakeBuild,
 		hostSrc:             hostSrc,
+		hostBuild:           opts.BuildDir,
 		hostPrefix:          opts.HostPrefixDir,
 		hostSrcOnDisk:       hostSrcOnDisk,
 		g:                   g,
@@ -2606,6 +2611,7 @@ type targetLowerCtx struct {
 	cmakeSrc         string
 	cmakeBuild       string
 	hostSrc          string
+	hostBuild        string
 	hostPrefix       string
 	hostSrcOnDisk    bool
 	g                *ninja.Graph
@@ -3329,19 +3335,51 @@ func routeCompileGrouplessSource(irt *ir.Target, src fileapi.TargetSource, lc ta
 	// relative; cmakeSrc-relative paths pass through.
 	srcPath := src.Path
 	if filepath.IsAbs(srcPath) {
-		if rel, inside := relativeIfInside(cmakeSrc, srcPath); inside {
-			srcPath = rel
-		} else {
+		rel, inside := relativeIfInside(cmakeSrc, srcPath)
+		if !inside {
+			routeCompileGrouplessAbsSource(irt, src, lc)
 			return
 		}
+		srcPath = rel
 	}
 	if pathHasDotDotSegment(srcPath) {
+		recordElidedSource(lc.cc, irt.Name, src.Path, "non-compile-group-source")
 		return
 	}
 	ext := strings.ToLower(filepath.Ext(srcPath))
 	if cclang.IsHeaderExt(ext) {
 		irt.Hdrs = append(irt.Hdrs, reanchor(srcPath))
 	}
+}
+
+// routeCompileGrouplessAbsSource handles the absolute-path entries
+// routeCompileGrouplessSource can't relativize against the source tree.
+// A build-dir target_sources() entry (typically a generated header): a
+// recovered producer covers it — the consumer attribution attaches it —
+// so nothing drops; cmake bookkeeping stays elided by design; otherwise
+// the on-disk bake recovers it like the compiled-source path, attaching
+// as a header. Only a byteless orphan records. An out-of-tree absolute
+// entry has nothing staging it — account the drop.
+func routeCompileGrouplessAbsSource(irt *ir.Target, src fileapi.TargetSource, lc targetLowerCtx) {
+	rel, insideBuild := relativeIfInside(lc.cmakeBuild, src.Path)
+	if !insideBuild {
+		recordElidedSource(lc.cc, irt.Name, src.Path, "non-compile-group-source")
+		return
+	}
+	if _, produced := lc.cc.OutToGenrule[rel]; produced {
+		return
+	}
+	if strings.HasPrefix(rel, "CMakeFiles/") {
+		return
+	}
+	if _, baked := bakeBuildDirFile(rel, lc); baked {
+		irt.Hdrs = append(irt.Hdrs, rel)
+		if !stringSliceContains(irt.Tags, "has-cmake-codegen") {
+			irt.Tags = append(irt.Tags, "has-cmake-codegen")
+		}
+		return
+	}
+	recordElidedSource(lc.cc, irt.Name, src.Path, "non-compile-group-source")
 }
 
 // elideBuildDirOnlySource handles a configure-time-created file living
@@ -3352,37 +3390,77 @@ func routeCompileGrouplessSource(irt *ir.Target, src fileapi.TargetSource, lc ta
 // original inline branch.
 func elideBuildDirOnlySource(irt *ir.Target, src fileapi.TargetSource, i int, st *sourceWalkState, inCG bool, lc targetLowerCtx) bool {
 	cmakeBuild := lc.cmakeBuild
-	cc := lc.cc
-	if cmakeBuild != "" && filepath.IsAbs(src.Path) {
-		if rel, inside := relativeIfInside(cmakeBuild, src.Path); inside {
-			// Before eliding: a build-dir source that matches a
-			// recovered generator output (configure_file /
-			// file(GENERATE) / execute_process / custom-command)
-			// is produced by a genrule the converter already
-			// emitted onto cc.Genrules — wire that output edge
-			// into srcs (or hdrs) instead of dropping it. This
-			// captures the project's generated-compile-source
-			// intent natively rather than emitting a broken
-			// empty-srcs target. The canonical case is eigen's
-			// doc-snippet `compile_<snippet>` cc_binaries:
-			// configure_file splices a snippet's .cpp into a
-			// template and the generated .cpp is the binary's
-			// only source, so eliding it leaves srcs empty. The
-			// build-dir-relative `rel` matches OutToGenrule's
-			// keys (both relativize against the codemodel build
-			// dir; see recoverConfigureFiles' recordedBuildDir).
-			if _, produced := cc.OutToGenrule[rel]; produced {
-				st.consumesCodegen = true
-				if sp := attachGeneratedSource(irt, rel, inCG, false, cc.CcEmbedSourceToHeader[rel]); sp != "" {
-					st.srcEmitPath[i] = sp
-				}
-				return true
-			}
-			st.elidedBuildDirSrc = true
-			return true
-		}
+	if cmakeBuild == "" || !filepath.IsAbs(src.Path) {
+		return false
 	}
-	return false
+	rel, inside := relativeIfInside(cmakeBuild, src.Path)
+	if !inside {
+		return false
+	}
+	recoverOrElideBuildDirSource(irt, src, rel, i, st, inCG, lc)
+	return true
+}
+
+// recoverOrElideBuildDirSource runs the recovery ladder for one
+// build-dir source: wire a recovered producer, keep cmake bookkeeping
+// elided by design, bake on-disk bytes, and only then elide — loudly.
+// Bodies and rationale comments are verbatim from the original inline
+// branch of elideBuildDirOnlySource.
+func recoverOrElideBuildDirSource(irt *ir.Target, src fileapi.TargetSource, rel string, i int, st *sourceWalkState, inCG bool, lc targetLowerCtx) {
+	cc := lc.cc
+	// Before eliding: a build-dir source that matches a
+	// recovered generator output (configure_file /
+	// file(GENERATE) / execute_process / custom-command)
+	// is produced by a genrule the converter already
+	// emitted onto cc.Genrules — wire that output edge
+	// into srcs (or hdrs) instead of dropping it. This
+	// captures the project's generated-compile-source
+	// intent natively rather than emitting a broken
+	// empty-srcs target. The canonical case is eigen's
+	// doc-snippet `compile_<snippet>` cc_binaries:
+	// configure_file splices a snippet's .cpp into a
+	// template and the generated .cpp is the binary's
+	// only source, so eliding it leaves srcs empty. The
+	// build-dir-relative `rel` matches OutToGenrule's
+	// keys (both relativize against the codemodel build
+	// dir; see recoverConfigureFiles' recordedBuildDir).
+	if _, produced := cc.OutToGenrule[rel]; produced {
+		st.consumesCodegen = true
+		if sp := attachGeneratedSource(irt, rel, inCG, false, cc.CcEmbedSourceToHeader[rel]); sp != "" {
+			st.srcEmitPath[i] = sp
+		}
+		return
+	}
+	// cmake bookkeeping under CMakeFiles/ (PCH compile stubs
+	// like cmake_pch.hxx.cxx, re-run markers) is cmake-internal
+	// — its semantics are handled by dedicated lifts (the PCH
+	// forced-include lift), so the by-design elide stands, tag
+	// only (the meta-cmake-pch gate pins that these never leak
+	// into the BUILD).
+	if strings.HasPrefix(rel, "CMakeFiles/") {
+		st.elidedBuildDirSrc = true
+		return
+	}
+	// On-disk bake fallback (no silent drops of anything in the
+	// codemodel): the configure already CREATED this file — by a
+	// writer the trace classifiers don't model (file(WRITE) /
+	// APPEND / COPY / TOUCH / DOWNLOAD, custom macros) — so the
+	// bytes are sitting in the build dir. Bake them rather than
+	// emitting a rule that's missing an input cmake compiled.
+	// See build_dir_source_bake.go.
+	if _, baked := bakeBuildDirFile(rel, lc); baked {
+		st.consumesCodegen = true
+		if sp := attachGeneratedSource(irt, rel, inCG, false, cc.CcEmbedSourceToHeader[rel]); sp != "" {
+			st.srcEmitPath[i] = sp
+		}
+		return
+	}
+	// Bytes unavailable (offline replay without a recorded
+	// mirror): the elide stands, but LOUDLY — recorded for the
+	// end-of-lower aggregate warning + source-elided todo, with
+	// the per-target tag kept for BUILD-side audits.
+	recordElidedSource(cc, irt.Name, src.Path, "build-dir-source")
+	st.elidedBuildDirSrc = true
 }
 
 func lowerOrdinarySource(irt *ir.Target, t *fileapi.Target, src fileapi.TargetSource, i int, st *sourceWalkState, inCG bool, lc targetLowerCtx) error {
@@ -3593,6 +3671,7 @@ func lowerOrdinarySource(irt *ir.Target, t *fileapi.Target, src fileapi.TargetSo
 				st.srcEmitPath[i] = src.Path
 				return nil
 			}
+			recordElidedSource(lc.cc, irt.Name, src.Path, "missing-source")
 			st.elidedMissingSrc = true
 			return nil
 		}
@@ -4737,9 +4816,11 @@ func stageTargetHeaders(irt *ir.Target, t *fileapi.Target, lc targetLowerCtx, wa
 	// Gated on an elision flag so the rare legitimate srcs-less
 	// binary (one that links a dep providing main, with nothing
 	// elided) is left untouched.
-	if (irt.Kind == ir.KindCCBinary || irt.Kind == ir.KindCCTest) &&
-		len(irt.Srcs) == 0 && srcElided {
-		msg := fmt.Sprintf("target %q (%s) has no srcs after lowering — every compiled source was elided (build-dir-only generated file with no recovered generator edge, missing-on-disk source, or compiler artifact); emitting it would produce a Bazel-invalid srcs-less rule", t.Name, t.Type)
+	// Libraries refuse too when EVERYTHING (srcs AND hdrs) elided: an
+	// empty cc_library links nothing, so every consumer fails at final
+	// link with no signal pointing back here.
+	if elidedKindsRefuseWhenEmpty(irt) && srcElided {
+		msg := fmt.Sprintf("target %q (%s) has no srcs after lowering — every compiled source was elided (build-dir-only generated file with no recovered generator edge, missing-on-disk source, or compiler artifact); emitting it would produce a Bazel-invalid or empty rule", t.Name, t.Type)
 		if rejections != nil {
 			rejections.AddWithContext(failure.AllSourcesElided, msg, t.Name, "")
 			return nil, nil
@@ -4988,6 +5069,13 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 	}
 
 	targetBuildIncs, walkPkgRootForHdrs, privateIncDirs := lowerCompileGroups(irt, t, tt, lc, pchCtx)
+
+	// Bake configure-written build-dir headers this target's includes
+	// consume but no recovered producer covers (the untraced-writer
+	// family) — before the attribution loops, so recovered outputs keep
+	// their richer attribution and only true orphans bake. See
+	// build_dir_source_bake.go.
+	bakeConsumedBuildDirHeaders(irt, lc, targetBuildIncs)
 
 	attributeGeneratedConsumers(irt, t, lc, targetBuildIncs)
 
