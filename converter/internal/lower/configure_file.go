@@ -191,6 +191,14 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 				var inside bool
 				relDir, inside = relativeIfInside(recordedSrcDir, filepath.Dir(call.CallFile))
 				if !inside {
+					// The relative output anchors to no codemodel directory
+					// scope and the issuing file isn't under the source tree
+					// (e.g. a generate_export_header with a relative output,
+					// issued from cmake's own module dir): we can't place the
+					// rendered header, so it isn't recovered. Note the uncertain
+					// drop rather than continuing silently. call.Output is the
+					// relative operand — leak-safe for the report.
+					cc.noteUnresolvedRecoveryInput(unresolvedConfigureFileUnanchored, filepath.ToSlash(call.Output))
 					continue
 				}
 			}

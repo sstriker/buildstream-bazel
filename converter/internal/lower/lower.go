@@ -2249,6 +2249,11 @@ func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts
 	// Warnings is nil.
 	emitInternalDropTodos(opts.Todos, cc.FilteredInternalCmds)
 	emitUnreadableConfigureOutputTodos(opts.Todos, cc.UnreadableConfigureOutputs)
+	// Configure-time recovery inputs that couldn't be resolved (an
+	// unanchorable configure_file output, an unreadable declared .proto or
+	// nested header): uncertain drops, surfaced as todos + a breadcrumb rather
+	// than the historical silent continue. See unresolved_recovery_inputs.go.
+	warnUnresolvedRecoveryInputs(opts, cc)
 	warnUnconvertedTests(opts, cc)
 	// Nested cmake builds detected but not lifted (offline run, warm
 	// pass disabled, or a failed nested lowering): loud degradation —
