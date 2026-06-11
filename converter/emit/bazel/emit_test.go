@@ -2204,3 +2204,57 @@ func TestEmit_NoFeaturesAttributeWhenEmpty(t *testing.T) {
 		t.Errorf("features attribute should be omitted when empty; got:\n%s", got)
 	}
 }
+
+// TestEmit_Provenance_OutOfTreeDropped: a provenance whose file is still
+// ABSOLUTE after the lowering's re-anchor pass (an out-of-tree origin — a
+// bundled cmake Module, a fetched dep on the convert host) is dropped
+// rather than emitted verbatim: there is no workspace location to inspect,
+// and the raw host path would leak the convert machine's layout into the
+// BUILD bytes. The macro shape degrades line by line.
+func TestEmit_Provenance_OutOfTreeDropped(t *testing.T) {
+	mk := func(prov, call ir.Provenance) *ir.Package {
+		return &ir.Package{Targets: []ir.Target{{
+			Name: "gadget", Kind: ir.KindCCLibrary, Srcs: []string{"gadget.c"},
+			Provenance: prov, CallSite: call,
+		}}}
+	}
+	abs := ir.Provenance{File: "/usr/share/cmake-3.28/Modules/Helpers.cmake", Line: 14, Command: "add_library"}
+	rel := ir.Provenance{File: "CMakeLists.txt", Line: 18, Command: "add_gadget_lib"}
+
+	// Out-of-tree Declared under an in-tree call site: Source survives,
+	// Declared drops, and no absolute path reaches the output.
+	got, err := bazel.EmitWithOptions(mk(abs, rel), bazel.Options{EmitProvenance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(got)
+	if !strings.Contains(s, "# Source: CMakeLists.txt:18 (add_gadget_lib)") {
+		t.Errorf("in-tree call site must keep its # Source: line; got:\n%s", s)
+	}
+	if strings.Contains(s, "Declared") || strings.Contains(s, "/usr/share") {
+		t.Errorf("out-of-tree # Declared: must drop (no location to inspect, host-path leak); got:\n%s", s)
+	}
+
+	// Directly-declared out-of-tree: no provenance comment at all.
+	got, err = bazel.EmitWithOptions(mk(abs, ir.Provenance{}), bazel.Options{EmitProvenance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := string(got); strings.Contains(s, "# Source:") || strings.Contains(s, "/usr/share") {
+		t.Errorf("out-of-tree direct declaration must emit no provenance; got:\n%s", s)
+	}
+
+	// Out-of-tree call site over an in-tree declaration: promotes to the
+	// single # Source: line (the direct shape).
+	got, err = bazel.EmitWithOptions(mk(rel, abs), bazel.Options{EmitProvenance: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s = string(got)
+	if !strings.Contains(s, "# Source: CMakeLists.txt:18 (add_gadget_lib)") {
+		t.Errorf("in-tree declaration must promote to # Source: when the call site is out-of-tree; got:\n%s", s)
+	}
+	if strings.Contains(s, "Declared") || strings.Contains(s, "/usr/share") {
+		t.Errorf("no Declared line and no host path expected; got:\n%s", s)
+	}
+}

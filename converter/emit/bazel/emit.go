@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/template"
@@ -81,17 +82,37 @@ func emitPackageDefaultVisibility(buf *bytes.Buffer) {
 //
 //	# Source: CMakeLists.txt:18 (add_gadget_lib)
 //	# Declared: cmake/helpers.cmake:14 (add_library)
+//
+// A provenance whose file is still ABSOLUTE after the lowering's re-anchor
+// pass (reanchorProvenanceFile's leave-untouched tail: a declaring file
+// outside the source tree, its parent, and the build dir — a bundled cmake
+// Module, a fetched dep on the convert host) is NOT emitted: there is no
+// workspace location for the operator to inspect, and the raw host path
+// would leak the convert machine's filesystem layout into the BUILD bytes
+// (a byte-identical-emit hazard across hosts). The macro shape degrades
+// line by line — an in-tree call site keeps its `# Source:` even when the
+// out-of-tree `# Declared:` drops, and an in-tree declaration promotes to
+// the single `# Source:` line when only the call site is out-of-tree.
 func emitTargetProvenance(buf *bytes.Buffer, t ir.Target) {
-	if t.CallSite.IsZero() {
-		if !t.Provenance.IsZero() {
+	if t.CallSite.IsZero() || !provenanceEmittable(t.CallSite) {
+		if !t.Provenance.IsZero() && provenanceEmittable(t.Provenance) {
 			emitProvenanceComment(buf, "Source", t.Provenance)
 		}
 		return
 	}
 	emitProvenanceComment(buf, "Source", t.CallSite)
-	if !t.Provenance.IsZero() {
+	if !t.Provenance.IsZero() && provenanceEmittable(t.Provenance) {
 		emitProvenanceComment(buf, "Declared", t.Provenance)
 	}
+}
+
+// provenanceEmittable reports whether a provenance breadcrumb names a
+// location the emitted BUILD's reader can actually open: a workspace-
+// relative path. Absolute paths are exactly the re-anchor pass's
+// fall-through (out-of-tree origins), so the check doubles as the
+// "was it normalized?" test.
+func provenanceEmittable(p ir.Provenance) bool {
+	return !filepath.IsAbs(p.File)
 }
 
 // emitProvenanceComment writes one `# <label>: <file>:<line> (<command>)`
