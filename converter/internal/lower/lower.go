@@ -4323,6 +4323,12 @@ func lowerCompileGroups(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 		// fragment split withheld into the declared headers' ordered
 		// `-include` copts, staging + tagging as needed (see pch.go).
 		copts, irt.Srcs = pchCtx.apply(pchArtifacts, cg, copts, irt.Srcs, irt.Hdrs, irt)
+		// Source-tree -idirafter dirs: exec-root re-anchor + header-walk
+		// staging (see idirafter.go). The walk dirs ride the same
+		// privateIncDirs channel PRIVATE -I dirs use.
+		var idirWalk []string
+		copts, idirWalk = reanchorIDirAfterCopts(copts, pchCtx.cmakeSrc, pchCtx.reanchor, pchCtx.pkgPath)
+		privateIncDirs = append(privateIncDirs, idirWalk...)
 		irt.Copts = copts
 
 		for _, d := range cg.Defines {
@@ -5498,6 +5504,11 @@ func splitCompileGroups(t *fileapi.Target, irt *ir.Target, cc *codegenContext, c
 		// source-tree headers land on the sub where its compile runs, and
 		// the user-visible wrapper gets the tag.
 		copts, subSrcs = pchCtx.apply(pchArtifacts, cg, copts, subSrcs, subHdrs, irt)
+		// Source-tree -idirafter: same exec-root re-anchor as the main
+		// path; the walk dirs are dropped here — the wrapper's pass
+		// already collected them, and the staged headers partition into
+		// the subs via sharedHdrs.
+		copts, _ = reanchorIDirAfterCopts(copts, pchCtx.cmakeSrc, pchCtx.reanchor, pchCtx.pkgPath)
 
 		subName := irt.Name + "_" + langSuffix(cg.Language)
 		if langCount[cg.Language] > 1 {
