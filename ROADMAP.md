@@ -424,6 +424,42 @@ transition cleanly.
   `libc_top` / `all_files` so actions ship the sysroot. Larger; follows the
   `builtin_sysroot` item.
 
+- **Hoist common compile flags into a toolchain `default_compile_flags` feature
+  (dedup per-target `copts`).** Today every `cc_library`/`cc_binary`/`cc_test`
+  carries its OWN `copts`/`defines` list, so flags shared by every target in a
+  project — `-O3`, `-mavx2`/arch flags, the project-wide `CMAKE_<LANG>_FLAGS`,
+  common `-D…` — are duplicated once per target in the emitted BUILD. The flags
+  are extracted per-target in `lower.splitCompileFragments` →
+  `irt.Copts`/`irt.Defines` (converter/internal/lower/lower.go) and rendered
+  per-rule as `ccView.CoptsExpr` (converter/emit/bazel/emit.go's `ccRuleTmpl`,
+  the `copts = …` arm); there is **no** package- or workspace-level hoist (the
+  only `package(...)` default emitted is `default_visibility`). What EXISTS is a
+  per-flag, per-target *feature* lift for a narrow class only:
+  `lower.liftRawFeatureFlags` (converter/internal/lower/lift_feature_flags.go)
+  strips `-fPIC`/`-flto`/`-fsanitize=…` from each target and adds `features =
+  [...]`, gated on a fed-in toolchain's declared `feature()` names
+  (`--toolchain-features-from`, converter/internal/cli/flags.go; vocabulary read
+  by `toolchainscan`, flag→feature map in
+  converter/internal/toolchainfeature/featureflag.go). It does NOT touch general
+  optimization/arch/define flags and does NOT dedup across targets. The
+  machinery to *emit* a toolchain config with `feature()` flag-sets already
+  exists too (converter/internal/emit/bazeltoolchain/emit.go renders
+  `cc_toolchain_config.bzl` from the cmake probe; sanitizerfeatures/ emits a
+  per-config sanitizer-feature `.bzl`). **What's needed:** (1) classify
+  global-vs-target-specific flags at convert time — the info is available
+  (cmake's codemodel records `CMAKE_<LANG>_FLAGS` + `add_compile_options`
+  separately from per-target `target_compile_options`, but the converter
+  currently sees them already folded into each target's
+  `CompileGroup.CompileCommandFragments`, so the split has to be reconstructed);
+  (2) emit the globals ONCE — either as a `default_compile_flags` `feature()` in
+  the `bazeltoolchain` config (targets reference it / it's on by default) or as a
+  `package(default_copts=[...])`; (3) emit only the per-target DELTA into each
+  rule's `copts`. Gate behind an opt-in CLI flag so the current inline emission
+  stays the byte-stable default. Sibling to the feature-flag lift above; the
+  audit already nudges toward features (`bazelidiom.auditRawCompileFlags` →
+  `raw-toolchain-feature-flag`). Payoff: substantially smaller, more idiomatic
+  BUILDs; no fidelity change (same flags reach each compile, just declared once).
+
 - **Agent-actionable prompts — AI post-pass (consumer) remains.** The
   deterministic **producer** (`conversion-todos.json`, on by default, wired
   through to project B via the `<name>_converted` convert genrule + `stage-b`)
