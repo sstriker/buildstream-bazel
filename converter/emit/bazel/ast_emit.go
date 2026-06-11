@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/bazelbuild/buildtools/build"
@@ -46,8 +47,59 @@ func astTargetCall(t ir.Target) (*build.CallExpr, bool, error) {
 		return shBinaryExpr(t), true, nil
 	case ir.KindCCImport:
 		return ccImportExpr(t), true, nil
+	case ir.KindGenrule:
+		return genruleExpr(t), true, nil
+	case ir.KindCCEmbed:
+		call, err := ccEmbedExpr(t)
+		return call, true, err
 	}
 	return nil, false, nil
+}
+
+// genruleExpr is the AST form of emitGenrule: name, optional srcs, outs, cmd
+// (a single quoted string), optional tools/tags/visibility.
+func genruleExpr(t ir.Target) *build.CallExpr {
+	call, r := newCall("genrule")
+	r.SetAttr("name", strExpr(t.Name))
+	setListIfNonEmpty(r, "srcs", sortedCopy(t.Srcs))
+	r.SetAttr("outs", strListExpr(sortedCopy(t.GenruleOuts)))
+	r.SetAttr("cmd", strExpr(t.GenruleCmd))
+	setListIfNonEmpty(r, "tools", sortedCopy(t.GenruleTools))
+	setListIfNonEmpty(r, "tags", sortedCopy(t.Tags))
+	setListIfNonEmpty(r, "visibility", nonDefaultVisibility(t.Visibility))
+	return call
+}
+
+// ccEmbedExpr is the AST form of emitCCEmbed: scalar src/symbol/out_*, the
+// True-only binary/nul_terminate flags, optional export_*, the fixed tool, and
+// tags/visibility.
+func ccEmbedExpr(t ir.Target) (*build.CallExpr, error) {
+	s := t.CCEmbed
+	if s == nil {
+		return nil, fmt.Errorf("emit cc_embed %q: nil CCEmbed spec", t.Name)
+	}
+	call, r := newCall("cc_embed")
+	r.SetAttr("name", strExpr(t.Name))
+	r.SetAttr("src", strExpr(s.Src))
+	r.SetAttr("symbol", strExpr(s.Symbol))
+	r.SetAttr("out_header", strExpr(s.OutHeader))
+	r.SetAttr("out_source", strExpr(s.OutSource))
+	if s.Binary {
+		r.SetAttr("binary", boolIdent(true))
+	}
+	if s.NulTerminate {
+		r.SetAttr("nul_terminate", boolIdent(true))
+	}
+	if s.ExportSymbol != "" {
+		r.SetAttr("export_symbol", strExpr(s.ExportSymbol))
+	}
+	if s.ExportHeader != "" {
+		r.SetAttr("export_header", strExpr(s.ExportHeader))
+	}
+	r.SetAttr("tool", strExpr("//tools:cc-embed"))
+	setListIfNonEmpty(r, "tags", sortedCopy(t.Tags))
+	setListIfNonEmpty(r, "visibility", nonDefaultVisibility(t.Visibility))
+	return call, nil
 }
 
 // newCall starts a rule CallExpr of the given kind and its Rule helper.
@@ -58,12 +110,37 @@ func newCall(kind string) (*build.CallExpr, *build.Rule) {
 
 func strExpr(s string) build.Expr { return &build.StringExpr{Value: s} }
 
+// strListExpr is the AST form of strList: a string list whose multi-line-ness
+// matches strList's "single-line trial > 60 chars forces multi-line" rule, so
+// buildifier preserves the same shape (the text path renders via strList, then
+// reformats — a list strList wrapped opens with a newline after `[`, which
+// buildifier keeps multi-line). Width-based wrapping below 60 is left to
+// Format, which treats this AST and the parsed text identically.
 func strListExpr(vs []string) build.Expr {
 	items := make([]build.Expr, len(vs))
 	for i, v := range vs {
 		items[i] = strExpr(v)
 	}
-	return &build.ListExpr{List: items}
+	le := &build.ListExpr{List: items}
+	le.ForceMultiLine = strListSingleLineLen(vs) > 60
+	return le
+}
+
+// strListSingleLineLen is the length of strList's single-line trial form
+// (`["a", "b"]`), the input to its >60 multi-line decision. strconv.Quote
+// matches the template's %q escaping.
+func strListSingleLineLen(vs []string) int {
+	if len(vs) == 0 {
+		return len("[]")
+	}
+	n := len("[]")
+	for i, s := range vs {
+		if i > 0 {
+			n += len(", ")
+		}
+		n += len(strconv.Quote(s))
+	}
+	return n
 }
 
 // armListExpr is strListExpr for a select() arm: the text path renders arm

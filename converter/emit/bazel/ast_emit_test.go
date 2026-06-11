@@ -171,3 +171,55 @@ func TestASTEmit_CCImport(t *testing.T) {
 		})
 	}
 }
+
+func TestASTEmit_Genrule(t *testing.T) {
+	cases := []ir.Target{
+		{Kind: ir.KindGenrule, Name: "g", GenruleOuts: []string{"out.h"}, GenruleCmd: "$(location //t:x) $@"},
+		{Kind: ir.KindGenrule, Name: "g", Srcs: []string{"in.txt"}, GenruleOuts: []string{"o.h"},
+			GenruleCmd: "cp $< $@", GenruleTools: []string{"//t:x"}, Tags: []string{"manual"}, Visibility: []string{"//v:__pkg__"}},
+		// Long outs list (single-line form > 60) must force multi-line, matching strList.
+		{Kind: ir.KindGenrule, Name: "g", GenruleCmd: "x",
+			GenruleOuts: []string{"gen/aaaaaaaa.h", "gen/bbbbbbbb.h", "gen/cccccccc.h", "gen/dddddddd.h"}},
+	}
+	for i, tc := range cases {
+		tc := tc
+		t.Run(string(rune('a'+i)), func(t *testing.T) {
+			assertKindByteIdentical(t, genruleExpr(tc), func(b *bytes.Buffer) error { return emitGenrule(b, tc) })
+		})
+	}
+}
+
+func TestASTEmit_CCEmbed(t *testing.T) {
+	cases := []ir.Target{
+		{Kind: ir.KindCCEmbed, Name: "e", CCEmbed: &ir.CCEmbedSpec{Src: "a.bin", Symbol: "kA", OutHeader: "a.h", OutSource: "a.c"}},
+		{Kind: ir.KindCCEmbed, Name: "e", Tags: []string{"manual"}, CCEmbed: &ir.CCEmbedSpec{
+			Src: "a.bin", Symbol: "kA", OutHeader: "a.h", OutSource: "a.c",
+			Binary: true, NulTerminate: true, ExportSymbol: "EXP", ExportHeader: "exp.h"}},
+	}
+	for i, tc := range cases {
+		tc := tc
+		t.Run(string(rune('a'+i)), func(t *testing.T) {
+			call, err := ccEmbedExpr(tc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertKindByteIdentical(t, call, func(b *bytes.Buffer) error { return emitCCEmbed(b, tc) })
+		})
+	}
+}
+
+// strListExpr must match strList's >60-char multi-line rule across the
+// boundary, so a list rendered inline by strList stays inline and one strList
+// wraps stays wrapped.
+func TestStrListExpr_MatchesStrList(t *testing.T) {
+	cases := [][]string{
+		{},
+		{"a"},
+		{"short", "list"},
+		{"aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc", "dddddddddd"}, // ~ boundary
+		{"a/very/long/path/one.cc", "a/very/long/path/two.cc", "three.cc"},
+	}
+	for _, c := range cases {
+		compareExprToString(t, strListExpr(c), strList(c))
+	}
+}
