@@ -1,6 +1,8 @@
 package lower_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -84,19 +86,43 @@ func TestExecuteProcess_ConsumerAttribution_HeaderUnderBuildInclude(t *testing.T
 	}
 }
 
+// writeLinkToSourceFixture stages a real on-disk source root (with the named
+// committed .c files) and an empty build dir for the link_to_source tests.
+// Real paths matter: the missing-source elision (#209) stats each codemodel
+// source against the host root, so synthetic /src paths would route the
+// tests through the reply-dir-replay branch instead of the production one.
+func writeLinkToSourceFixture(t *testing.T, files ...string) (src, build string) {
+	t.Helper()
+	root := t.TempDir()
+	src = filepath.Join(root, "src")
+	build = filepath.Join(root, "build")
+	for _, d := range []string{src, build} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range files {
+		if err := os.WriteFile(filepath.Join(src, f), []byte("int x;\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return src, build
+}
+
 // TestExecuteProcess_InOutCopy_NoDuplicateSrc is the mbedtls link_to_source
 // regression. Under GEN_FILES=OFF, mbedtls `ln -s`'s a COMMITTED source
 // (error.c) from the source tree into the build dir, and the library compiles
-// it. emitCopyGenrule drops the redundant in==out copy and returns the path;
-// the consumer-attribution loop then matched that path against the library's
-// build-dir include and re-attached it — duplicating the srcs entry the
-// codemodel source list already carried, which Bazel rejects ("attribute srcs
-// has duplicate entries"). The attach loop now seeds its seen set from the
-// target's existing srcs/hdrs, so the committed source is attached exactly once.
+// it. emitCopyGenrule drops the redundant in==out copy AND surfaces no output
+// (the aliased path is the committed source every consumer already resolves
+// to), so the consumer-attribution loop never re-attaches it — the codemodel
+// source list's single entry is all the library carries. (Historically the
+// drop returned the path and only a per-target seen-dedup kept this case to
+// one entry; see the broadcast test below for why that wasn't enough.)
 func TestExecuteProcess_InOutCopy_NoDuplicateSrc(t *testing.T) {
+	src, build := writeLinkToSourceFixture(t, "error.c")
 	r := &fileapi.Reply{
 		Codemodel: fileapi.Codemodel{
-			Paths: fileapi.CodemodelPaths{Source: "/src", Build: "/build"},
+			Paths: fileapi.CodemodelPaths{Source: src, Build: build},
 			Configurations: []fileapi.Configuration{{
 				Name:    "Release",
 				Targets: []fileapi.ConfigTargetRef{{Name: "thelib", Id: "thelib::@1"}},
@@ -110,8 +136,9 @@ func TestExecuteProcess_InOutCopy_NoDuplicateSrc(t *testing.T) {
 					{Path: "error.c", CompileGroupIndex: 0},
 				},
 				CompileGroups: []fileapi.CompileGroup{{
-					Language: "C",
-					Includes: []fileapi.CompileInclude{{Path: "/build"}},
+					Language:      "C",
+					SourceIndexes: []int{0},
+					Includes:      []fileapi.CompileInclude{{Path: build}},
 				}},
 			},
 		},
@@ -119,11 +146,11 @@ func TestExecuteProcess_InOutCopy_NoDuplicateSrc(t *testing.T) {
 	// link_to_source(error.c): `ln -s <src>/error.c <build>/error.c` — an in==out
 	// copy of a committed source the library already compiles.
 	traceRaw := []byte(
-		`{"args":["COMMAND","ln","-s","/src/error.c","/build/error.c"],"cmd":"execute_process","file":"/src/CMakeLists.txt","line":3}` + "\n",
+		`{"args":["COMMAND","ln","-s","` + src + `/error.c","` + build + `/error.c"],"cmd":"execute_process","file":"` + src + `/CMakeLists.txt","line":3}` + "\n",
 	)
 	pkg, err := lower.ToIR(r, nil, lower.Options{
-		HostSourceRoot: "/src",
-		BuildDir:       "/build",
+		HostSourceRoot: src,
+		BuildDir:       build,
 		TraceRaw:       traceRaw,
 	})
 	if err != nil {
@@ -144,6 +171,82 @@ func TestExecuteProcess_InOutCopy_NoDuplicateSrc(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("error.c should appear exactly once in srcs (in==out copy of a committed source); got %d in %v", n, srcs)
+	}
+}
+
+// TestExecuteProcess_InOutCopy_NoBroadcastToSiblingTargets is the mbedtls
+// three-way source-duplication regression (the symbol-fidelity lens's first
+// true positive). All three mbedtls libraries record the build ROOT as an
+// include (${CMAKE_CURRENT_BINARY_DIR} → the "" relative prefix, which
+// matches every output path), so when the in==out link_to_source drop still
+// SURFACED the committed source as an execute_process output, the attribution
+// loop attached it to every sibling — mbedtls/mbedx509 each gained
+// mbedcrypto's error.c and over-exported its symbols. The identity drop now
+// surfaces no output, so siblings whose codemodel doesn't compile the file
+// must not carry it.
+func TestExecuteProcess_InOutCopy_NoBroadcastToSiblingTargets(t *testing.T) {
+	src, build := writeLinkToSourceFixture(t, "error.c", "ssl_tls.c", "x509.c")
+	buildRootInc := []fileapi.CompileGroup{{
+		Language:      "C",
+		SourceIndexes: []int{0},
+		Includes:      []fileapi.CompileInclude{{Path: build}},
+	}}
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{Source: src, Build: build},
+			Configurations: []fileapi.Configuration{{
+				Name: "Release",
+				Targets: []fileapi.ConfigTargetRef{
+					{Name: "mbedcrypto", Id: "mbedcrypto::@1"},
+					{Name: "mbedtls", Id: "mbedtls::@1"},
+					{Name: "mbedx509", Id: "mbedx509::@1"},
+				},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"mbedcrypto::@1": {
+				Name: "mbedcrypto", Type: "STATIC_LIBRARY",
+				Sources:       []fileapi.TargetSource{{Path: "error.c", CompileGroupIndex: 0}},
+				CompileGroups: buildRootInc,
+			},
+			"mbedtls::@1": {
+				Name: "mbedtls", Type: "STATIC_LIBRARY",
+				Sources:       []fileapi.TargetSource{{Path: "ssl_tls.c", CompileGroupIndex: 0}},
+				CompileGroups: buildRootInc,
+			},
+			"mbedx509::@1": {
+				Name: "mbedx509", Type: "STATIC_LIBRARY",
+				Sources:       []fileapi.TargetSource{{Path: "x509.c", CompileGroupIndex: 0}},
+				CompileGroups: buildRootInc,
+			},
+		},
+	}
+	traceRaw := []byte(
+		`{"args":["COMMAND","ln","-s","` + src + `/error.c","` + build + `/error.c"],"cmd":"execute_process","file":"` + src + `/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: src,
+		BuildDir:       build,
+		TraceRaw:       traceRaw,
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	got := map[string]int{}
+	for _, tgt := range pkg.Targets {
+		for _, s := range tgt.Srcs {
+			if s == "error.c" {
+				got[tgt.Name]++
+			}
+		}
+	}
+	if got["mbedcrypto"] != 1 {
+		t.Errorf("mbedcrypto should carry error.c exactly once (its codemodel source); got %d", got["mbedcrypto"])
+	}
+	for _, sib := range []string{"mbedtls", "mbedx509"} {
+		if got[sib] != 0 {
+			t.Errorf("%s must NOT carry error.c (cmake compiles it only in mbedcrypto); got %d", sib, got[sib])
+		}
 	}
 }
 
