@@ -101,7 +101,7 @@ func TestBuildGenexTargets_FoldsInterfaceLibraryProbe(t *testing.T) {
 			},
 		},
 	}
-	got := buildGenexTargets(nil, "", probes, nil, nil)
+	got := buildGenexTargets(nil, "", probes, nil, nil, "")
 	ti, ok := got["iface"]
 	if !ok {
 		t.Fatalf("iface INTERFACE_LIBRARY probe should be folded into genexTargets; got keys %v", keysOfTargetInfo(got))

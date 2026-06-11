@@ -1573,7 +1573,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// INTERFACE_COMPILE_DEFINITIONS reconciliation. Empty when no
 	// probe ran (no --probe-genex, cmake < 3.24); each consumer
 	// degrades to its pre-probe behavior in that case.
-	genexTargets := buildGenexTargets(r, cmakeBuild, opts.GenexProbes, decodedTrace, opts.Imports)
+	genexTargets := buildGenexTargets(r, cmakeBuild, opts.GenexProbes, decodedTrace, opts.Imports, opts.HostPrefixDir)
 
 	var fileGenerates []fileGenerateOut
 	if traceDecoded {
