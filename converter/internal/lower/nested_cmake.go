@@ -373,11 +373,46 @@ func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSr
 				"lower: nested cmake build %s: lowering failed (%v); falling back to the not-lifted warning\n", nb.BuildRel, err)
 			continue
 		}
+		// No-silent-dangle guard. A build-dir-sourced nested project
+		// (anchored at its OWN root because its source isn't under the outer
+		// tree — generated into the build dir by a higher-level configure)
+		// whose targets COMPILE build-dir-resident sources would merge
+		// dangling srcs: the source bytes live in the build dir, not the
+		// outer package, and aren't baked/staged yet. Emitting them would be
+		// a SILENT broken conversion, so leave the build not-lifted (the loud
+		// nested-cmake-not-lifted todo) until build-dir source staging lands.
+		// A TARGET-LESS build-dir nested (a downloader / superbuild bootstrap
+		// — cryptoauthlib's mbedtls project(NONE)+ExternalProject) merges
+		// nothing, so it stays a clean no-op lift.
+		if rootAbs, aerr := filepath.Abs(hostSrc); aerr == nil &&
+			nestedElementRoot(rootAbs, nb.SrcDir) != rootAbs &&
+			nestedHasCompiledSources(nestedPkg) {
+			fmt.Fprintf(warningsOrDiscard(opts.Warnings),
+				"lower: nested cmake build %s: its sources live in the build dir (not the outer source tree) and aren't staged yet; leaving it not-lifted rather than emitting dangling srcs\n", nb.BuildRel)
+			continue
+		}
 		cc.NestedLifted[nb.BuildRel] = true
 		mergeNestedPackage(pkg, nestedPkg, nb, cc, opts, hostSrc)
 		outs = append(outs, bakeNestedGeneratedHeaders(nb, cc, opts)...)
 	}
 	return outs, nil
+}
+
+// nestedHasCompiledSources reports whether a nested package has any target
+// carrying srcs/hdrs — files that would merge into the outer package as
+// labels. A target-less nested package (only UTILITY targets, which the
+// converter skips — a downloader / superbuild bootstrap) has none, so it
+// merges nothing and is safe to lift as a no-op even when build-dir-sourced.
+func nestedHasCompiledSources(pkg *ir.Package) bool {
+	if pkg == nil {
+		return false
+	}
+	for i := range pkg.Targets {
+		if len(pkg.Targets[i].Srcs) > 0 || len(pkg.Targets[i].Hdrs) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // nestedElementRoot picks the label-anchor root for a nested lowering.

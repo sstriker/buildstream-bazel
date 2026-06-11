@@ -128,6 +128,28 @@ func TestNestedElementRoot(t *testing.T) {
 	}
 }
 
+func TestNestedHasCompiledSources(t *testing.T) {
+	// Target-less (a downloader / superbuild bootstrap: UTILITY targets the
+	// converter skips, so the lowered package has none) — safe to lift as a
+	// no-op even when build-dir-sourced.
+	if nestedHasCompiledSources(&ir.Package{}) {
+		t.Error("empty package reported compiled sources")
+	}
+	if nestedHasCompiledSources(nil) {
+		t.Error("nil package reported compiled sources")
+	}
+	// A cc target carrying srcs would merge as labels — build-dir-sourced,
+	// those would dangle, so the guard must see it.
+	withSrcs := &ir.Package{Targets: []ir.Target{{Name: "sublib", Kind: ir.KindCCLibrary, Srcs: []string{"sub.c"}}}}
+	if !nestedHasCompiledSources(withSrcs) {
+		t.Error("package with a srcs-bearing target reported no compiled sources")
+	}
+	withHdrs := &ir.Package{Targets: []ir.Target{{Name: "h", Kind: ir.KindCCLibrary, Hdrs: []string{"h.h"}}}}
+	if !nestedHasCompiledSources(withHdrs) {
+		t.Error("package with an hdrs-bearing target reported no compiled sources")
+	}
+}
+
 func TestRecoverNestedCMakeCall_SinkAndCompanions(t *testing.T) {
 	anc := execAnchors{hostBuildDir: "/b", recordedBuildDir: "/b", hostSrcDir: "/s", recordedSrcDir: "/s"}
 	cc := newCodegenContext()
