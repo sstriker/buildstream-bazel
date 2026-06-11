@@ -107,6 +107,37 @@ func TestRun_NoSidecarWhenAbsent(t *testing.T) {
 	}
 }
 
+// TestRun_StagesCommonCompileFlagsBzl confirms the self-contained common-copts
+// hoist's generated common_compile_flags.bzl is staged alongside BUILD.bazel
+// (the per-dir BUILDs load it by label, so it must travel with them), and a
+// missing one (hoist mode off) is a no-op.
+func TestRun_StagesCommonCompileFlagsBzl(t *testing.T) {
+	a, b := mkProject(t, map[string]string{"hello": "cc_library(name=\"hello\")\n"}, nil)
+	bzl := "COMMON_COPTS = [\n    \"-O2\",\n]\n"
+	if err := os.WriteFile(filepath.Join(a, "bazel-bin", "elements", "hello", "common_compile_flags.bzl"), []byte(bzl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(args{projectA: a, projectB: b}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(b, "elements", "hello", "common_compile_flags.bzl"))
+	if err != nil {
+		t.Fatalf("common_compile_flags.bzl not staged: %v", err)
+	}
+	if string(got) != bzl {
+		t.Errorf("staged .bzl = %q; want %q", got, bzl)
+	}
+
+	// Absent in another element → no error, nothing staged.
+	a2, b2 := mkProject(t, map[string]string{"plain": "cc_library(name=\"plain\")\n"}, nil)
+	if _, err := run(args{projectA: a2, projectB: b2}); err != nil {
+		t.Fatalf("run (absent): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(b2, "elements", "plain", "common_compile_flags.bzl")); !os.IsNotExist(err) {
+		t.Errorf("expected no .bzl staged when absent; stat err = %v", err)
+	}
+}
+
 func TestRun_FirstStage_AllChanged(t *testing.T) {
 	a, b := mkProject(t,
 		map[string]string{"alpha": "cc_library(name = \"alpha\")\n", "beta": "cc_library(name = \"beta\")\n"},
