@@ -677,7 +677,20 @@ trees, optional-feature deps, codegen instances). Each member's
   side-effect WRITERS whose outputs are neither consumed (so no File-API
   demand) nor dir/stem-correlatable still refuse loudly — a
   `--cmake-script-trace`-style strace/fsmonitor capture for arbitrary
-  tools is the research item.
+  tools is the research item. NEW variant (marked by the **cryptoauthlib**
+  corpus member, `make fetch-cryptoauthlib`): a **download-only** nested
+  project — `project(mbedtls-download NONE)` whose `--build` step is an
+  `ExternalProject_Add` that materializes sources into the *outer* build dir,
+  which the outer then `file(GLOB)`s and compiles directly (no nested
+  codemodel/targets to merge). The warm recursive-merge path has nothing to
+  merge, so it currently surfaces as `1 unsupported-execute-process` (the
+  nested configure/build) + `5 unsupported-source-path` (the build-dir
+  GLOB'd sources). Lift shape: treat the materialized build-dir sources as a
+  genrule/repository-rule-vendored input set anchored at the outer root,
+  rather than refusing them as out-of-tree. (The fetch script already pins +
+  pre-fetches the tarball and repoints the ExternalProject `URL` at a local
+  `file://` copy, so the configure-time download is hermetic — the natural
+  seam for the repository-rule lift.)
 
 - **PCH forced-include lift — fidelity residue.** The lift (shipped: cmake's
   `target_precompile_headers` forced-include semantics expand into ordered
