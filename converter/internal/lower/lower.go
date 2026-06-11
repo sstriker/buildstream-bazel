@@ -2117,7 +2117,11 @@ func assembleLoweredPackage(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, o
 		for _, cfg := range r.Codemodel.Configurations {
 			configs = append(configs, cfg.Name)
 		}
-		lowerMultiConfigDeltas(pkg, r.TargetsByConfig, configs, cmakeSrc, cmakeBuild, idToName)
+		// The per-config PCH divergence pass needs the same mirror
+		// machinery lowerTarget's lift uses; reconstruct the context
+		// from assemble-level state.
+		mcPCH := multiConfigPCHCtx(ti, opts, cc, cmakeSrc, cmakeBuild, hostSrc)
+		lowerMultiConfigDeltas(pkg, r.TargetsByConfig, configs, cmakeSrc, cmakeBuild, idToName, mcPCH)
 		// The multi-config fold populates the per-config `defines` select() arms
 		// AFTER the flat-define scoping above, so a config-divergent PRIVATE
 		// define (VTK's KWSYS_SYSTEMINFORMATION_HAS_DEBUG_BUILD, set only under
@@ -5008,6 +5012,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 		cmakeBuild: cmakeBuild,
 		reanchor:   reanchor,
 		pkgPath:    lc.bazelPackagePath,
+		cc:         lc.cc,
 	}
 	rejections := lc.rejections
 
@@ -8106,10 +8111,12 @@ func isNvccArchFlag(s string) bool {
 // invocation and the flag becomes either a no-op or a leak of convert-time
 // state into the audit surface.
 //
-// pchArtifacts returns the cmake_pch.h[xx] paths whose `-include` pairs were
-// withheld from copts (order-preserving, deduped). The caller routes them
-// through pchForcedIncludeCopts (pch.go), which expands the declared PCH
-// header list into the forced-include copts that preserve cmake's semantics.
+// pchArtifacts returns the cmake_pch.h[xx] paths seen as `-include`
+// arguments (order-preserving, deduped). Their pairs stay IN copts at
+// their original positions; the caller routes the artifacts through
+// pchLiftCtx.apply (pch.go), which rewrites each artifact argument to
+// the synthesized mirror header's exec-root path — preserving cmake's
+// forced-include order and warning-suppression semantics.
 func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines, pchArtifacts []string) {
 	// Order-preserving dedup against cmake's own duplication —
 	// projects with `add_compile_options` chains, transitive
@@ -8123,17 +8130,22 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines, pch
 	coptsSeen := map[string]bool{}
 	defSeen := map[string]bool{}
 	// heldInclude defers a `-include` / `-include-pch` flag until we see its
-	// argument: cmake's target_precompile_headers adds `-include
-	// <build>/CMakeFiles/<t>.dir/<cfg>/cmake_pch.h` to the compile line, an
-	// absolute build-dir path to a PCH that doesn't exist under Bazel's
-	// hermetic compile. The pair is withheld from copts and the artifact path
-	// surfaced via pchArtifacts — the caller expands it into the declared PCH
-	// headers' forced-include copts (pchForcedIncludeCopts), preserving
-	// cmake's "PCH header is included first in every TU" semantics. A
-	// `-include` of a NON-PCH forced header is preserved as-is (the held flag
-	// is emitted when its arg isn't a PCH).
+	// argument, then emits the PAIR atomically and in place — positional
+	// fidelity matters because forced includes are processed left-to-right
+	// (one forced header may depend on another's macros). Pairs dedup at
+	// PAIR granularity (flag+arg), never through the generic coptsSeen:
+	// per-flag dedup would swallow the second `-include` of two distinct
+	// forced headers and leave its argument as an orphan bare token. A
+	// cmake_pch artifact pair (cmake's target_precompile_headers adds
+	// `-include <build>/CMakeFiles/<t>.dir/<cfg>/cmake_pch.h`, an absolute
+	// build-dir path that doesn't exist under Bazel's hermetic compile)
+	// stays in place too and is ALSO surfaced via pchArtifacts — the caller
+	// (pchLiftCtx.apply) rewrites the artifact argument to the mirror
+	// header's exec-root path, preserving cmake's "PCH header is included
+	// first in every TU" semantics at the original argv position.
 	heldInclude := ""
 	pchSeen := map[string]bool{}
+	pairSeen := map[string]bool{}
 	emitHeld := func() {
 		if heldInclude != "" && !coptsSeen[heldInclude] {
 			coptsSeen[heldInclude] = true
@@ -8163,21 +8175,22 @@ func splitCompileFragments(frags []fileapi.CommandFragment) (copts, defines, pch
 		// alike, so the old whole-token stripBalancedQuotes step is subsumed.
 		for _, p := range splitShellTokens(f.Fragment) {
 			// Resolve a pending `-include` / `-include-pch` against this
-			// token (its argument). A cmake PCH artifact (cmake_pch.h /
-			// cmake_pch.hxx) withholds the pair and surfaces the artifact
-			// for the forced-include lift; any other forced-include header
-			// keeps both.
+			// token (its argument): emit the pair atomically, in place,
+			// deduped at pair granularity. A cmake PCH artifact argument
+			// (cmake_pch.h / cmake_pch.hxx) is additionally surfaced via
+			// pchArtifacts so the forced-include mirror lift rewrites it.
 			if heldInclude != "" {
-				if isCMakePCHPath(p) {
-					heldInclude = ""
-					if !pchSeen[p] {
+				pair := heldInclude + "\x00" + p
+				if !pairSeen[pair] {
+					pairSeen[pair] = true
+					copts = append(copts, heldInclude, p)
+					if isCMakePCHPath(p) && !pchSeen[p] {
 						pchSeen[p] = true
 						pchArtifacts = append(pchArtifacts, p)
 					}
-					continue
 				}
-				emitHeld()
-				// fall through to process p normally below
+				heldInclude = ""
+				continue
 			}
 			if p == "-include" || p == "-include-pch" {
 				heldInclude = p
