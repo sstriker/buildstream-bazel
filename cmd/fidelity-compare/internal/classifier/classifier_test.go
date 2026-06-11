@@ -427,6 +427,7 @@ func TestIsLibcRuntimeHelper(t *testing.T) {
 		"puts", "putchar", "fputs", "fwrite", // stdio builtins (printf folding)
 		"__cxa_guard_acquire", "__cxa_pure_virtual", // C++ runtime
 		"__open_2", "__openat_2", // _FORTIFY_SOURCE open-family (glog)
+		"_GLOBAL_OFFSET_TABLE_", // linker-provided GOT (PIC/PIE compile-mode artifact; libevent)
 		"_ZTVSt13runtime_error", // std::runtime_error vtable (direct)
 		"_ZTVNSt7__cxx1119basic_ostringstreamIcSt11char_traitsIcESaIcEEE", // ostringstream vtable (nested)
 		"_ZTTNSt7__cxx1119basic_ostringstreamIcSt11char_traitsIcESaIcEEE", // ostringstream VTT (nested)

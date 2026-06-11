@@ -282,12 +282,27 @@ transition cleanly.
   member's `testdata/fidelity/<name>.allowlist.txt`, writing
   `<out>/<name>/symbol-fidelity.json` (`ok`/`FAIL`); members without a config
   self-skip. Validated: `SURVEY_BAZEL_BUILD=zlib SURVEY_SYMBOL_FIDELITY=1` →
-  `zlib: symbol-fidelity -> ok` (seeded `zlib.symfidelity`). **v1 scope /
-  follow-ups:** seed `.symfidelity` for the other fidelity fixtures (spdlog /
-  fmt / catch2 / libpng / nlohmann-json — their Makefile params already exist)
-  and the broader corpus; reuse the build lens's `build-ws` bazel artifacts
-  instead of run-fidelity's own from-scratch bazel build (an optimization); a
-  survey summary column. Design rationale: the
+  `zlib: symbol-fidelity -> ok` (seeded `zlib.symfidelity`). **Seeded so far
+  (11):** zlib, fmt, spdlog, catch2, googletest, glog, libxml2, brotli,
+  libpng, libevent (a `_GLOBAL_OFFSET_TABLE_` PIC artifact added to the
+  auto-benign classifier), and mbedtls — whose seeding immediately paid for
+  the lens: its first run was a true-positive `FAIL` (the in==out
+  `link_to_source` execute_process drop surfaced the committed source as an
+  output, and the build-dir-include attribution broadcast it into every
+  sibling library's srcs — three-way source duplication, 8 over-exported
+  symbols), fixed by surfacing NO output from the identity drop
+  (`emitCopyGenrule`); the allowlist stays absent so any recurrence re-flags.
+  **Remaining follow-ups:** a
+  CONSUMER-SIDE lens mode for header-only members (nlohmann-json / glm /
+  eigen — the CI consumer fixtures exist via `run-fidelity.sh
+  --consumer-file`, but the survey lens only does library-side archives); a
+  multi-archive UNION compare for language-partitioned targets (zstd's C/asm
+  split emits `liblibzstd_static_{c,asm}.a` while `fidelity-compare` takes
+  one `--bazel-artifact`, so zstd self-skips on no-artifact); the heavy
+  members (curl / sdl / openblas / protobuf / grpc / llvm / vtk) as
+  build-lens time permits; a survey summary column. (The earlier "reuse the
+  build lens's build-ws artifacts" follow-up is DONE — the lens reuses the
+  split build-ws and rebuilds only the release arm.) Design rationale: the
   build lens (`SURVEY_BAZEL_BUILD`) proves the converted graph builds
   under `bazel build //...`; the compile-commands lens
   (`SURVEY_COMPILE_DB`) proves per-TU

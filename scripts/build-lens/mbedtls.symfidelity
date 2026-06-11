@@ -1,0 +1,9 @@
+# Symbol-fidelity lens config for mbedtls (7th survey lens,
+# SURVEY_SYMBOL_FIDELITY). With USE_STATIC_MBEDTLS_LIBRARY=ON (default) and the
+# shared toggle off, the static TLS target keeps the plain name mbedtls →
+# libmbedtls.a on both sides (mbedx509/mbedcrypto layer beneath it; one archive
+# is representative). The lens folds the .conf's ENABLE_TESTING=OFF /
+# ENABLE_PROGRAMS=OFF defines into the cmake side automatically. No allowlist —
+# the symbol sets must match exactly.
+SYMFID_TARGET=mbedtls
+SYMFID_ARTIFACT=libmbedtls.a
