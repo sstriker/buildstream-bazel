@@ -223,3 +223,58 @@ func TestStrListExpr_MatchesStrList(t *testing.T) {
 		compareExprToString(t, strListExpr(c), strList(c))
 	}
 }
+
+func TestASTEmit_WriteFile(t *testing.T) {
+	cases := []ir.Target{
+		{Kind: ir.KindWriteFile, Name: "w", WriteFileOut: "out.h", WriteFileContent: []string{"#define A 1", "#define B 2"}},
+		{Kind: ir.KindWriteFile, Name: "w", WriteFileOut: "o.h", WriteFileContent: []string{"line"}, WriteFileNewline: "auto", Tags: []string{"manual"}},
+		// per-config select body
+		{Kind: ir.KindWriteFile, Name: "w", WriteFileOut: "o.h", WriteFileContent: []string{"#define D 0"},
+			WriteFileContentByConfig: map[string][]string{"//config:dbg": {"#define D 1"}}},
+	}
+	for i, tc := range cases {
+		tc := tc
+		t.Run(string(rune('a'+i)), func(t *testing.T) {
+			assertKindByteIdentical(t, writeFileExpr(tc), func(b *bytes.Buffer) error { return emitWriteFile(b, tc) })
+		})
+	}
+}
+
+func TestASTEmit_PkgFiles(t *testing.T) {
+	cases := []ir.Target{
+		{Kind: ir.KindPkgFiles, Name: "p", Srcs: []string{"a.h", "b.h"}, PkgPrefix: "include"},
+		{Kind: ir.KindPkgFiles, Name: "p", Srcs: []string{"inc"}, PkgSrcsGlob: true, PkgStripPrefix: "inc"},
+		{Kind: ir.KindPkgFiles, Name: "p", Srcs: []string{"x.h"}, PkgRenames: map[string]string{"x.h": "renamed/x.h"}},
+	}
+	for i, tc := range cases {
+		tc := tc
+		t.Run(string(rune('a'+i)), func(t *testing.T) {
+			assertKindByteIdentical(t, pkgFilesExpr(tc), func(b *bytes.Buffer) error { return emitPkgFiles(b, tc) })
+		})
+	}
+}
+
+func TestASTEmit_CMakeConfigureFile(t *testing.T) {
+	cases := []ir.Target{
+		{Kind: ir.KindCMakeConfigureFile, Name: "c", CMakeConfigureFile: &ir.CMakeConfigureFileSpec{
+			Out: "config.h", Template: "config.h.in", Values: map[string]string{"VERSION": "1.0"}, Tool: "//tools:ccf"}},
+		{Kind: ir.KindCMakeConfigureFile, Name: "c", Tags: []string{"manual"}, CMakeConfigureFile: &ir.CMakeConfigureFileSpec{
+			Out: "c.h", Content: "#define X @X@\n", Values: map[string]string{"X": "1"}, Tool: "//tools:ccf",
+			AtOnly: true, EscapeQuotes: true, NewlineStyle: "LF",
+			StampValues: map[string]string{"GIT_SHA": "STABLE_GIT_SHA"},
+			TargetFiles: map[string]string{"//x:y": "f"}}},
+		{Kind: ir.KindCMakeConfigureFile, Name: "c", CMakeConfigureFile: &ir.CMakeConfigureFileSpec{
+			Out: "c.h", Template: "c.h.in", Values: map[string]string{}, Tool: "//tools:ccf",
+			GenexValuesPerConfig: map[string]map[string]string{"//config:dbg": {"OPT": "0"}, "//config:rel": {"OPT": "3"}}}},
+	}
+	for i, tc := range cases {
+		tc := tc
+		t.Run(string(rune('a'+i)), func(t *testing.T) {
+			call, err := cmakeConfigureFileExpr(tc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertKindByteIdentical(t, call, func(b *bytes.Buffer) error { return emitCMakeConfigureFile(b, tc) })
+		})
+	}
+}

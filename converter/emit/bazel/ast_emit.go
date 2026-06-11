@@ -56,6 +56,12 @@ func astTargetStmts(t ir.Target, opts Options) ([]build.Expr, bool, error) {
 		return one(genruleExpr(t))
 	case ir.KindCCEmbed:
 		return oneErr(ccEmbedExpr(t))
+	case ir.KindWriteFile:
+		return one(writeFileExpr(t))
+	case ir.KindPkgFiles:
+		return one(pkgFilesExpr(t))
+	case ir.KindCMakeConfigureFile:
+		return oneErr(cmakeConfigureFileExpr(t))
 	case ir.KindCCLibrary, ir.KindCCInterface, ir.KindCCBinary, ir.KindCCTest,
 		ir.KindCudaLibrary, ir.KindCudaBinary, ir.KindCudaTest, ir.KindFortranLibrary:
 		call, err := ccTargetCall(t, opts)
@@ -286,11 +292,73 @@ func scalarAttrExprAST(flat string, sel map[string]string) build.Expr {
 	return selectCall(entries)
 }
 
+// selectCall builds `select({...})`. The dict is always multi-line: the text
+// renderers (attrExpr, renderConfigDictSelect) open every select with a
+// newline after `{`, which buildifier keeps. (attrExpr selects carry ≥2 arms
+// and would multi-line anyway; a single-arm config select needs the force.)
 func selectCall(entries []*build.KeyValueExpr) build.Expr {
 	return &build.CallExpr{
 		X:    &build.Ident{Name: "select"},
-		List: []build.Expr{&build.DictExpr{List: entries}},
+		List: []build.Expr{&build.DictExpr{ForceMultiLine: true, List: entries}},
 	}
+}
+
+// configDictSelectExpr is the AST form of renderConfigDictSelect: a
+// `select({"//config:x": {dict}, …})` with NO default arm, each arm a
+// strDict.
+func configDictSelectExpr(perConfig map[string]map[string]string) build.Expr {
+	labels := sliceutil.SortedKeys(perConfig)
+	entries := make([]*build.KeyValueExpr, 0, len(labels))
+	for _, l := range labels {
+		entries = append(entries, &build.KeyValueExpr{Key: strExpr(l), Value: strDictExpr(perConfig[l])})
+	}
+	return selectCall(entries)
+}
+
+// cmakeConfigureFileExpr is the AST form of emitCMakeConfigureFile.
+func cmakeConfigureFileExpr(t ir.Target) (*build.CallExpr, error) {
+	s := t.CMakeConfigureFile
+	if s == nil {
+		return nil, fmt.Errorf("emit cmake_configure_file %q: nil CMakeConfigureFile spec", t.Name)
+	}
+	call, r := newCall("cmake_configure_file")
+	r.SetAttr("name", strExpr(t.Name))
+	r.SetAttr("out", strExpr(s.Out))
+	if s.Template != "" {
+		r.SetAttr("template", strExpr(s.Template))
+	} else {
+		r.SetAttr("content", strExpr(s.Content))
+	}
+	r.SetAttr("values", strDictExpr(s.Values))
+	if len(s.StampValues) > 0 {
+		r.SetAttr("stamp_values", strDictExpr(s.StampValues))
+	}
+	if len(s.GenexValuesPerConfig) > 0 {
+		r.SetAttr("genex_values", configDictSelectExpr(s.GenexValuesPerConfig))
+	} else if len(s.GenexValues) > 0 {
+		r.SetAttr("genex_values", strDictExpr(s.GenexValues))
+	}
+	setStrIfNonEmpty(r, "genex_context", s.GenexContext)
+	if len(s.TargetFiles) > 0 {
+		r.SetAttr("target_files", strDictExpr(s.TargetFiles))
+	}
+	if len(s.TargetObjects) > 0 {
+		r.SetAttr("target_objects", strDictExpr(s.TargetObjects))
+	}
+	r.SetAttr("tool", strExpr(s.Tool))
+	if s.AtOnly {
+		r.SetAttr("at_only", boolIdent(true))
+	}
+	if s.CopyOnly {
+		r.SetAttr("copy_only", boolIdent(true))
+	}
+	if s.EscapeQuotes {
+		r.SetAttr("escape_quotes", boolIdent(true))
+	}
+	setStrIfNonEmpty(r, "newline_style", s.NewlineStyle)
+	setListIfNonEmpty(r, "tags", sortedCopy(t.Tags))
+	setListIfNonEmpty(r, "visibility", nonDefaultVisibility(t.Visibility))
+	return call, nil
 }
 
 // globExpr builds `glob(["pat", …])`.
@@ -484,6 +552,88 @@ func sharedLibraryExpr(t ir.Target) *build.CallExpr {
 	}
 	r.SetAttr("deps", strListExpr([]string{":" + t.Name}))
 	return call
+}
+
+// writeFileExpr is the AST form of emitWriteFile: name, out, content (an
+// ORDERED list — not sorted — or a per-config select over the bake bodies),
+// newline, optional tags/visibility.
+func writeFileExpr(t ir.Target) *build.CallExpr {
+	call, r := newCall("write_file")
+	r.SetAttr("name", strExpr(t.Name))
+	r.SetAttr("out", strExpr(t.WriteFileOut))
+	var content build.Expr
+	if len(t.WriteFileContentByConfig) > 0 {
+		sel := make(map[string][]string, len(t.WriteFileContentByConfig)+1)
+		for label, lines := range t.WriteFileContentByConfig {
+			sel[label] = lines
+		}
+		if _, ok := sel["//conditions:default"]; !ok {
+			sel["//conditions:default"] = t.WriteFileContent
+		}
+		content = attrExprAST(nil, sel)
+	} else {
+		content = strListExpr(t.WriteFileContent)
+	}
+	r.SetAttr("content", content)
+	newline := t.WriteFileNewline
+	if newline == "" {
+		newline = "unix"
+	}
+	r.SetAttr("newline", strExpr(newline))
+	setListIfNonEmpty(r, "tags", sortedCopy(t.Tags))
+	setListIfNonEmpty(r, "visibility", nonDefaultVisibility(t.Visibility))
+	return call
+}
+
+// pkgFilesExpr is the AST form of emitPkgFiles.
+func pkgFilesExpr(t ir.Target) *build.CallExpr {
+	call, r := newCall("pkg_files")
+	r.SetAttr("name", strExpr(t.Name))
+	srcs, strip := pkgFilesSrcsExprAST(t)
+	if srcs == nil {
+		srcs = &build.ListExpr{} // template renders the always-present srcs as [] when empty
+	}
+	r.SetAttr("srcs", srcs)
+	setStrIfNonEmpty(r, "prefix", t.PkgPrefix)
+	setIfNonNil(r, "renames", pkgRenamesExpr(t.PkgRenames))
+	setIfNonNil(r, "strip_prefix", strip)
+	setListIfNonEmpty(r, "tags", sortedCopy(t.Tags))
+	setListIfNonEmpty(r, "visibility", nonDefaultVisibility(t.Visibility))
+	return call
+}
+
+// pkgFilesSrcsExprAST is the AST form of pkgFilesSrcsExpr: a plain/select list
+// or glob, plus the optional strip_prefix.from_pkg(...) call for the glob case.
+func pkgFilesSrcsExprAST(t ir.Target) (srcs build.Expr, strip build.Expr) {
+	if !t.PkgSrcsGlob {
+		return attrExprAST(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")), nil
+	}
+	patterns := make([]string, 0, len(t.Srcs))
+	for _, d := range sortedCopy(t.Srcs) {
+		patterns = append(patterns, d+"/**")
+	}
+	srcs = globExpr(patterns)
+	if t.PkgStripPrefix != "" {
+		strip = &build.CallExpr{
+			X:    &build.DotExpr{X: &build.Ident{Name: "strip_prefix"}, Name: "from_pkg"},
+			List: []build.Expr{strExpr(t.PkgStripPrefix)},
+		}
+	}
+	return srcs, strip
+}
+
+// pkgRenamesExpr is the AST form of pkgFilesRenamesExpr — an always-multi-line
+// {src: dst} dict (the text renderer opens with a newline after `{`).
+func pkgRenamesExpr(renames map[string]string) build.Expr {
+	if len(renames) == 0 {
+		return nil
+	}
+	keys := sliceutil.SortedKeys(renames)
+	entries := make([]*build.KeyValueExpr, 0, len(keys))
+	for _, k := range keys {
+		entries = append(entries, &build.KeyValueExpr{Key: strExpr(k), Value: strExpr(renames[k])})
+	}
+	return &build.DictExpr{ForceMultiLine: true, List: entries}
 }
 
 // leadingCommentTokens renders a target's leading author comment + provenance
