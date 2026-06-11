@@ -516,3 +516,147 @@ func TestPerConfigPCHArms(t *testing.T) {
 		t.Errorf("non-divergent baseline must stay; copts = %v", tgt2.Copts)
 	}
 }
+
+// TestLowerTarget_PCH_CreatorGroupExcluded is the test-binary shape: a
+// PCH-declaring EXECUTABLE doesn't split compile groups, and cmake's
+// codemodel lists the PCH-CREATOR group (the cmake_pch.hxx.cxx compile,
+// fragments carrying `-x c++-header`) FIRST. Selecting it as the
+// primary group used to leak `-x c++-header` into the rule's copts —
+// compiling every project TU as a header. The creator group must be
+// skipped (firstRealCompileGroup), its machinery sources dropped
+// silently (no misleading elided-source audit tag), and the real
+// group's mirror lift ride as usual.
+func TestLowerTarget_PCH_CreatorGroupExcluded(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{Source: "/src", Build: "/b"},
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "unit_test::@1", Name: "unit_test"}},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"unit_test::@1": {
+				Name: "unit_test",
+				Type: "EXECUTABLE",
+				Sources: []fileapi.TargetSource{
+					{Path: "/b/CMakeFiles/unit_test.dir/cmake_pch.hxx.cxx", CompileGroupIndex: 0},
+					{Path: "test_main.cpp", CompileGroupIndex: 1},
+					{Path: "/b/CMakeFiles/unit_test.dir/cmake_pch.hxx"},
+				},
+				CompileGroups: []fileapi.CompileGroup{
+					{
+						Language:      "CXX",
+						SourceIndexes: []int{0},
+						CompileCommandFragments: []fileapi.CommandFragment{
+							{Fragment: "-Winvalid-pch -x c++-header -include /b/CMakeFiles/unit_test.dir/cmake_pch.hxx"},
+						},
+						PrecompileHeaders: []fileapi.CompilePCH{{Header: "/src/tpch.h"}},
+					},
+					{
+						Language:      "CXX",
+						SourceIndexes: []int{1},
+						CompileCommandFragments: []fileapi.CommandFragment{
+							{Fragment: "-Winvalid-pch -include /b/CMakeFiles/unit_test.dir/cmake_pch.hxx"},
+						},
+						PrecompileHeaders: []fileapi.CompilePCH{{Header: "/src/tpch.h"}},
+					},
+				},
+			},
+		},
+	}
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pchFindTarget(t, pkg, "unit_test")
+	joined := strings.Join(tgt.Copts, " ")
+	if strings.Contains(joined, "c++-header") || strings.Contains(joined, "-x ") {
+		t.Errorf("PCH-creator fragments leaked into copts: %v", tgt.Copts)
+	}
+	if !strings.Contains(joined, "-include cmake_pch/unit_test/cmake_pch.hxx") {
+		t.Errorf("real group's mirror include missing: %v", tgt.Copts)
+	}
+	for _, s := range tgt.Srcs {
+		if strings.Contains(s, "CMakeFiles") {
+			t.Errorf("PCH machinery source leaked into srcs: %v", tgt.Srcs)
+		}
+	}
+	if stringSliceContains(tgt.Tags, "cmake-elided-build-dir-source") {
+		t.Errorf("machinery sources must skip silently, not stamp the elided audit tag: %v", tgt.Tags)
+	}
+	// Creator + one real group must NOT split: one rule, no _cxx_0 subs.
+	for _, other := range pkg.Targets {
+		if strings.HasPrefix(other.Name, "unit_test_cxx") {
+			t.Errorf("creator group forced a spurious split: %s", other.Name)
+		}
+	}
+}
+
+// TestLowerTarget_PCH_ReuseFromEdgeDrops pins the REUSE_FROM dependency
+// routing: cmake records the owner as a plain target dependency (no
+// backtrace), detectable only as "the dep is the owner of a cmake_pch
+// artifact my fragments force-include" (pchReuseFromOwners). The edge
+// DROPS: the consumer's real input is the owner's mirror FILE (staged
+// via srcs), deps would be illegal for an executable-kind owner, and
+// even data poisons (a cc_test owner is implicitly testonly, which a
+// non-test consumer can't reference).
+func TestLowerTarget_PCH_ReuseFromEdgeDrops(t *testing.T) {
+	parent := 0
+	g := fileapi.BacktraceGraph{
+		Commands: []string{"target_precompile_headers"},
+		Files:    []string{"CMakeLists.txt"},
+		Nodes: []fileapi.BacktraceNode{
+			{File: 0, Line: 0, Command: -1},
+			{File: 0, Line: 9, Command: 0, Parent: &parent},
+		},
+	}
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Paths: fileapi.CodemodelPaths{Source: "/src", Build: "/b"},
+			Configurations: []fileapi.Configuration{{
+				Name: "Release",
+				Targets: []fileapi.ConfigTargetRef{
+					{Id: "unit_test::@1", Name: "unit_test"},
+					{Id: "tool::@1", Name: "tool"},
+				},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"unit_test::@1": {
+				Name: "unit_test", Type: "EXECUTABLE",
+				Sources: []fileapi.TargetSource{{Path: "test_main.cpp", CompileGroupIndex: 0}},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language: "CXX", SourceIndexes: []int{0},
+					PrecompileHeaders: []fileapi.CompilePCH{{Header: "/src/tpch.h"}},
+				}},
+			},
+			"tool::@1": {
+				Name: "tool", Type: "EXECUTABLE",
+				Sources: []fileapi.TargetSource{{Path: "tool_main.cpp", CompileGroupIndex: 0}},
+				CompileGroups: []fileapi.CompileGroup{{
+					Language: "CXX", SourceIndexes: []int{0},
+					CompileCommandFragments: []fileapi.CommandFragment{
+						{Fragment: "-include /b/CMakeFiles/unit_test.dir/cmake_pch.hxx"},
+					},
+				}},
+				Dependencies:   []fileapi.TargetDependency{{Id: "unit_test::@1", Backtrace: 1}},
+				BacktraceGraph: g,
+			},
+		},
+	}
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tool := pchFindTarget(t, pkg, "tool")
+	if stringSliceContains(tool.Deps, ":unit_test") {
+		t.Errorf("REUSE_FROM owner must not land in deps (illegal for executable kinds): %v", tool.Deps)
+	}
+	if stringSliceContains(tool.Data, ":unit_test") {
+		t.Errorf("REUSE_FROM owner must not land in data either (testonly poisoning from a cc_test owner): %v", tool.Data)
+	}
+	if !strings.Contains(strings.Join(tool.Copts, " "), "-include cmake_pch/unit_test/cmake_pch.hxx") {
+		t.Errorf("REUSE_FROM consumer missing the owner's mirror: %v", tool.Copts)
+	}
+}

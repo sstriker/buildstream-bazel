@@ -23,3 +23,17 @@ target_precompile_headers(user REUSE_FROM core)
 add_library(mixed STATIC mixed.cpp skip.cpp)
 target_precompile_headers(mixed PRIVATE pch.h)
 set_source_files_properties(skip.cpp PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+
+# The TEST-BINARY shape: a PCH-declaring executable registered via
+# add_test. Executables don't split compile groups, so the codemodel's
+# PCH-CREATOR group (cmake_pch.hxx.cxx, `-x c++-header`) sits first and
+# must be excluded from group selection — leaking it compiles every TU
+# as a header. The REUSE_FROM tool exercises the cross-kind owner edge
+# (target dependency backtraced to target_precompile_headers), which
+# must route to data: an executable in deps is illegal in Bazel.
+enable_testing()
+add_executable(unit_test test_main.cpp)
+target_precompile_headers(unit_test PRIVATE pch.h <vector>)
+add_test(NAME unit_test COMMAND unit_test)
+add_executable(tool tool_main.cpp)
+target_precompile_headers(tool REUSE_FROM unit_test)

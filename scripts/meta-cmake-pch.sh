@@ -84,7 +84,7 @@ grep -q 'CMakeFiles.*cmake_pch' "$build" \
 # 4. Declaring target, REUSE_FROM consumer, and the SKIP-probe target are
 # all tagged.
 tag_count=$(grep -c "cmake-codegen-pch" "$build" || true)
-[ "$tag_count" -ge 3 ] || fail "expected the cmake-codegen-pch tag on core, user AND mixed (got $tag_count)"
+[ "$tag_count" -ge 5 ] || fail "expected the cmake-codegen-pch tag on core, user, mixed, unit_test AND tool (got $tag_count)"
 # 5. The REUSE_FROM consumer (user) got the OWNER's mirror — same path,
 # shared rule.
 awk '/name = "user"/{f=1} f{print} f&&/^\)/{exit}' "$build" | grep -qF '"cmake_pch/core/cmake_pch.hxx",' \
@@ -93,8 +93,22 @@ awk '/name = "user"/{f=1} f{print} f&&/^\)/{exit}' "$build" | grep -qF '"cmake_p
 # forced include (the same-language compile-group split routes it apart).
 awk '/name = "mixed_cxx_1"/{f=1} f{print} f&&/^\)/{exit}' "$build" | grep -qF '"-include"' \
     && fail "SKIP_PRECOMPILE_HEADERS TU still carries the forced include"
+# 7. TEST-BINARY shape: the cc_test carries its mirror include, and the
+# PCH-CREATOR compile group's `-x c++-header` fragments must NOT leak
+# anywhere (they'd compile every TU as a header).
+awk '/name = "unit_test"/{f=1} f{print} f&&/^\)/{exit}' "$build" | grep -qF '"cmake_pch/unit_test/cmake_pch.hxx",' \
+    || fail "PCH-declaring cc_test missing its mirror include"
+grep -qF 'c++-header' "$build" \
+    && fail "PCH-creator '-x c++-header' fragments leaked into the BUILD"
+# 8. Cross-kind REUSE_FROM: the owner edge routes to data (an executable
+# in deps is illegal in Bazel) while the consumer still force-includes
+# the owner's mirror.
+awk '/name = "tool"/{f=1} f{print} f&&/^\)/{exit}' "$build" | grep -qF '":unit_test"' \
+    && fail "REUSE_FROM owner target referenced by the consumer (deps is illegal for executable kinds; data poisons via testonly) — the mirror FILE in srcs is the only edge needed"
+awk '/name = "tool"/{f=1} f{print} f&&/^\)/{exit}' "$build" | grep -qF '"cmake_pch/unit_test/cmake_pch.hxx",' \
+    || fail "cross-kind REUSE_FROM consumer missing the owner's mirror"
 
-echo "ok  meta-cmake-pch: target_precompile_headers lifted to the mirror forced include (declaring + REUSE_FROM + SKIP probe)"
+echo "ok  meta-cmake-pch: target_precompile_headers lifted to the mirror forced include (declaring + REUSE_FROM + SKIP + test-binary shapes)"
 
 # --- Bazel-build half ---
 if command -v bazel >/dev/null; then
