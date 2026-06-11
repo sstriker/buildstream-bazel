@@ -68,7 +68,7 @@ grep -qF 'out = "subbuild/sub_config.h"' "$build" || fail "nested configure-gene
 # only OUTER targets consume), re-homed under subbuild/ by the merge.
 grep -qF '"cmake-codegen-configure-file"' "$build" || fail "configure_file recovery facet missing — the nested trace didn't reach the nested lowering"
 grep -qF '"subbuild/sub_config.h",' "$build" || fail "recovered header not attributed to the outer consumer"
-grep -qF 'hdrs = ["subbuild/sub_config.h"]' "$build" || fail "recovered header not attached to the nested consumer's hdrs (sub.c's include would be undeclared)"
+grep -FA3 'hdrs = [' "$build" | grep -qF '"subbuild/sub_config.h",' || fail "recovered header not attached to the nested consumer's hdrs (sub.c's include would be undeclared)"
 # The nested execute_process codegen (cmake -E copy) is liftable ONLY
 # from the nested trace; assert the cp genrule landed with the
 # label-root-anchored template src and wired into the nested lib.
@@ -78,7 +78,20 @@ grep -qF '"subbuild/sub_extra.c",' "$build" || fail "lifted codegen output not w
 grep -q 'unsupported-execute-process' "$work_dir/convert.stderr" \
     && fail "nested cmake calls still refuse (the lift should cover both)"
 
-echo "ok  meta-cmake-nested-cmake: nested configure+build lifted — targets merged, archive wired, generated header baked"
+# --- Superbuild CHAIN (depth 2): sub's configure runs its OWN nested
+# cmake (subsub). The driver worklist detects it from sub's trace,
+# stages + traced-re-configures the grandchild dir directly, and the
+# recursive lowering composes the re-homes: the grandchild's
+# configure_file recovery lands doubly re-homed under
+# subbuild/subsubbuild/ with a chain-composed rule name, and sub.c's
+# include of it re-points through both levels.
+grep -qF 'out = "subbuild/subsubbuild/subsub_config.h"' "$build" || fail "grandchild configure-generated header not recovered/re-homed through the chain"
+grep -qF '"subbuild/subsubbuild/subsub_config.h",' "$build" || fail "grandchild header not attributed to its consumer"
+grep -qF '"subbuild/subsubbuild",' "$build" || fail "nested consumer's grandchild-build include dir not re-homed through the chain"
+grep -q 'detected but not lifted.*subsubbuild' "$work_dir/convert.stderr" \
+    && fail "grandchild nested build still warns not-lifted (the worklist should lift it)"
+
+echo "ok  meta-cmake-nested-cmake: nested configure+build lifted — targets merged, archive wired, generated header baked (chain depth 2 incl.)"
 
 # --- Bazel-build half ---
 if command -v bazel >/dev/null; then
@@ -119,7 +132,8 @@ if ! (cd "$ws" && "$BZL" --output_user_root="$bz_cache" ${META_BAZEL_STARTUP_ARG
     exit 1
 fi
 # The binary's exit code IS the content check: it returns 0 only when the
-# nested lib's symbol links AND the baked header carries SUB_VALUE=7.
+# nested lib's symbol links AND the baked headers carry SUB_VALUE=7 plus
+# the GRANDCHILD's SUBSUB_VALUE=11 (sub_value() returns 7 + 11).
 if ! "$ws/bazel-bin/app"; then
     echo "FAIL: app exited non-zero — nested lib or baked header content wrong"
     exit 1
