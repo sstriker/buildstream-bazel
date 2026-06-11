@@ -387,3 +387,62 @@ func TestParse_AdditionalProperties(t *testing.T) {
 		}
 	}
 }
+
+// An unrecognized set_tests_properties key is surfaced as a
+// cmake-test-unhandled-prop=<key> tag rather than vanishing silently (the
+// no-silent-drops contract). A KNOWN key on the same test must NOT produce
+// the tag.
+func TestParse_UnhandledPropertySurfaced(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "CTestTestfile.cmake"),
+		`add_test([=[t]=] "exe")`+"\n"+
+			`set_tests_properties([=[t]=] PROPERTIES PROCESSORS "4" LABELS "fast")`+"\n",
+	)
+	r, err := Parse(dir)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := r.All()
+	if len(got) != 1 {
+		t.Fatalf("want 1 test, got %d", len(got))
+	}
+	if !contains(got[0].Tags, "cmake-test-unhandled-prop=PROCESSORS") {
+		t.Errorf("unknown key PROCESSORS not surfaced; tags=%v", got[0].Tags)
+	}
+	// LABELS is modeled (→ Tags), so it must not be tagged as unhandled.
+	if contains(got[0].Tags, "cmake-test-unhandled-prop=LABELS") {
+		t.Errorf("known key LABELS wrongly tagged unhandled; tags=%v", got[0].Tags)
+	}
+}
+
+// A malformed TIMEOUT value is surfaced as a tag (the test would otherwise
+// silently get no timeout); a well-formed one sets Timeout and emits no tag.
+func TestParse_TimeoutUnparsedSurfaced(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "CTestTestfile.cmake"),
+		`add_test([=[bad]=] "exe")`+"\n"+
+			`set_tests_properties([=[bad]=] PROPERTIES TIMEOUT "not-a-number")`+"\n"+
+			`add_test([=[ok]=] "exe")`+"\n"+
+			`set_tests_properties([=[ok]=] PROPERTIES TIMEOUT "30")`+"\n",
+	)
+	r, err := Parse(dir)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	byName := map[string]Test{}
+	for _, te := range r.All() {
+		byName[te.Name] = te
+	}
+	if !contains(byName["bad"].Tags, "cmake-test-timeout-unparsed") {
+		t.Errorf("malformed TIMEOUT not surfaced; tags=%v", byName["bad"].Tags)
+	}
+	if byName["bad"].Timeout != 0 {
+		t.Errorf("malformed TIMEOUT should leave Timeout zero; got %v", byName["bad"].Timeout)
+	}
+	if byName["ok"].Timeout != 30*time.Second {
+		t.Errorf("well-formed TIMEOUT = %v, want 30s", byName["ok"].Timeout)
+	}
+	if contains(byName["ok"].Tags, "cmake-test-timeout-unparsed") {
+		t.Errorf("well-formed TIMEOUT wrongly tagged; tags=%v", byName["ok"].Tags)
+	}
+}
