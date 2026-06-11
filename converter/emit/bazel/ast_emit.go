@@ -27,31 +27,46 @@ import (
 // The leading/provenance comments are attached by the caller (targetStmts). An
 // error mirrors the producer-bug guards the text emitters raise (e.g. a
 // filegroup that sets both explicit srcs and a glob).
-func astTargetCall(t ir.Target) (*build.CallExpr, bool, error) {
+func astTargetStmts(t ir.Target, opts Options) ([]build.Expr, bool, error) {
+	one := func(c *build.CallExpr) ([]build.Expr, bool, error) { return []build.Expr{c}, true, nil }
+	oneErr := func(c *build.CallExpr, err error) ([]build.Expr, bool, error) {
+		if err != nil {
+			return nil, true, err
+		}
+		return []build.Expr{c}, true, nil
+	}
 	switch t.Kind {
 	case ir.KindAlias:
-		return aliasExpr(t), true, nil
+		return one(aliasExpr(t))
 	case ir.KindBoolFlag:
-		return boolFlagExpr(t), true, nil
+		return one(boolFlagExpr(t))
 	case ir.KindConfigSetting:
-		return configSettingExpr(t), true, nil
+		return one(configSettingExpr(t))
 	case ir.KindPickFile:
-		return pickFileExpr(t), true, nil
+		return one(pickFileExpr(t))
 	case ir.KindCCHash:
-		call, err := ccHashExpr(t)
-		return call, true, err
+		return oneErr(ccHashExpr(t))
 	case ir.KindFilegroup:
-		call, err := filegroupExpr(t)
-		return call, true, err
+		return oneErr(filegroupExpr(t))
 	case ir.KindShBinary:
-		return shBinaryExpr(t), true, nil
+		return one(shBinaryExpr(t))
 	case ir.KindCCImport:
-		return ccImportExpr(t), true, nil
+		return one(ccImportExpr(t))
 	case ir.KindGenrule:
-		return genruleExpr(t), true, nil
+		return one(genruleExpr(t))
 	case ir.KindCCEmbed:
-		call, err := ccEmbedExpr(t)
-		return call, true, err
+		return oneErr(ccEmbedExpr(t))
+	case ir.KindCCLibrary, ir.KindCCInterface, ir.KindCCBinary, ir.KindCCTest,
+		ir.KindCudaLibrary, ir.KindCudaBinary, ir.KindCudaTest, ir.KindFortranLibrary:
+		call, err := ccTargetCall(t, opts)
+		if err != nil {
+			return nil, true, err
+		}
+		stmts := []build.Expr{call}
+		if t.SharedLibName != "" {
+			stmts = append(stmts, sharedLibraryExpr(t))
+		}
+		return stmts, true, nil
 	}
 	return nil, false, nil
 }
@@ -368,6 +383,106 @@ func ccImportExpr(t ir.Target) *build.CallExpr {
 	setIfNonNil(r, "hdrs", attrExprAST(sortedCopy(t.Hdrs), perPlatformAttr(t, "hdrs")))
 	setListIfNonEmpty(r, "tags", sortedCopy(t.Tags))
 	setListIfNonEmpty(r, "visibility", nonDefaultVisibility(t.Visibility))
+	return call
+}
+
+// setStrIfNonEmpty SetAttrs a string attribute only when non-empty (the
+// templates' `{{- if .X}}` guard around scalar string attributes).
+func setStrIfNonEmpty(r *build.Rule, key, s string) {
+	if s != "" {
+		r.SetAttr(key, strExpr(s))
+	}
+}
+
+// concatExprs is the AST form of concatListExprs: nil-aware `a + b`.
+func concatExprs(a, b build.Expr) build.Expr {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	default:
+		return &build.BinaryExpr{Op: "+", X: a, Y: b}
+	}
+}
+
+// strDictExpr is the AST form of strDict: a {k: v} dict whose multi-line-ness
+// matches strDict's >60 single-line-trial rule (same as strList for lists).
+func strDictExpr(m map[string]string) build.Expr {
+	keys := sliceutil.SortedKeys(m)
+	entries := make([]*build.KeyValueExpr, 0, len(keys))
+	for _, k := range keys {
+		entries = append(entries, &build.KeyValueExpr{Key: strExpr(k), Value: strExpr(m[k])})
+	}
+	d := &build.DictExpr{List: entries}
+	d.ForceMultiLine = strDictSingleLineLen(m, keys) > 60
+	return d
+}
+
+// strDictSingleLineLen is the length of strDict's single-line trial form
+// (`{"k": "v", …}`), the input to its >60 multi-line decision.
+func strDictSingleLineLen(m map[string]string, keys []string) int {
+	n := len("{}")
+	for i, k := range keys {
+		if i > 0 {
+			n += len(", ")
+		}
+		n += len(strconv.Quote(k)) + len(": ") + len(strconv.Quote(m[k]))
+	}
+	return n
+}
+
+// ccViewToCall renders a ccView (its attr-expr fields already AST) into the
+// cc-family rule CallExpr — the AST form of ccRuleTmpl. Attribute presence
+// mirrors the template's `{{- if}}` guards (nil expr / empty string / empty
+// list / false bool => omitted); order is left to build.Format's NamePriority.
+func ccViewToCall(v ccView) *build.CallExpr {
+	call, r := newCall(v.RuleKind)
+	r.SetAttr("name", strExpr(v.Name))
+	setIfNonNil(r, "srcs", v.SrcsExpr)
+	setIfNonNil(r, "module_srcs", v.ModuleSrcsExpr)
+	setIfNonNil(r, "hdrs", v.HdrsExpr)
+	setIfNonNil(r, "textual_hdrs", v.TextualHdrsExpr)
+	setIfNonNil(r, "includes", v.IncludesExpr)
+	setStrIfNonEmpty(r, "include_prefix", v.IncludePrefix)
+	setStrIfNonEmpty(r, "strip_include_prefix", v.StripIncludePrefix)
+	setIfNonNil(r, "copts", v.CoptsExpr)
+	setIfNonNil(r, "defines", v.DefinesExpr)
+	setIfNonNil(r, "local_defines", v.LocalDefinesExpr)
+	setIfNonNil(r, "linkopts", v.LinkoptsExpr)
+	setIfNonNil(r, "additional_linker_inputs", v.AdditionalLinkerInputsExpr)
+	setIfNonNil(r, "deps", v.DepsExpr)
+	setIfNonNil(r, "dynamic_deps", v.DynamicDepsExpr)
+	setIfNonNil(r, "implementation_deps", v.ImplementationDepsExpr)
+	setListIfNonEmpty(r, "data", v.Data)
+	setListIfNonEmpty(r, "args", v.Args)
+	if len(v.Env) > 0 {
+		r.SetAttr("env", strDictExpr(v.Env))
+	}
+	setStrIfNonEmpty(r, "timeout", v.Timeout)
+	if v.Linkstatic {
+		r.SetAttr("linkstatic", boolIdent(true))
+	}
+	if v.Alwayslink {
+		r.SetAttr("alwayslink", boolIdent(true))
+	}
+	setListIfNonEmpty(r, "features", v.Features)
+	setListIfNonEmpty(r, "tags", v.Tags)
+	setListIfNonEmpty(r, "visibility", v.Visibility)
+	return call
+}
+
+// sharedLibraryExpr is the AST form of emitSharedLibrary: the cc_shared_library
+// companion wrapping a SHARED/MODULE library's static impl into a real .so.
+func sharedLibraryExpr(t ir.Target) *build.CallExpr {
+	call, r := newCall("cc_shared_library")
+	r.SetAttr("name", strExpr(t.Name+"_shared"))
+	r.SetAttr("shared_lib_name", strExpr(t.SharedLibName))
+	if dd := sortedCopy(t.SharedLibDynamicDeps); len(dd) > 0 {
+		// emitSharedLibrary renders dynamic_deps multi-line (newline after `[`).
+		r.SetAttr("dynamic_deps", armListExpr(dd))
+	}
+	r.SetAttr("deps", strListExpr([]string{":" + t.Name}))
 	return call
 }
 
