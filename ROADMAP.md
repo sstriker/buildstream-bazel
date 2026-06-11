@@ -293,24 +293,6 @@ transition cleanly.
   `SURVEY_SHARED=1` / `cc_shared_library`, where private `.so` link options
   actually matter and are measurable via the link-order lens.
 
-- **mbedtls: conditionally-generated crypto sources duplicated across all
-  three library targets (symbol-fidelity TRUE POSITIVE).** Found by seeding
-  `mbedtls.symfidelity`: the converted `mbedtls` and `mbedx509` cc_libraries
-  carry `error.c`, `version_features.c`, and
-  `psa_crypto_driver_wrappers_no_static.c` in srcs — sources cmake compiles
-  exactly once, in `mbedcrypto` (`src_crypto`; they're the conditionally
-  GENERATED set that `GEN_FILES` re-points at `${CMAKE_CURRENT_BINARY_DIR}`,
-  library/CMakeLists.txt:136-179). `libmbedtls.a` therefore over-exports
-  `mbedtls_strerror` / `mbedtls_version_check_feature` /
-  `psa_driver_wrapper_*` (8 impactful deltas vs cmake's archive), and a
-  whole-archive static consumer linking all three libs would see duplicate
-  definitions. Suspect mechanism: the generated-source consumer attribution
-  attaches the recovered generated sources to every target in the package
-  instead of the one codemodel target that compiles them. Regression guard:
-  `SURVEY_BAZEL_BUILD=mbedtls SURVEY_SYMBOL_FIDELITY=1` — the member's
-  allowlist is deliberately absent, so the lens flips from `FAIL` to `ok`
-  exactly when this is fixed.
-
 - **Symbol-fidelity lens — SHIPPED (v1, opt-in `SURVEY_SYMBOL_FIDELITY`).**
   Wired into `run-survey.sh` as the LAST lens — runs after the build, only when
   the build lens passed (the pipeline ordering: structural → build →
@@ -325,10 +307,14 @@ transition cleanly.
   `zlib: symbol-fidelity -> ok` (seeded `zlib.symfidelity`). **Seeded so far
   (11):** zlib, fmt, spdlog, catch2, googletest, glog, libxml2, brotli,
   libpng, libevent (a `_GLOBAL_OFFSET_TABLE_` PIC artifact added to the
-  auto-benign classifier), and mbedtls — whose lens result is a deliberate
-  `FAIL`: a true-positive converter finding (see the mbedtls
-  source-duplication entry below), kept un-allowlisted so the report stays
-  red until the converter fix lands. **Remaining follow-ups:** a
+  auto-benign classifier), and mbedtls — whose seeding immediately paid for
+  the lens: its first run was a true-positive `FAIL` (the in==out
+  `link_to_source` execute_process drop surfaced the committed source as an
+  output, and the build-dir-include attribution broadcast it into every
+  sibling library's srcs — three-way source duplication, 8 over-exported
+  symbols), fixed by surfacing NO output from the identity drop
+  (`emitCopyGenrule`); the allowlist stays absent so any recurrence re-flags.
+  **Remaining follow-ups:** a
   CONSUMER-SIDE lens mode for header-only members (nlohmann-json / glm /
   eigen — the CI consumer fixtures exist via `run-fidelity.sh
   --consumer-file`, but the survey lens only does library-side archives); a
