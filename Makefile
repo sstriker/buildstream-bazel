@@ -7,7 +7,7 @@
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
         fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-catch2 fetch-libpng fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
-        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm fetch-survey-regression \
+        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm fetch-cryptoauthlib fetch-survey-regression \
         survey-gazelle survey-multiplatform update-golden record-fixtures lint vet fmt staticcheck check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
@@ -87,6 +87,9 @@ GLOG_VERSION      ?= v0.7.1
 GLOG_DIR          ?= /tmp/glog
 GLM_VERSION       ?= 1.0.1
 GLM_DIR           ?= /tmp/glm
+# cryptoauthlib: real-world recursive cmake via configure-time execute_process.
+CRYPTOAUTHLIB_VERSION ?= v3.8.0
+CRYPTOAUTHLIB_DIR     ?= /tmp/cryptoauthlib
 
 GO        ?= go
 GOFLAGS   ?=
@@ -358,6 +361,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-execute-process-argv-codegen.sh \
 	scripts/meta-cmake-execute-process-unspecified-outs.sh \
 	scripts/meta-cmake-nested-cmake.sh \
+	scripts/meta-cmake-nested-cmake-workdir.sh \
 	scripts/meta-cmake-build-dir-source-bake.sh \
 	scripts/meta-cmake-cc-hash.sh \
 	scripts/meta-cmake-todos-coverage.sh \
@@ -1357,6 +1361,42 @@ fetch-glm:
 		echo "glm already at $(GLM_DIR); rm -rf to refetch"; \
 	fi
 
+# cryptoauthlib: real-world recursive cmake via configure-time execute_process
+# — the superbuild-at-configure idiom nested_cmake.go lifts. Its
+# cmake/mbedtls.cmake does configure_file(third_party/CMakeLists-mbedtls.txt.in)
+# → execute_process(${CMAKE_COMMAND} -G … .) → execute_process(${CMAKE_COMMAND}
+# --build .) → file(GLOB) the result. NOTE the survey shape: the CMake root is
+# the `lib/` subdir (project(cryptoauth C)), and the mbedtls integration is
+# gated `option(ATCA_MBEDTLS … OFF)` — survey `$(CRYPTOAUTHLIB_DIR)/lib`
+# with -DATCA_MBEDTLS=ON to actually hit the nested build.
+#
+# The nested build's "build" step is an ExternalProject_Add that DOWNLOADS an
+# mbedtls tarball at configure time. So this fetch pre-fetches that tarball and
+# repoints the ExternalProject URL at the local file:// copy (URL_HASH still
+# verifies) — the configure-time nested cmake build then needs no network. The
+# URL is read out of the pinned tag's .txt.in, so it tracks the pin. (This is
+# also the seam where a repository-rule lift would hermetically vendor the
+# dependency instead of cloning at configure time.)
+fetch-cryptoauthlib:
+	@if [ ! -d "$(CRYPTOAUTHLIB_DIR)" ]; then \
+		git clone --depth 1 --branch $(CRYPTOAUTHLIB_VERSION) https://github.com/MicrochipTech/cryptoauthlib.git "$(CRYPTOAUTHLIB_DIR)"; \
+		txtin="$(CRYPTOAUTHLIB_DIR)/third_party/CMakeLists-mbedtls.txt.in"; \
+		url=$$(sed -n 's/.*URL[[:space:]]*"\(http[^"]*\)".*/\1/p' "$$txtin" | head -1); \
+		if [ -n "$$url" ]; then \
+			pfdir="$(CRYPTOAUTHLIB_DIR)/third_party/_prefetch"; \
+			mkdir -p "$$pfdir"; \
+			tarball="$$(cd "$$pfdir" && pwd)/$$(basename "$$url")"; \
+			echo "pre-fetching configure-time mbedtls download: $$url"; \
+			curl -fsSL "$$url" -o "$$tarball"; \
+			sed -i "s|\"$$url\"|\"file://$$tarball\"|" "$$txtin"; \
+			echo "repointed mbedtls ExternalProject URL at $$tarball (configure-time nested build is now network-free; URL_HASH still verifies)"; \
+		else \
+			echo "WARNING: no mbedtls download URL found in $$txtin; the configure-time nested build will fetch over the network"; \
+		fi; \
+	else \
+		echo "cryptoauthlib already at $(CRYPTOAUTHLIB_DIR); rm -rf to refetch"; \
+	fi
+
 # mbedtls: wrapped `ctest -D Experimental` dashboard target wrongly lifted
 # (fixed — isCMakeInternalCmd dashboard filter). NOTE: 3.6.x needs its
 # `framework` git submodule, so this fetch recurses submodules.
@@ -1448,7 +1488,7 @@ fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
 # Convenience aggregate: fetch the regression corpus (the projects that
 # surfaced past bugs + the clean controls). cutlass / cuda-samples need a
 # CUDA toolkit to actually survey; they're fetched so the corpus is whole.
-fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm
+fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm fetch-cryptoauthlib
 
 # survey-gazelle: the strongest lens-2 (structural idiom) check — run the
 # gazelle_cc round-trip on wild corpus projects (see

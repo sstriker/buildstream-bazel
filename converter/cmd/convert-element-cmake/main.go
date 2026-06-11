@@ -535,12 +535,16 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	nestedSink := map[string]string{}
 	var nestedBuilds []lower.NestedBuildInput
 	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment, parentScopeForwards []shadow.ParentScopeForward) (*ir.Package, error) {
-		// Reset the todos collector each pass: ToIR can run more than once
-		// (two-pass genex / stamp recovery) against the same collector, and
-		// the producers Add on every pass. Resetting first means the report
-		// reflects only the final pass's result rather than accumulating
-		// duplicate entries across passes.
+		// Reset the per-pass collectors each pass: ToIR can run more than
+		// once (two-pass genex / stamp / nested-cmake recovery) against the
+		// same collectors, and the producers Add on every pass. Resetting
+		// first means each report reflects only the final pass's result
+		// rather than accumulating duplicate entries across passes (a
+		// nested-cmake project that runs the warm second pass would
+		// otherwise double-count every outer rejection / coverage finding).
 		todosCollector.Reset()
+		rejections.Reset()
+		coverageCollector.Reset()
 		return lower.ToIR(r, g, lower.Options{
 			HostSourceRoot:                    a.SourceRoot,
 			ElementSourceRoot:                 a.ElementSourceRoot,

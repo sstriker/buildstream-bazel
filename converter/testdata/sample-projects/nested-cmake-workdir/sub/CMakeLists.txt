@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.20)
+project(subproj C)
+configure_file(sub_config.h.in sub_config.h)
+add_library(sublib STATIC sub.c)
+target_include_directories(sublib PUBLIC ${CMAKE_CURRENT_BINARY_DIR})

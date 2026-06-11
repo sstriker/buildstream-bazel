@@ -460,6 +460,7 @@ regressing the fix — that's the whole point of keeping them around.
 | **OpenBLAS** | assembly kernels + Fortran/LAPACK + arch-conditional source selection + ~2460 targets — scale + shapes nothing else has | name-collision robustness (add_test test-name == a different target's name) | github.com/OpenMathLib/OpenBLAS (`OPENBLAS_VERSION`) | `make fetch-openblas` |
 | **glog** | unresolved-genex include dir (`$<TARGET_PROPERTY:glog,INCLUDE_DIRECTORIES>` on the trace-synthesized `glog_test` INTERFACE library) aborted `--split-packages` — it became a header-lib root whose name `$<…>_headers` is not a valid Bazel identifier | fixed (`dropGenexIncludeDirs` in ToIR + a `planSplit` genex-root backstop) | github.com/google/glog (`GLOG_VERSION`) | `make fetch-glog` |
 | **glm** | a header-only INTERFACE lib (`glm-header-only`) whose include path is the source root (`$<BUILD_INTERFACE:${SOURCE_DIR}>`) emitted **empty** (the root include was skipped) and the `glm → glm-header-only` PUBLIC link edge was dropped (the codemodel omits it; cmake bakes the usage requirements in) | fixed (`lowerInterfaceLibraries` root-walk so the INTERFACE lib owns its headers + `routeTraceInterfaceLibDeps` routes the trace edge) | github.com/g-truc/glm (`GLM_VERSION`) | `make fetch-glm` |
+| **cryptoauthlib** | Real-world recursive cmake via configure-time `execute_process(${CMAKE_COMMAND} … --build)` — the superbuild-at-configure idiom `nested_cmake.go` targets. `cmake/mbedtls.cmake` `configure_file`s a downloader `.txt.in`, runs a nested cmake configure+build (a positional-source `cmake -G … .` + `cmake --build .`, both anchored by `WORKING_DIRECTORY` — an ExternalProject that materializes mbedtls sources), then `file(GLOB)`s them. Faithful survey (multi-config + split, `ATCA_MBEDTLS=ON`): **5 rejections / 4 idioms / 0 coverage / 2 todos**. The `WORKING_DIRECTORY` + positional-source nested-cmake form is now **recognized and lifted** (`nested_cmake.go` resolves relative dirs against `WORKING_DIRECTORY`; gate `scripts/meta-cmake-nested-cmake-workdir.sh`) — the warm pass runs, and because the download-only nested project has no buildable targets it degrades to a `nested-cmake-not-lifted` todo rather than the opaque `unsupported-execute-process` refusals it produced before. The remaining 5 `unsupported-source-path` → 4 `empty-cc-library` are the *download-only build-dir-materialized GLOB sources* gap (the repository-rule vendoring residue in `ROADMAP.md`) — a recursive shape distinct from the artifact-producing sub-build the `nested-cmake` fixture models. | n/a (capability guard / converter-gap marker) | github.com/MicrochipTech/cryptoauthlib (`CRYPTOAUTHLIB_VERSION`) | `make fetch-cryptoauthlib` |
 
 Per-project survey caveats (faithful-survey rules, same spirit as the
 llvm-subdir note below):
@@ -613,6 +614,39 @@ llvm-subdir note below):
   too without `NO_CBLAS`). Real reference-Fortran LAPACK (no `C_LAPACK`) is
   separate future work — needs a Bazel Fortran ruleset (none exists in the BCR;
   `edbaunton/rules_fortran` is an empty stub).
+- **cryptoauthlib (real-world recursive cmake via `execute_process`):** two
+  non-defaults to hit the lift, both encoded in
+  `scripts/build-lens/cryptoauthlib.conf` (`DIAG_CONVERT_FLAGS`). (1) The CMake
+  root is the **`lib/` subdir** (`project(cryptoauth C)`), not the repo root —
+  survey `$(CRYPTOAUTHLIB_DIR)/lib` (pass `cryptoauthlib=$CRYPTOAUTHLIB_DIR/lib`
+  to `run-survey.sh`). (2) The mbedtls integration is gated
+  `option(ATCA_MBEDTLS … OFF)` — configure with
+  `--cmake-define ATCA_MBEDTLS=ON` so `cmake/mbedtls.cmake` runs its
+  configure-time nested cmake build (`configure_file` the downloader
+  `.txt.in` → `execute_process` `${CMAKE_COMMAND}` configure → `--build` →
+  `file(GLOB)` the materialized sources). **`make fetch-cryptoauthlib`
+  pre-fetches the mbedtls tarball that nested build downloads and repoints the
+  ExternalProject `URL` at a local `file://` copy** — it reads the URL out of
+  the pinned tag's `.txt.in` (so it tracks the pin) and the `URL_HASH` still
+  verifies, so the configure-time nested build needs no network, the same
+  hermeticity a repository-rule lift would give (and the natural seam for one).
+  Re-run the target after any manual re-fetch so the URL stays repointed.
+
+> **Why there's no real-world `cmake_language(DEFER)` member.** A real-world
+> DEFER project was evaluated (CGAL, cpp_delegates, resolvo) and deliberately
+> not added: empirically none yields converter-relevant signal. The converter
+> consumes the **post-DEFER** codemodel/ninja state (every `DEFER` call has
+> executed by the time the reply is written), so target/property/custom-command
+> DEFER is invisible to it, and the one trace-recovered case that *is*
+> converter-relevant — a deferred file-producing `execute_process` — does not
+> exist in the wild (a GitHub code search for `cmake_language(DEFER CALL
+> execute_process` returns only this repo's own fixture). Deferred
+> `configure_file` (resolvo's `configure_package_config_file`) converts
+> **0/0/0/0** clean but needs a Rust toolchain on the converter's PATH +
+> Corrosion `FetchContent` to even configure. So the deterministic, hermetic
+> `defer-execute-process` sample fixture (+ `scripts/meta-cmake-defer-execute-process.sh`)
+> remains the right home for DEFER coverage; a real-world member would be a
+> clean-convert smoke guard at best.
 
 ### Optional toolchains (unlock fuller surveys)
 

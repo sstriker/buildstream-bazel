@@ -49,6 +49,17 @@ func (c *Collector) Add(f Finding) {
 	c.items = append(c.items, f)
 }
 
+// Reset clears the recorded findings. ToIR can run more than once against
+// the same collector (two-pass genex / stamp / nested-cmake recovery);
+// callers Reset before the final pass so the report reflects only that
+// pass rather than accumulating duplicates. Mirrors todos.Collector.Reset.
+func (c *Collector) Reset() {
+	if c == nil {
+		return
+	}
+	c.items = nil
+}
+
 // Items returns a copy of the recorded findings in insertion order.
 func (c *Collector) Items() []Finding {
 	if c == nil {

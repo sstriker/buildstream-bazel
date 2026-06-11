@@ -45,6 +45,19 @@ func TestParseNestedCMakeArgv(t *testing.T) {
 		},
 		{name: "build without dir", argv: []string{"cmake", "--build"}, ok: false},
 		{name: "configure missing -B", argv: []string{"cmake", "-S", "/src"}, ok: false},
+		{
+			name: "configure positional source (no -S/-B; build dir from WORKING_DIRECTORY)",
+			argv: []string{"cmake", "-G", "Ninja", "."},
+			want: nestedCMakeShape{kind: "configure", srcDir: "."},
+			ok:   true,
+		},
+		{
+			name: "configure positional source, multi-config generator value not taken as source",
+			argv: []string{"/usr/bin/cmake", "-G", "Ninja Multi-Config", "/b/dl"},
+			want: nestedCMakeShape{kind: "configure", srcDir: "/b/dl"},
+			ok:   true,
+		},
+		{name: "generator with no source is not nested", argv: []string{"cmake", "-G", "Ninja"}, ok: false},
 		{name: "cmake -E is not nested", argv: []string{"cmake", "-E", "copy", "a", "b"}, ok: false},
 		{name: "cmake -P is not nested", argv: []string{"cmake", "-P", "x.cmake"}, ok: false},
 		{name: "non-cmake driver", argv: []string{"make", "-C", "/b"}, ok: false},
@@ -155,12 +168,63 @@ func TestRecoverNestedCMakeCall_RelativeBuildDir(t *testing.T) {
 	if got := cc.NestedConfigureSink["subbuild"]; got != "/s/sub" {
 		t.Fatalf("sink[subbuild] = %q, want /s/sub", got)
 	}
-	// Relative -B with WORKING_DIRECTORY moves the resolution base —
-	// refuse explicitly rather than anchoring a phantom directory.
+	// Relative -B with WORKING_DIRECTORY resolves against it (the cmake
+	// process cwd): -B subbuild under WD /b/deps → /b/deps/subbuild,
+	// anchored under the outer build root as deps/subbuild.
 	moved := relative
 	moved.WorkingDirectory = "/b/deps"
-	if ref := recoverNestedCMakeCall(moved, anc, cc); ref == nil {
-		t.Fatal("relative -B with WORKING_DIRECTORY must refuse")
+	if ref := recoverNestedCMakeCall(moved, anc, cc); ref != nil {
+		t.Fatalf("relative -B with WORKING_DIRECTORY refused: %+v", ref)
+	}
+	if got := cc.NestedConfigureSink["deps/subbuild"]; got != "/s/sub" {
+		t.Fatalf("sink[deps/subbuild] = %q, want /s/sub", got)
+	}
+}
+
+func TestRecoverNestedCMakeCall_WorkingDirectoryForm(t *testing.T) {
+	// The download/build-at-configure idiom (cryptoauthlib's mbedtls
+	// downloader): a positional-source configure and `cmake --build .`,
+	// both run IN the nested build dir via WORKING_DIRECTORY.
+	anc := execAnchors{hostBuildDir: "/b", recordedBuildDir: "/b", hostSrcDir: "/s", recordedSrcDir: "/s"}
+	cc := newCodegenContext()
+	wd := "/b/mbedtls_downloader"
+	configure := shadow.ExecuteProcessCall{
+		File: "/s/cmake/mbedtls.cmake", Line: 5,
+		Commands:         [][]string{{"cmake", "-G", "Ninja Multi-Config", "."}},
+		WorkingDirectory: wd,
+	}
+	build := shadow.ExecuteProcessCall{
+		File: "/s/cmake/mbedtls.cmake", Line: 7,
+		Commands:         [][]string{{"cmake", "--build", "."}},
+		WorkingDirectory: wd,
+	}
+	if ref := recoverNestedCMakeCall(configure, anc, cc); ref != nil {
+		t.Fatalf("positional+WD configure refused: %+v", ref)
+	}
+	if ref := recoverNestedCMakeCall(build, anc, cc); ref != nil {
+		t.Fatalf("`cmake --build .`+WD companion refused: %+v", ref)
+	}
+	// The in-source nested root (where the configure_file'd CMakeLists lives)
+	// is the working directory; the --build is its companion, not a 2nd entry.
+	if got := cc.NestedConfigureSink["mbedtls_downloader"]; got != wd {
+		t.Fatalf("sink[mbedtls_downloader] = %q, want %q", got, wd)
+	}
+	if len(cc.NestedConfigureSink) != 1 {
+		t.Fatalf("sink has %d entries, want 1", len(cc.NestedConfigureSink))
+	}
+	// Classify routes both calls to the nested bucket.
+	for _, call := range []shadow.ExecuteProcessCall{configure, build} {
+		if got := Classify(call); got.Bucket != BucketNestedCMake {
+			t.Errorf("bucket = %q (%s), want nested-cmake", got.Bucket, got.Reason)
+		}
+	}
+	// A positional-source configure with NO WORKING_DIRECTORY can't resolve
+	// its build dir — it declines (not classified nested), rather than
+	// reconfiguring the outer cwd.
+	noWD := configure
+	noWD.WorkingDirectory = ""
+	if got, ok := classifyNestedCMake("cmake", noWD); ok {
+		t.Errorf("positional configure without WORKING_DIRECTORY classified nested: %+v", got)
 	}
 }
 
