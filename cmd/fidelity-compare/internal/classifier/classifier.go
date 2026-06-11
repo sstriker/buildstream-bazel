@@ -489,6 +489,13 @@ func isLibcRuntimeHelper(sym string) bool {
 	// don't carry that suffix). glog references __open_2.
 	case "__open_2", "__open64_2", "__openat_2", "__openat64_2":
 		return true
+	// Linker-provided section symbols. _GLOBAL_OFFSET_TABLE_ appears as an
+	// undefined reference in any PIC/PIE-compiled object (the linker
+	// materializes the GOT); whether a side's objects reference it is purely
+	// a -fPIC/-fPIE compile-mode artifact (libevent's bazel-side objects
+	// under the hermetic toolchain's PIE default), not a converter signal.
+	case "_GLOBAL_OFFSET_TABLE_":
+		return true
 	}
 	// libstdc++ vtables / typeinfo / VTTs for std types — the std::exception
 	// family (std::runtime_error, std::bad_alloc, …) plus stream types like

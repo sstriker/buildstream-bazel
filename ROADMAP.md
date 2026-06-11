@@ -293,6 +293,24 @@ transition cleanly.
   `SURVEY_SHARED=1` / `cc_shared_library`, where private `.so` link options
   actually matter and are measurable via the link-order lens.
 
+- **mbedtls: conditionally-generated crypto sources duplicated across all
+  three library targets (symbol-fidelity TRUE POSITIVE).** Found by seeding
+  `mbedtls.symfidelity`: the converted `mbedtls` and `mbedx509` cc_libraries
+  carry `error.c`, `version_features.c`, and
+  `psa_crypto_driver_wrappers_no_static.c` in srcs — sources cmake compiles
+  exactly once, in `mbedcrypto` (`src_crypto`; they're the conditionally
+  GENERATED set that `GEN_FILES` re-points at `${CMAKE_CURRENT_BINARY_DIR}`,
+  library/CMakeLists.txt:136-179). `libmbedtls.a` therefore over-exports
+  `mbedtls_strerror` / `mbedtls_version_check_feature` /
+  `psa_driver_wrapper_*` (8 impactful deltas vs cmake's archive), and a
+  whole-archive static consumer linking all three libs would see duplicate
+  definitions. Suspect mechanism: the generated-source consumer attribution
+  attaches the recovered generated sources to every target in the package
+  instead of the one codemodel target that compiles them. Regression guard:
+  `SURVEY_BAZEL_BUILD=mbedtls SURVEY_SYMBOL_FIDELITY=1` — the member's
+  allowlist is deliberately absent, so the lens flips from `FAIL` to `ok`
+  exactly when this is fixed.
+
 - **Symbol-fidelity lens — SHIPPED (v1, opt-in `SURVEY_SYMBOL_FIDELITY`).**
   Wired into `run-survey.sh` as the LAST lens — runs after the build, only when
   the build lens passed (the pipeline ordering: structural → build →
@@ -304,12 +322,23 @@ transition cleanly.
   member's `testdata/fidelity/<name>.allowlist.txt`, writing
   `<out>/<name>/symbol-fidelity.json` (`ok`/`FAIL`); members without a config
   self-skip. Validated: `SURVEY_BAZEL_BUILD=zlib SURVEY_SYMBOL_FIDELITY=1` →
-  `zlib: symbol-fidelity -> ok` (seeded `zlib.symfidelity`). **v1 scope /
-  follow-ups:** seed `.symfidelity` for the other fidelity fixtures (spdlog /
-  fmt / catch2 / libpng / nlohmann-json — their Makefile params already exist)
-  and the broader corpus; reuse the build lens's `build-ws` bazel artifacts
-  instead of run-fidelity's own from-scratch bazel build (an optimization); a
-  survey summary column. Design rationale: the
+  `zlib: symbol-fidelity -> ok` (seeded `zlib.symfidelity`). **Seeded so far
+  (11):** zlib, fmt, spdlog, catch2, googletest, glog, libxml2, brotli,
+  libpng, libevent (a `_GLOBAL_OFFSET_TABLE_` PIC artifact added to the
+  auto-benign classifier), and mbedtls — whose lens result is a deliberate
+  `FAIL`: a true-positive converter finding (see the mbedtls
+  source-duplication entry below), kept un-allowlisted so the report stays
+  red until the converter fix lands. **Remaining follow-ups:** a
+  CONSUMER-SIDE lens mode for header-only members (nlohmann-json / glm /
+  eigen — the CI consumer fixtures exist via `run-fidelity.sh
+  --consumer-file`, but the survey lens only does library-side archives); a
+  multi-archive UNION compare for language-partitioned targets (zstd's C/asm
+  split emits `liblibzstd_static_{c,asm}.a` while `fidelity-compare` takes
+  one `--bazel-artifact`, so zstd self-skips on no-artifact); the heavy
+  members (curl / sdl / openblas / protobuf / grpc / llvm / vtk) as
+  build-lens time permits; a survey summary column. (The earlier "reuse the
+  build lens's build-ws artifacts" follow-up is DONE — the lens reuses the
+  split build-ws and rebuilds only the release arm.) Design rationale: the
   build lens (`SURVEY_BAZEL_BUILD`) proves the converted graph builds
   under `bazel build //...`; the compile-commands lens
   (`SURVEY_COMPILE_DB`) proves per-TU
