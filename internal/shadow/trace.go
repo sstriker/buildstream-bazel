@@ -3,14 +3,24 @@ package shadow
 import (
 	"bytes"
 	"encoding/json"
+	"hash/fnv"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // TraceEvent is one record from `cmake --trace-expand --trace-format=json-v1`.
 // We deliberately decode only the fields we read; cmake adds more.
+//
+// IMMUTABLE: ParseTrace memoizes its result and hands the SAME []TraceEvent
+// (and thus the same per-event Args slices) to every caller, so a TraceEvent
+// must be treated as read-only. Never assign through a field of a parsed event
+// (`ev.Args[i] = …`) or sort/append-in-place a field slice — a mutation
+// through the shared slice silently corrupts every later consumer (e.g. a
+// warm-pass re-lower reading the cached events after pass 1). Derive new
+// values instead.
 type TraceEvent struct {
 	File string   `json:"file"`
 	Line int      `json:"line"`
@@ -40,7 +50,30 @@ type TraceEvent struct {
 // Single-pass entry for callers that want to feed multiple extractors
 // off one trace without paying the bytes.Split + json.Unmarshal cost
 // per extractor.
+//
+// Memoized: one convert parses the SAME trace blob many times — Decode and
+// the platform-conditional Tier-2 extractor both run inside parseTraceFacts,
+// the driver Decodes it again for a couple of single fields, and every warm
+// second-pass re-lower repeats all of that. Profiling a mid/large convert
+// (abseil) put ~42% of the Go translation time in encoding/json re-parsing
+// the same bytes. A tiny fingerprint-keyed cache turns the repeats into map
+// hits. The returned slice is SHARED across callers — they all treat it
+// read-only (verified: every extractor only indexes/compares event fields),
+// so no defensive copy is made.
 func ParseTrace(traceRaw []byte) []TraceEvent {
+	if len(traceRaw) == 0 {
+		return nil
+	}
+	key := traceFingerprint(traceRaw)
+	if ev, ok := traceMemoGet(key); ok {
+		return ev
+	}
+	events := parseTraceUncached(traceRaw)
+	traceMemoPut(key, events)
+	return events
+}
+
+func parseTraceUncached(traceRaw []byte) []TraceEvent {
 	// Pre-size to roughly the line count to avoid repeated growth.
 	lines := bytes.Count(traceRaw, []byte{'\n'}) + 1
 	out := make([]TraceEvent, 0, lines)
@@ -56,6 +89,76 @@ func ParseTrace(traceRaw []byte) []TraceEvent {
 		out = append(out, ev)
 	}
 	return out
+}
+
+// traceKey fingerprints a trace blob for the memo. The length plus a 64-bit
+// FNV-1a over a bounded sample (the whole blob when small, else head+middle+
+// tail windows) is O(1) per call yet collision-safe in practice for the
+// handful of distinct traces one convert sees — two DIFFERENT traces would
+// need an identical length AND identical sampled bytes.
+type traceKey struct {
+	n int
+	h uint64
+}
+
+func traceFingerprint(b []byte) traceKey {
+	h := fnv.New64a()
+	const win = 4096
+	if len(b) <= 3*win {
+		h.Write(b)
+	} else {
+		h.Write(b[:win])
+		mid := len(b) / 2
+		h.Write(b[mid : mid+win])
+		h.Write(b[len(b)-win:])
+	}
+	return traceKey{n: len(b), h: h.Sum64()}
+}
+
+// Bounded memo (most-recent-last LRU). Capacity 2 covers the within-convert
+// trace set — the primary expanded trace (parsed repeatedly in one pass-1
+// burst) coexisting with one warm-pass / nested trace — while keeping at most
+// two parsed-event slices alive (each ~the trace's size), so the cache never
+// balloons memory on a huge-trace project (LLVM/VTK).
+const traceMemoCap = 2
+
+type traceMemoEntry struct {
+	key    traceKey
+	events []TraceEvent
+}
+
+var (
+	traceMemoMu sync.Mutex
+	traceMemo   []traceMemoEntry
+)
+
+func traceMemoGet(key traceKey) ([]TraceEvent, bool) {
+	traceMemoMu.Lock()
+	defer traceMemoMu.Unlock()
+	for i := range traceMemo {
+		if traceMemo[i].key == key {
+			e := traceMemo[i]
+			// Move-to-end (most-recently-used).
+			traceMemo = append(traceMemo[:i], traceMemo[i+1:]...)
+			traceMemo = append(traceMemo, e)
+			return e.events, true
+		}
+	}
+	return nil, false
+}
+
+func traceMemoPut(key traceKey, events []TraceEvent) {
+	traceMemoMu.Lock()
+	defer traceMemoMu.Unlock()
+	for i := range traceMemo {
+		if traceMemo[i].key == key {
+			return // already cached (lost a race; harmless)
+		}
+	}
+	traceMemo = append(traceMemo, traceMemoEntry{key: key, events: events})
+	if len(traceMemo) > traceMemoCap {
+		traceMemo = traceMemo[len(traceMemo)-traceMemoCap:]
+	}
 }
 
 // ExtractReadPaths returns every source-tree path that the trace shows being
