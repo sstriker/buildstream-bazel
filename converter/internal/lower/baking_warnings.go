@@ -49,6 +49,7 @@ var convertTimeBakedShapes = map[string]string{
 	"cmake-codegen-cmake-script-lift":                 "cmake -P script lifted via operator-staged runner (script-internal paths must survive the sandbox)",
 	"cmake-codegen-autoinit-bake":                     "VTK-shape AUTOINIT_INCLUDE header bytes baked at convert time",
 	"cmake-codegen-nested-cmake-bake":                 "nested cmake build's configure-generated header baked at convert time",
+	"cmake-codegen-build-dir-bake":                    "configure-written build-dir file (untraced writer, e.g. file(WRITE)) baked at convert time",
 }
 
 // bakedEntry is one (target, reason) row in the inventory.

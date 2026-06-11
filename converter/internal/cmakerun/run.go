@@ -271,6 +271,50 @@ func StageFileAPIQueries(buildDir string) error {
 	return nil
 }
 
+// TraceReconfigure re-runs an ALREADY-CONFIGURED build dir's configure
+// with trace instrumentation only: `cmake --trace-expand
+// --trace-format=json-v1 --trace-redirect=<trace> <buildDir>`. No -G /
+// -D / hook flags are passed — the warm cache carries the generator and
+// every cache decision of whoever configured the dir, which is exactly
+// the fidelity wanted when that was a PROJECT's own cmake invocation
+// (the nested-cmake lift's execute_process child) rather than Configure
+// above: replaying OUR defaults (-DCMAKE_BUILD_TYPE, -G Ninja) could
+// CHANGE the nested cache. File API queries already staged in the dir
+// are honored by this run like any other, so the reply refreshes too.
+// The cwd and env contracts match Configure (cwd = buildDir, scratch
+// HOME, PrefixDir on CMAKE_PREFIX_PATH).
+func TraceReconfigure(ctx context.Context, buildDir, tracePath, prefixDir string, stdout, stderr io.Writer) error {
+	// Same caller-relative-path hazard as Configure: the child runs
+	// with cwd = buildDir, so absolutize against the CALLER's cwd
+	// first (TracePath especially — see Configure's note).
+	for _, p := range []*string{&buildDir, &tracePath, &prefixDir} {
+		if *p == "" {
+			continue
+		}
+		abs, err := filepath.Abs(*p)
+		if err != nil {
+			return fmt.Errorf("cmakerun: absolutize %q: %w", *p, err)
+		}
+		*p = abs
+	}
+	homeDir, err := os.MkdirTemp("", "cmakerun-home-*")
+	if err != nil {
+		return fmt.Errorf("cmakerun: stage home: %w", err)
+	}
+	defer os.RemoveAll(homeDir)
+	cmd := exec.CommandContext(ctx, "cmake",
+		"--trace-expand", "--trace-format=json-v1", "--trace-redirect="+tracePath,
+		buildDir)
+	cmd.Dir = buildDir
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.Env = configureEnv(homeDir, prefixDir)
+	if runErr := cmd.Run(); runErr != nil {
+		return fmt.Errorf("cmakerun: traced reconfigure of %s: %w", buildDir, runErr)
+	}
+	return nil
+}
+
 // Configure runs cmake -B <build> -S <source>, with File API queries
 // pre-staged for codemodel-v2, toolchains-v1, cmakeFiles-v1, and cache-v2.
 // Returns the reply directory location on success.

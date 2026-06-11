@@ -114,6 +114,16 @@ type codegenContext struct {
 	NestedArtifactDeps  map[string]string
 	NestedLifted        map[string]bool
 
+	// No-silent-drops accounting + the build-dir on-disk bake (see
+	// build_dir_source_bake.go). ElidedSources records every
+	// codemodel-referenced source the lowering dropped WITHOUT recovery
+	// (surfaced as one stderr aggregate + source-elided todos);
+	// BuildDirHdrWalked / BuildDirBakedHdrs cache the consumed-include
+	// header walk and its baked rel → rule-name registrations.
+	ElidedSources     []elidedSourceRecord
+	BuildDirHdrWalked map[string]bool
+	BuildDirBakedHdrs map[string]string
+
 	// HeaderWalkCache memoizes filesystem walks of include directories
 	// across targets within one lower-element invocation. Keyed on the
 	// absolute include-dir path; value is the package-relative header
@@ -328,6 +338,8 @@ func newCodegenContext() *codegenContext {
 		NestedConfigureSink:   map[string]string{},
 		NestedArtifactDeps:    map[string]string{},
 		NestedLifted:          map[string]bool{},
+		BuildDirHdrWalked:     map[string]bool{},
+		BuildDirBakedHdrs:     map[string]string{},
 	}
 }
 

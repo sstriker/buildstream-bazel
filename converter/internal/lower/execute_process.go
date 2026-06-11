@@ -764,12 +764,19 @@ func emitCopyGenrule(what, tagOp, src, dst string, anc execAnchors, cc *codegenC
 		// build file back to its own committed source path (error.c,
 		// version_features.c). Emitting it would make X both an input and an
 		// output, which Bazel forbids; and the copy is redundant — X already
-		// exists as the committed source. Drop it; consumers of X resolve to that
-		// source. Only fires on the genuine in==out collision (which Bazel
-		// rejects regardless), so it can't regress a building target. Scoped to
-		// the single-file path: a recursive DIR copy (emitDirCopyGenrule) at the
-		// same relative root is a real staging copy, not an identity.
-		return []string{dstRel}, "", true
+		// exists as the committed source. Drop it AND surface no output: the
+		// aliased path IS a committed source, so every consumer (the codemodel
+		// target that compiles it included) already resolves to it — there is
+		// nothing for the build-dir-include attribution to attach. Returning the
+		// path here used to broadcast it into the srcs of EVERY target whose
+		// includes cover the build root (mbedtls's three libs each gained all
+		// four link_to_source files, over-exporting their symbols — the
+		// symbol-fidelity lens's first true positive). Only fires on the genuine
+		// in==out collision (which Bazel rejects regardless), so it can't
+		// regress a building target. Scoped to the single-file path: a recursive
+		// DIR copy (emitDirCopyGenrule) at the same relative root is a real
+		// staging copy, not an identity.
+		return nil, "", true
 	}
 	if _, exists := cc.OutToGenrule[dstRel]; exists {
 		return []string{dstRel}, "", true
@@ -1889,6 +1896,20 @@ func executeProcessAnchorSource(p string, anc execAnchors) (string, bool) {
 		return "", false
 	}
 	if rel, ok := relativeIfInside(anc.recordedSrcDir, p); ok {
+		// Umbrella re-anchor, mirroring lc.umbrellaReanchor for the
+		// exec recovery's anchors: when the label root sits ABOVE the
+		// cmake source dir (workspace promotion, --element-source-root
+		// overlays, the nested-cmake recursive lowering), a bare
+		// cmakeSrc-relative rel mis-anchors — the emitted genrule
+		// srcs/$(location) must carry the labelRoot-relative form
+		// ("sub/sub_extra.c.in", not "sub_extra.c.in"). Offline
+		// replays where hostSrcDir is a different machine's path
+		// don't relativize and keep the recorded-relative form.
+		if anc.hostSrcDir != "" && anc.hostSrcDir != anc.recordedSrcDir {
+			if prefix, inside := relativeIfInside(anc.hostSrcDir, anc.recordedSrcDir); inside && prefix != "" && prefix != "." {
+				return filepath.ToSlash(filepath.Join(prefix, rel)), true
+			}
+		}
 		return rel, true
 	}
 	if anc.hostSrcDir != "" && anc.hostSrcDir != anc.recordedSrcDir {

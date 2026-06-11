@@ -6,11 +6,11 @@
 # which none of the above cover. `default: none` keeps it from second-guessing
 # staticcheck — only the complexity linters run.
 #
-# BLOCKING: the soft-launch burndown reached green against these thresholds, so
-# the CI step now gates like vet / gofmt / staticcheck. A handful of tracked
-# complexity giants carry documented //nolint directives keyed to the ROADMAP
-# burndown; every other function is held to the thresholds below, so new
-# complexity regressions fail the build. Run locally with `make lint-complexity`.
+# BLOCKING: the burndown is complete — every function (including the six
+# former giants: lowerTarget, ToIR, convert-element-cmake's run, write-a's
+# main, planSplit, rewriteTarget) is held to the thresholds below with NO
+# grandfathered //nolint directives, so new complexity regressions fail the
+# build. Run locally with `make lint-complexity`.
 version: "2"
 
 linters:

@@ -1,0 +1,11 @@
+# Symbol-fidelity lens config for libpng (7th survey lens, SURVEY_SYMBOL_FIDELITY).
+# Mirrors the Makefile e2e-fidelity-compare-libpng fixture: compare the converted
+# Bazel libpng_static.a against cmake's libpng16.a (allowlist auto-picked from
+# testdata/fidelity/libpng.allowlist.txt). PNG_SHARED=OFF keeps the cmake side on
+# the static target only (libpng's own shared toggle, distinct from
+# BUILD_SHARED_LIBS); PNG_TESTS=OFF skips the test executables. find_package(ZLIB)
+# resolves to the host libz on both sides (the libpng.conf host-system-lib path).
+SYMFID_TARGET=png_static
+SYMFID_CMAKE_ARTIFACT=libpng16.a
+SYMFID_BAZEL_ARTIFACT=libpng_static.a
+SYMFID_CMAKE_FLAGS='-DPNG_TESTS=OFF -DPNG_SHARED=OFF'
