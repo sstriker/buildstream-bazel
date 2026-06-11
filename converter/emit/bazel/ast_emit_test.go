@@ -2,11 +2,37 @@ package bazel
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/bazelbuild/buildtools/build"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
+
+// TestWriteFile_ContentOrderPreserved pins the one property the buildifier-
+// canonical guard can't: write_file content is a semantic ordered body, so the
+// builder must never sort it. (assertKindByteIdentical only checks canonical
+// layout, not content order, after the multiline capstone retool.)
+func TestWriteFile_ContentOrderPreserved(t *testing.T) {
+	cases := []ir.Target{
+		{Kind: ir.KindWriteFile, Name: "w", WriteFileOut: "o.h", WriteFileContent: []string{"#define Z 0", "#define A 0"}},
+		{Kind: ir.KindWriteFile, Name: "w", WriteFileOut: "o.h", WriteFileContent: []string{"#define Z 0"},
+			WriteFileContentByConfig: map[string][]string{"//config:dbg": {"#define Z 1", "#define A 1"}}},
+	}
+	for i, tc := range cases {
+		got := string(formatFile(&build.File{Type: build.TypeBuild, Stmt: []build.Expr{writeFileExpr(tc)}}, nil))
+		if zi, ai := strings.LastIndex(got, "#define Z 1"), strings.LastIndex(got, "#define A 1"); i == 1 {
+			if zi < 0 || ai < 0 || zi > ai {
+				t.Errorf("case %d: per-config arm content not in Z-before-A order:\n%s", i, got)
+			}
+		}
+		if zi, ai := strings.Index(got, "#define Z 0"), strings.Index(got, "#define A 0"); i == 0 {
+			if zi < 0 || ai < 0 || zi > ai {
+				t.Errorf("case %d: content not in Z-before-A order:\n%s", i, got)
+			}
+		}
+	}
+}
 
 // assertKindByteIdentical is the per-kind builder guard. Originally it pinned
 // byte-identity against the text template during the migration; with the
