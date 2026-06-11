@@ -15,6 +15,22 @@ transition cleanly.
 
 ## Next
 
+- **`-idirafter` copts leak convert-time absolute source paths (sdl build
+  lens red under hermetic /tmp).** Found during the PCH failure-case hunt
+  (pre-existing — verified identical on main via a worktree convert): cmake
+  emits sdl's vendored-Khronos include as `-idirafter /tmp/SDL/src/video/
+  khronos`, and the lowering passes the joined copt through VERBATIM with
+  the convert-time absolute path. Bazel >= 8's hermetic sandbox /tmp makes
+  that path invisible at compile time, so `EGL/egl.h` resolution fails and
+  the sdl build lens is now RED in environments whose survey source dir
+  lives under /tmp (259-TU `extra_in_bazel` include noise in the compile-db
+  lens rides the same run). The fix family already exists: re-anchor
+  source-tree `-idirafter` dirs to exec-root form the way `-I`/`-isystem`
+  include dirs and the PCH mirror's exec-root paths are handled (and stage
+  the dir's headers; cf. split.go's includeDirFromCopt, which deliberately
+  skips `-idirafter` for the header-lib relabel — that skip is about
+  relabeling, not about leaving the path absolute).
+
 - **Reproducible `find_package` host-installs.** The grpc/protobuf build-lens
   `.conf` files hardcode `/tmp/absl-install` (host-installed abseil) and the
   umbrella deps list is a snapshot of the pinned abseil. Fold the abseil (and
@@ -724,26 +740,6 @@ trees, optional-feature deps, codegen instances). Each member's
   pre-fetches the tarball and repoints the ExternalProject `URL` at a local
   `file://` copy, so the configure-time download is hermetic — the natural
   seam for the repository-rule lift.)
-
-- **PCH forced-include lift — fidelity residue.** The lift (shipped: cmake's
-  `target_precompile_headers` forced-include semantics expand into ordered
-  `-include` copts, incl. REUSE_FROM; gate `scripts/meta-cmake-pch.sh`;
-  corpus acceptance verified — the sdl build+compile-db lens re-run went
-  build `ok` with the prior 223-TU `missing_in_bazel: ["-include"]` copt
-  mismatch collapsed to ZERO mismatches) has three documented v1 residues to
-  revisit if a corpus member trips on them: (1) cmake's generated cmake_pch
-  header carries `#pragma GCC system_header`, so warnings INSIDE declared PCH
-  headers are suppressed under cmake but can fire under the direct `-include`
-  (a `-Werror` project could break — the fallback is materializing a literal
-  mirror of cmake_pch.h[xx] and force-including that one file); (2) a
-  per-config-VARYING PCH list rides the primary configuration's view — the
-  multi-config fold strips the per-config `cmake_pch` arm tokens
-  (`filterPCHCoptArm`) rather than re-expanding the list per `//config:*`
-  arm; (3) the expanded pairs append at the tail of copts rather than the
-  cmake_pch `-include`'s original compile-line position, so a target that
-  ALSO adds its own non-PCH forced include sees a different forced-include
-  processing order than under cmake (matters only when one forced header
-  depends on the other's macros).
 
 - **Genrule command-rewrite token-replace consolidation (deferred from the
   2026-06-08 refactoring audit).** `replaceBareToken` (genrule.go) and
