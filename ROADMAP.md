@@ -448,8 +448,13 @@ transition cleanly.
   `meta-cmake-sanitizer-features` mold (assert strip + tag/load + `.bzl` shape on
   a fixture) to put it under the gates-in-CI net; (3) the FEATURE mode's lens
   validation needs the survey to wire the emitted feature into a registered
-  toolchain (the self-contained mode needs none). Sibling to the feature-flag
-  lift above.
+  toolchain (the self-contained mode needs none); (4) `write-a` doesn't yet
+  THREAD `--emit-common-compile-flags-bzl` into the orchestrated project-A/B
+  converter rule, so the self-contained mode is operator/survey-only for now —
+  the staging of the generated `common_compile_flags.bzl` IS handled on both
+  delivery shapes (split: the packages TreeArtifact + stage-b's `stageSplitDir`;
+  monolithic: stage-b's sidecar copy), so threading is the only piece left to
+  make it a graph-level toggle. Sibling to the feature-flag lift above.
 
 - **Agent-actionable prompts — AI post-pass (consumer) remains.** The
   deterministic **producer** (`conversion-todos.json`, on by default, wired

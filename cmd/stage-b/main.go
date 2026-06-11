@@ -172,6 +172,16 @@ func run(a args) ([]string, error) {
 		if err := stageSidecar(filepath.Join(aElements, name), filepath.Join(bElements, name), "conversion-todos.json"); err != nil {
 			return nil, fmt.Errorf("stage conversion-todos for %s: %v", name, err)
 		}
+		// Same for common_compile_flags.bzl: the converter emits it next to
+		// BUILD.bazel.out when --emit-common-compile-flags-bzl is set (the
+		// self-contained common-copts hoist), and the per-dir BUILDs load it
+		// by label, so it must travel with them. The --split-packages path
+		// already lands it via stageSplitDir (it's a file inside the packages
+		// TreeArtifact); this covers the single-file genrule shape. No-op when
+		// the file is absent (the hoist mode is off), so it's free otherwise.
+		if err := stageSidecar(filepath.Join(aElements, name), filepath.Join(bElements, name), "common_compile_flags.bzl"); err != nil {
+			return nil, fmt.Errorf("stage common_compile_flags.bzl for %s: %v", name, err)
+		}
 		dst := filepath.Join(bElements, name, "BUILD.bazel")
 		dstBytes, err := os.ReadFile(dst)
 		if err != nil && !os.IsNotExist(err) {
