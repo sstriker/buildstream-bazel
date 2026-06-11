@@ -314,3 +314,22 @@ func TestOrderedLibIdentities(t *testing.T) {
 		t.Errorf("bazel order = %v", g)
 	}
 }
+
+// TestFactsFromArgv_IDirAfter routes -idirafter dirs (joined and
+// separate-pair) through IncludeDir like -I/-isystem — cmake's absolute
+// host dir and the converted exec-root form are the same compiler input
+// in two path spaces, reconciled by the include normalization. Raw-token
+// comparison would flag every TU of an -idirafter project.
+func TestFactsFromArgv_IDirAfter(t *testing.T) {
+	f := factsFromArgv([]string{"-idirafter/tmp/SDL/src/video/khronos", "-idirafter", "extra", "-O2"})
+	for _, want := range []string{"/tmp/SDL/src/video/khronos", "extra"} {
+		if !f.IncludeDir[want] {
+			t.Errorf("IncludeDir missing %q: %v", want, f.IncludeDir)
+		}
+	}
+	for c := range f.Copts {
+		if strings.Contains(c, "idirafter") {
+			t.Errorf("-idirafter leaked into opaque copts: %v", f.Copts)
+		}
+	}
+}
