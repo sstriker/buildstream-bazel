@@ -283,6 +283,15 @@ func applyProperty(t *Test, key, value string) {
 		secs, err := strconv.ParseFloat(value, 64)
 		if err == nil && secs > 0 {
 			t.Timeout = time.Duration(secs * float64(time.Second))
+		} else {
+			// A non-numeric or non-positive TIMEOUT (a leftover ${VAR} that
+			// didn't expand, a typo) silently left the test with no timeout —
+			// a hang risk an operator couldn't see. Surface it as a tag, like
+			// the no-Bazel-analogue properties below. The raw value isn't
+			// embedded (it could be anything, and the tag name + the test's
+			// CTestTestfile entry are enough to find it) so the tag stays
+			// leak-safe and deterministic.
+			t.Tags = appendUniq(t.Tags, "cmake-test-timeout-unparsed")
 		}
 	case "ENVIRONMENT":
 		t.Env = appendSplitNonEmpty(t.Env, value, ';')
@@ -331,6 +340,25 @@ func applyProperty(t *Test, key, value string) {
 		if v := strings.TrimSpace(value); v != "" {
 			t.Tags = appendUniq(t.Tags, "cmake-test-pass-regex="+v)
 		}
+	default:
+		// An underscore-prefixed key is cmake-internal bookkeeping, not user
+		// intent — ctest emits _BACKTRACE_TRIPLES (property-provenance) on
+		// essentially every set_tests_properties. That's 100%-confident noise,
+		// so drop it silently (per the no-silent-drops contract: a confident
+		// skip stays quiet). CMake reserves the leading-underscore namespace
+		// for internal properties, so the prefix test is a safe classifier.
+		if strings.HasPrefix(key, "_") {
+			return
+		}
+		// Any other unrecognized key: this switch models the subset of CTest
+		// properties the converter handles, and cmake (plus custom test
+		// frameworks) defines many more. Rather than let an unknown key vanish
+		// — the known no-Bazel-analogue keys above are deliberately surfaced as
+		// cmake-test-* tags so operators can grep for them — tag the test with
+		// the dropped key's NAME so the omission is auditable. The key is a
+		// CTest property identifier (no paths), so the tag is leak-safe and
+		// deterministic; the value is not embedded.
+		t.Tags = appendUniq(t.Tags, "cmake-test-unhandled-prop="+key)
 	}
 }
 
