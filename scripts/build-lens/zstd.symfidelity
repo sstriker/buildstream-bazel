@@ -1,0 +1,8 @@
+# Symbol-fidelity lens config for zstd (7th survey lens, SURVEY_SYMBOL_FIDELITY).
+# zstd's cmake root is build/cmake (the surveyed dir per docs/survey-corpus.md);
+# the static lib target is libzstd_static with OUTPUT_NAME zstd, so cmake's
+# archive is libzstd.a while the converted cc_library keeps the target name
+# (liblibzstd_static.a). No allowlist — the symbol sets must match exactly.
+SYMFID_TARGET=libzstd_static
+SYMFID_CMAKE_ARTIFACT=libzstd.a
+SYMFID_BAZEL_ARTIFACT=liblibzstd_static.a

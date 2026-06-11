@@ -1,0 +1,9 @@
+# Symbol-fidelity lens config for libevent (7th survey lens,
+# SURVEY_SYMBOL_FIDELITY). add_event_library(event_core ...) declares the
+# static target event_core_static with OUTPUT_NAME event_core, so cmake's
+# archive is libevent_core.a while the converted cc_library keeps the target
+# name (libevent_core_static.a). event_core is the base library (event/
+# event_extra layer on it). No allowlist — the symbol sets must match exactly.
+SYMFID_TARGET=event_core_static
+SYMFID_CMAKE_ARTIFACT=libevent_core.a
+SYMFID_BAZEL_ARTIFACT=libevent_core_static.a
