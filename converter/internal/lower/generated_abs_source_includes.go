@@ -139,6 +139,17 @@ func rewriteGeneratedWrapperIncludes(pkg *ir.Package, hostSrc, bazelPackagePath 
 		}
 		var incs []string
 		for li, line := range t.WriteFileContent {
+			// Cheap necessary-condition pre-filter: quoteIncludeRe requires
+			// the literal "include", so a line without it can't match. Most
+			// write_file content is non-include lines (a baked config header is
+			// mostly #define / comments), and per-line FindStringSubmatch
+			// re-enters the backtracking regex engine each call — profiling a
+			// wrapper/config-heavy convert put ~0.3s here. The substring scan
+			// skips the regex on the lines that never match; it can't change
+			// the result (every match contains "include").
+			if !strings.Contains(line, "include") {
+				continue
+			}
 			m := quoteIncludeRe.FindStringSubmatch(line)
 			if m == nil {
 				continue
