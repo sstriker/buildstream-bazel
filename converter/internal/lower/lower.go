@@ -1008,6 +1008,7 @@ type traceFacts struct {
 	decodedConfigureFiles        []shadow.ConfigureFileCall
 	decodedFileGenerates         []shadow.FileGenerateCall
 	decodedExecuteProcesses      []shadow.ExecuteProcessCall
+	decodedOutOfTreeExecProcs    []shadow.ExecuteProcessCall
 	decodedAddCustomCommands     []shadow.AddCustomCommandCall
 	decodedAddCustomTargets      []shadow.AddCustomTargetCall
 	decodedAddDependencies       []shadow.AddDependenciesCall
@@ -1093,6 +1094,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 	var decodedConfigureFiles []shadow.ConfigureFileCall
 	var decodedFileGenerates []shadow.FileGenerateCall
 	var decodedExecuteProcesses []shadow.ExecuteProcessCall
+	var decodedOutOfTreeExecProcs []shadow.ExecuteProcessCall
 	// decoded{AddCustomCommands,AddCustomTargets,AddDependencies}
 	// carry the source-level add_custom_command / add_custom_target /
 	// add_dependencies events the standalone-genrule cross-reference
@@ -1192,6 +1194,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 		decodedConfigureFiles = decoded.ConfigFiles
 		decodedFileGenerates = decoded.FileGenerates
 		decodedExecuteProcesses = decoded.ExecuteProcesses
+		decodedOutOfTreeExecProcs = decoded.OutOfTreeExecuteProcesses
 		decodedAddCustomCommands = decoded.AddCustomCommands
 		decodedAddCustomTargets = decoded.AddCustomTargets
 		decodedAddDependencies = decoded.AddDependencies
@@ -1265,6 +1268,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 		decodedConfigureFiles:        decodedConfigureFiles,
 		decodedFileGenerates:         decodedFileGenerates,
 		decodedExecuteProcesses:      decodedExecuteProcesses,
+		decodedOutOfTreeExecProcs:    decodedOutOfTreeExecProcs,
 		decodedAddCustomCommands:     decodedAddCustomCommands,
 		decodedAddCustomTargets:      decodedAddCustomTargets,
 		decodedAddDependencies:       decodedAddDependencies,
@@ -1509,6 +1513,7 @@ type recoveredArtifacts struct {
 func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Options, cfg fileapi.Configuration, tf traceFacts, cmakeSrc, cmakeBuild, hostSrc string, cc *codegenContext) (*recoveredArtifacts, *ir.Package, error) {
 	traceDecoded, decodedTrace := tf.traceDecoded, tf.decodedTrace
 	decodedConfigureFiles, decodedFileGenerates, decodedExecuteProcesses := tf.decodedConfigureFiles, tf.decodedFileGenerates, tf.decodedExecuteProcesses
+	decodedOutOfTreeExecProcs := tf.decodedOutOfTreeExecProcs
 	// execute_process recovery. Configure-time subprocess
 	// invocations are a hermeticity violation by Bazel's
 	// analysis-then-action model. Some calls are liftable
@@ -1587,6 +1592,17 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 	// orphans only configure-time codegen can explain.
 	cc.NinjaOuts = ninjaOutputSet(g)
 	cc.ConsumedBuildRel = consumedBuildDirSources(r, cmakeBuild)
+	// Out-of-tree execute_process calls the lift's inSourceTree filter
+	// dropped: route the codemodel-source-backed build-dir subprojects into
+	// the SAME lift machinery as in-tree calls (so they get a genrule/probe
+	// lift, or a loud per-call refusal — not a vague note), set the uncertain
+	// ones aside for warnOutOfTreeExecuteProcess, and drop cmake's own probe
+	// noise silently. See out_of_tree_execute_process.go.
+	liftOOT, noteOOT := partitionOutOfTreeExec(decodedOutOfTreeExecProcs, cmakeBuild, opts.HostPrefixDir, cc.ConsumedBuildRel)
+	cc.OutOfTreeExecNotes = noteOOT
+	if len(liftOOT) > 0 {
+		decodedExecuteProcesses = append(append([]shadow.ExecuteProcessCall(nil), decodedExecuteProcesses...), liftOOT...)
+	}
 	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, rescueVars, forwardedStampVars, cc)
 	// Expand the stamp-var set through verbatim set(X ${Y}) copies the
 	// driver recovered from a non-expanded trace (empty in the single-pass
@@ -2255,6 +2271,12 @@ func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts
 	// stderr warning + structured todo — replacing the historical
 	// Tier-1 refusal. See nested_cmake.go.
 	warnUnliftedNestedBuilds(opts, cc)
+	// Out-of-tree execute_process calls that were uncertain (no codemodel
+	// sources to anchor a lift): the codemodel-source-backed ones were already
+	// spliced into the lift in recoverConfigureTimeArtifacts; this surfaces the
+	// rest as conversion-todos. cmake's own probe noise stayed silent. See
+	// out_of_tree_execute_process.go.
+	warnOutOfTreeExecuteProcess(opts, cc)
 	// Codemodel sources dropped without recovery (no silent drops):
 	// aggregate stderr warning + structured source-elided todos. See
 	// build_dir_source_bake.go.

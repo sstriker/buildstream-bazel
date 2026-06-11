@@ -152,6 +152,15 @@ type codegenContext struct {
 	// output) is NOT recorded here, since that's a by-design trace-only skip.
 	UnreadableConfigureOutputs map[string]string
 
+	// OutOfTreeExecNotes collects the uncertain out-of-tree execute_process
+	// calls partitionOutOfTreeExec set aside to NOTE (rather than lift): a
+	// build-dir location with no codemodel sources to anchor a lift, or a
+	// find_package prefix-tree probe. recoverConfigureTimeArtifacts fills it
+	// (the codemodel-source-backed calls are spliced into the lift instead);
+	// emitToIRDiagnostics surfaces it via warnOutOfTreeExecuteProcess. See
+	// out_of_tree_execute_process.go.
+	OutOfTreeExecNotes []outOfTreeExecNote
+
 	// MissingIncludeDirs collects absolute include-directory paths
 	// referenced by the codemodel that don't exist on disk. cmake
 	// permits these (LLVM's llvm-mca declares

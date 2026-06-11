@@ -32,14 +32,21 @@ import (
 // called three Extract* functions back-to-back on the same trace)
 // uses this to pay the bytes.Split + json.Unmarshal cost once.
 type Decoded struct {
-	Reads                      []string
-	Includes                   []TargetIncludeCall
-	Links                      []TargetLinkCall
-	CompileDefinitions         []TargetCompileCall
-	CompileOptions             []TargetCompileCall
-	ConfigFiles                []ConfigureFileCall
-	FileGenerates              []FileGenerateCall
-	ExecuteProcesses           []ExecuteProcessCall
+	Reads              []string
+	Includes           []TargetIncludeCall
+	Links              []TargetLinkCall
+	CompileDefinitions []TargetCompileCall
+	CompileOptions     []TargetCompileCall
+	ConfigFiles        []ConfigureFileCall
+	FileGenerates      []FileGenerateCall
+	ExecuteProcesses   []ExecuteProcessCall
+	// OutOfTreeExecuteProcesses carries execute_process calls whose issuing
+	// CMakeLists lives OUTSIDE the source tree — cmake-subproject builds in
+	// the build dir, find_package config files in the prefix tree, and
+	// cmake-internal probes. The lift path (ExecuteProcesses) deliberately
+	// excludes these; the lower-layer out-of-tree surfacing pass classifies
+	// them so uncertain drops are NOTED rather than silently lost.
+	OutOfTreeExecuteProcesses  []ExecuteProcessCall
 	PlatformConditionalSources []PlatformConditionalSource
 	SourceFileProperties       []SourceFilePropertiesCall
 	AddCustomCommands          []AddCustomCommandCall
@@ -138,6 +145,11 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 			call.DeferDir = deferDirFor(ev, deferDirs)
 			call.CallFile, call.CallLine, call.CallCmd = invocationCallSite(ev, lastEventAtFrame, traceSourceRoot)
 			d.ExecuteProcesses = append(d.ExecuteProcesses, call)
+		}
+		if call, ok := classifyOutOfTreeExecuteProcess(ev, traceSourceRoot); ok {
+			call.DeferDir = deferDirFor(ev, deferDirs)
+			call.CallFile, call.CallLine, call.CallCmd = invocationCallSite(ev, lastEventAtFrame, traceSourceRoot)
+			d.OutOfTreeExecuteProcesses = append(d.OutOfTreeExecuteProcesses, call)
 		}
 		if call, ok := classifySourceFileProperties(ev, traceSourceRoot); ok {
 			d.SourceFileProperties = append(d.SourceFileProperties, call)
@@ -1311,31 +1323,55 @@ func splitCMakeListArg(a string) []string {
 	return out
 }
 
-// classifyExecuteProcess parses one trace event into an
-// ExecuteProcessCall, or returns (_, false) when the event
-// isn't an in-source-tree execute_process. Shared between the
-// legacy single-pass API and Decode's combined pass.
-//
-// cmake's execute_process arg syntax interleaves keywords with
-// values; COMMAND clauses form pipelines and consume tokens
-// until the next recognized keyword. ENVIRONMENT is variadic:
-// it consumes "KEY=value" tokens until another keyword
-// appears. Single-value keywords (WORKING_DIRECTORY, TIMEOUT,
-// *_VARIABLE, *_FILE) consume exactly one following token.
-// Flag-only keywords (OUTPUT_QUIET, ERROR_QUIET,
-// *_STRIP_TRAILING_WHITESPACE) take no value.
-//
-// Unknown tokens at the top level (i.e., not part of an open
-// COMMAND or ENVIRONMENT list) are dropped silently — cmake
-// adds new options across versions and a stricter rejection
-// would force the classifier to refuse otherwise-liftable calls
-// just because a v1 hasn't taught the parser about a benign
-// recent option.
+// classifyExecuteProcess parses one in-source-tree execute_process trace
+// event into an ExecuteProcessCall, or returns (_, false) when the event
+// isn't an in-source-tree execute_process. Shared between the legacy
+// single-pass API and Decode's combined pass.
 func classifyExecuteProcess(ev TraceEvent, sourceRoot string) (ExecuteProcessCall, bool) {
-	if !strings.EqualFold(ev.Cmd, "execute_process") {
+	if !inSourceTree(ev.File, sourceRoot) {
 		return ExecuteProcessCall{}, false
 	}
-	if !inSourceTree(ev.File, sourceRoot) {
+	return parseExecuteProcessArgs(ev)
+}
+
+// classifyOutOfTreeExecuteProcess is classifyExecuteProcess's mirror for
+// events whose issuing `file` is OUTSIDE the source tree. The in-tree path
+// feeds the lift/refusal machinery (the calls the converter tries to
+// reproduce); this sibling feeds the out-of-tree surfacing pass
+// (out_of_tree_execute_process.go) so cmake-subproject and find_package
+// prefix-tree calls are NOTED rather than silently dropped. cmake-internal
+// probes (/usr/share/cmake-* modules, try_compile scratch under
+// <build>/CMakeFiles) come through here too — the lower-layer classifier
+// discards that confident noise and keeps only the uncertain calls.
+func classifyOutOfTreeExecuteProcess(ev TraceEvent, sourceRoot string) (ExecuteProcessCall, bool) {
+	if inSourceTree(ev.File, sourceRoot) {
+		return ExecuteProcessCall{}, false
+	}
+	return parseExecuteProcessArgs(ev)
+}
+
+// parseExecuteProcessArgs parses one execute_process trace event's argv into
+// an ExecuteProcessCall WITHOUT applying the source-tree filter. Returns
+// (_, false) when the event isn't an execute_process or carries no COMMAND
+// clause. Shared by classifyExecuteProcess (in-source-tree calls) and
+// classifyOutOfTreeExecuteProcess (out-of-tree calls) so both paths recover
+// identical argv/keyword structure.
+//
+// cmake's execute_process arg syntax interleaves keywords with values;
+// COMMAND clauses form pipelines and consume tokens until the next
+// recognized keyword. ENVIRONMENT is variadic: it consumes "KEY=value"
+// tokens until another keyword appears. Single-value keywords
+// (WORKING_DIRECTORY, TIMEOUT, *_VARIABLE, *_FILE) consume exactly one
+// following token. Flag-only keywords (OUTPUT_QUIET, ERROR_QUIET,
+// *_STRIP_TRAILING_WHITESPACE) take no value.
+//
+// Unknown tokens at the top level (i.e., not part of an open COMMAND or
+// ENVIRONMENT list) are dropped silently — cmake adds new options across
+// versions and a stricter rejection would force the classifier to refuse
+// otherwise-liftable calls just because a v1 hasn't taught the parser about
+// a benign recent option.
+func parseExecuteProcessArgs(ev TraceEvent) (ExecuteProcessCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "execute_process") {
 		return ExecuteProcessCall{}, false
 	}
 	if len(ev.Args) == 0 {
