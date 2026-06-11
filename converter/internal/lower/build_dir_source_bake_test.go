@@ -213,11 +213,19 @@ func TestElidedKindsRefuseWhenEmpty(t *testing.T) {
 	}
 }
 
-// TestNestedBakeReHome covers the merge-time re-anchoring: a nested
-// lowering's build-dir bake rule gains the <buildRel>/ prefix on its
-// out AND name, registers in the OUTER producer map, and consumer
-// srcs/hdrs entries re-point; non-bake rels stay untouched.
-func TestNestedBakeReHome(t *testing.T) {
+// TestNestedProducerReHome covers the merge-time re-anchoring: a
+// nested producer rule whose out lives in the nested BUILD dir gains
+// the <buildRel>/ prefix on its out and renames; a producer whose out
+// lives in the SOURCE tree (the in-place-rewrite shape) stays; an out
+// on disk nowhere conservatively stays; consumer srcs/hdrs entries
+// pointing at re-homed rels re-point.
+func TestNestedProducerReHome(t *testing.T) {
+	hostSrc := t.TempDir()
+	nbDir := t.TempDir()
+	mustWriteFile(t, filepath.Join(nbDir, "sub_config.h"), "#define SUB 7\n")
+	mustWriteFile(t, filepath.Join(nbDir, "gen.c"), "int g;\n")
+	mustWriteFile(t, filepath.Join(hostSrc, "rewritten.c"), "int r;\n")
+
 	nestedPkg := &ir.Package{Targets: []ir.Target{
 		{
 			Name: "consumer", Kind: ir.KindCCLibrary,
@@ -229,20 +237,31 @@ func TestNestedBakeReHome(t *testing.T) {
 			WriteFileOut: "sub_config.h", Tags: buildDirBakeTags(),
 		},
 		{
-			Name: bakedBuildDirName("gen.c"), Kind: ir.KindGenrule,
-			GenruleOuts: []string{"gen.c"}, Tags: buildDirBakeTags(),
+			Name: "gen_c", Kind: ir.KindGenrule,
+			GenruleOuts: []string{"gen.c"}, Tags: []string{"cmake-codegen"},
+		},
+		{
+			Name: "rewrite_rewritten_c", Kind: ir.KindGenrule,
+			GenruleOuts: []string{"rewritten.c"}, Tags: []string{"cmake-codegen"},
+		},
+		{
+			Name: "phantom", Kind: ir.KindGenrule,
+			GenruleOuts: []string{"never_built.c"}, Tags: []string{"cmake-codegen"},
 		},
 	}}
-	nb := NestedBuildInput{BuildRel: "subbuild"}
+	nb := NestedBuildInput{BuildRel: "subbuild", HostBuildDir: nbDir}
 
-	rehome := nestedBakeReHomes(nestedPkg, nb)
-	if rehome["sub_config.h"] != "subbuild/sub_config.h" || rehome["gen.c"] != "subbuild/gen.c" {
-		t.Fatalf("rehome map = %v", rehome)
+	rehome := nestedProducerReHomes(nestedPkg, nb, hostSrc)
+	want := map[string]string{
+		"sub_config.h": "subbuild/sub_config.h",
+		"gen.c":        "subbuild/gen.c",
+	}
+	if len(rehome) != len(want) || rehome["sub_config.h"] != want["sub_config.h"] || rehome["gen.c"] != want["gen.c"] {
+		t.Fatalf("rehome map = %v; want %v (source-tree and phantom outs must not re-home)", rehome, want)
 	}
 
-	cc := newCodegenContext()
 	for i := range nestedPkg.Targets {
-		applyNestedBakeReHome(&nestedPkg.Targets[i], rehome, cc)
+		applyNestedProducerReHome(&nestedPkg.Targets[i], rehome, "subbuild")
 	}
 
 	consumer := nestedPkg.Targets[0]
@@ -254,13 +273,16 @@ func TestNestedBakeReHome(t *testing.T) {
 	}
 	wf := nestedPkg.Targets[1]
 	if wf.WriteFileOut != "subbuild/sub_config.h" || wf.Name != bakedBuildDirName("subbuild/sub_config.h") {
-		t.Errorf("write_file out/name = %q/%q; want subbuild-prefixed", wf.WriteFileOut, wf.Name)
+		t.Errorf("write_file out/name = %q/%q; want subbuild-prefixed bake name", wf.WriteFileOut, wf.Name)
 	}
 	gr := nestedPkg.Targets[2]
-	if gr.GenruleOuts[0] != "subbuild/gen.c" || gr.Name != bakedBuildDirName("subbuild/gen.c") {
-		t.Errorf("genrule outs/name = %v/%q; want subbuild-prefixed", gr.GenruleOuts, gr.Name)
+	if gr.GenruleOuts[0] != "subbuild/gen.c" || gr.Name != "subbuild_gen_c" {
+		t.Errorf("genrule outs/name = %v/%q; want subbuild/gen.c + subbuild_gen_c", gr.GenruleOuts, gr.Name)
 	}
-	if cc.OutToGenrule["subbuild/sub_config.h"] != wf.Name || cc.OutToGenrule["subbuild/gen.c"] != gr.Name {
-		t.Errorf("outer producer map = %v; want re-homed outs registered", cc.OutToGenrule)
+	if nestedPkg.Targets[3].GenruleOuts[0] != "rewritten.c" || nestedPkg.Targets[3].Name != "rewrite_rewritten_c" {
+		t.Errorf("source-tree producer mutated: %+v", nestedPkg.Targets[3])
+	}
+	if nestedPkg.Targets[4].GenruleOuts[0] != "never_built.c" {
+		t.Errorf("phantom producer mutated: %+v", nestedPkg.Targets[4])
 	}
 }

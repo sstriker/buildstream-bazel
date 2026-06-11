@@ -60,13 +60,21 @@ grep -qF 'name = "sublib"' "$build" || fail "nested target not merged into the o
 grep -qF '"sub/sub.c"' "$build" || fail "nested target's srcs not re-anchored at the outer root"
 grep -qF '"cmake-codegen-nested-cmake"' "$build" || fail "nested-cmake audit tag missing on the merged target"
 grep -qF 'deps = [":sublib"]' "$build" || fail "nested archive link fragment not wired to the merged target's label"
-grep -qF 'out = "subbuild/sub_config.h"' "$build" || fail "nested configure-generated header not baked"
-# The bake arrives via the nested lowering's generic build-dir bake,
-# re-homed under subbuild/ by the merge (cmake-codegen-nested-cmake-bake
-# remains the fallback channel for headers only OUTER targets consume).
-grep -qF '"cmake-codegen-build-dir-bake"' "$build" || fail "build-dir bake audit facet missing on the re-homed bake"
-grep -qF '"subbuild/sub_config.h",' "$build" || fail "baked header not attributed to the outer consumer"
-grep -qF 'hdrs = ["subbuild/sub_config.h"]' "$build" || fail "baked header not attached to the nested consumer's hdrs (sub.c's include would be undeclared)"
+grep -qF 'out = "subbuild/sub_config.h"' "$build" || fail "nested configure-generated header not recovered"
+# The driver's traced re-configure of the nested dir hands the nested
+# lowering a real trace, so the header recovers via the NATIVE
+# configure_file channel (not the trace-less build-dir-bake fallback,
+# and not the cmake-codegen-nested-cmake-bake last resort for headers
+# only OUTER targets consume), re-homed under subbuild/ by the merge.
+grep -qF '"cmake-codegen-configure-file"' "$build" || fail "configure_file recovery facet missing — the nested trace didn't reach the nested lowering"
+grep -qF '"subbuild/sub_config.h",' "$build" || fail "recovered header not attributed to the outer consumer"
+grep -qF 'hdrs = ["subbuild/sub_config.h"]' "$build" || fail "recovered header not attached to the nested consumer's hdrs (sub.c's include would be undeclared)"
+# The nested execute_process codegen (cmake -E copy) is liftable ONLY
+# from the nested trace; assert the cp genrule landed with the
+# label-root-anchored template src and wired into the nested lib.
+grep -qF '"cmake-codegen-execute-process-op=copy"' "$build" || fail "nested execute_process codegen not lifted (trace didn't drive the exec recovery)"
+grep -qF '$(location sub/sub_extra.c.in)' "$build" || fail "nested cp genrule's template not re-anchored at the label root"
+grep -qF '"subbuild/sub_extra.c",' "$build" || fail "lifted codegen output not wired into the nested consumer's srcs"
 grep -q 'unsupported-execute-process' "$work_dir/convert.stderr" \
     && fail "nested cmake calls still refuse (the lift should cover both)"
 
@@ -94,7 +102,7 @@ fi
 ws="$work_dir/ws"
 mkdir -p "$ws/sub"
 cp "$fixture"/main.c "$ws/"
-cp "$fixture"/sub/sub.c "$ws/sub/"
+cp "$fixture"/sub/sub.c "$fixture"/sub/sub_extra.c.in "$ws/sub/"
 cp "$build" "$ws/BUILD.bazel"
 cat > "$ws/MODULE.bazel" <<'EOF'
 module(name = "nestedcmake", version = "0.0.0")

@@ -125,6 +125,13 @@ type NestedBuildInput struct {
 	Reply        *fileapi.Reply
 	Graph        *ninja.Graph
 	HostBuildDir string
+	// TraceRaw is the nested configure's own --trace-expand capture
+	// (the driver's traced re-configure of the nested build dir;
+	// see runNestedTraceReconfigure). Nil when the traced re-run
+	// failed or was skipped — the nested lowering then runs
+	// trace-less, recovering consumable outputs via the generic
+	// on-disk bakes only.
+	TraceRaw []byte
 }
 
 // recoverNestedCMakeCall dispatches one BucketNestedCMake call inside
@@ -207,10 +214,14 @@ func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSr
 // nested package's labels anchor at the OUTER label root via
 // ElementSourceRoot (the cuda-samples overlay machinery), so merged
 // targets' srcs/hdrs resolve in the outer BUILD without re-anchoring.
-// The nested build has no trace (we can't inject argv into the
-// project's own cmake call), so trace-driven recoveries inside are
-// skipped — the codemodel carries the targets, sources, flags, and
-// artifacts, which is the lift's substance.
+// We can't inject trace argv into the project's own cmake call, but
+// the driver's traced re-configure of the nested dir captures an
+// equivalent trace (nb.TraceRaw) — when present, the FULL trace-driven
+// recovery ladder runs inside the nested lowering (configure_file
+// lifts, execute_process classification, stamp vars) exactly as it
+// does for the outer project. Nil TraceRaw degrades to the trace-less
+// lowering: the codemodel still carries targets, sources, flags, and
+// artifacts, and the generic on-disk bakes cover consumable outputs.
 func lowerOneNestedBuild(nb NestedBuildInput, opts Options, hostSrc string) (*ir.Package, error) {
 	// resolveElementSourceRoot requires an absolute root; a relative
 	// --source-root (CI scripts, ad-hoc runs) reaches here verbatim, so
@@ -229,6 +240,7 @@ func lowerOneNestedBuild(nb NestedBuildInput, opts Options, hostSrc string) (*ir
 		HostSourceRoot:    nb.SrcDir,
 		ElementSourceRoot: rootAbs,
 		BuildDir:          nb.HostBuildDir,
+		TraceRaw:          nb.TraceRaw,
 		Imports:           opts.Imports,
 		BazelPackagePath:  opts.BazelPackagePath,
 		CMakeVars:         opts.CMakeVars,
@@ -247,13 +259,14 @@ func lowerOneNestedBuild(nb NestedBuildInput, opts Options, hostSrc string) (*ir
 // `:<name>` in cc.NestedArtifactDeps so outer link fragments naming the
 // nested archive wire to the real label.
 func mergeNestedPackage(pkg *ir.Package, nestedPkg *ir.Package, nb NestedBuildInput, cc *codegenContext, opts Options, hostSrc string) {
-	rehome := nestedBakeReHomes(nestedPkg, nb)
+	rehome := nestedProducerReHomes(nestedPkg, nb, hostSrc)
+	namePrefix := sanitizeOutputName(nb.BuildRel)
 	present := map[string]bool{}
 	for _, t := range pkg.Targets {
 		present[t.Name] = true
 	}
 	for _, t := range nestedPkg.Targets {
-		applyNestedBakeReHome(&t, rehome, cc)
+		applyNestedProducerReHome(&t, rehome, namePrefix)
 		if present[t.Name] {
 			fmt.Fprintf(warningsOrDiscard(opts.Warnings),
 				"lower: nested cmake build %s: target %q collides with an outer target; keeping the outer one\n", nb.BuildRel, t.Name)
@@ -293,6 +306,13 @@ func mergeNestedPackage(pkg *ir.Package, nestedPkg *ir.Package, nb NestedBuildIn
 		}
 		pkg.Targets = append(pkg.Targets, t)
 		present[t.Name] = true
+		// Register an APPENDED producer's outs in the OUTER producer
+		// map (collision-skipped rules must not register a dangling
+		// name): bakeNestedGeneratedHeaders defers to these instead
+		// of duplicating, and later outer recoveries see the edge.
+		for _, out := range producerOuts(&t) {
+			cc.OutToGenrule[out] = t.Name
+		}
 		if t.ArtifactName != "" {
 			cc.NestedArtifactDeps[nb.BuildRel+"/"+filepath.ToSlash(t.ArtifactName)] = ":" + t.Name
 		}
@@ -309,50 +329,71 @@ func mergeNestedPackage(pkg *ir.Package, nestedPkg *ir.Package, nb NestedBuildIn
 	}
 }
 
-// nestedBakeReHomes maps the nested lowering's own build-dir bake outs
-// (tag cmake-codegen-build-dir-bake — the generic on-disk bake for
-// configure-written files, which inside the nested lowering anchors
-// rels at the NESTED build root) to their outer-package homes: in the
-// outer BUILD the bytes live under <buildRel>/, not the package root.
-func nestedBakeReHomes(nestedPkg *ir.Package, nb NestedBuildInput) map[string]string {
+// nestedProducerReHomes maps the nested lowering's producer-rule outs
+// (write_file / genrule — build-dir bakes, configure_file recoveries,
+// execute_process lifts, custom-command genrules) to their outer-
+// package homes. Inside the nested lowering a BUILD-dir out anchors at
+// the NESTED build root ("sub_config.h"), which in the outer BUILD
+// would materialize at the package root instead of under <buildRel>/.
+// A genrule out can also be SOURCE-relative (the in-place-rewrite
+// shape rewrites a committed source) — those already anchor correctly
+// under ElementSourceRoot, so on-disk existence is the discriminator,
+// the same tie-break the include re-homing uses: present under the
+// outer source root → source out, stays; present under the nested
+// build dir → re-homes. Present under neither (an unbuilt nested
+// custom-command out) conservatively stays.
+func nestedProducerReHomes(nestedPkg *ir.Package, nb NestedBuildInput, hostSrc string) map[string]string {
 	rehome := map[string]string{}
 	for i := range nestedPkg.Targets {
 		t := &nestedPkg.Targets[i]
-		if !stringSliceContains(t.Tags, "cmake-codegen-build-dir-bake") {
-			continue
-		}
-		if t.WriteFileOut != "" {
-			rehome[t.WriteFileOut] = nb.BuildRel + "/" + t.WriteFileOut
-		}
-		for _, out := range t.GenruleOuts {
-			rehome[out] = nb.BuildRel + "/" + out
+		for _, out := range producerOuts(t) {
+			if isExistingFile(filepath.Join(hostSrc, filepath.FromSlash(out))) {
+				continue
+			}
+			if isExistingFile(filepath.Join(nb.HostBuildDir, filepath.FromSlash(out))) {
+				rehome[out] = nb.BuildRel + "/" + out
+			}
 		}
 	}
 	return rehome
 }
 
-// applyNestedBakeReHome re-anchors one merged target against the nested
-// bake re-homes: a bake rule's out (and name — two nested builds baking
-// the same rel must not collide in the outer package) gains the
-// <buildRel>/ prefix and registers in the OUTER producer map (so
-// bakeNestedGeneratedHeaders defers to it instead of duplicating); any
-// other target's srcs/hdrs entries pointing at a re-homed rel re-point.
-func applyNestedBakeReHome(t *ir.Target, rehome map[string]string, cc *codegenContext) {
+// producerOuts lists a producer rule's output paths; empty for
+// non-producer kinds.
+func producerOuts(t *ir.Target) []string {
+	switch t.Kind {
+	case ir.KindWriteFile:
+		return []string{t.WriteFileOut}
+	case ir.KindGenrule:
+		return t.GenruleOuts
+	}
+	return nil
+}
+
+// applyNestedProducerReHome re-anchors one merged target against the
+// re-homes: a producer rule's outs gain the <buildRel>/ prefix and the
+// rule renames (two nested builds recovering the same-named rule must
+// not collide in the outer package); any other target's srcs/hdrs
+// entries pointing at a re-homed rel re-point. namePrefix is the
+// sanitized buildRel.
+func applyNestedProducerReHome(t *ir.Target, rehome map[string]string, namePrefix string) {
 	if len(rehome) == 0 {
 		return
 	}
-	if stringSliceContains(t.Tags, "cmake-codegen-build-dir-bake") {
+	if t.Kind == ir.KindWriteFile || t.Kind == ir.KindGenrule {
+		renamed := false
 		if newRel, ok := rehome[t.WriteFileOut]; ok {
 			t.WriteFileOut = newRel
-			t.Name = bakedBuildDirName(newRel)
-			cc.OutToGenrule[newRel] = t.Name
+			renamed = true
 		}
 		for i, out := range t.GenruleOuts {
 			if newRel, ok := rehome[out]; ok {
 				t.GenruleOuts[i] = newRel
-				t.Name = bakedBuildDirName(newRel)
-				cc.OutToGenrule[newRel] = t.Name
+				renamed = true
 			}
+		}
+		if renamed {
+			t.Name = nestedProducerName(t, namePrefix)
 		}
 		return
 	}
@@ -366,6 +407,26 @@ func applyNestedBakeReHome(t *ir.Target, rehome map[string]string, cc *codegenCo
 			t.Hdrs[i] = newRel
 		}
 	}
+}
+
+// nestedProducerName names a re-homed producer: build-dir bakes keep
+// their canonical shape (bakedBuildDirName over the re-homed rel,
+// which already encodes the buildRel); every other producer prefixes
+// the sanitized buildRel onto its nested name.
+func nestedProducerName(t *ir.Target, namePrefix string) string {
+	if stringSliceContains(t.Tags, "cmake-codegen-build-dir-bake") {
+		outs := producerOuts(t)
+		if len(outs) > 0 {
+			return bakedBuildDirName(outs[0])
+		}
+	}
+	return namePrefix + "_" + t.Name
+}
+
+// isExistingFile reports whether p exists and is a regular file.
+func isExistingFile(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.Mode().IsRegular()
 }
 
 // bakeNestedGeneratedHeaders bakes the nested build dir's
