@@ -1593,11 +1593,11 @@ func liftCMakeEConfigureFile(args []string, anc execAnchors, liftEnabled bool, c
 	templatePath := filepath.Join(anc.hostSrcDir, srcRel)
 	template, terr := os.ReadFile(templatePath)
 	if terr != nil {
-		return nil, fmt.Sprintf("cmake -E configure_file: template %q is unreadable (%v) — the configured output can't be recovered", srcRel, terr), false
+		return nil, fmt.Sprintf("cmake -E configure_file: template %q is unreadable — the configured output can't be recovered", srcRel), false
 	}
 	rendered, rerr := os.ReadFile(filepath.Join(anc.hostBuildDir, dstRel))
 	if rerr != nil {
-		return nil, fmt.Sprintf("cmake -E configure_file: rendered output %q is unreadable (%v) — the configured bytes can't be recovered", dstRel, rerr), false
+		return nil, fmt.Sprintf("cmake -E configure_file: rendered output %q is unreadable — the configured bytes can't be recovered", dstRel), false
 	}
 
 	// Same-path mirror — parity with configure_file's copyOnlySourceMirror.
