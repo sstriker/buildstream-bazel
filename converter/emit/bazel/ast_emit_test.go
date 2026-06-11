@@ -231,9 +231,11 @@ func TestASTEmit_WriteFile(t *testing.T) {
 		// the byte-identity guard.
 		{Kind: ir.KindWriteFile, Name: "w", WriteFileOut: "out.h", WriteFileContent: []string{"#define B 2", "#define A 1"}},
 		{Kind: ir.KindWriteFile, Name: "w", WriteFileOut: "o.h", WriteFileContent: []string{"line"}, WriteFileNewline: "auto", Tags: []string{"manual"}},
-		// per-config select body
-		{Kind: ir.KindWriteFile, Name: "w", WriteFileOut: "o.h", WriteFileContent: []string{"#define D 0"},
-			WriteFileContentByConfig: map[string][]string{"//config:dbg": {"#define D 1"}}},
+		// per-config select body — multi-line NON-alphabetical content in both
+		// the default body and the config arm, so an accidental sort in either
+		// the flat path or selectListExpr's arm path changes bytes.
+		{Kind: ir.KindWriteFile, Name: "w", WriteFileOut: "o.h", WriteFileContent: []string{"#define Z 0", "#define A 0"},
+			WriteFileContentByConfig: map[string][]string{"//config:dbg": {"#define Z 1", "#define A 1"}}},
 	}
 	for i, tc := range cases {
 		tc := tc
