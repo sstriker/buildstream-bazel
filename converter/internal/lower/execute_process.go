@@ -225,6 +225,14 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 				continue
 			}
 			collect(rels)
+		case BucketNestedCMake:
+			// Nested cmake configure/build (the superbuild-at-configure
+			// idiom): record the (src, build) pair for the driver's warm
+			// second pass; the lift happens there (lowerNestedBuilds).
+			// See nested_cmake.go.
+			if ref := recoverNestedCMakeCall(call, anc, cc); ref != nil {
+				unsupported = append(unsupported, *ref)
+			}
 		default:
 			// Argv-declared codegen rescue before the probe/stamp/refusal
 			// dispatch: `tool <in…> <out…>` with the files in the argv lifts

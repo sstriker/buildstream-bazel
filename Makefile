@@ -357,6 +357,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-defer-execute-process.sh \
 	scripts/meta-cmake-execute-process-argv-codegen.sh \
 	scripts/meta-cmake-execute-process-unspecified-outs.sh \
+	scripts/meta-cmake-nested-cmake.sh \
 	scripts/meta-cmake-cc-hash.sh \
 	scripts/meta-cmake-todos-coverage.sh \
 	scripts/meta-intent-capture-lens.sh \

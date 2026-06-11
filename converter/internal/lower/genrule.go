@@ -102,6 +102,18 @@ type codegenContext struct {
 	ConsumedBuildRel map[string]bool
 	NinjaOuts        map[string]bool
 
+	// Nested-cmake lift state (see nested_cmake.go). NestedConfigureSink
+	// maps each detected nested build dir (outer-build-relative) to its
+	// trace-recorded source dir; recoverExecuteProcess fills it, the
+	// driver stages File API queries there for the warm second pass.
+	// NestedArtifactDeps maps `<nestedBuildRel>/<artifact>` to the merged
+	// nested target's label so outer link fragments naming the nested
+	// archive wire to it. NestedLifted records the builds the second pass
+	// actually merged, gating the not-lifted warning/todo.
+	NestedConfigureSink map[string]string
+	NestedArtifactDeps  map[string]string
+	NestedLifted        map[string]bool
+
 	// HeaderWalkCache memoizes filesystem walks of include directories
 	// across targets within one lower-element invocation. Keyed on the
 	// absolute include-dir path; value is the package-relative header
@@ -313,6 +325,9 @@ func newCodegenContext() *codegenContext {
 		MissingIncludeDirs:    map[string]bool{},
 		FilteredInternalCmds:  map[string]string{},
 		SubParent:             map[string]string{},
+		NestedConfigureSink:   map[string]string{},
+		NestedArtifactDeps:    map[string]string{},
+		NestedLifted:          map[string]bool{},
 	}
 }
 

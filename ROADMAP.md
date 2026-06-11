@@ -676,7 +676,20 @@ trees, optional-feature deps, codegen instances). Each member's
   linkage via directory-operand containment (enumerated outs, re-run with
   the operand → `$(RULEDIR)/<dir>`) or derived-name correlation (bake
   tier); single-claim ambiguity rule, declines stay loud refusals; gate
-  `meta-cmake-execute-process-unspecified-outs.sh`. Remaining deferred
+  `meta-cmake-execute-process-unspecified-outs.sh`. NESTED cmake builds
+  (the superbuild-at-configure idiom: `execute_process(${CMAKE_COMMAND}
+  -S … -B …)` + `cmake --build`) also LIFT now — pass 1 detects the
+  (src, build) pair, a warm second pass stages File API queries into the
+  nested build dir and re-configures, and the nested reply lowers
+  recursively (labels anchored at the outer root) and merges: nested
+  targets land in the outer BUILD, archive link fragments wire to their
+  labels, and nested configure-generated headers bake; gate
+  `meta-cmake-nested-cmake.sh`. Documented residues: no nested TRACE (we
+  can't inject argv into the project's own cmake call), so the nested
+  configure_file ladder degrades to the header bake; not-lifted nested
+  builds (offline runs, `--two-pass-genex=false`) surface as a warning +
+  `nested-cmake-not-lifted` todo instead of the historical Tier-1 abort;
+  doubly-nested builds warn from the inner lowering. Remaining deferred
   variant: a bake fallback for non-PATH-portable tools on the
   argv-declared shape (capture the configure's bytes via bakeFileTarget
   instead of re-running). Assessed mechanical cost ordering when a fixture lands:

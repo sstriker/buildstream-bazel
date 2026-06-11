@@ -51,6 +51,20 @@ const (
 	// them rather than guessing at the right platform mapping.
 	BucketProbe Bucket = "probe"
 
+	// BucketNestedCMake marks a configure-time NESTED cmake build —
+	// `${CMAKE_COMMAND} -S <src> -B <build>` (configure), `cmake
+	// --build <build>`, or `cmake --install <build>` — the
+	// superbuild-at-configure idiom: the outer configure bootstraps a
+	// sub-project whose artifacts the outer targets then consume.
+	// RESULT_VARIABLE capture is allowed (exit-status-as-answer, the
+	// idiom's standard error check). The lift is a dedicated warm
+	// second pass: stage File API queries into the nested build dir,
+	// re-configure (the execute_process re-runs and the nested cmake
+	// writes a codemodel reply), then recursively lower the nested
+	// reply and merge its targets into the outer package — see
+	// lowerNestedBuilds.
+	BucketNestedCMake Bucket = "nested-cmake"
+
 	// BucketRefuse is the typed-refusal bucket: calls whose
 	// shape is recognized as unliftable for a specific reason
 	// (multi-COMMAND pipeline, malformed argv, unsupported
@@ -599,6 +613,14 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	// captured) lift to the same shapes as their `cmake -E` analogs or
 	// skip benignly.
 	if res, ok := classifyRawPosixDriver(driver, call); ok {
+		return res
+	}
+
+	// Nested cmake configure / build / install (the
+	// superbuild-at-configure idiom). Recognized before the
+	// stamp/probe driver gates so the RESULT_VARIABLE error-check
+	// shape doesn't fall into the unrecognized-probe refusal.
+	if res, ok := classifyNestedCMake(driver, call); ok {
 		return res
 	}
 
