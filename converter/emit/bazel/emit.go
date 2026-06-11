@@ -490,19 +490,62 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	emitCommonCoptsLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
 
-	for i, t := range pkg.Targets {
-		if i > 0 {
-			buf.WriteString("\n")
-		}
-		if err := emitTarget(&buf, t, opts); err != nil {
-			return nil, err
-		}
-	}
 	var trailing map[string]string
 	if opts.EmitSourceComments {
 		trailing = trailingCommentMap(pkg)
 	}
-	return canonicalize(buf.Bytes(), trailing)
+	// Assemble the BUILD as a buildtools AST File rather than parsing one
+	// concatenated text blob: the prelude (header comments + loads + package)
+	// is parsed once, then each target is appended as statement(s) — AST-built
+	// where a kind has an AST emitter, else parsed from its own text snippet
+	// (the in-progress text->AST migration; see ROADMAP "AST-direct BUILD
+	// emit"). formatFile then canonicalizes the assembled File (addKeepMarkers
+	// + addTrailingComments + build.Format), byte-identical to feeding
+	// buildifier the concatenated text — but AST-built targets skip the
+	// build.Parse that dominated emit profiling. Splitting the parse per
+	// statement lexes the same total bytes as one whole-file parse, so it's
+	// not a regression while kinds are still on the text path.
+	file, err := build.Parse("BUILD.bazel", buf.Bytes())
+	if err != nil {
+		return nil, failure.New(failure.BazelCanonicalizeFailed,
+			"bazel.canonicalize: prelude emitted unparseable BUILD bytes: %v\n%s", err, buf.Bytes())
+	}
+	for _, t := range pkg.Targets {
+		stmts, err := targetStmts(t, opts)
+		if err != nil {
+			return nil, err
+		}
+		file.Stmt = append(file.Stmt, stmts...)
+	}
+	return formatFile(file, trailing), nil
+}
+
+// targetStmts returns one target's BUILD statement(s) for the assembled File.
+// During the text->AST migration this emits the target's text (leading
+// comment + provenance + rule body) and parses it back; a kind with a native
+// AST emitter returns its CallExpr directly and skips the parse. Multiple
+// statements are possible (a cc target with a SharedLibName companion).
+func targetStmts(t ir.Target, opts Options) ([]build.Expr, error) {
+	var buf bytes.Buffer
+	if err := emitTarget(&buf, t, opts); err != nil {
+		return nil, err
+	}
+	f, err := build.Parse("BUILD.bazel", buf.Bytes())
+	if err != nil {
+		return nil, failure.New(failure.BazelCanonicalizeFailed,
+			"bazel.canonicalize: target %q emitted unparseable BUILD bytes: %v\n%s", t.Name, err, buf.Bytes())
+	}
+	return f.Stmt, nil
+}
+
+// formatFile canonicalizes an assembled BUILD AST: keep-markers + recovered
+// trailing comments, then build.Format (the buildifier formatter). The shared
+// tail of both the assembled-File path (EmitWithOptions) and the
+// parse-a-text-blob path (canonicalize).
+func formatFile(f *build.File, trailing map[string]string) []byte {
+	addKeepMarkers(f)
+	addTrailingComments(f, trailing)
+	return build.Format(f)
 }
 
 // emitTarget writes one target's rendered rule to buf: its recovered leading
@@ -632,9 +675,7 @@ func canonicalize(body []byte, trailing map[string]string) ([]byte, error) {
 		return nil, failure.New(failure.BazelCanonicalizeFailed,
 			"bazel.canonicalize: template emitted unparseable BUILD bytes: %v\n%s", err, body)
 	}
-	addKeepMarkers(f)
-	addTrailingComments(f, trailing)
-	return build.Format(f), nil
+	return formatFile(f, trailing), nil
 }
 
 // addTrailingComments attaches each rule's recovered trailing author comment
