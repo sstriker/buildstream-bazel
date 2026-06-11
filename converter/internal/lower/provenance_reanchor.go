@@ -146,9 +146,14 @@ func isInclusionCommand(cmd string) bool {
 //  3. inside cmakeSrc's parent (common for `third-party/`
 //     directories one level up from cmakeSrc) → relative
 //     anchored there.
-//  4. otherwise → leave the absolute path untouched. The
-//     comment is still informational; operators see the
-//     out-of-tree origin verbatim.
+//  4. otherwise → leave the absolute path untouched in the IR.
+//     The EMITTER drops provenance lines that remain absolute
+//     (emit/bazel's provenanceEmittable): there is no workspace
+//     location for the operator to inspect, and the raw host
+//     path in the BUILD bytes is the byte-identical-emit hazard
+//     named above. Keeping the path in the IR (rather than
+//     zeroing here) preserves it for convert-time consumers —
+//     diagnostics and comment recovery read real host paths.
 //
 // Already-relative paths pass through unchanged.
 func reanchorProvenanceFile(file, cmakeSrc, cmakeBuild string) string {
