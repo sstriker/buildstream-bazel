@@ -125,3 +125,27 @@ func TestASTEmitSpike_MixedAssembly(t *testing.T) {
 		t.Errorf("mixed assembly differs from whole-file parse (incremental migration NOT byte-identical):\n--- want ---\n%s\n--- got ---\n%s", want, got)
 	}
 }
+
+// Comment-boundary spike: today leading/provenance comments are emitted as
+// text ABOVE each rule. When a rule is AST-built, those comments must attach
+// to the CallExpr as Before-comments and Format identically. Proves the
+// comment handling survives the text->AST seam.
+func TestASTEmitSpike_LeadingComments(t *testing.T) {
+	withComment := "# gen: cmake add_library(foo)\n# elements/foo:3\n" + ccLibraryText
+	ref, err := build.Parse("BUILD.bazel", []byte(withComment))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	want := build.Format(ref)
+
+	astFile := buildCcLibraryAST()
+	call := astFile.Stmt[0].(*build.CallExpr)
+	call.Comments.Before = []build.Comment{
+		{Token: "# gen: cmake add_library(foo)"},
+		{Token: "# elements/foo:3"},
+	}
+	got := build.Format(astFile)
+	if string(got) != string(want) {
+		t.Errorf("AST Before-comments differ from text leading comments:\n--- want ---\n%s\n--- got ---\n%s", want, got)
+	}
+}
