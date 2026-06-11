@@ -176,6 +176,13 @@ func (c pchLiftCtx) apply(artifacts []string, cg fileapi.CompileGroup,
 			// No declared list recoverable (orphan artifact): drop the
 			// raw build-dir pair — emitting a convert-time path would
 			// never resolve — and leave the tag below as the audit trail.
+			// FOLLOW-UP (per #585 review): once #582's
+			// UnresolvedRecoveryInputs channel lands, route this drop
+			// through cc.noteUnresolvedRecoveryInput (a
+			// pch-list-unrecoverable kind, build-relative artifact as the
+			// Ref) so the lost-PCH case is distinguishable from a
+			// successful mirror, which carries the same tag. No corpus
+			// member produces the shape today.
 			continue
 		}
 		mirrorRel, hdrsToStage := c.ensureMirror(owner, cg.Language, "", entries)
