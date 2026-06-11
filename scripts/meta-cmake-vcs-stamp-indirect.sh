@@ -61,7 +61,7 @@ make converter >/dev/null
 
 # The warm second --trace pass must actually have run (else the lift would
 # be vacuous — pass 1 alone can't see the set() copy).
-if ! grep -q 'second configure (non-expanded trace)' "$work_dir/convert.stderr"; then
+if ! grep -q 'warm second configure for:.*VCS-stamp' "$work_dir/convert.stderr"; then
   echo "FAIL: the warm second --trace pass did not run; the indirection lift would be vacuous"
   sed 's/^/   stderr: /' "$work_dir/convert.stderr"
   exit 1

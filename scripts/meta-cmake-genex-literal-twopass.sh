@@ -72,8 +72,8 @@ out_on="$work_dir/BUILD.on"
     exit 1
 }
 
-if ! grep -q 'warm second configure pass' "$work_dir/on.stderr"; then
-    echo "FAIL: expected the warm second configure pass to announce itself on stderr"
+if ! grep -q 'warm second configure for:.*genex literal' "$work_dir/on.stderr"; then
+    echo "FAIL: expected the warm second configure pass to announce the genex-literal demand on stderr"
     echo "   (pass 1 should have recorded the unresolved \$<TARGET_PROPERTY:app,APP_GENDIR>)"
     sed 's/^/   stderr: /' "$work_dir/on.stderr"
     exit 1

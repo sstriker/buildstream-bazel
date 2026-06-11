@@ -624,116 +624,101 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	// re-lifts keeps the genex resolutions in the final result.
 	var genexResolutions map[string]cmakerun.LiteralResolution
 
-	// Pass 2 (conditional, warm): if the first pass left unresolved
-	// literals AND we have a live build dir to reconfigure, run a
-	// second cmake configure against the SAME build dir injecting a
-	// file(GENERATE) literal-probe hook, read the resolved bytes
-	// back, and re-lift with them. Skipped when nothing was
-	// unresolved (the common case → zero overhead), when the
-	// operator opted out (--two-pass-genex=false), or in the offline
-	// --reply-dir / --cmake-build-dir paths (no live build dir).
-	if a.TwoPassGenex && hostBuildDir != "" && literalSink.Len() > 0 {
-		reqs := literalSink.Requests()
-		fmt.Fprintf(os.Stderr, "convert-element-cmake: %d unresolved genex literal(s) after pass 1; running warm second configure pass to resolve them.\n", len(reqs))
-		if _, cfgErr := cmakerun.Configure(ctx, cmakerun.Options{
-			SourceRoot:         a.SourceRoot,
-			BuildDir:           hostBuildDir,
-			PrefixDir:          a.PrefixDir,
-			ToolchainCMakeFile: a.ToolchainCMakeFile,
-			BuildType:          a.BuildType,
-			BuildTypes:         a.BuildTypes,
-			// Inject ONLY the literal-probe hook. No trace, no
-			// structural probe, no dump-vars — those already ran in
-			// pass 1, and adding them (or any cache var) would
-			// disturb the warm cache. Reusing hostBuildDir keeps the
-			// try_compile / find_package results cached, so this pass
-			// costs a small fraction of the first configure.
-			LiteralProbes: reqs,
-			Stdout:        os.Stderr,
-			Stderr:        os.Stderr,
-		}); cfgErr != nil {
-			// A failed second pass is non-fatal: fall back to pass 1's
-			// result (the unresolved literals stay dropped, exactly as
-			// they would without the two-pass feature). Surface the
-			// degradation so it isn't invisible.
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: warm second configure pass failed (%v); keeping pass-1 result with %d literal(s) unresolved.\n", cfgErr, len(reqs))
-		} else if resolutions, readErr := cmakerun.ReadLiteralProbe(hostBuildDir); readErr != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading literal-probe output failed (%v); keeping pass-1 result.\n", readErr)
-		} else if len(resolutions) > 0 {
-			genexResolutions = resolutions
-			pkg2, err2 := runToIR(nil, resolutions, recoveredStampSets, recoveredStampForwards)
-			if err2 != nil {
-				return nil, err2
-			}
-			pkg = pkg2
-		}
+	// Coalesced warm second pass (conditional). Pass 1 can leave up to three
+	// INDEPENDENT recovery demands, each fixed by re-running the WARM outer
+	// configure (try_compile/find_package cached) with its own hook + a
+	// re-lower: unresolved genex literals (a file(GENERATE) literal probe),
+	// VCS-stamp set()-copy indirection (a NON-EXPANDED trace), and
+	// configure-time nested cmake builds (staged File API queries). Rather than
+	// pay a separate configure + full re-lower PER demand (a project hitting all
+	// three reconfigured + re-lowered three times), inject the UNION of hooks
+	// into ONE warm configure and re-lower ONCE. The hooks are orthogonal — the
+	// literal-probe file, the non-expanded trace, and the nested replies are
+	// independent outputs and none invalidates the warm cache. Each demand is
+	// skipped when absent (the common no-demand case → zero overhead), opted out
+	// (--two-pass-genex=false), or offline (no live build dir).
+	warm := a.TwoPassGenex && hostBuildDir != ""
+	needGenex := warm && literalSink.Len() > 0
+	needStamp := warm && len(stampSink) > 0 && len(recoveredStampSets) == 0
+	needNested := warm && len(nestedSink) > 0
+	var nestedRels []string
+	if needNested {
+		var staged int
+		nestedRels, staged = stageNestedFileAPIQueries(hostBuildDir, nestedSink)
+		needNested = staged > 0
 	}
-
-	// Stamp set()-indirection second pass (conditional, warm): if pass 1
-	// found VCS-stamp variables and we have a live build dir, run a second
-	// cmake configure capturing the NON-EXPANDED trace, recover its
-	// `set(X ${Y})` verbatim copies, and re-lift. That lets a
-	// configure_file referencing a COPY of a stamp var — `set(VERSION
-	// ${GIT_SHA})` then `@VERSION@`, the Google-Benchmark shape — re-read
-	// the live revision instead of baking it; the direct-reference case
-	// already lifts in pass 1 without this. Skipped with no stamp vars
-	// (the common case → zero overhead), when opted out, or offline (no
-	// live build dir). A failed pass is non-fatal: keep the pass-1 result
-	// (direct stamp vars only).
-	if a.TwoPassGenex && hostBuildDir != "" && len(stampSink) > 0 && len(recoveredStampSets) == 0 {
-		plainTrace := filepath.Join(hostBuildDir, "trace-plain.jsonl")
-		fmt.Fprintf(os.Stderr, "convert-element-cmake: %d VCS-stamp var(s) after pass 1; running warm second configure (non-expanded trace) to recover set()-copy indirection.\n", len(stampSink))
-		if _, cfgErr := cmakerun.Configure(ctx, cmakerun.Options{
+	if needGenex || needStamp || needNested {
+		opts := cmakerun.Options{
 			SourceRoot:         a.SourceRoot,
 			BuildDir:           hostBuildDir,
 			PrefixDir:          a.PrefixDir,
 			ToolchainCMakeFile: a.ToolchainCMakeFile,
 			BuildType:          a.BuildType,
 			BuildTypes:         a.BuildTypes,
-			// We add NO new hooks or cache vars here — only the
-			// non-expanded trace. (The dump-vars / probe hooks staged in
-			// pass 1 may still re-run via the cached
-			// CMAKE_PROJECT_TOP_LEVEL_INCLUDES, but their build-dir output
-			// paths are filtered out of ExtractSetAssignments by the
-			// sourceRoot gate, so they don't perturb the recovered copies.)
-			// Reusing hostBuildDir keeps try_compile / find_package cached,
-			// so this costs a fraction of the first configure.
-			TracePath:        plainTrace,
-			TraceNonExpanded: true,
-			Stdout:           os.Stderr,
-			Stderr:           os.Stderr,
-		}); cfgErr != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: warm second configure (stamp set-trace) failed (%v); keeping pass-1 result with direct stamp vars only.\n", cfgErr)
-		} else if raw, readErr := os.ReadFile(plainTrace); readErr != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading non-expanded trace failed (%v); keeping pass-1 result.\n", readErr)
+			Stdout:             os.Stderr,
+			Stderr:             os.Stderr,
+		}
+		var plainTrace string
+		var demands []string
+		if needGenex {
+			opts.LiteralProbes = literalSink.Requests()
+			demands = append(demands, fmt.Sprintf("%d unresolved genex literal(s)", literalSink.Len()))
+		}
+		if needStamp {
+			plainTrace = filepath.Join(hostBuildDir, "trace-plain.jsonl")
+			opts.TracePath = plainTrace
+			opts.TraceNonExpanded = true
+			demands = append(demands, fmt.Sprintf("%d VCS-stamp var(s)", len(stampSink)))
+		}
+		if needNested {
+			demands = append(demands, fmt.Sprintf("%d nested cmake build(s)", len(nestedRels)))
+		}
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: warm second configure for: %s.\n", strings.Join(demands, ", "))
+		if _, cfgErr := cmakerun.Configure(ctx, opts); cfgErr != nil {
+			// Non-fatal: keep pass-1's result for every demand (exactly as
+			// without the two-pass feature). The failure is loud, not silent.
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: warm second configure failed (%v); keeping pass-1 result.\n", cfgErr)
 		} else {
-			sets := shadow.ExtractSetAssignments(raw, a.SourceRoot)
-			forwards := shadow.ExtractParentScopeForwards(raw, a.SourceRoot)
-			if len(sets) > 0 || len(forwards) > 0 {
-				pkg3, err3 := runToIR(nil, genexResolutions, sets, forwards)
-				if err3 != nil {
-					return nil, err3
+			recovered := false
+			if needGenex {
+				if resolutions, readErr := cmakerun.ReadLiteralProbe(hostBuildDir); readErr != nil {
+					fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading literal-probe output failed (%v); genex literals stay unresolved.\n", readErr)
+				} else if len(resolutions) > 0 {
+					genexResolutions = resolutions
+					recovered = true
 				}
-				pkg = pkg3
 			}
-		}
-	}
-	// Nested-cmake second pass (conditional, warm): pass 1 detected
-	// configure-time nested cmake builds (the superbuild-at-configure
-	// idiom). Stage File API queries into each nested build dir, re-run
-	// the warm outer configure (the nested cmake re-runs and writes its
-	// codemodel reply), and re-lower with the harvested nested builds so
-	// their targets merge into the outer package. Skipped when nothing
-	// was detected (zero overhead), when opted out, or offline. Failures
-	// degrade to the loud not-lifted warning + structured todo.
-	if a.TwoPassGenex && hostBuildDir != "" && len(nestedSink) > 0 {
-		if nbs := runNestedCMakePass(ctx, a, hostBuildDir, nestedSink); len(nbs) > 0 {
-			nestedBuilds = nbs
-			pkgN, errN := runToIR(nil, genexResolutions, recoveredStampSets, recoveredStampForwards)
-			if errN != nil {
-				return nil, errN
+			// Stamp sets: the freshly recovered non-expanded-trace copies when
+			// the stamp demand fired, else the pass-1-abort recovery's copies
+			// (mutually exclusive: needStamp requires recoveredStampSets empty).
+			setsToUse := recoveredStampSets
+			forwardsToUse := recoveredStampForwards
+			if needStamp {
+				if raw, readErr := os.ReadFile(plainTrace); readErr != nil {
+					fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading non-expanded trace failed (%v); keeping direct stamp vars only.\n", readErr)
+				} else {
+					sets := shadow.ExtractSetAssignments(raw, a.SourceRoot)
+					forwards := shadow.ExtractParentScopeForwards(raw, a.SourceRoot)
+					if len(sets) > 0 || len(forwards) > 0 {
+						setsToUse = sets
+						forwardsToUse = forwards
+						recovered = true
+					}
+				}
 			}
-			pkg = pkgN
+			if needNested {
+				if nbs := harvestNestedBuilds(ctx, a, hostBuildDir, nestedRels, nestedSink); len(nbs) > 0 {
+					nestedBuilds = nbs
+					recovered = true
+				}
+			}
+			if recovered {
+				pkg2, err2 := runToIR(nil, genexResolutions, setsToUse, forwardsToUse)
+				if err2 != nil {
+					return nil, err2
+				}
+				pkg = pkg2
+			}
 		}
 	}
 

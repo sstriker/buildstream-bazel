@@ -14,20 +14,18 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 )
 
-// runNestedCMakePass is the nested-cmake warm second pass (see
-// lower/nested_cmake.go for the full design): stage File API queries
-// into each nested build dir pass 1 detected, re-run the WARM outer
-// configure (execute_process re-runs the nested cmake, which now writes
-// a codemodel reply), and harvest each nested reply + ninja graph for
-// the merge re-lower. Failures degrade to nil — the not-lifted warning
-// + structured todo stay loud in the final pass.
-func runNestedCMakePass(ctx context.Context, a cli.Args, hostBuildDir string, sink map[string]string) []lower.NestedBuildInput {
-	rels := make([]string, 0, len(sink))
+// stageNestedFileAPIQueries stages File API query files into each nested build
+// dir pass 1 detected, so the WARM outer reconfigure (the coalesced warm second
+// pass in runLowerPasses) makes the nested cmake write a codemodel reply.
+// Returns every nested rel (sorted) plus how many were actually staged; the
+// caller skips the warm pass's nested half when staged == 0. The reconfigure
+// itself is NOT run here — it's shared with the genex/stamp demands.
+func stageNestedFileAPIQueries(hostBuildDir string, sink map[string]string) (rels []string, staged int) {
+	rels = make([]string, 0, len(sink))
 	for rel := range sink {
 		rels = append(rels, rel)
 	}
 	sort.Strings(rels)
-	staged := 0
 	for _, rel := range rels {
 		nb := filepath.Join(hostBuildDir, filepath.FromSlash(rel))
 		if st, err := os.Stat(nb); err != nil || !st.IsDir() {
@@ -40,26 +38,16 @@ func runNestedCMakePass(ctx context.Context, a cli.Args, hostBuildDir string, si
 		}
 		staged++
 	}
-	if staged == 0 {
-		return nil
-	}
-	fmt.Fprintf(os.Stderr, "convert-element-cmake: %d nested cmake build(s) detected; running warm second configure pass to capture their File API replies.\n", staged)
-	// Warm outer reconfigure with NO extra hooks (same discipline as the
-	// stamp second pass): the nested execute_process re-runs, and the
-	// nested cmake sees the staged queries.
-	if _, cfgErr := cmakerun.Configure(ctx, cmakerun.Options{
-		SourceRoot:         a.SourceRoot,
-		BuildDir:           hostBuildDir,
-		PrefixDir:          a.PrefixDir,
-		ToolchainCMakeFile: a.ToolchainCMakeFile,
-		BuildType:          a.BuildType,
-		BuildTypes:         a.BuildTypes,
-		Stdout:             os.Stderr,
-		Stderr:             os.Stderr,
-	}); cfgErr != nil {
-		fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: warm second configure (nested cmake) failed (%v); nested builds stay unlifted.\n", cfgErr)
-		return nil
-	}
+	return rels, staged
+}
+
+// harvestNestedBuilds reads each nested build's File API reply + ninja graph
+// (after the shared warm reconfigure ran the nested cmake) and assembles the
+// NestedBuildInput merge inputs, recursing into superbuild grandchildren. The
+// shared outer reconfigure has already happened; this is the post-configure
+// half of the old runNestedCMakePass. Failures degrade to nil/skip — the
+// not-lifted warning + structured todo stay loud in the final pass.
+func harvestNestedBuilds(ctx context.Context, a cli.Args, hostBuildDir string, rels []string, sink map[string]string) []lower.NestedBuildInput {
 	// Cycle guard for the superbuild-chain worklist below: canonical
 	// build dirs already claimed by a lift (the outer dir + every
 	// harvested nested dir). A chain that re-configures an
