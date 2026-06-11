@@ -526,6 +526,13 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 // AST emitter returns its CallExpr directly and skips the parse. Multiple
 // statements are possible (a cc target with a SharedLibName companion).
 func targetStmts(t ir.Target, opts Options) ([]build.Expr, error) {
+	// AST-native kinds build their CallExpr directly and skip the parse; the
+	// leading/provenance comments (emitted as text on the fallback path) attach
+	// as Before-comments here.
+	if call, ok := astTargetCall(t); ok {
+		call.Comments.Before = append(leadingCommentTokens(t, opts), call.Comments.Before...)
+		return []build.Expr{call}, nil
+	}
 	var buf bytes.Buffer
 	if err := emitTarget(&buf, t, opts); err != nil {
 		return nil, err
