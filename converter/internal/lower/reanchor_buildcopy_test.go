@@ -26,7 +26,7 @@ func TestReanchorBuildDirCopyGenrule(t *testing.T) {
 	}
 	outs := []string{"gens/src/proto/x.pb.cc", "gens/src/proto/x.pb.h"}
 
-	cmd, kept, tools := reanchorBuildDirCopyGenrule(raw, rewritten, srcs, outs, "", "/b", "elements/grpc")
+	cmd, kept, tools := reanchorBuildDirCopyGenrule(raw, rewritten, srcs, outs, "", "/b", "elements/grpc", nil)
 
 	wantCmd := "$(execpath @protobuf//:protoc) --grpc_out=:$(RULEDIR)/gens --cpp_out=$(RULEDIR)/gens " +
 		"--plugin=protoc-gen-grpc=$(execpath grpc_cpp_plugin) -I elements/grpc elements/grpc/src/proto/x.proto"
@@ -46,7 +46,7 @@ func TestReanchorBuildDirCopyGenrule(t *testing.T) {
 func TestReanchorBuildDirCopyGenrule_NoOp(t *testing.T) {
 	raw := "protoc --cpp_out=gens x.proto"
 	srcs := []string{"x.proto"}
-	cmd, kept, _ := reanchorBuildDirCopyGenrule(raw, raw, srcs, []string{"gens/x.pb.cc"}, "", "/b", "elements/grpc")
+	cmd, kept, _ := reanchorBuildDirCopyGenrule(raw, raw, srcs, []string{"gens/x.pb.cc"}, "", "/b", "elements/grpc", nil)
 	if cmd != raw || !reflect.DeepEqual(kept, srcs) {
 		t.Errorf("expected no-op; got cmd=%q kept=%v", cmd, kept)
 	}
@@ -66,7 +66,7 @@ func TestProtoImportClosure(t *testing.T) {
 	write("a/msg.proto", "syntax=\"proto3\";\nimport \"a/base.proto\";\n")
 	write("a/base.proto", "syntax=\"proto3\";\n")
 
-	got := protoImportClosure([]string{"a/svc.proto"}, dir)
+	got := protoImportClosure([]string{"a/svc.proto"}, dir, nil)
 	want := []string{"a/base.proto", "a/msg.proto"} // sorted; the WKT (not on disk) is skipped
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("imports = %v; want %v", got, want)

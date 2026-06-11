@@ -761,6 +761,11 @@ func bakeNestedGeneratedHeaders(nb NestedBuildInput, cc *codegenContext, opts Op
 		}
 		body, rerr := os.ReadFile(p)
 		if rerr != nil {
+			// A header-shaped file we'd otherwise bake for outer consumers
+			// exists on disk but can't be read: note the uncertain drop
+			// rather than skipping silently. outRel is build-relative —
+			// leak-safe for the report.
+			cc.noteUnresolvedRecoveryInput(unresolvedNestedHeaderUnreadable, outRel)
 			return nil
 		}
 		name := executeProcessGenruleName(outRel)

@@ -152,6 +152,14 @@ type codegenContext struct {
 	// output) is NOT recorded here, since that's a by-design trace-only skip.
 	UnreadableConfigureOutputs map[string]string
 
+	// UnresolvedRecoveryInputs collects configure-time recovery inputs the
+	// converter expected to resolve but couldn't (an unanchorable
+	// configure_file output, an unreadable declared .proto or nested header) —
+	// uncertain drops surfaced as conversion-todos + a stderr breadcrumb via
+	// warnUnresolvedRecoveryInputs. The cross-family sibling of
+	// UnreadableConfigureOutputs. See unresolved_recovery_inputs.go.
+	UnresolvedRecoveryInputs []unresolvedRecoveryInput
+
 	// OutOfTreeExecNotes collects the uncertain out-of-tree execute_process
 	// calls partitionOutOfTreeExec set aside to NOTE (rather than lift): a
 	// build-dir location with no codemodel sources to anchor a lift, or a
@@ -565,7 +573,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	// already carries, drop the producerless copies, and anchor the output-root
 	// dir. See reanchorBuildDirCopyGenrule.
 	var copyTools []string
-	rewrittenCmd, srcs, copyTools = reanchorBuildDirCopyGenrule(cmd, rewrittenCmd, srcs, outs, cmakeSrc, buildDir, cc.BazelPackagePath)
+	rewrittenCmd, srcs, copyTools = reanchorBuildDirCopyGenrule(cmd, rewrittenCmd, srcs, outs, cmakeSrc, buildDir, cc.BazelPackagePath, cc)
 	tools = append(tools, copyTools...)
 	gen := ir.Target{
 		Name:         name,
@@ -1034,7 +1042,7 @@ func relativeIfInsideRelaxed(root, abs string) (string, bool) {
 // Gated tightly on the `cd <buildDir>/<sub>` shape: a genrule whose raw command
 // had no such cd (the corpus norm) is returned untouched, as is the pkg=="" /
 // no-twin case.
-func reanchorBuildDirCopyGenrule(rawCmd, cmd string, srcs, outs []string, cmakeSrc, buildDir, pkg string) (string, []string, []string) {
+func reanchorBuildDirCopyGenrule(rawCmd, cmd string, srcs, outs []string, cmakeSrc, buildDir, pkg string, cc *codegenContext) (string, []string, []string) {
 	if pkg == "" || !strings.HasPrefix(rawCmd, "cd ") {
 		return cmd, srcs, nil
 	}
@@ -1154,7 +1162,7 @@ func reanchorBuildDirCopyGenrule(rawCmd, cmd string, srcs, outs []string, cmakeS
 	// imported file from the genrule's staged inputs. Walk each kept `.proto`
 	// src's transitive imports (resolved under cmakeSrc, the `-I <pkg>` root) and
 	// add any that exist on disk and aren't already declared.
-	kept = append(kept, protoImportClosure(kept, cmakeSrc)...)
+	kept = append(kept, protoImportClosure(kept, cmakeSrc, cc)...)
 
 	return cmd, kept, tools
 }
@@ -1164,7 +1172,7 @@ func reanchorBuildDirCopyGenrule(rawCmd, cmd string, srcs, outs []string, cmakeS
 // cmakeSrc and aren't already in srcs. Imports are resolved relative to the
 // source root (the `-I <pkg>` include root the reanchored command uses), which
 // is grpc's `import "src/proto/..."` convention.
-func protoImportClosure(srcs []string, cmakeSrc string) []string {
+func protoImportClosure(srcs []string, cmakeSrc string, cc *codegenContext) []string {
 	if cmakeSrc == "" {
 		return nil
 	}
@@ -1184,6 +1192,14 @@ func protoImportClosure(srcs []string, cmakeSrc string) []string {
 		queue = queue[1:]
 		data, err := os.ReadFile(filepath.Join(cmakeSrc, cur))
 		if err != nil {
+			// A declared .proto src we're walking for transitive imports
+			// can't be read: its imports may now be missing from the genrule
+			// srcs. Note the uncertain drop rather than skipping silently.
+			// `cur` is source-tree-relative — leak-safe for the report. (The
+			// well-known-type Stat miss below stays a confident silent skip:
+			// that proto genuinely lives under a -I include root, not the
+			// source tree.)
+			cc.noteUnresolvedRecoveryInput(unresolvedProtoImportUnreadable, cur)
 			continue
 		}
 		for _, imp := range parseProtoImports(string(data)) {
