@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"fmt"
 	"hash/fnv"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/cclang"
@@ -208,41 +210,92 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 		ensure(d)
 	}
 
-	// 3. Render each package group via the shared EmitWithOptions.
+	// 3. Render each package group via the shared EmitWithOptions, CONCURRENTLY.
+	// Each group is an independent BUILD file (its own EmitWithOptions ->
+	// build.Format, the per-package CPU cost profiling flagged as the emit
+	// hotspot), so a big multi-package project (eigen, LLVM, VTK) parallelizes
+	// the formatting across cores. The output is byte-identical: each body is
+	// deterministic for its package and keyed by dir, and a failure is reported
+	// deterministically (the lexicographically-first failing dir) regardless of
+	// goroutine scheduling. EmitWithOptions holds no shared mutable state.
 	base := strings.Trim(opts.BazelPackagePath, "/")
 	out := map[string][]byte{}
+	errs := map[string]error{}
+	workers := splitEmitWorkers
+	if workers < 1 {
+		workers = 1
+	}
+	sem := make(chan struct{}, workers)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
 	for dir, targets := range groups {
-		sub := &ir.Package{
-			Name:       pkg.Name,
-			SourceRoot: pkg.SourceRoot,
-			Targets:    targets,
-			// Propagate the common-copts constant label so each per-dir BUILD
-			// that holds a PrependCommonCopts target emits the load() +
-			// `COMMON_COPTS + [...]`. The label is absolute (//<root-pkg>:…),
-			// so every sub-package references the one constant file.
-			CommonCoptsLabel: pkg.CommonCoptsLabel,
-		}
-		// HeaderComments only on the root package.
-		if dir == "" {
-			sub.HeaderComments = pkg.HeaderComments
-		}
-		subOpts := opts
-		subOpts.BazelPackagePath = joinPkgPath(base, dir)
-		body, err := EmitWithOptions(sub, subOpts)
-		if err != nil {
-			return nil, fmt.Errorf("split-packages: emit %q: %w", dirKey(dir), err)
-		}
-		// Append any exports_files() this package owes cross-package
-		// source consumers.
-		if needs := exportsByDir[dir]; len(needs) > 0 {
-			body, err = appendExportsFiles(body, needs)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(dir string, targets []ir.Target) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			body, err := renderSplitPackage(pkg, targets, dir, opts, base, exportsByDir[dir])
+			mu.Lock()
+			defer mu.Unlock()
 			if err != nil {
-				return nil, fmt.Errorf("split-packages: exports_files %q: %w", dirKey(dir), err)
+				errs[dir] = err
+				return
 			}
+			out[dir] = body
+		}(dir, targets)
+	}
+	wg.Wait()
+	if len(errs) > 0 {
+		failed := make([]string, 0, len(errs))
+		for d := range errs {
+			failed = append(failed, d)
 		}
-		out[dir] = body
+		sort.Strings(failed)
+		return nil, errs[failed[0]]
 	}
 	return out, nil
+}
+
+// splitEmitWorkers bounds EmitSplit's per-package render concurrency. Defaults
+// to the core count (the per-package build.Format is CPU-bound); a benchmark or
+// a caller that wants deterministic single-threaded rendering can lower it.
+var splitEmitWorkers = max(runtime.NumCPU(), 2)
+
+// renderSplitPackage renders one directory's BUILD body: the sub-package
+// (targets + the propagated common-copts label; HeaderComments only at the
+// root) through EmitWithOptions, plus any exports_files() the package owes
+// cross-package source consumers. Pure — no shared state — so EmitSplit calls
+// it concurrently across packages.
+func renderSplitPackage(pkg *ir.Package, targets []ir.Target, dir string, opts Options, base string, exportsNeeds map[string]struct{}) ([]byte, error) {
+	sub := &ir.Package{
+		Name:       pkg.Name,
+		SourceRoot: pkg.SourceRoot,
+		Targets:    targets,
+		// Propagate the common-copts constant label so each per-dir BUILD that
+		// holds a PrependCommonCopts target emits the load() + `COMMON_COPTS +
+		// [...]`. The label is absolute (//<root-pkg>:…), so every sub-package
+		// references the one constant file.
+		CommonCoptsLabel: pkg.CommonCoptsLabel,
+	}
+	// HeaderComments only on the root package.
+	if dir == "" {
+		sub.HeaderComments = pkg.HeaderComments
+	}
+	subOpts := opts
+	subOpts.BazelPackagePath = joinPkgPath(base, dir)
+	body, err := EmitWithOptions(sub, subOpts)
+	if err != nil {
+		return nil, fmt.Errorf("split-packages: emit %q: %w", dirKey(dir), err)
+	}
+	// Append any exports_files() this package owes cross-package source
+	// consumers.
+	if len(exportsNeeds) > 0 {
+		body, err = appendExportsFiles(body, exportsNeeds)
+		if err != nil {
+			return nil, fmt.Errorf("split-packages: exports_files %q: %w", dirKey(dir), err)
+		}
+	}
+	return body, nil
 }
 
 // primaryGeneratedOutput returns the element-root-relative output path
