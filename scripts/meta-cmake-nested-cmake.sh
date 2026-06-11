@@ -61,8 +61,12 @@ grep -qF '"sub/sub.c"' "$build" || fail "nested target's srcs not re-anchored at
 grep -qF '"cmake-codegen-nested-cmake"' "$build" || fail "nested-cmake audit tag missing on the merged target"
 grep -qF 'deps = [":sublib"]' "$build" || fail "nested archive link fragment not wired to the merged target's label"
 grep -qF 'out = "subbuild/sub_config.h"' "$build" || fail "nested configure-generated header not baked"
-grep -qF '"cmake-codegen-nested-cmake-bake"' "$build" || fail "nested bake audit facet missing"
+# The bake arrives via the nested lowering's generic build-dir bake,
+# re-homed under subbuild/ by the merge (cmake-codegen-nested-cmake-bake
+# remains the fallback channel for headers only OUTER targets consume).
+grep -qF '"cmake-codegen-build-dir-bake"' "$build" || fail "build-dir bake audit facet missing on the re-homed bake"
 grep -qF '"subbuild/sub_config.h",' "$build" || fail "baked header not attributed to the outer consumer"
+grep -qF 'hdrs = ["subbuild/sub_config.h"]' "$build" || fail "baked header not attached to the nested consumer's hdrs (sub.c's include would be undeclared)"
 grep -q 'unsupported-execute-process' "$work_dir/convert.stderr" \
     && fail "nested cmake calls still refuse (the lift should cover both)"
 

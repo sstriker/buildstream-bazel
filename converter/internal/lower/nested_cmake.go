@@ -212,13 +212,22 @@ func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSr
 // skipped — the codemodel carries the targets, sources, flags, and
 // artifacts, which is the lift's substance.
 func lowerOneNestedBuild(nb NestedBuildInput, opts Options, hostSrc string) (*ir.Package, error) {
+	// resolveElementSourceRoot requires an absolute root; a relative
+	// --source-root (CI scripts, ad-hoc runs) reaches here verbatim, so
+	// absolutize against the converter's cwd first — without this the
+	// nested lowering fails and the whole lift degrades to the
+	// not-lifted warning on otherwise-fine invocations.
+	rootAbs, absErr := filepath.Abs(hostSrc)
+	if absErr != nil {
+		return nil, absErr
+	}
 	nestedOpts := Options{
 		// The nested source dir is where the nested cmake configured;
 		// ElementSourceRoot forces label anchoring at the OUTER root
 		// (the cuda-samples overlay shape), so merged targets' srcs
 		// carry the `<nested-src-rel>/` prefix the outer BUILD needs.
 		HostSourceRoot:    nb.SrcDir,
-		ElementSourceRoot: hostSrc,
+		ElementSourceRoot: rootAbs,
 		BuildDir:          nb.HostBuildDir,
 		Imports:           opts.Imports,
 		BazelPackagePath:  opts.BazelPackagePath,
@@ -238,11 +247,13 @@ func lowerOneNestedBuild(nb NestedBuildInput, opts Options, hostSrc string) (*ir
 // `:<name>` in cc.NestedArtifactDeps so outer link fragments naming the
 // nested archive wire to the real label.
 func mergeNestedPackage(pkg *ir.Package, nestedPkg *ir.Package, nb NestedBuildInput, cc *codegenContext, opts Options, hostSrc string) {
+	rehome := nestedBakeReHomes(nestedPkg, nb)
 	present := map[string]bool{}
 	for _, t := range pkg.Targets {
 		present[t.Name] = true
 	}
 	for _, t := range nestedPkg.Targets {
+		applyNestedBakeReHome(&t, rehome, cc)
 		if present[t.Name] {
 			fmt.Fprintf(warningsOrDiscard(opts.Warnings),
 				"lower: nested cmake build %s: target %q collides with an outer target; keeping the outer one\n", nb.BuildRel, t.Name)
@@ -298,6 +309,65 @@ func mergeNestedPackage(pkg *ir.Package, nestedPkg *ir.Package, nb NestedBuildIn
 	}
 }
 
+// nestedBakeReHomes maps the nested lowering's own build-dir bake outs
+// (tag cmake-codegen-build-dir-bake — the generic on-disk bake for
+// configure-written files, which inside the nested lowering anchors
+// rels at the NESTED build root) to their outer-package homes: in the
+// outer BUILD the bytes live under <buildRel>/, not the package root.
+func nestedBakeReHomes(nestedPkg *ir.Package, nb NestedBuildInput) map[string]string {
+	rehome := map[string]string{}
+	for i := range nestedPkg.Targets {
+		t := &nestedPkg.Targets[i]
+		if !stringSliceContains(t.Tags, "cmake-codegen-build-dir-bake") {
+			continue
+		}
+		if t.WriteFileOut != "" {
+			rehome[t.WriteFileOut] = nb.BuildRel + "/" + t.WriteFileOut
+		}
+		for _, out := range t.GenruleOuts {
+			rehome[out] = nb.BuildRel + "/" + out
+		}
+	}
+	return rehome
+}
+
+// applyNestedBakeReHome re-anchors one merged target against the nested
+// bake re-homes: a bake rule's out (and name — two nested builds baking
+// the same rel must not collide in the outer package) gains the
+// <buildRel>/ prefix and registers in the OUTER producer map (so
+// bakeNestedGeneratedHeaders defers to it instead of duplicating); any
+// other target's srcs/hdrs entries pointing at a re-homed rel re-point.
+func applyNestedBakeReHome(t *ir.Target, rehome map[string]string, cc *codegenContext) {
+	if len(rehome) == 0 {
+		return
+	}
+	if stringSliceContains(t.Tags, "cmake-codegen-build-dir-bake") {
+		if newRel, ok := rehome[t.WriteFileOut]; ok {
+			t.WriteFileOut = newRel
+			t.Name = bakedBuildDirName(newRel)
+			cc.OutToGenrule[newRel] = t.Name
+		}
+		for i, out := range t.GenruleOuts {
+			if newRel, ok := rehome[out]; ok {
+				t.GenruleOuts[i] = newRel
+				t.Name = bakedBuildDirName(newRel)
+				cc.OutToGenrule[newRel] = t.Name
+			}
+		}
+		return
+	}
+	for i, s := range t.Srcs {
+		if newRel, ok := rehome[s]; ok {
+			t.Srcs[i] = newRel
+		}
+	}
+	for i, h := range t.Hdrs {
+		if newRel, ok := rehome[h]; ok {
+			t.Hdrs[i] = newRel
+		}
+	}
+}
+
 // bakeNestedGeneratedHeaders bakes the nested build dir's
 // configure-generated headers: on-disk header-shaped files that the
 // NESTED ninja graph does not produce (so they were written by the
@@ -333,6 +403,11 @@ func bakeNestedGeneratedHeaders(nb NestedBuildInput, cc *codegenContext, opts Op
 		}
 		outRel := nb.BuildRel + "/" + rel
 		if _, produced := cc.OutToGenrule[outRel]; produced {
+			// Another channel already owns the bytes (typically the
+			// nested lowering's own re-homed build-dir bake); don't
+			// duplicate the rule, but DO surface the out so the outer
+			// consumer attribution still attaches it.
+			outs = append(outs, executeProcessOut{RelOutput: outRel})
 			return nil
 		}
 		body, rerr := os.ReadFile(p)
