@@ -9,6 +9,13 @@
 # `find_package(producer CONFIG REQUIRED) +
 # file(GENERATE OUTPUT tool_path.h CONTENT "...$<TARGET_FILE:producer::producer>...")`).
 #
+# The pipeline opts into the configure_file lift via
+# --cmake-configure-file-bin (write-a then threads
+# --lift-configure-file=true into each kind:cmake convert genrule and
+# stages //tools:cmake-configure-file) — without the opt-in the
+# converter lawfully takes the bake tier and no resolution happens,
+# which is how this gate's build half was broken from birth.
+#
 # The gate asserts:
 #   1. Render: write-a emits per-element BUILDs with an
 #      imports.json on the consumer side mapping
@@ -18,14 +25,21 @@
 #      the staged bundle; the trace captures the file(GENERATE)
 #      call; convert-element-cmake's file(GENERATE) lifter
 #      sees the cross-package $<TARGET_FILE:producer::producer>
-#      reference, looks it up in the imports manifest, and
-#      emits a lifted genrule whose cmd carries
-#      `--target-file=producer::producer="$(location
-#      //elements/producer:producer)"`.
+#      reference, looks it up in the imports manifest (expanding
+#      the manifest's ${_IMPORT_PREFIX} link-path anchor against
+#      the staged prefix so the (a)-evaluator's byte-equal check
+#      matches), and emits a lifted cmake_configure_file whose
+#      label-keyed target_files dict carries
+#      `"//elements/producer:producer": "producer::producer"` —
+#      Bazel resolves the artifact path at action time.
 #   3. The refusal-stub tag
 #      (`cmake-codegen-genex-cross-package`) does
 #      NOT fire — the resolved-lift path replaces the PR 1
 #      refusal stub for the manifest-hit case.
+#   4. No convert-time absolute artifact path is baked into the
+#      output (the (b)-capture failure shape: genex_values
+#      embedding the recording machine's staged-prefix path,
+#      which doesn't exist on the Bazel executor).
 #
 # Bazel-availability + cmake/ninja gating + META_BAZEL_*_ARGS
 # overrides mirror scripts/meta-cross-cmake.sh; sandboxed
@@ -43,12 +57,14 @@ bin_dir="$work_dir/bin"
 mkdir -p "$bin_dir"
 CGO_ENABLED=0 go build -o "$bin_dir/write-a" ./cmd/write-a
 CGO_ENABLED=0 go build -o "$bin_dir/convert-element-cmake" ./converter/cmd/convert-element-cmake
+CGO_ENABLED=0 go build -o "$bin_dir/cmake-configure-file" ./cmd/cmake-configure-file
 
 A="$work_dir/A"
 B="$work_dir/B"
 
 "$bin_dir/write-a" \
     --rules-package-path "$repo_root/rules_buildstream_bazel" \
+    --cmake-configure-file-bin "$bin_dir/cmake-configure-file" \
     --bst testdata/meta-project/cross-package-target-file/producer.bst \
     --bst testdata/meta-project/cross-package-target-file/consumer.bst \
     --out "$A" \
@@ -125,18 +141,20 @@ fi
 
 # === The PR 2 assertions ===============================================
 #
-# 1. The lifted file(GENERATE) genrule's cmd carries the
-#    --target-file flag pointing at the manifest-resolved
-#    cross-package label, NOT the same-package shorthand.
-want_flag='--target-file=producer::producer="$(location //elements/producer:producer)"'
-if ! grep -qF -- "$want_flag" "$consumer_build"; then
-    echo "meta-cmake-cross-package-target-file: consumer BUILD.bazel.out missing expected --target-file flag" >&2
-    echo "want: $want_flag" >&2
+# 1. The lifted file(GENERATE) cmake_configure_file's label-keyed
+#    target_files dict maps the manifest-resolved cross-package
+#    label, NOT the same-package shorthand — Bazel tracks the
+#    producer as a dependency and resolves its artifact path at
+#    action time.
+want_entry='"//elements/producer:producer": "producer::producer"'
+if ! grep -qF -- "$want_entry" "$consumer_build"; then
+    echo "meta-cmake-cross-package-target-file: consumer BUILD.bazel.out missing expected target_files entry" >&2
+    echo "want: $want_entry" >&2
     echo "--- consumer BUILD.bazel.out ---" >&2
     cat "$consumer_build" >&2
     exit 1
 fi
-echo "meta-cmake-cross-package-target-file: --target-file resolved to cross-package label OK"
+echo "meta-cmake-cross-package-target-file: target_files resolved to cross-package label OK"
 
 # 2. The (a) lift's tag IS present.
 if ! grep -q '"cmake-codegen-genex-resolved"' "$consumer_build"; then
@@ -155,5 +173,17 @@ if grep -q '"cmake-codegen-genex-cross-package"' "$consumer_build"; then
     exit 1
 fi
 echo "meta-cmake-cross-package-target-file: refusal-stub tag correctly absent"
+
+# 4. No convert-time absolute artifact path baked into the output —
+#    the (b)-capture failure shape embeds the recording machine's
+#    staged-prefix path (e.g. /tmp/<stage>/lib/libproducer.a) in a
+#    genex_values dict; that path doesn't exist on the executor.
+if grep -qE '"/[^"]*lib/libproducer\.a"' "$consumer_build"; then
+    echo "meta-cmake-cross-package-target-file: convert-time absolute producer artifact path baked into the output" >&2
+    echo "--- consumer BUILD.bazel.out ---" >&2
+    cat "$consumer_build" >&2
+    exit 1
+fi
+echo "meta-cmake-cross-package-target-file: no convert-time absolute artifact path baked"
 
 echo "meta-cmake-cross-package-target-file: ok"
