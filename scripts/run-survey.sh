@@ -359,6 +359,13 @@ try_bazel_build() {
     # bundle end-to-end rather than choking on a filegroup over not-on-disk files.
     # A project can opt out via EMIT_INSTALL_EXPORT=0 in its .conf.
     [ "$EMIT_INSTALL_EXPORT" = "0" ] || set -- "$@" --emit-install-export-config
+    # SURVEY_HOIST_COMMON_COPTS=1: lens-validate the common-copts hoist. Emit the
+    # self-contained common_compile_flags.bzl + COMMON_COPTS-referencing copts
+    # (mode B — no cc_toolchain wiring, so the build lens can build it directly),
+    # then `bazel build //...` proves the hoisted tree still compiles on real
+    # corpus members. Off by default (the inline emission is what the green
+    # corpus is validated under).
+    [ "${SURVEY_HOIST_COMMON_COPTS:-0}" != "0" ] && set -- "$@" --emit-common-compile-flags-bzl
     set -- "$@" \
         --bazel-package-path "$_bb_pkg" \
         --out-build "$_bb_elt/BUILD.bazel" \
