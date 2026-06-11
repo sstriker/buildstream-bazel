@@ -98,16 +98,22 @@ func parseNestedCMakeArgv(driver string, argv []string) (nestedCMakeShape, bool)
 	if src != "" && build != "" {
 		return nestedCMakeShape{kind: "configure", srcDir: src, buildDir: build}, true
 	}
-	// No explicit -S/-B pair. Recognize the positional-source configure
-	// (`cmake [-G <gen>] <src>`), leaving the build dir empty for the caller
-	// to fill from WORKING_DIRECTORY. An explicit-but-incomplete -S/-B (one
-	// without the other) stays unrecognized, as before.
-	if src == "" && build == "" {
-		if pos := nestedPositionalSourceArg(argv); pos != "" {
-			return nestedCMakeShape{kind: "configure", srcDir: pos}, true
-		}
+	// No explicit -S/-B pair. Fall back to a positional source
+	// (`cmake [-G <gen>] <src>`). A SOURCE is the thing the recursive
+	// lowering needs; the build dir may be left empty here for the caller
+	// to fill from WORKING_DIRECTORY (resolveNestedCMakeDirs declines when
+	// there's none). So an explicit `-S <src>` WITHOUT `-B` is accepted too
+	// — it configures into the process cwd, which a WORKING_DIRECTORY moves,
+	// exactly like the positional form. A lone `-B` with NO source stays
+	// unrecognized: a source-less reconfigure of an existing build dir gives
+	// the recursive lowering no source tree to work from.
+	if src == "" {
+		src = nestedPositionalSourceArg(argv)
 	}
-	return nestedCMakeShape{}, false
+	if src == "" {
+		return nestedCMakeShape{}, false
+	}
+	return nestedCMakeShape{kind: "configure", srcDir: src, buildDir: build}, true
 }
 
 // nestedPositionalSourceArg returns the trailing positional source-dir
@@ -367,11 +373,86 @@ func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSr
 				"lower: nested cmake build %s: lowering failed (%v); falling back to the not-lifted warning\n", nb.BuildRel, err)
 			continue
 		}
+		// No-silent-dangle guard. A build-dir-sourced nested project
+		// (anchored at its OWN root because its source isn't under the outer
+		// tree — generated into the build dir by a higher-level configure)
+		// whose targets COMPILE build-dir-resident sources would merge
+		// dangling srcs: the source bytes live in the build dir, not the
+		// outer package, and aren't baked/staged yet. Emitting them would be
+		// a SILENT broken conversion, so leave the build not-lifted (the loud
+		// nested-cmake-not-lifted todo) until build-dir source staging lands.
+		// A TARGET-LESS build-dir nested (a downloader / superbuild bootstrap
+		// — cryptoauthlib's mbedtls project(NONE)+ExternalProject) merges
+		// nothing, so it stays a clean no-op lift.
+		if rootAbs, aerr := filepath.Abs(hostSrc); aerr == nil &&
+			nestedElementRoot(rootAbs, nb.SrcDir) != rootAbs &&
+			nestedHasCompiledSources(nestedPkg) {
+			fmt.Fprintf(warningsOrDiscard(opts.Warnings),
+				"lower: nested cmake build %s: its sources live in the build dir (not the outer source tree) and aren't staged yet; leaving it not-lifted rather than emitting dangling srcs\n", nb.BuildRel)
+			continue
+		}
 		cc.NestedLifted[nb.BuildRel] = true
 		mergeNestedPackage(pkg, nestedPkg, nb, cc, opts, hostSrc)
 		outs = append(outs, bakeNestedGeneratedHeaders(nb, cc, opts)...)
 	}
 	return outs, nil
+}
+
+// nestedHasCompiledSources reports whether a nested package has any target
+// carrying a file-label-bearing attribute — srcs / hdrs / textual_hdrs /
+// data — i.e. paths that would merge into the outer package as labels. A
+// build-dir-sourced nested target carries build-dir-resident paths in ALL
+// of them, so any non-empty one would merge a dangling label; covering them
+// all keeps the guard's invariant (no silent dangling file labels) matching
+// its name. A target-less nested package (only UTILITY targets, which the
+// converter skips — a downloader / superbuild bootstrap) has none, so it
+// merges nothing and is safe to lift as a no-op even when build-dir-sourced.
+func nestedHasCompiledSources(pkg *ir.Package) bool {
+	if pkg == nil {
+		return false
+	}
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		if len(t.Srcs) > 0 || len(t.Hdrs) > 0 || len(t.TextualHdrs) > 0 || len(t.Data) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// nestedElementRoot picks the label-anchor root for a nested lowering.
+// Promote to the OUTER root (outerRootAbs) when the nested SOURCES live
+// under the outer source tree (the in-tree subproject / cuda-samples
+// overlay shape) — merged srcs then carry the <nested-src-rel>/ prefix the
+// outer BUILD needs. But when the nested source dir is NOT under the outer
+// tree — generated into the build dir by a higher-level configure (e.g.
+// cryptoauthlib's mbedtls downloader: configure_file writes its CMakeLists
+// into the build dir, then project(NONE)+ExternalProject yields no
+// buildable targets) — there is no outer-root-relative home, and promoting
+// it would make resolveElementSourceRoot reject the whole lowering (the
+// outer root isn't an ancestor of a build-dir source), turning an empty,
+// nothing-to-merge lift into a MISLEADING "targets missing"
+// nested-cmake-not-lifted todo. So anchor a build-dir-sourced nested build
+// at its OWN root instead: a target-less downloader lowers to an empty
+// package (clean no-op), and any build-dir sources of a hypothetical real
+// target surface as honest unsupported-source-path findings rather than
+// hard-failing. The Rel/`..` test is exactly the ancestor check
+// resolveElementSourceRoot would apply — reused here as a
+// promote-vs-own-root SELECTOR rather than a gate. Empty or
+// un-absolutizable nestedSrc keeps the outer root (the historical default).
+func nestedElementRoot(outerRootAbs, nestedSrc string) string {
+	if nestedSrc == "" {
+		return outerRootAbs
+	}
+	nestedAbs, err := filepath.Abs(nestedSrc)
+	if err != nil {
+		return outerRootAbs
+	}
+	rel, err := filepath.Rel(outerRootAbs, nestedAbs)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nestedAbs
+	}
+	return outerRootAbs
 }
 
 // lowerOneNestedBuild recursively runs ToIR over one nested reply. The
@@ -396,13 +477,19 @@ func lowerOneNestedBuild(nb NestedBuildInput, opts Options, hostSrc string) (*ir
 	if absErr != nil {
 		return nil, absErr
 	}
+	// Promote to the OUTER root for an in-tree nested source, or fall back
+	// to the nested's OWN root for a build-dir-generated one (see
+	// nestedElementRoot).
+	elementRoot := nestedElementRoot(rootAbs, nb.SrcDir)
 	nestedOpts := Options{
-		// The nested source dir is where the nested cmake configured;
-		// ElementSourceRoot forces label anchoring at the OUTER root
-		// (the cuda-samples overlay shape), so merged targets' srcs
-		// carry the `<nested-src-rel>/` prefix the outer BUILD needs.
+		// HostSourceRoot is where the nested cmake configured;
+		// ElementSourceRoot anchors the merged labels — at the OUTER root
+		// for an in-tree nested source (so srcs carry the
+		// <nested-src-rel>/ prefix the outer BUILD needs), or at the
+		// nested's OWN root when its source sits outside the outer tree
+		// (a build-dir-generated nested project; see the selector above).
 		HostSourceRoot:    nb.SrcDir,
-		ElementSourceRoot: rootAbs,
+		ElementSourceRoot: elementRoot,
 		BuildDir:          nb.HostBuildDir,
 		TraceRaw:          nb.TraceRaw,
 		// The superbuild-chain recursion: this build's own nested

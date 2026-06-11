@@ -44,7 +44,15 @@ func TestParseNestedCMakeArgv(t *testing.T) {
 			ok:   true,
 		},
 		{name: "build without dir", argv: []string{"cmake", "--build"}, ok: false},
-		{name: "configure missing -B", argv: []string{"cmake", "-S", "/src"}, ok: false},
+		{
+			// -S without -B configures into the cwd (which WORKING_DIRECTORY
+			// moves); recognized, build dir deferred to the resolver.
+			name: "configure -S without -B",
+			argv: []string{"cmake", "-S", "/src"},
+			want: nestedCMakeShape{kind: "configure", srcDir: "/src"},
+			ok:   true,
+		},
+		{name: "lone -B with no source is not nested", argv: []string{"cmake", "-B", "/b"}, ok: false},
 		{
 			name: "configure positional source (no -S/-B; build dir from WORKING_DIRECTORY)",
 			argv: []string{"cmake", "-G", "Ninja", "."},
@@ -92,6 +100,64 @@ func TestClassifyNestedCMake(t *testing.T) {
 	captured.OutputVariable = "OUT"
 	if got := Classify(captured); got.Bucket != BucketRefuse {
 		t.Errorf("captured-output nested configure: bucket = %q, want refuse", got.Bucket)
+	}
+}
+
+func TestNestedElementRoot(t *testing.T) {
+	outer := "/proj/src"
+	for _, tc := range []struct {
+		name      string
+		nestedSrc string
+		want      string
+	}{
+		// In-tree nested source → promote to the outer root (merged labels
+		// get the <nested-src-rel>/ prefix).
+		{"in-tree subdir", "/proj/src/sub", outer},
+		{"equal to outer root", "/proj/src", outer},
+		// Build-dir-generated nested source (not under the outer tree) →
+		// anchor at its own root, so the lowering doesn't hard-fail (the
+		// cryptoauthlib mbedtls-downloader shape).
+		{"build-dir source", "/proj/build/mbedtls_downloader", "/proj/build/mbedtls_downloader"},
+		{"unrelated abs path", "/elsewhere/dl", "/elsewhere/dl"},
+		// Empty keeps the outer root (historical default).
+		{"empty", "", outer},
+	} {
+		if got := nestedElementRoot(outer, tc.nestedSrc); got != tc.want {
+			t.Errorf("%s: nestedElementRoot(%q, %q) = %q, want %q", tc.name, outer, tc.nestedSrc, got, tc.want)
+		}
+	}
+}
+
+func TestNestedHasCompiledSources(t *testing.T) {
+	// Target-less (a downloader / superbuild bootstrap: UTILITY targets the
+	// converter skips, so the lowered package has none) — safe to lift as a
+	// no-op even when build-dir-sourced.
+	if nestedHasCompiledSources(&ir.Package{}) {
+		t.Error("empty package reported compiled sources")
+	}
+	if nestedHasCompiledSources(nil) {
+		t.Error("nil package reported compiled sources")
+	}
+	// A cc target carrying srcs would merge as labels — build-dir-sourced,
+	// those would dangle, so the guard must see it.
+	withSrcs := &ir.Package{Targets: []ir.Target{{Name: "sublib", Kind: ir.KindCCLibrary, Srcs: []string{"sub.c"}}}}
+	if !nestedHasCompiledSources(withSrcs) {
+		t.Error("package with a srcs-bearing target reported no compiled sources")
+	}
+	withHdrs := &ir.Package{Targets: []ir.Target{{Name: "h", Kind: ir.KindCCLibrary, Hdrs: []string{"h.h"}}}}
+	if !nestedHasCompiledSources(withHdrs) {
+		t.Error("package with an hdrs-bearing target reported no compiled sources")
+	}
+	// textual_hdrs (fused-source idiom) and data are file labels too — a
+	// build-dir-sourced target carrying only one of them would still dangle,
+	// so the guard covers every file-bearing attribute.
+	withTextual := &ir.Package{Targets: []ir.Target{{Name: "t", Kind: ir.KindCCLibrary, TextualHdrs: []string{"t.inc"}}}}
+	if !nestedHasCompiledSources(withTextual) {
+		t.Error("package with a textual_hdrs-only target reported no compiled sources")
+	}
+	withData := &ir.Package{Targets: []ir.Target{{Name: "d", Kind: ir.KindCCLibrary, Data: []string{"d.bin"}}}}
+	if !nestedHasCompiledSources(withData) {
+		t.Error("package with a data-only target reported no compiled sources")
 	}
 }
 
