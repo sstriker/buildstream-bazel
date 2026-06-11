@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/bazelbuild/buildtools/build"
@@ -131,50 +130,17 @@ func newCall(kind string) (*build.CallExpr, *build.Rule) {
 
 func strExpr(s string) build.Expr { return &build.StringExpr{Value: s} }
 
-// strListExpr is the AST form of strList: a string list whose multi-line-ness
-// matches strList's "single-line trial > 60 chars forces multi-line" rule, so
-// buildifier preserves the same shape (the text path renders via strList, then
-// reformats — a list strList wrapped opens with a newline after `[`, which
-// buildifier keeps multi-line). Width-based wrapping below 60 is left to
-// Format, which treats this AST and the parsed text identically.
+// strListExpr builds a string list. Layout (inline vs multi-line) is left
+// entirely to build.Format's width rule — the AST-direct emitter does not
+// reproduce the old text renderers' arbitrary thresholds (strList's >60,
+// indentArmList's always-multi-line); buildifier owns it, so the output is
+// what `buildifier --mode=fix` produces by construction.
 func strListExpr(vs []string) build.Expr {
 	items := make([]build.Expr, len(vs))
 	for i, v := range vs {
 		items[i] = strExpr(v)
 	}
-	le := &build.ListExpr{List: items}
-	le.ForceMultiLine = strListSingleLineLen(vs) > 60
-	return le
-}
-
-// strListSingleLineLen is the length of strList's single-line trial form
-// (`["a", "b"]`), the input to its >60 multi-line decision. strconv.Quote
-// matches the template's %q escaping.
-func strListSingleLineLen(vs []string) int {
-	if len(vs) == 0 {
-		return len("[]")
-	}
-	n := len("[]")
-	for i, s := range vs {
-		if i > 0 {
-			n += len(", ")
-		}
-		n += len(strconv.Quote(s))
-	}
-	return n
-}
-
-// armListExpr is strListExpr for a select() arm: the text path renders arm
-// lists via indentArmList, which always opens with a newline after `[`, so
-// buildifier keeps them multi-line. A NON-empty arm therefore forces
-// multi-line; an empty arm stays the inline `[]` indentArmList also emits.
-func armListExpr(vs []string) build.Expr {
-	le := &build.ListExpr{List: make([]build.Expr, len(vs))}
-	for i, v := range vs {
-		le.List[i] = strExpr(v)
-	}
-	le.ForceMultiLine = len(vs) > 0
-	return le
+	return &build.ListExpr{List: items}
 }
 
 // boolIdent renders a Starlark True/False literal (a bare Ident, matching how
@@ -260,11 +226,11 @@ func selectListExpr(sel map[string][]string) build.Expr {
 	sort.Strings(keys)
 	entries := make([]*build.KeyValueExpr, 0, len(keys)+1)
 	for _, k := range keys {
-		entries = append(entries, &build.KeyValueExpr{Key: strExpr(k), Value: armListExpr(sel[k])})
+		entries = append(entries, &build.KeyValueExpr{Key: strExpr(k), Value: strListExpr(sel[k])})
 	}
 	entries = append(entries, &build.KeyValueExpr{
 		Key:   strExpr("//conditions:default"),
-		Value: armListExpr(defaultArm),
+		Value: strListExpr(defaultArm),
 	})
 	return selectCall(entries)
 }
@@ -299,7 +265,7 @@ func scalarAttrExprAST(flat string, sel map[string]string) build.Expr {
 func selectCall(entries []*build.KeyValueExpr) build.Expr {
 	return &build.CallExpr{
 		X:    &build.Ident{Name: "select"},
-		List: []build.Expr{&build.DictExpr{ForceMultiLine: true, List: entries}},
+		List: []build.Expr{&build.DictExpr{List: entries}},
 	}
 }
 
@@ -371,10 +337,7 @@ func globExpr(patterns []string) build.Expr {
 func configSettingExpr(t ir.Target) *build.CallExpr {
 	call, r := newCall("config_setting")
 	r.SetAttr("name", strExpr(t.Name))
-	// ForceMultiLine: the template renders the single-entry flag_values dict
-	// across lines; buildifier keeps a source-multi-line dict multi-line, so
-	// the AST must force it (a 1-entry dict otherwise inlines).
-	r.SetAttr("flag_values", &build.DictExpr{ForceMultiLine: true, List: []*build.KeyValueExpr{
+	r.SetAttr("flag_values", &build.DictExpr{List: []*build.KeyValueExpr{
 		{Key: strExpr(t.ConfigSettingFlag), Value: strExpr(t.ConfigSettingValue)},
 	}})
 	setListIfNonEmpty(r, "visibility", nonDefaultVisibility(t.Visibility))
@@ -474,30 +437,14 @@ func concatExprs(a, b build.Expr) build.Expr {
 	}
 }
 
-// strDictExpr is the AST form of strDict: a {k: v} dict whose multi-line-ness
-// matches strDict's >60 single-line-trial rule (same as strList for lists).
+// strDictExpr builds a {k: v} dict. Layout is left to build.Format (see strListExpr).
 func strDictExpr(m map[string]string) build.Expr {
 	keys := sliceutil.SortedKeys(m)
 	entries := make([]*build.KeyValueExpr, 0, len(keys))
 	for _, k := range keys {
 		entries = append(entries, &build.KeyValueExpr{Key: strExpr(k), Value: strExpr(m[k])})
 	}
-	d := &build.DictExpr{List: entries}
-	d.ForceMultiLine = strDictSingleLineLen(m, keys) > 60
-	return d
-}
-
-// strDictSingleLineLen is the length of strDict's single-line trial form
-// (`{"k": "v", …}`), the input to its >60 multi-line decision.
-func strDictSingleLineLen(m map[string]string, keys []string) int {
-	n := len("{}")
-	for i, k := range keys {
-		if i > 0 {
-			n += len(", ")
-		}
-		n += len(strconv.Quote(k)) + len(": ") + len(strconv.Quote(m[k]))
-	}
-	return n
+	return &build.DictExpr{List: entries}
 }
 
 // ccViewToCall renders a ccView (its attr-expr fields already AST) into the
@@ -548,7 +495,7 @@ func sharedLibraryExpr(t ir.Target) *build.CallExpr {
 	r.SetAttr("shared_lib_name", strExpr(t.SharedLibName))
 	if dd := sortedCopy(t.SharedLibDynamicDeps); len(dd) > 0 {
 		// emitSharedLibrary renders dynamic_deps multi-line (newline after `[`).
-		r.SetAttr("dynamic_deps", armListExpr(dd))
+		r.SetAttr("dynamic_deps", strListExpr(dd))
 	}
 	r.SetAttr("deps", strListExpr([]string{":" + t.Name}))
 	return call
@@ -633,7 +580,7 @@ func pkgRenamesExpr(renames map[string]string) build.Expr {
 	for _, k := range keys {
 		entries = append(entries, &build.KeyValueExpr{Key: strExpr(k), Value: strExpr(renames[k])})
 	}
-	return &build.DictExpr{ForceMultiLine: true, List: entries}
+	return &build.DictExpr{List: entries}
 }
 
 // leadingCommentTokens renders a target's leading author comment + provenance
