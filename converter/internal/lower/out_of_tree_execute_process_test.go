@@ -49,6 +49,41 @@ func TestPartitionOutOfTreeExec_Buckets(t *testing.T) {
 	}
 }
 
+// The codemodel signal takes precedence over the issuing site: a call ISSUED
+// from the prefix tree but whose WORKING_DIRECTORY operates on a build-dir
+// location the codemodel lists sources under is a subproject to LIFT, not a
+// prefix-tree probe to note. A sibling prefix-tree call with no build-dir
+// working dir stays a noted prefix probe.
+func TestPartitionOutOfTreeExec_WorkingDirCodemodelPrecedence(t *testing.T) {
+	build := "/build"
+	prefix := "/synth"
+	consumed := map[string]bool{"_deps/sub-build/foo.c": true}
+	driveSubBuild := ootCall("/synth/lib/cmake/Foo/FooConfig.cmake", 1, "cmake", "--build", ".")
+	driveSubBuild.WorkingDirectory = "/build/_deps/sub-build" // operates on build dir w/ codemodel srcs
+	pureProbe := ootCall("/synth/lib/cmake/Foo/FooConfig.cmake", 2, "foo-config", "--cflags")
+	pureProbe.WorkingDirectory = "/synth/lib/cmake/Foo" // stays in the prefix tree
+	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{driveSubBuild, pureProbe}, build, prefix, consumed)
+	if len(lift) != 1 || lift[0].Line != 1 {
+		t.Fatalf("lift: want the prefix-issued sub-build (line 1); got %+v", lift)
+	}
+	if len(note) != 1 || note[0].Signal != signalPrefixTree || note[0].Line != 2 {
+		t.Fatalf("note: want the pure prefix probe (line 2, prefix-tree); got %+v", note)
+	}
+}
+
+// A relative WORKING_DIRECTORY must NOT be mistaken for a build-relative path
+// (which would false-positive the codemodel check): the prefix-issued call
+// with a relative WD and no other build-dir signal stays a prefix probe.
+func TestPartitionOutOfTreeExec_RelativeWorkingDirNotBuildRel(t *testing.T) {
+	c := ootCall("/synth/lib/cmake/Foo/FooConfig.cmake", 1, "foo", "--x")
+	c.WorkingDirectory = "_deps/sub-build" // relative — not an absolute build-dir path
+	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{c},
+		"/build", "/synth", map[string]bool{"_deps/sub-build/foo.c": true})
+	if len(lift) != 0 || len(note) != 1 || note[0].Signal != signalPrefixTree {
+		t.Errorf("relative WD must not trigger the codemodel lift; got lift=%+v note=%+v", lift, note)
+	}
+}
+
 // CMakeFiles anywhere in the build-relative path is confident noise, even
 // nested under a subproject dir (cmake's per-subproject scratch) — neither
 // lifted nor noted.

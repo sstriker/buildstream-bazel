@@ -41,7 +41,12 @@ import (
 //   - codemodel-source-backed build-dir subproject → LIFTED through the same
 //     recoverExecuteProcess machinery as an in-source-tree call (the codemodel
 //     confirms a real target backs it, so it gets a genrule/probe lift — or a
-//     loud per-call execute-process-refusal — rather than a vague note);
+//     loud per-call execute-process-refusal — rather than a vague note). The
+//     codemodel signal is the STRONGEST one and takes precedence regardless of
+//     where the call was issued from: a call that OPERATES on a build-dir
+//     location (its WORKING_DIRECTORY, not only its issuing CMakeLists) with
+//     codemodel sources beneath it is a subproject even when issued from the
+//     prefix tree (a find_package config file driving a real sub-build);
 //   - everything else uncertain (build-dir without codemodel sources, a
 //     find_package prefix-tree probe) → NOTED as a conversion-todo.
 
@@ -52,9 +57,10 @@ import (
 type outOfTreeExecSignal string
 
 const (
-	// signalBuildSubproject: the call issues from a build-dir location and
-	// the codemodel lists sources under that same location — a configure-time
-	// cmake subproject the lift didn't reproduce. The strongest signal.
+	// signalBuildSubproject: the call OPERATES on a build-dir location (its
+	// issuing CMakeLists or its WORKING_DIRECTORY) the codemodel lists sources
+	// under — a configure-time cmake subproject the lift didn't reproduce. The
+	// strongest signal, taking precedence over the issuing-site signals below.
 	signalBuildSubproject outOfTreeExecSignal = "codemodel-build-subproject"
 	// signalBuildDirOther: the call issues from a build-dir location with NO
 	// codemodel sources beneath it — a configure-time call we can't tie to a
@@ -89,7 +95,7 @@ func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedBuildDir,
 		if len(c.Commands) == 0 {
 			continue
 		}
-		sig, ok := classifyOneOutOfTreeExec(c.File, recordedBuildDir, prefixDir, consumedBuildRel)
+		sig, ok := classifyOneOutOfTreeExec(c.File, c.WorkingDirectory, recordedBuildDir, prefixDir, consumedBuildRel)
 		if !ok {
 			continue // confident noise — the skip is correct, stay silent
 		}
@@ -104,31 +110,61 @@ func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedBuildDir,
 	return lift, note
 }
 
-// classifyOneOutOfTreeExec maps one out-of-tree issuing file to a surfacing
-// signal, or (_, false) when the call is confident noise. See the rule table
-// in the package doc comment above.
-func classifyOneOutOfTreeExec(file, recordedBuildDir, prefixDir string, consumedBuildRel map[string]bool) (outOfTreeExecSignal, bool) {
-	if recordedBuildDir != "" {
-		if rel, ok := relativeIfInsideRelaxed(recordedBuildDir, file); ok {
+// classifyOneOutOfTreeExec maps one out-of-tree call to a surfacing signal, or
+// (_, false) when the call is confident noise. See the rule table in the
+// package doc comment above. workingDir is the call's WORKING_DIRECTORY (the
+// dir the subprocess runs in) — where the call OPERATES, which can differ from
+// `file`, the CMakeLists it was ISSUED from.
+func classifyOneOutOfTreeExec(file, workingDir, recordedBuildDir, prefixDir string, consumedBuildRel map[string]bool) (outOfTreeExecSignal, bool) {
+	// (1) Confident noise keyed on the ISSUING file: cmake's own try_compile /
+	// compiler-id scratch under <build>/CMakeFiles. The issuing-file location
+	// is the reliable noise signal — a scratch CMakeLists is never project
+	// intent, whatever it does.
+	fileRel, fileUnderBuild := buildRelAbs(recordedBuildDir, file)
+	if fileUnderBuild && (pathHasSegment(fileRel, "CMakeFiles") || pathHasSegment(fileRel, "CMakeScratch")) {
+		return "", false
+	}
+
+	// (2) Strongest signal, regardless of where the call was ISSUED from: does
+	// it OPERATE on a build-dir location the codemodel lists sources under?
+	// Check the issuing file's dir AND the WORKING_DIRECTORY — a find_package
+	// prefix-tree config file can drive a real sub-build whose sources land in
+	// the build dir (codemodel-backed), which is a subproject to LIFT, not a
+	// prefix probe to note. Scratch locations don't count (cmake's own).
+	for _, loc := range []string{file, workingDir} {
+		if rel, ok := buildRelAbs(recordedBuildDir, loc); ok {
 			if pathHasSegment(rel, "CMakeFiles") || pathHasSegment(rel, "CMakeScratch") {
-				// try_compile / compiler-id scratch — cmake's own probes,
-				// never project intent. 100% confident: silent.
-				return "", false
+				continue
 			}
 			if buildSubtreeHasConsumedSources(slashDir(rel), consumedBuildRel) {
 				return signalBuildSubproject, true
 			}
-			return signalBuildDirOther, true
 		}
 	}
-	if prefixDir != "" {
-		if _, ok := relativeIfInsideRelaxed(prefixDir, file); ok {
-			return signalPrefixTree, true
-		}
+
+	// (3) Issued from a build-dir location but no codemodel sources beneath it.
+	if fileUnderBuild {
+		return signalBuildDirOther, true
 	}
-	// Neither the build dir nor the prefix tree — a bundled cmake module
+	// (4) Issued from the synthesized find_package prefix tree.
+	if _, ok := buildRelAbs(prefixDir, file); ok {
+		return signalPrefixTree, true
+	}
+	// (5) Neither the build dir nor the prefix tree — a bundled cmake module
 	// (/usr/share/cmake-*) or other system path. Confident noise: silent.
 	return "", false
+}
+
+// buildRelAbs returns the slash-form path of abs relative to root when abs is
+// an ABSOLUTE path inside root, else (_, false). The absolute guard matters
+// for the WORKING_DIRECTORY signal: the trace records it absolute when set,
+// and a relative WD must NOT be mistaken for a build-relative path (which
+// relativeIfInsideRelaxed would do for any non-absolute input).
+func buildRelAbs(root, abs string) (string, bool) {
+	if root == "" || abs == "" || !filepath.IsAbs(abs) {
+		return "", false
+	}
+	return relativeIfInsideRelaxed(root, abs)
 }
 
 // pathHasSegment reports whether the slash-form relative path rel contains
@@ -154,9 +190,10 @@ func slashDir(rel string) string {
 
 // buildSubtreeHasConsumedSources reports whether any codemodel-consumed
 // build-relative source lives under dir (the build-relative directory of the
-// issuing CMakeLists). An empty dir (issuing file at the build root) never
-// matches — the codemodel sources of a real subproject live under its own
-// build-dir subtree, not at the root.
+// call's operative location — its issuing CMakeLists or its WORKING_DIRECTORY).
+// An empty dir (the location at the build root) never matches — the codemodel
+// sources of a real subproject live under its own build-dir subtree, not at
+// the root.
 func buildSubtreeHasConsumedSources(dir string, consumedBuildRel map[string]bool) bool {
 	if dir == "" {
 		return false
