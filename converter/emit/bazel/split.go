@@ -216,6 +216,11 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 			Name:       pkg.Name,
 			SourceRoot: pkg.SourceRoot,
 			Targets:    targets,
+			// Propagate the common-copts constant label so each per-dir BUILD
+			// that holds a PrependCommonCopts target emits the load() +
+			// `COMMON_COPTS + [...]`. The label is absolute (//<root-pkg>:…),
+			// so every sub-package references the one constant file.
+			CommonCoptsLabel: pkg.CommonCoptsLabel,
 		}
 		// HeaderComments only on the root package.
 		if dir == "" {

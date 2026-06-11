@@ -319,6 +319,17 @@ type Package struct {
 	//
 	// Out-of-band (`json:"-"`): never serializes into --out-ir-json.
 	SourceByteReads []string `json:"-"`
+
+	// CommonCoptsLabel, when non-empty, is the Bazel label of the generated
+	// `common_compile_flags.bzl` that defines COMMON_COPTS (the longest copt
+	// prefix shared by every cc target, hoisted by commonflags' self-contained
+	// `defs.bzl` mode). When set, the emitter adds
+	// `load(<label>, "COMMON_COPTS")` to each BUILD that has a target with
+	// PrependCommonCopts and renders that target's copts as
+	// `COMMON_COPTS + [<delta>]`. Empty keeps the inline per-target emission.
+	//
+	// Out-of-band (`json:"-"`): an emit-shape signal, never serialized.
+	CommonCoptsLabel string `json:"-"`
 }
 
 // Provenance records the originating source location of a Target.
@@ -625,6 +636,13 @@ type Target struct {
 	// --out-sanitizer-features. Deterministic emit: the emitter
 	// sorts the list.
 	Features []string
+
+	// PrependCommonCopts, when true, makes the emitter render this target's
+	// copts as `COMMON_COPTS + [<flat copts>]` and ensures the BUILD `load()`s
+	// the constant (see Package.CommonCoptsLabel). Set by commonflags'
+	// self-contained `defs.bzl` hoist mode after it strips the shared prefix.
+	// Out-of-band emit signal; not serialized.
+	PrependCommonCopts bool `json:"-"`
 
 	// Data routes to Bazel's `data = [...]` attribute — build-
 	// order dependencies that don't propagate compile/link

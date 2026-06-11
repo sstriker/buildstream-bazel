@@ -466,6 +466,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	emitCCEmbedLoad(&buf, pkg)
 	emitCCHashLoad(&buf, pkg)
 	emitFortranLoad(&buf, pkg)
+	emitCommonCoptsLoad(&buf, pkg)
 	emitPackageDefaultVisibility(&buf)
 
 	for i, t := range pkg.Targets {
@@ -1638,6 +1639,23 @@ func emitCCHashLoad(buf *bytes.Buffer, pkg *ir.Package) {
 	}
 }
 
+// emitCommonCoptsLoad writes the
+// `load("<CommonCoptsLabel>", "COMMON_COPTS")` line when pkg has the
+// self-contained common-copts mode active (a CommonCoptsLabel set) AND at
+// least one target in THIS package references it (PrependCommonCopts). Scoped
+// per-package so a split sub-BUILD with no hoisted target stays load-free.
+func emitCommonCoptsLoad(buf *bytes.Buffer, pkg *ir.Package) {
+	if pkg.CommonCoptsLabel == "" {
+		return
+	}
+	for _, t := range pkg.Targets {
+		if t.PrependCommonCopts {
+			fmt.Fprintf(buf, "load(%q, \"COMMON_COPTS\")\n\n", pkg.CommonCoptsLabel)
+			return
+		}
+	}
+}
+
 // emitFortranLoad writes the
 // `load("@rules_buildstream_bazel//rules:fortran.bzl", "fortran_library")` line
 // when pkg has any KindFortranLibrary target, else nothing — a non-Fortran
@@ -2034,6 +2052,17 @@ func emitCCTargetWithOptions(w *bytes.Buffer, t ir.Target, opts Options) error {
 	}
 	if t.Kind == ir.KindFortranLibrary {
 		adaptFortranView(&v)
+	}
+	// Self-contained common-copts mode: prepend the loaded COMMON_COPTS
+	// constant to this target's copts (the shared prefix was stripped into it).
+	// `COMMON_COPTS + <rest>` keeps the toolchain-feature mode's order: the
+	// shared flags come first, then the per-target delta / select arms.
+	if t.PrependCommonCopts {
+		if v.CoptsExpr == "" {
+			v.CoptsExpr = "COMMON_COPTS"
+		} else {
+			v.CoptsExpr = "COMMON_COPTS + " + v.CoptsExpr
+		}
 	}
 	return ccRuleTmpl.Execute(w, v)
 }

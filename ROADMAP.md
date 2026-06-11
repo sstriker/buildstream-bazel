@@ -424,24 +424,27 @@ transition cleanly.
   `libc_top` / `all_files` so actions ship the sysroot. Larger; follows the
   `builtin_sysroot` item.
 
-- **Common compile flags → toolchain feature — SHIPPED (v1, opt-in
-  `--out-common-compile-flags-feature`); remaining: a self-contained
-  `defs.bzl` mode + defines.** v1 dedups the per-target `copts` repetition:
-  `commonflags.HoistCommonCopts` (converter/internal/emit/commonflags) finds the
-  longest copt PREFIX every cc target shares (cmake's project-wide
-  `CMAKE_<LANG>_FLAGS`), strips it from each target, tags them
-  `features = ["cmake_common_compile_flags"]`, and `commonflags.Emit` writes the
-  matching `feature()` `.bzl` the operator threads into whatever cc_toolchain the
-  build uses (converter-emitted, rules_cc auto, or their own — the same
-  operator-wired convention as sanitizerfeatures / the raw-flag lift). Prefix-only
-  so feature-flags-before-copts preserves cmake's order exactly; off by default
-  (byte-stable inline emission). **Remaining:** (1) a SELF-CONTAINED alternative
-  mode that needs no toolchain wiring — emit a shared `//:common_compile_flags.bzl`
-  defining `COMMON_COPTS`, `load()`ed by every BUILD as `copts = COMMON_COPTS +
-  [delta]` (works with the default toolchain out of the box; the toolchain-feature
-  mode is a no-op until the operator wires it); (2) extend the hoist to the common
-  `defines` prefix (today copts only); (3) survey-lens validation under a wired
-  toolchain. Sibling to the feature-flag lift above.
+- **Common compile flags hoist — SHIPPED (both modes, opt-in); remaining:
+  defines + a render gate / lens validation.** Dedups the per-target `copts`
+  repetition of cmake's project-wide `CMAKE_<LANG>_FLAGS`.
+  `commonflags.HoistCommonCopts*` (converter/internal/emit/commonflags) find the
+  longest copt PREFIX every cc target shares and strip it; prefix-only so the
+  reapplied flags stay before the per-target copts (cmake's order). Two opt-in
+  emit modes:
+  - `--out-common-compile-flags-feature` — writes a `cmake_common_compile_flags`
+    cc_toolchain `feature()` `.bzl` + tags each stripped target
+    `features = [...]`. Operator-wired into whatever toolchain the build uses
+    (same convention as sanitizerfeatures); a no-op until wired.
+  - `--emit-common-compile-flags-bzl` — SELF-CONTAINED: writes
+    `common_compile_flags.bzl` defining `COMMON_COPTS`, `load()`ed by every BUILD
+    as `copts = COMMON_COPTS + [delta]`. No toolchain wiring; works with the
+    default toolchain (validated: `bazel build` green on the emitted output).
+  Off by default (byte-stable inline emission). **Remaining:** (1) extend the
+  hoist to the common `defines` prefix (today copts only); (2) a render gate in
+  the `meta-cmake-sanitizer-features` mold (assert strip + tag/load + `.bzl`
+  shape on a fixture) to put it under the gates-in-CI net, plus survey-lens
+  validation under a wired toolchain for the feature mode. Sibling to the
+  feature-flag lift above.
 
 - **Agent-actionable prompts — AI post-pass (consumer) remains.** The
   deterministic **producer** (`conversion-todos.json`, on by default, wired
