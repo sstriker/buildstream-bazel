@@ -21,18 +21,28 @@ import (
 // just slower, without the precompiled artifact.
 //
 // Bazel cc_library has no PCH attribute, so the lift preserves effect
-// (1) by expanding the declared header list into ordered `-include`
-// copts pairs, and leaves effect (2) to the operator (a cc_toolchain
-// feature / custom rule; see docs/operator-toolchain-features.md). The
+// (1) by emitting a MIRROR of cmake's generated cmake_pch.h[xx] — a
+// synthesized header carrying `#pragma GCC system_header` plus the
+// declared #includes in order, materialized by a write_file rule — and
+// force-including that ONE file at the cmake_pch pair's ORIGINAL
+// compile-line position. Mirroring the header (rather than expanding
+// the list into N `-include` pairs, the previous shape) reproduces
+// cmake's semantics by construction:
+//
+//   - warnings INSIDE the declared PCH headers stay suppressed (the
+//     system_header pragma propagates to the files it includes), so
+//     -Werror projects behave identically;
+//   - the single -include occupies cmake's exact argv position, so a
+//     target that also adds its own non-PCH forced include keeps
+//     cmake's forced-include processing order;
+//   - per-config-VARYING header lists materialize as per-config
+//     mirrors selected per `//config:*` arm (multiconfig.go's
+//     perConfigPCHArms).
+//
+// The speed half stays operator-side (a cc_toolchain feature / custom
+// rule; see docs/operator-toolchain-features.md). The
 // `cmake-codegen-pch` tag + bazelidiom audit finding keep that residual
 // auditable.
-//
-// Known fidelity residue, accepted for v1: cmake's generated cmake_pch
-// header carries `#pragma GCC system_header`, so warnings INSIDE the
-// declared PCH headers are suppressed under cmake but fire under the
-// direct `-include`. If a corpus member trips on that (e.g. -Werror),
-// the fallback is materializing a literal mirror of cmake_pch.h[xx]
-// and force-including that one file instead.
 
 // pchResolver looks up the ordered target_precompile_headers entries of
 // the named cmake target for one language. ToIR builds it over the
@@ -43,7 +53,7 @@ import (
 // the fragment is the only signal it carries.
 type pchResolver func(targetName, language string) []fileapi.CompilePCH
 
-// pchLiftCtx bundles the inputs the forced-include expansion needs.
+// pchLiftCtx bundles the inputs the forced-include mirror needs.
 // pkgPath is the element's repo-root-relative landing package
 // (--bazel-package-path): compile actions run from Bazel's EXEC ROOT,
 // and copts are passed verbatim (unlike the `includes` attribute, which
@@ -51,83 +61,142 @@ type pchResolver func(targetName, language string) []fileapi.CompilePCH
 // file must carry the exec-root form `<pkgPath>/<rel>` — the same
 // re-anchoring rewriteGenruleCmd applies to genrule cmds. Empty pkgPath
 // (standalone convert, element at the workspace root) keeps bare
-// element-relative args.
+// element-relative args. cc registers the mirror write_file rules
+// (OutToGenrule dedups them, so a REUSE_FROM consumer shares the
+// owner's mirror instead of duplicating it).
 type pchLiftCtx struct {
 	resolve    pchResolver
 	cmakeSrc   string
 	cmakeBuild string
 	reanchor   func(string) string
 	pkgPath    string
+	cc         *codegenContext
 }
 
-// forcedIncludeCopts expands the cmake_pch artifacts splitCompileFragments
-// detected (and withheld from copts) into the forced-include copts pairs
-// that preserve cmake's PCH include semantics:
-//
-//	-include <hdr-1> -include <hdr-2> ...
-//
-// in the declared order (cmake_pch.h[xx] #includes them in that order, and
-// forced includes are processed left-to-right). The header list comes from
-// the compile group's own PrecompileHeaders when present (the declaring
-// target — exact and config-resolved), else from resolve() keyed by the
-// artifact path's owning `CMakeFiles/<target>.dir/` segment (the REUSE_FROM
-// consumer case).
-//
-// stageHdrs returns the source-tree headers the expansion references, as
-// reanchored element-relative paths, so the caller can ensure they're staged
-// as action inputs. The declaring target already carries them (cmake lists
-// PCH headers in the target's Sources), but a REUSE_FROM consumer does not.
-func (c pchLiftCtx) forcedIncludeCopts(artifacts []string, cg fileapi.CompileGroup) (copts, stageHdrs []string) {
-	if len(artifacts) == 0 {
-		return nil, nil
+// pchMirrorOut returns the element-relative path of the mirror header
+// for one (owner target, language, config) triple. The extension
+// follows cmake's own naming (cmake_pch.hxx for CXX, cmake_pch.h
+// otherwise); the dedicated cmake_pch/ tree keeps the synthesized file
+// from colliding with project sources. config is empty for the
+// baseline mirror and the cell name for a per-config one (the
+// config-varying-list shape).
+func pchMirrorOut(owner, language, config string) string {
+	ext := "h"
+	if strings.EqualFold(language, "CXX") {
+		ext = "hxx"
 	}
-	seen := map[string]bool{}
-	for _, art := range artifacts {
-		entries := cg.PrecompileHeaders
-		if len(entries) == 0 && c.resolve != nil {
-			if owner := pchArtifactOwner(art, c.cmakeBuild); owner != "" {
-				entries = c.resolve(owner, cg.Language)
-			}
+	dir := "cmake_pch/" + sanitizeOutputName(owner)
+	if config != "" {
+		dir += "/" + sanitizeOutputName(config)
+	}
+	return dir + "/cmake_pch." + ext
+}
+
+// ensureMirror materializes (once) the mirror header for an owner's
+// declared PCH list and returns its element-relative out path plus the
+// source-tree headers the mirror references (reanchored element-relative;
+// the caller stages them as action inputs of the CONSUMING rule — the
+// declaring target already carries them via its codemodel Sources, a
+// REUSE_FROM consumer does not). Repeated calls (the REUSE_FROM
+// consumer after the owner, per-language subs) reuse the registered
+// rule and still return the staging list.
+func (c pchLiftCtx) ensureMirror(owner, language, config string, entries []fileapi.CompilePCH) (outRel string, stageHdrs []string) {
+	outRel = pchMirrorOut(owner, language, config)
+	lines := []string{
+		"/* Mirror of cmake's generated cmake_pch (target_precompile_headers,",
+		"   target " + owner + "): force-included first into every TU, exactly",
+		"   as cmake compiles. The system_header pragma propagates to the",
+		"   included headers, matching cmake's warning suppression. */",
+		"#pragma GCC system_header",
+	}
+	for _, e := range entries {
+		line, stage := c.includeLine(e.Header)
+		if line == "" {
+			continue
 		}
-		for _, e := range entries {
-			arg, stage := c.includeArg(e.Header)
-			if arg == "" || seen[arg] {
-				continue
-			}
-			seen[arg] = true
-			copts = append(copts, "-include", arg)
-			if stage != "" {
-				stageHdrs = append(stageHdrs, stage)
-			}
+		lines = append(lines, line)
+		if stage != "" {
+			stageHdrs = append(stageHdrs, stage)
 		}
 	}
-	return copts, stageHdrs
+	if c.cc == nil {
+		return outRel, stageHdrs
+	}
+	if _, exists := c.cc.OutToGenrule[outRel]; exists {
+		return outRel, stageHdrs
+	}
+	body := []byte(strings.Join(lines, "\n") + "\n")
+	name := "pch_" + sanitizePathToNameStem(outRel)
+	tags := []string{"cmake-codegen", "cmake-codegen-pch"}
+	c.cc.Genrules = append(c.cc.Genrules, bakeFileTarget(name, outRel, body, tags))
+	c.cc.OutToGenrule[outRel] = name
+	return outRel, stageHdrs
 }
 
 // apply is the rule-level application of the lift, shared by lowerTarget's
-// main compile-group path and splitCompileGroups' per-language subs: expand
-// the withheld artifacts into forced-include copts, stage the expansion's
-// source-tree headers, and tag the user-visible target. The tag matters
-// especially for the REUSE_FROM shape, whose codemodel PrecompileHeaders is
-// null — without the artifact-driven tag it would lose its PCH silently.
+// main compile-group path and splitCompileGroups' per-language subs.
+// splitCompileFragments leaves each cmake_pch `-include` pair IN PLACE
+// (positional fidelity); apply rewrites the artifact argument to the
+// mirror's exec-root path, materializes the mirror rule, stages the
+// mirror (and, for REUSE_FROM consumers, the source-tree headers it
+// references) into srcs, and tags the user-visible target. The tag
+// matters especially for the REUSE_FROM shape, whose codemodel
+// PrecompileHeaders is null — without the artifact-driven handling it
+// would lose its PCH silently.
 //
-// Staging slot: headers not already present land in SRCS, not hdrs — they
+// Staging slot: inputs not already present land in SRCS, not hdrs — they
 // are compile inputs of this rule's own TUs only (the forced include), and
 // hdrs would export them to dependents, the include-over-grant shape the
-// emit-side `cmake-include-over-grant` warning exists to flag. In practice
-// the append only fires for REUSE_FROM consumers: a declaring target
-// already carries its PCH headers in hdrs via the t.Sources walk (cmake
-// lists them in the target's sources), which the dedup honors.
+// emit-side `cmake-include-over-grant` warning exists to flag.
 func (c pchLiftCtx) apply(artifacts []string, cg fileapi.CompileGroup,
 	copts, srcs, hdrs []string, irt *ir.Target) (newCopts, newSrcs []string) {
-	pchCopts, pchHdrs := c.forcedIncludeCopts(artifacts, cg)
-	copts = append(copts, pchCopts...)
-	for _, h := range pchHdrs {
+	if len(artifacts) == 0 {
+		return copts, srcs
+	}
+	stage := []string{}
+	seenArg := map[string]bool{}
+	out := copts[:0]
+	for i := 0; i < len(copts); i++ {
+		tok := copts[i]
+		if (tok != "-include" && tok != "-include-pch") || i+1 >= len(copts) || !isCMakePCHPath(copts[i+1]) {
+			out = append(out, tok)
+			continue
+		}
+		art := copts[i+1]
+		i++
+		entries := cg.PrecompileHeaders
+		owner := pchArtifactOwner(art, c.cmakeBuild)
+		if owner == "" {
+			owner = irt.Name
+		}
+		if len(entries) == 0 && c.resolve != nil {
+			entries = c.resolve(owner, cg.Language)
+		}
+		if len(entries) == 0 {
+			// No declared list recoverable (orphan artifact): drop the
+			// raw build-dir pair — emitting a convert-time path would
+			// never resolve — and leave the tag below as the audit trail.
+			continue
+		}
+		mirrorRel, hdrsToStage := c.ensureMirror(owner, cg.Language, "", entries)
+		arg := c.execRootPath(mirrorRel)
+		if seenArg[arg] {
+			continue
+		}
+		seenArg[arg] = true
+		// -include-pch expects a precompiled artifact; the mirror is a
+		// plain header, so the flag normalizes to -include.
+		out = append(out, "-include", arg)
+		stage = append(stage, mirrorRel)
+		stage = append(stage, hdrsToStage...)
+	}
+	copts = out
+	for _, h := range stage {
 		if !stringSliceContains(srcs, h) && !stringSliceContains(hdrs, h) {
 			srcs = append(srcs, h)
 		}
 	}
-	if len(artifacts) > 0 && !stringSliceContains(irt.Tags, "cmake-codegen-pch") {
+	if !stringSliceContains(irt.Tags, "cmake-codegen-pch") {
 		irt.Tags = append(irt.Tags, "cmake-codegen-pch")
 	}
 	return copts, srcs
@@ -148,47 +217,47 @@ func pchArtifactOwner(artifact, cmakeBuild string) string {
 	return owner
 }
 
-// includeArg maps one codemodel precompileHeaders entry onto the argument
-// of a `-include` copt, plus (when the entry is a source-tree file) the
-// element-relative path the caller should stage as an action input.
+// includeLine maps one codemodel precompileHeaders entry onto the
+// `#include` line the mirror header carries, plus (when the entry is a
+// source-tree file) the element-relative path the caller should stage
+// as an action input.
 //
 // The entry shapes mirror what cmake writes into cmake_pch.h[xx]:
 //
-//   - `<vector>`   (angle form)    → `vector`, resolved via the include search
-//     chain (`-include` falls back to the <...> chain after the quote chain).
-//   - `"other.h"`  (verbatim form) → `other.h`, resolved via the target's
-//     include paths the lift already replicates.
-//   - absolute source-tree path    → exec-root path `<pkgPath>/<element-rel>`
-//     (compile actions run from the exec root; see pchLiftCtx.pkgPath), with
-//     the header itself staged via stage.
-//   - absolute build-dir path      → exec-root path of the generated header
-//     (`<pkgPath>/<build-rel>`; resolves once its genrule stages it — the
+//   - `<vector>`   (angle form)    → `#include <vector>`.
+//   - `"other.h"`  (verbatim form) → `#include "other.h"`, resolved via the
+//     target's include paths the lift already replicates.
+//   - absolute source-tree path    → `#include "<pkgPath>/<element-rel>"`
+//     (compile actions run from the exec root; see pchLiftCtx.pkgPath),
+//     with the header itself staged via stage.
+//   - absolute build-dir path      → exec-root include of the generated
+//     header (resolves once its genrule stages it — the
 //     configure_file/codegen lifts own that half).
 //   - other absolute path          → kept verbatim (out-of-tree system
 //     header; cmake_pch baked the same absolute path).
 //   - bare relative path           → kept verbatim (a generator-expression
 //     result cmake didn't resolve; it rides the include search chain).
-func (c pchLiftCtx) includeArg(h string) (arg, stage string) {
+func (c pchLiftCtx) includeLine(h string) (line, stage string) {
 	switch {
 	case h == "":
 		return "", ""
 	case strings.HasPrefix(h, "<") && strings.HasSuffix(h, ">"):
-		return strings.TrimSuffix(strings.TrimPrefix(h, "<"), ">"), ""
+		return "#include " + h, ""
 	case strings.HasPrefix(h, `"`):
-		return stripBalancedQuotes(h), ""
+		return "#include \"" + stripBalancedQuotes(h) + "\"", ""
 	case filepath.IsAbs(h):
 		if rel, ok := relativeIfInside(c.cmakeSrc, h); ok {
 			if c.reanchor != nil {
 				rel = c.reanchor(rel)
 			}
-			return c.execRootPath(rel), rel
+			return "#include \"" + c.execRootPath(rel) + "\"", rel
 		}
 		if rel, ok := relativeIfInsideRelaxed(c.cmakeBuild, h); ok {
-			return c.execRootPath(rel), ""
+			return "#include \"" + c.execRootPath(rel) + "\"", ""
 		}
-		return h, ""
+		return "#include \"" + h + "\"", ""
 	default:
-		return h, ""
+		return "#include \"" + h + "\"", ""
 	}
 }
 
@@ -211,8 +280,9 @@ func (c pchLiftCtx) execRootPath(rel string) string {
 // `-include` / `-include-pch` flag only when the arm held a PCH artifact and
 // no other non-flag token remains that could be the flag's argument (a
 // genuine per-config forced include of a project header keeps its pair).
-// The forced-include semantics themselves ride the baseline copts via
-// the forcedIncludeCopts lift, not the per-config arms.
+// The forced-include semantics themselves ride the baseline copts via the
+// mirror lift; a per-config-VARYING declared list additionally re-expands
+// per arm via perConfigPCHArms (multiconfig.go).
 func filterPCHCoptArm(values []string) []string {
 	hadPCH := false
 	out := values[:0]
@@ -244,4 +314,31 @@ func filterPCHCoptArm(values []string) []string {
 		filtered = append(filtered, v)
 	}
 	return filtered
+}
+
+// multiConfigPCHCtx reconstructs the lift context for the multi-config
+// per-config-divergence pass (perConfigPCHArms) from assemble-level
+// state: same fields lowerTarget's per-target pchLiftCtx carries — the
+// umbrella reanchor derives from hostSrc/cmakeSrc exactly as
+// targetLowerCtx.umbrellaReanchor does.
+func multiConfigPCHCtx(ti targetIndexes, opts Options, cc *codegenContext, cmakeSrc, cmakeBuild, hostSrc string) *pchLiftCtx {
+	reanchor := func(rel string) string { return rel }
+	if hostSrc != "" && hostSrc != cmakeSrc {
+		if prefix, inside := relativeIfInside(hostSrc, cmakeSrc); inside && prefix != "" && prefix != "." {
+			reanchor = func(rel string) string {
+				if rel == "" {
+					return rel
+				}
+				return filepath.Join(prefix, rel)
+			}
+		}
+	}
+	return &pchLiftCtx{
+		resolve:    ti.pchResolve,
+		cmakeSrc:   cmakeSrc,
+		cmakeBuild: cmakeBuild,
+		reanchor:   reanchor,
+		pkgPath:    opts.BazelPackagePath,
+		cc:         cc,
+	}
 }

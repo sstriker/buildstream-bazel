@@ -80,17 +80,18 @@ func pchFindTarget(t *testing.T, pkg *ir.Package, name string) *ir.Target {
 }
 
 // TestLowerTarget_PCH_ForcedIncludeLift confirms the declaring target's
-// cmake_pch `-include` pair is replaced by the declared header list, in
-// order, with each codemodel entry shape mapped onto a workable `-include`
-// argument: source-tree absolute → element-relative (and staged), angle →
-// bare name riding the include search chain, verbatim-quoted → unquoted.
+// cmake_pch `-include` pair is rewritten IN PLACE to the synthesized
+// mirror header's path (positional fidelity: the forced include keeps
+// cmake's argv position relative to other flags), the mirror rule is
+// registered with `#pragma GCC system_header` plus the declared
+// #includes in order, and the mirror is staged into srcs.
 func TestLowerTarget_PCH_ForcedIncludeLift(t *testing.T) {
 	pkg, err := ToIR(pchReply(), &ninja.Graph{}, Options{})
 	if err != nil {
 		t.Fatalf("ToIR: %v", err)
 	}
 	core := pchFindTarget(t, pkg, "core")
-	want := []string{"-include", "pch.h", "-include", "vector", "-include", "other.h"}
+	want := []string{"-include", "cmake_pch/core/cmake_pch.hxx"}
 	var got []string
 	for i := 0; i < len(core.Copts); i++ {
 		if core.Copts[i] == "-include" && i+1 < len(core.Copts) {
@@ -102,26 +103,42 @@ func TestLowerTarget_PCH_ForcedIncludeLift(t *testing.T) {
 		t.Errorf("forced-include copts = %v, want %v (full copts: %v)", got, want, core.Copts)
 	}
 	for _, c := range core.Copts {
-		if strings.Contains(c, "cmake_pch") {
-			t.Errorf("cmake_pch artifact leaked into copts: %v", core.Copts)
+		if strings.Contains(c, "CMakeFiles") {
+			t.Errorf("cmake_pch build-dir artifact leaked into copts: %v", core.Copts)
 		}
 	}
 	if !stringSliceContains(core.Tags, "cmake-codegen-pch") {
 		t.Errorf("expected cmake-codegen-pch tag; got %v", core.Tags)
 	}
-	if !stringSliceContains(core.Hdrs, "pch.h") {
-		t.Errorf("source-tree PCH header not staged in Hdrs: %v", core.Hdrs)
+	if !stringSliceContains(core.Srcs, "cmake_pch/core/cmake_pch.hxx") {
+		t.Errorf("mirror header not staged in srcs: %v", core.Srcs)
+	}
+	mirror := pchFindTarget(t, pkg, "pch_cmake_pch_core_cmake_pch_hxx")
+	if mirror.Kind != ir.KindWriteFile || mirror.WriteFileOut != "cmake_pch/core/cmake_pch.hxx" {
+		t.Fatalf("mirror rule shape: kind=%v out=%q", mirror.Kind, mirror.WriteFileOut)
+	}
+	body := strings.Join(mirror.WriteFileContent, "\n")
+	iSys := strings.Index(body, "#pragma GCC system_header")
+	iPch := strings.Index(body, `#include "pch.h"`)
+	iVec := strings.Index(body, "#include <vector>")
+	iOther := strings.Index(body, `#include "other.h"`)
+	if !(iSys >= 0 && iSys < iPch && iPch < iVec && iVec < iOther) {
+		t.Errorf("mirror body must carry system_header then the declared includes in order; got:\n%s", body)
+	}
+	if !stringSliceContains(mirror.Tags, "cmake-codegen-pch") {
+		t.Errorf("mirror rule missing the pch facet: %v", mirror.Tags)
 	}
 }
 
 // TestLowerTarget_PCH_ReuseFromConsumer confirms the REUSE_FROM shape: the
 // consumer's codemodel PrecompileHeaders is null, so the lift must resolve
 // the owning target from the fragment's CMakeFiles/<owner>.dir segment and
-// expand the OWNER's declared list — plus stage the source-tree headers the
-// consumer doesn't carry in its own Sources, and tag it (before the lift
-// this shape lost its forced include silently, with no tag at all). The
-// staging slot is SRCS, not hdrs: the header is a compile input of this
-// rule's own TUs only, and hdrs would export it to dependents (the
+// force-include the OWNER's mirror — sharing the owner's registered rule,
+// not duplicating it — plus stage the mirror AND the source-tree headers
+// it references (the consumer doesn't carry them in its own Sources), and
+// tag it (before the lift this shape lost its forced include silently).
+// The staging slot is SRCS, not hdrs: the header is a compile input of
+// this rule's own TUs only, and hdrs would export it to dependents (the
 // include-over-grant shape).
 func TestLowerTarget_PCH_ReuseFromConsumer(t *testing.T) {
 	pkg, err := ToIR(pchReply(), &ninja.Graph{}, Options{})
@@ -130,20 +147,32 @@ func TestLowerTarget_PCH_ReuseFromConsumer(t *testing.T) {
 	}
 	user := pchFindTarget(t, pkg, "user")
 	joined := strings.Join(user.Copts, " ")
-	if !strings.Contains(joined, "-include pch.h") {
-		t.Errorf("REUSE_FROM consumer missing owner's forced include; copts = %v", user.Copts)
+	if !strings.Contains(joined, "-include cmake_pch/core/cmake_pch.hxx") {
+		t.Errorf("REUSE_FROM consumer missing the owner's mirror include; copts = %v", user.Copts)
 	}
-	if strings.Contains(joined, "cmake_pch") {
-		t.Errorf("cmake_pch artifact leaked into consumer copts: %v", user.Copts)
+	if strings.Contains(joined, "CMakeFiles") {
+		t.Errorf("cmake_pch build-dir artifact leaked into consumer copts: %v", user.Copts)
 	}
 	if !stringSliceContains(user.Tags, "cmake-codegen-pch") {
 		t.Errorf("REUSE_FROM consumer should carry the PCH tag; got %v", user.Tags)
 	}
-	if !stringSliceContains(user.Srcs, "pch.h") {
-		t.Errorf("owner's source-tree PCH header not staged into consumer srcs: %v", user.Srcs)
+	for _, want := range []string{"cmake_pch/core/cmake_pch.hxx", "pch.h"} {
+		if !stringSliceContains(user.Srcs, want) {
+			t.Errorf("consumer srcs missing staged %q: %v", want, user.Srcs)
+		}
 	}
 	if stringSliceContains(user.Hdrs, "pch.h") {
 		t.Errorf("staged PCH header must not be exported via hdrs: %v", user.Hdrs)
+	}
+	// Exactly ONE mirror rule serves both the owner and the consumer.
+	n := 0
+	for _, tgt := range pkg.Targets {
+		if tgt.WriteFileOut == "cmake_pch/core/cmake_pch.hxx" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("mirror rule count = %d, want exactly 1 (shared)", n)
 	}
 }
 
@@ -212,70 +241,69 @@ func TestLowerTarget_NoPCH_NoTag(t *testing.T) {
 	}
 }
 
-// TestPCHIncludeArg pins the per-entry mapping of codemodel
-// precompileHeaders shapes onto `-include` arguments.
-func TestPCHIncludeArg(t *testing.T) {
+// TestPCHIncludeLine pins the per-entry mapping of codemodel
+// precompileHeaders shapes onto the mirror header's #include lines.
+func TestPCHIncludeLine(t *testing.T) {
 	cases := []struct {
 		name      string
 		header    string
-		wantArg   string
+		wantLine  string
 		wantStage string
 	}{
-		{"source-tree absolute", "/src/inc/pch.h", "inc/pch.h", "inc/pch.h"},
-		{"angle system header", "<vector>", "vector", ""},
-		{"verbatim quoted", `"other.h"`, "other.h", ""},
-		{"build-dir generated", "/b/gen/config.h", "gen/config.h", ""},
-		{"out-of-tree absolute", "/usr/include/zlib.h", "/usr/include/zlib.h", ""},
-		{"bare relative (unresolved genex)", "dbg.h", "dbg.h", ""},
+		{"source-tree absolute", "/src/inc/pch.h", `#include "inc/pch.h"`, "inc/pch.h"},
+		{"angle system header", "<vector>", "#include <vector>", ""},
+		{"verbatim quoted", `"other.h"`, `#include "other.h"`, ""},
+		{"build-dir generated", "/b/gen/config.h", `#include "gen/config.h"`, ""},
+		{"out-of-tree absolute", "/usr/include/zlib.h", `#include "/usr/include/zlib.h"`, ""},
+		{"bare relative (unresolved genex)", "dbg.h", `#include "dbg.h"`, ""},
 		{"empty", "", "", ""},
 	}
 	c := pchLiftCtx{cmakeSrc: "/src", cmakeBuild: "/b"}
 	for _, tc := range cases {
-		arg, stage := c.includeArg(tc.header)
-		if arg != tc.wantArg || stage != tc.wantStage {
-			t.Errorf("%s: includeArg(%q) = (%q, %q), want (%q, %q)",
-				tc.name, tc.header, arg, stage, tc.wantArg, tc.wantStage)
+		line, stage := c.includeLine(tc.header)
+		if line != tc.wantLine || stage != tc.wantStage {
+			t.Errorf("%s: includeLine(%q) = (%q, %q), want (%q, %q)",
+				tc.name, tc.header, line, stage, tc.wantLine, tc.wantStage)
 		}
 	}
 }
 
-// TestPCHIncludeArg_Reanchor confirms the umbrella-promotion reanchor is
+// TestPCHIncludeLine_Reanchor confirms the umbrella-promotion reanchor is
 // applied to source-tree entries (LLVM shape: labels rooted above cmakeSrc).
-func TestPCHIncludeArg_Reanchor(t *testing.T) {
+func TestPCHIncludeLine_Reanchor(t *testing.T) {
 	c := pchLiftCtx{
 		cmakeSrc:   "/src",
 		cmakeBuild: "/b",
 		reanchor:   func(rel string) string { return "llvm/" + rel },
 	}
-	arg, stage := c.includeArg("/src/pch.h")
-	if arg != "llvm/pch.h" || stage != "llvm/pch.h" {
-		t.Errorf("includeArg with reanchor = (%q, %q), want (llvm/pch.h, llvm/pch.h)", arg, stage)
+	line, stage := c.includeLine("/src/pch.h")
+	if line != `#include "llvm/pch.h"` || stage != "llvm/pch.h" {
+		t.Errorf("includeLine with reanchor = (%q, %q), want (#include \"llvm/pch.h\", llvm/pch.h)", line, stage)
 	}
 }
 
-// TestPCHIncludeArg_PackagePath confirms in-element `-include` arguments
-// carry the exec-root form when the element lands in a subpackage
-// (--bazel-package-path): compile actions run from the exec root and copts
-// are verbatim — unlike the `includes` attribute, which Bazel
-// package-prefixes — so a bare element-relative path would fail to resolve
-// (SDL's `src/SDL_internal.h` under the build lens's elements/sdl mount).
-// The staged hdr stays element-relative (it's a package-level Hdrs entry).
-func TestPCHIncludeArg_PackagePath(t *testing.T) {
+// TestPCHIncludeLine_PackagePath confirms in-element mirror #includes carry
+// the exec-root form when the element lands in a subpackage
+// (--bazel-package-path): compile actions run from the exec root and the
+// mirror's quote-includes resolve relative to it (SDL's
+// `src/SDL_internal.h` under the build lens's elements/sdl mount). The
+// staged hdr stays element-relative (it's a package-level srcs entry).
+func TestPCHIncludeLine_PackagePath(t *testing.T) {
 	c := pchLiftCtx{cmakeSrc: "/src", cmakeBuild: "/b", pkgPath: "elements/sdl"}
-	arg, stage := c.includeArg("/src/src/SDL_internal.h")
-	if arg != "elements/sdl/src/SDL_internal.h" || stage != "src/SDL_internal.h" {
-		t.Errorf("includeArg with pkgPath = (%q, %q), want (elements/sdl/src/SDL_internal.h, src/SDL_internal.h)", arg, stage)
+	line, stage := c.includeLine("/src/src/SDL_internal.h")
+	if line != `#include "elements/sdl/src/SDL_internal.h"` || stage != "src/SDL_internal.h" {
+		t.Errorf("includeLine with pkgPath = (%q, %q)", line, stage)
 	}
-	if arg, _ := c.includeArg("/b/gen/config.h"); arg != "elements/sdl/gen/config.h" {
-		t.Errorf("build-dir includeArg with pkgPath = %q, want elements/sdl/gen/config.h", arg)
+	if line, _ := c.includeLine("/b/gen/config.h"); line != `#include "elements/sdl/gen/config.h"` {
+		t.Errorf("build-dir includeLine with pkgPath = %q", line)
 	}
 	// Out-of-tree absolutes and angle/verbatim/bare entries never get the
 	// package prefix — they don't name in-element files.
-	if arg, _ := c.includeArg("/usr/include/zlib.h"); arg != "/usr/include/zlib.h" {
-		t.Errorf("out-of-tree includeArg with pkgPath = %q, want /usr/include/zlib.h", arg)
+	if line, _ := c.includeLine("/usr/include/zlib.h"); line != `#include "/usr/include/zlib.h"` {
+		t.Errorf("out-of-tree includeLine with pkgPath = %q", line)
 	}
-	if arg, _ := c.includeArg("<vector>"); arg != "vector" {
-		t.Errorf("angle includeArg with pkgPath = %q, want vector", arg)
+	if line, _ := c.includeLine("<vector>"); line != "#include <vector>" {
+		t.Errorf("angle includeLine with pkgPath = %q", line)
 	}
 }
 
@@ -352,7 +380,7 @@ func TestLowerMultiConfigDeltas_StripsPCHArmTokens(t *testing.T) {
 			},
 		},
 	}
-	lowerMultiConfigDeltas(pkg, byCfg, []string{"Release", "Debug"}, "/src", "/b", nil)
+	lowerMultiConfigDeltas(pkg, byCfg, []string{"Release", "Debug"}, "/src", "/b", nil, nil)
 	copts := pkg.Targets[0].PerPlatform["copts"]
 	if copts == nil {
 		t.Fatalf("copts arms missing: %v", pkg.Targets[0].PerPlatform)
@@ -366,5 +394,125 @@ func TestLowerMultiConfigDeltas_StripsPCHArmTokens(t *testing.T) {
 	}
 	if got := copts["//config:release"]; len(got) != 1 || got[0] != "-O3" {
 		t.Errorf("Release arm = %v, want [-O3]", got)
+	}
+}
+
+// TestSplitCompileFragments_ForcedIncludePairs pins the atomic-pair
+// handling: (a) repeated NON-PCH forced includes keep both pairs in
+// order — the generic per-flag dedup used to swallow the second
+// `-include` and leave its argument as an orphan bare token; (b) the
+// cmake_pch pair stays IN PLACE (positional fidelity) and is surfaced
+// via pchArtifacts; (c) identical pairs dedup at pair granularity.
+func TestSplitCompileFragments_ForcedIncludePairs(t *testing.T) {
+	frags := []fileapi.CommandFragment{
+		{Fragment: "-include first.h -O2 -include /b/CMakeFiles/core.dir/cmake_pch.hxx -include second.h -include first.h"},
+	}
+	copts, _, arts := splitCompileFragments(frags)
+	want := []string{
+		"-include", "first.h",
+		"-O2",
+		"-include", "/b/CMakeFiles/core.dir/cmake_pch.hxx",
+		"-include", "second.h",
+	}
+	if !reflect.DeepEqual(copts, want) {
+		t.Errorf("copts = %v, want %v", copts, want)
+	}
+	if len(arts) != 1 || arts[0] != "/b/CMakeFiles/core.dir/cmake_pch.hxx" {
+		t.Errorf("pchArtifacts = %v, want the cmake_pch path", arts)
+	}
+}
+
+// TestLowerTarget_PCH_PositionalMirror confirms the mirror's -include
+// lands at the cmake_pch pair's ORIGINAL argv position — a target that
+// also adds its own non-PCH forced include keeps cmake's forced-include
+// processing order (one forced header may depend on the other's macros).
+func TestLowerTarget_PCH_PositionalMirror(t *testing.T) {
+	r := pchReply()
+	core := r.Targets["core::@"]
+	core.CompileGroups[0].CompileCommandFragments = []fileapi.CommandFragment{
+		{Fragment: "-include /b/CMakeFiles/core.dir/cmake_pch.hxx -include own_forced.h -O2"},
+	}
+	r.Targets["core::@"] = core
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := pchFindTarget(t, pkg, "core")
+	joined := strings.Join(tgt.Copts, " ")
+	iMirror := strings.Index(joined, "-include cmake_pch/core/cmake_pch.hxx")
+	iOwn := strings.Index(joined, "-include own_forced.h")
+	if !(iMirror >= 0 && iOwn >= 0 && iMirror < iOwn) {
+		t.Errorf("mirror include must PRECEDE the target's own forced include (cmake's order); copts = %v", tgt.Copts)
+	}
+}
+
+// TestPerConfigPCHArms covers the config-varying declared list: the
+// baseline mirror (primary list) moves into the primary config's arm,
+// each divergent config gets its own mirror in its arm, and every
+// mirror stages into srcs. The non-divergent case (same list, only the
+// artifact path differing per config) must stay entirely on the
+// baseline.
+func TestPerConfigPCHArms(t *testing.T) {
+	mk := func(cfg string, headers ...string) fileapi.Target {
+		var entries []fileapi.CompilePCH
+		for _, h := range headers {
+			entries = append(entries, fileapi.CompilePCH{Header: h})
+		}
+		return fileapi.Target{
+			Name: "foo",
+			CompileGroups: []fileapi.CompileGroup{{
+				Language:          "CXX",
+				PrecompileHeaders: entries,
+				CompileCommandFragments: []fileapi.CommandFragment{
+					{Fragment: "-include /b/CMakeFiles/foo.dir/" + cfg + "/cmake_pch.hxx"},
+				},
+			}},
+		}
+	}
+	newCtx := func() pchLiftCtx {
+		return pchLiftCtx{cmakeSrc: "/src", cmakeBuild: "/b", cc: newCodegenContext()}
+	}
+
+	// Divergent lists: Debug adds dbg.h.
+	pch := newCtx()
+	baseRel, _ := pch.ensureMirror("foo", "CXX", "", []fileapi.CompilePCH{{Header: `"common.h"`}})
+	tgt := &ir.Target{Name: "foo", Kind: ir.KindCCLibrary,
+		Copts: []string{"-include", baseRel, "-O2"}, Srcs: []string{baseRel}}
+	views := map[string]fileapi.Target{
+		"Release": mk("Release", `"common.h"`),
+		"Debug":   mk("Debug", `"common.h"`, `"dbg.h"`),
+	}
+	perConfigPCHArms(tgt, views, []string{"Release", "Debug"}, map[string]map[string]fileapi.Target{"foo::@": views}, map[string]string{"foo": "foo::@"}, pch)
+	if strings.Contains(strings.Join(tgt.Copts, " "), "-include") {
+		t.Errorf("baseline pair must move into the arms; copts = %v", tgt.Copts)
+	}
+	arms := tgt.PerPlatform["copts"]
+	if got := strings.Join(arms["//config:release"], " "); got != "-include cmake_pch/foo/cmake_pch.hxx" {
+		t.Errorf("release arm = %q, want the baseline mirror pair", got)
+	}
+	if got := strings.Join(arms["//config:debug"], " "); got != "-include cmake_pch/foo/Debug/cmake_pch.hxx" {
+		t.Errorf("debug arm = %q, want the per-config mirror pair", got)
+	}
+	if !stringSliceContains(tgt.Srcs, "cmake_pch/foo/Debug/cmake_pch.hxx") {
+		t.Errorf("debug mirror not staged: %v", tgt.Srcs)
+	}
+	if _, ok := pch.cc.OutToGenrule["cmake_pch/foo/Debug/cmake_pch.hxx"]; !ok {
+		t.Error("debug mirror rule not registered")
+	}
+
+	// Non-divergent lists: same headers, config-varying artifact path only.
+	pch2 := newCtx()
+	base2, _ := pch2.ensureMirror("foo", "CXX", "", []fileapi.CompilePCH{{Header: `"common.h"`}})
+	tgt2 := &ir.Target{Name: "foo", Kind: ir.KindCCLibrary, Copts: []string{"-include", base2}}
+	views2 := map[string]fileapi.Target{
+		"Release": mk("Release", `"common.h"`),
+		"Debug":   mk("Debug", `"common.h"`),
+	}
+	perConfigPCHArms(tgt2, views2, []string{"Release", "Debug"}, map[string]map[string]fileapi.Target{"foo::@": views2}, map[string]string{"foo": "foo::@"}, pch2)
+	if len(tgt2.PerPlatform) != 0 {
+		t.Errorf("non-divergent lists must not produce arms: %v", tgt2.PerPlatform)
+	}
+	if !reflect.DeepEqual(tgt2.Copts, []string{"-include", base2}) {
+		t.Errorf("non-divergent baseline must stay; copts = %v", tgt2.Copts)
 	}
 }

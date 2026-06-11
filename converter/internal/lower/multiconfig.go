@@ -33,7 +33,7 @@ import (
 // Returns when byConfig is empty (single-config reply) or when no
 // target has cross-config deltas (every fact agreed across cells).
 // Pure function on pkg.Targets except for PerPlatform mutation.
-func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]fileapi.Target, configNames []string, cmakeSrc, cmakeBuild string, idToName map[string]string) {
+func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]fileapi.Target, configNames []string, cmakeSrc, cmakeBuild string, idToName map[string]string, pch *pchLiftCtx) {
 	if len(byConfig) == 0 || len(configNames) < 2 {
 		return
 	}
@@ -52,10 +52,15 @@ func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]file
 		return
 	}
 
-	// Index pkg.Targets by name for fast match.
+	// Index pkg.Targets by name for fast match, and invert idToName for
+	// the per-config PCH owner lookups (byConfig is keyed by target ID).
 	byName := map[string]*ir.Target{}
 	for i := range pkg.Targets {
 		byName[pkg.Targets[i].Name] = &pkg.Targets[i]
+	}
+	nameToID := map[string]string{}
+	for id, name := range idToName {
+		nameToID[name] = id
 	}
 
 	for _, fold := range folds {
@@ -65,6 +70,11 @@ func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]file
 		}
 		applyPartition(tgt, "defines", fold.Defines, cmakeSrc, cmakeBuild)
 		applyPartition(tgt, "copts", fold.CompileFragments, cmakeSrc, cmakeBuild)
+		if pch != nil {
+			if id, ok := nameToID[fold.Name]; ok {
+				perConfigPCHArms(tgt, byConfig[id], nonFeatureConfigs, byConfig, nameToID, *pch)
+			}
+		}
 		applyPartition(tgt, "linkopts", fold.LinkFragments, cmakeSrc, cmakeBuild)
 		// Includes are routed to the "includes" Bazel attribute
 		// rather than copts -I, matching the rest of the lift's
@@ -107,6 +117,162 @@ func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]file
 		// arms are all empty.
 		pruneEmptyPerPlatform(tgt)
 	}
+}
+
+// perConfigPCHArms closes the config-varying PCH gap: when a target's
+// declared target_precompile_headers LIST differs across configurations
+// (a $<CONFIG:...> genex in the declaration), the baseline mirror —
+// built from the primary configuration's list — is wrong for the other
+// configs. Detect the divergence from the per-config codemodel views,
+// synthesize a per-config mirror for each non-primary list, MOVE the
+// forced include from the baseline copts into per-config select() arms
+// (primary arm reuses the baseline mirror — its list IS the primary
+// list, so ensureMirror dedups to the registered rule), and stage every
+// config's mirror unconditionally in baseline srcs (cheap inputs;
+// per-config srcs arms would buy nothing).
+//
+// The overwhelmingly common case — same list in every config, only the
+// cmake_pch artifact PATH differing by config dir — is detected as
+// non-divergent and stays entirely on the baseline mirror
+// (filterPCHCoptArm already strips the per-config artifact tokens from
+// the arms), making the baseline coverage COMPLETE rather than assumed.
+//
+// views is byConfig[<this target's id>]; the full byConfig + nameToID
+// pair resolves a REUSE_FROM consumer's owner lists (the consumer's own
+// PrecompileHeaders is null in every config — the owner's divergence is
+// its divergence).
+func perConfigPCHArms(tgt *ir.Target, views map[string]fileapi.Target, configNames []string, byConfig map[string]map[string]fileapi.Target, nameToID map[string]string, pch pchLiftCtx) {
+	if len(views) == 0 || len(configNames) < 2 {
+		return
+	}
+	primary := configNames[0]
+	primView, ok := views[primary]
+	if !ok {
+		return
+	}
+	for _, cg := range primView.CompileGroups {
+		owner, perCfg := pchPerConfigEntries(tgt.Name, cg.Language, views, configNames, byConfig, nameToID, pch.cmakeBuild)
+		if owner == "" || !pchListsDiverge(perCfg, configNames) {
+			continue
+		}
+		// Strip the baseline pair (primary-list mirror) from the flat
+		// copts; it moves into the primary config's arm below.
+		baseArg := pch.execRootPath(pchMirrorOut(owner, cg.Language, ""))
+		tgt.Copts = stripIncludePair(tgt.Copts, baseArg)
+		if tgt.PerPlatform == nil {
+			tgt.PerPlatform = map[string]map[string][]string{}
+		}
+		if tgt.PerPlatform["copts"] == nil {
+			tgt.PerPlatform["copts"] = map[string][]string{}
+		}
+		for _, cfg := range configNames {
+			entries := perCfg[cfg]
+			if len(entries) == 0 {
+				continue // PCH absent in this config: no forced include.
+			}
+			mirrorCfg := cfg
+			if cfg == primary {
+				mirrorCfg = "" // reuse the registered baseline mirror
+			}
+			outRel, stageHdrs := pch.ensureMirror(owner, cg.Language, mirrorCfg, entries)
+			label := configLabel(cfg)
+			tgt.PerPlatform["copts"][label] = append(tgt.PerPlatform["copts"][label],
+				"-include", pch.execRootPath(outRel))
+			for _, s := range append([]string{outRel}, stageHdrs...) {
+				if !stringSliceContains(tgt.Srcs, s) && !stringSliceContains(tgt.Hdrs, s) {
+					tgt.Srcs = append(tgt.Srcs, s)
+				}
+			}
+		}
+	}
+}
+
+// pchPerConfigEntries resolves a target's effective PCH owner and its
+// declared header list in EVERY configuration for one language: the
+// target's own CompileGroup.PrecompileHeaders when declared, else (the
+// REUSE_FROM shape) the owner named by the cmake_pch artifact in that
+// config's compile fragments, resolved through byConfig. Returns
+// owner == "" when no configuration carries any PCH signal for the
+// language.
+func pchPerConfigEntries(name, language string, views map[string]fileapi.Target, configNames []string, byConfig map[string]map[string]fileapi.Target, nameToID map[string]string, cmakeBuild string) (string, map[string][]fileapi.CompilePCH) {
+	owner := ""
+	perCfg := map[string][]fileapi.CompilePCH{}
+	for _, cfg := range configNames {
+		cg, ok := compileGroupForLanguage(views[cfg], language)
+		if !ok {
+			continue
+		}
+		if len(cg.PrecompileHeaders) > 0 {
+			perCfg[cfg] = cg.PrecompileHeaders
+			if owner == "" {
+				owner = name
+			}
+			continue
+		}
+		_, _, arts := splitCompileFragments(cg.CompileCommandFragments)
+		for _, art := range arts {
+			o := pchArtifactOwner(art, cmakeBuild)
+			if o == "" {
+				continue
+			}
+			if owner == "" {
+				owner = o
+			}
+			if ocg, ok := compileGroupForLanguage(byConfig[nameToID[o]][cfg], language); ok {
+				perCfg[cfg] = ocg.PrecompileHeaders
+			}
+			break
+		}
+	}
+	return owner, perCfg
+}
+
+// compileGroupForLanguage returns the target's first compile group of the
+// given language (group order can differ across per-config views, so
+// index-based matching would mispair).
+func compileGroupForLanguage(t fileapi.Target, language string) (fileapi.CompileGroup, bool) {
+	for _, cg := range t.CompileGroups {
+		if cg.Language == language {
+			return cg, true
+		}
+	}
+	return fileapi.CompileGroup{}, false
+}
+
+// pchListsDiverge reports whether the per-config declared lists differ
+// anywhere: a config whose list deviates from the primary's (including
+// present-vs-absent) makes the baseline mirror wrong for that config.
+func pchListsDiverge(perCfg map[string][]fileapi.CompilePCH, configNames []string) bool {
+	base := perCfg[configNames[0]]
+	for _, cfg := range configNames[1:] {
+		if !equalPCHLists(base, perCfg[cfg]) {
+			return true
+		}
+	}
+	return false
+}
+
+func equalPCHLists(a, b []fileapi.CompilePCH) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].Header != b[i].Header {
+			return false
+		}
+	}
+	return true
+}
+
+// stripIncludePair removes the `-include <arg>` pair naming arg from a
+// flat copts slice (first occurrence; the lift emits at most one).
+func stripIncludePair(copts []string, arg string) []string {
+	for i := 0; i+1 < len(copts); i++ {
+		if copts[i] == "-include" && copts[i+1] == arg {
+			return append(copts[:i], copts[i+2:]...)
+		}
+	}
+	return copts
 }
 
 // pruneEmptyPerPlatform drops any tgt.PerPlatform[attr] map whose

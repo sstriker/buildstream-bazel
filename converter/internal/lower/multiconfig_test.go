@@ -32,7 +32,7 @@ func TestLowerMultiConfigDeltas_PopulatesPerPlatform(t *testing.T) {
 			},
 		},
 	}
-	lowerMultiConfigDeltas(pkg, byCfg, []string{"Release", "Debug"}, "", "", nil)
+	lowerMultiConfigDeltas(pkg, byCfg, []string{"Release", "Debug"}, "", "", nil, nil)
 	tgt := pkg.Targets[0]
 	if tgt.PerPlatform == nil {
 		t.Fatalf("PerPlatform should be populated; got nil")
@@ -71,7 +71,7 @@ func TestLowerMultiConfigDeltas_StripsCompileFragmentPrefix(t *testing.T) {
 			},
 		},
 	}
-	lowerMultiConfigDeltas(pkg, byCfg, []string{"Release", "Debug"}, "", "", nil)
+	lowerMultiConfigDeltas(pkg, byCfg, []string{"Release", "Debug"}, "", "", nil, nil)
 	copts := pkg.Targets[0].PerPlatform["copts"]
 	// "-O3" should not appear as "C|-O3" in the select arm — the
 	// language disambiguator is for configfold's bookkeeping, not
@@ -105,7 +105,7 @@ func TestLowerMultiConfigDeltas_SkipsSanitizerConfigs(t *testing.T) {
 	}
 	// Only Release survives the sanitizer filter; len(configs) == 1
 	// → no useful Partition; PerPlatform stays nil.
-	lowerMultiConfigDeltas(pkg, byCfg, []string{"Release", "ASan"}, "", "", nil)
+	lowerMultiConfigDeltas(pkg, byCfg, []string{"Release", "ASan"}, "", "", nil, nil)
 	if pkg.Targets[0].PerPlatform != nil {
 		t.Errorf("sanitizer-only multi-config should not populate PerPlatform; got %v",
 			pkg.Targets[0].PerPlatform)
@@ -116,7 +116,7 @@ func TestLowerMultiConfigDeltas_SkipsEmptyByConfig(t *testing.T) {
 	pkg := &ir.Package{
 		Targets: []ir.Target{{Name: "foo", Kind: ir.KindCCLibrary}},
 	}
-	lowerMultiConfigDeltas(pkg, nil, []string{"Release"}, "", "", nil)
+	lowerMultiConfigDeltas(pkg, nil, []string{"Release"}, "", "", nil, nil)
 	if pkg.Targets[0].PerPlatform != nil {
 		t.Errorf("single-config / empty byConfig should be a no-op")
 	}
@@ -146,7 +146,7 @@ func TestLowerMultiConfigDeltas_TargetMissingFromPackage(t *testing.T) {
 			},
 		},
 	}
-	lowerMultiConfigDeltas(pkg, byCfg, []string{"Release", "Debug"}, "", "", nil)
+	lowerMultiConfigDeltas(pkg, byCfg, []string{"Release", "Debug"}, "", "", nil, nil)
 	if len(pkg.Targets) != 0 {
 		t.Errorf("ghost target shouldn't be added; got %v", pkg.Targets)
 	}
