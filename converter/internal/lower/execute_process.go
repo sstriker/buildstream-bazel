@@ -1583,14 +1583,21 @@ func liftCMakeEConfigureFile(args []string, anc execAnchors, liftEnabled bool, c
 	// missing means the offline fixture / live tree is
 	// incomplete; soft-skip rather than refusing, parity with
 	// recoverConfigureFiles's read-error treatment.
+	// Reaching here means hostBuildDir is set (the offline no-build-dir
+	// degradation returned above), so a read failure is a LIVE anomaly: the
+	// configure ran but the template / rendered output we need to recover the
+	// configured file isn't readable. That's an uncertain skip — we'd be
+	// silently dropping an output a consumer needs — so refuse (loud) rather
+	// than the old "do nothing". (The offline trace-only case stays the
+	// silent degradation above.)
 	templatePath := filepath.Join(anc.hostSrcDir, srcRel)
 	template, terr := os.ReadFile(templatePath)
 	if terr != nil {
-		return nil, "", true
+		return nil, fmt.Sprintf("cmake -E configure_file: template %q is unreadable — the configured output can't be recovered", srcRel), false
 	}
 	rendered, rerr := os.ReadFile(filepath.Join(anc.hostBuildDir, dstRel))
 	if rerr != nil {
-		return nil, "", true
+		return nil, fmt.Sprintf("cmake -E configure_file: rendered output %q is unreadable — the configured bytes can't be recovered", dstRel), false
 	}
 
 	// Same-path mirror — parity with configure_file's copyOnlySourceMirror.

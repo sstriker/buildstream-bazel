@@ -679,13 +679,15 @@ func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_NoBuildDirSoftSkips(t *te
 // fixture, deleted output, etc.). Same soft-skip behavior as
 // the no-build-dir case, parity with recoverConfigureFiles's
 // per-call read-error treatment.
-func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_MissingRenderedSoftSkips(t *testing.T) {
+func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_MissingRenderedRefuses(t *testing.T) {
 	hostSrc := t.TempDir()
 	hostBuild := t.TempDir()
 	if err := os.WriteFile(filepath.Join(hostSrc, "t.in"), []byte("v=@VER@\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// No t.out in hostBuild — simulates the rendered output going missing.
+	// No t.out in hostBuild: the rendered output is missing in a LIVE convert
+	// (build dir set). That's an uncertain drop of a file a consumer needs —
+	// the converter must refuse LOUDLY, not silently do nothing.
 	calls := []shadow.ExecuteProcessCall{{
 		File: filepath.Join(hostSrc, "CMakeLists.txt"),
 		Commands: [][]string{{
@@ -696,11 +698,40 @@ func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_MissingRenderedSoftSkips(
 	}}
 	cc := newCodegenContext()
 	outs, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
-	if len(refusals) != 0 {
-		t.Fatalf("missing rendered output should soft-skip, not refuse; got %+v", refusals)
+	if len(refusals) != 1 {
+		t.Fatalf("missing rendered output (live) should refuse; got %+v", refusals)
+	}
+	if !strings.Contains(refusals[0].Reason, "unreadable") {
+		t.Errorf("refusal reason should name the unreadable output; got %q", refusals[0].Reason)
 	}
 	if len(outs) != 0 || len(cc.Genrules) != 0 {
-		t.Errorf("no outputs expected on soft-skip; got outs=%+v genrules=%+v", outs, cc.Genrules)
+		t.Errorf("no outputs expected on refusal; got outs=%+v genrules=%+v", outs, cc.Genrules)
+	}
+}
+
+// Offline (no build dir): the cmake -E configure_file lift can't read the
+// rendered bytes BY DESIGN and stays a SILENT degradation — not a refusal —
+// so trace-only / --reply-dir replay keeps working.
+func TestRecoverExecuteProcess_LiftCMakeEConfigureFile_OfflineStaysSilent(t *testing.T) {
+	hostSrc := t.TempDir()
+	if err := os.WriteFile(filepath.Join(hostSrc, "t.in"), []byte("v=@VER@\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ExecuteProcessCall{{
+		File: filepath.Join(hostSrc, "CMakeLists.txt"),
+		Commands: [][]string{{
+			"/usr/bin/cmake", "-E", "configure_file",
+			filepath.Join(hostSrc, "t.in"), "/some/build/t.out",
+		}},
+	}}
+	cc := newCodegenContext()
+	// hostBuildDir "" → offline.
+	outs, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "", true, nil, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("offline configure_file should stay silent, not refuse; got %+v", refusals)
+	}
+	if len(outs) != 0 || len(cc.Genrules) != 0 {
+		t.Errorf("no outputs expected offline; got outs=%+v genrules=%+v", outs, cc.Genrules)
 	}
 }
 

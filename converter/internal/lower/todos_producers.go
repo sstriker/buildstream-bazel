@@ -270,6 +270,42 @@ func emitInternalDropTodos(c *todos.Collector, filtered map[string]string) {
 	}
 }
 
+// emitUnreadableConfigureOutputTodos records configure_file outputs the
+// recovery couldn't read back in a LIVE convert (the configure ran but the
+// rendered file isn't readable). Unlike the by-design offline degradation
+// (not recorded), this is an UNCERTAIN skip — a generated file a consumer
+// needs was silently dropped — so it's surfaced as an actionable todo, the
+// configure_file sibling of emitExecuteProcessRefusalTodos. One folded todo
+// with an anchor per output keeps the id stable + the report deterministic.
+func emitUnreadableConfigureOutputTodos(c *todos.Collector, unreadable map[string]string) {
+	if c == nil || len(unreadable) == 0 {
+		return
+	}
+	outs := make([]string, 0, len(unreadable))
+	for rel := range unreadable {
+		outs = append(outs, rel)
+	}
+	sort.Strings(outs)
+	anchors := make([]todos.Anchor, 0, len(outs))
+	for _, out := range outs {
+		anchors = append(anchors, todos.Anchor{Construct: "configure_file output: " + out})
+	}
+	c.Add(todos.Todo{
+		Kind:        "configure-file-output-unreadable",
+		Disposition: todos.Actionable,
+		GroupKey:    "configure-file-output-unreadable",
+		Anchors:     anchors,
+		Evidence:    map[string]any{"outputs": outs},
+		SuggestedShape: "the configure ran but the rendered output wasn't readable in the build dir — " +
+			"check the configure actually produced it, or supply the configure_file's Bazel form (a " +
+			"//tools:cmake-configure-file genrule / a write_file) so the consumer's input resolves",
+		Prompt: fmt.Sprintf("The converter recovered %d configure_file output(s) from the trace but "+
+			"couldn't read the rendered bytes from the live build dir, so they were dropped — a "+
+			"consumer that #includes them will fail to build. Confirm the configure produced them, or "+
+			"author the idiomatic Bazel form.", len(outs)),
+	})
+}
+
 // emitInstallScriptTodos records install(SCRIPT) / install(CODE)
 // directives as structured conversion-todos, folded by (kind,
 // group_key) so the `id` (= hash(kind, group_key)) stays UNIQUE per todo
