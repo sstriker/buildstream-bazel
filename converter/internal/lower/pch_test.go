@@ -660,3 +660,62 @@ func TestLowerTarget_PCH_ReuseFromEdgeDrops(t *testing.T) {
 		t.Errorf("REUSE_FROM consumer missing the owner's mirror: %v", tool.Copts)
 	}
 }
+
+// TestLowerTarget_PCH_ReuseFromLinkedOwnerKeepsDep is the #595 review
+// counterexample: target_link_libraries(app core) + REUSE_FROM core
+// dedup into ONE backtrace-less dependency entry, indistinguishable
+// from reuse-only in t.Dependencies. Link evidence (here: the owner's
+// artifact in the consumer's link.commandFragments) must keep the deps
+// edge — dropping it severs the only in-tree link channel.
+func TestLowerTarget_PCH_ReuseFromLinkedOwnerKeepsDep(t *testing.T) {
+	r := pchReply()
+	app := fileapi.Target{
+		Name: "app", Type: "EXECUTABLE",
+		Sources: []fileapi.TargetSource{{Path: "app_main.cpp", CompileGroupIndex: 0}},
+		CompileGroups: []fileapi.CompileGroup{{
+			Language: "CXX", SourceIndexes: []int{0},
+			CompileCommandFragments: []fileapi.CommandFragment{
+				{Fragment: "-include /b/CMakeFiles/core.dir/cmake_pch.hxx"},
+			},
+		}},
+		Link: &fileapi.TargetLink{
+			CommandFragments: []fileapi.CommandFragment{{Fragment: "libcore.a", Role: "libraries"}},
+		},
+		Dependencies: []fileapi.TargetDependency{{Id: "core::@"}},
+	}
+	r.Targets["app::@"] = app
+	cfg := r.Codemodel.Configurations[0]
+	cfg.Targets = append(cfg.Targets, fileapi.ConfigTargetRef{Id: "app::@", Name: "app"})
+	r.Codemodel.Configurations[0] = cfg
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	got := pchFindTarget(t, pkg, "app")
+	if !stringSliceContains(got.Deps, ":core") {
+		t.Errorf("linked REUSE_FROM owner must KEEP its deps edge (link evidence); deps = %v", got.Deps)
+	}
+	if !strings.Contains(strings.Join(got.Copts, " "), "-include cmake_pch/core/cmake_pch.hxx") {
+		t.Errorf("linked REUSE_FROM consumer missing the owner's mirror: %v", got.Copts)
+	}
+}
+
+// TestIsCMakePCHMachinerySource pins the layout anchoring: cmake's
+// machinery under CMakeFiles/ matches; a PROJECT source legitimately
+// named cmake_pch.* does not (it must never be silently skipped).
+func TestIsCMakePCHMachinerySource(t *testing.T) {
+	for _, p := range []string{
+		"/b/CMakeFiles/core.dir/cmake_pch.hxx.cxx",
+		"/b/CMakeFiles/core.dir/cmake_pch.hxx",
+		"sub/CMakeFiles/t.dir/Debug/cmake_pch.h.c",
+	} {
+		if !isCMakePCHMachinerySource(p) {
+			t.Errorf("machinery path %q not recognized", p)
+		}
+	}
+	for _, p := range []string{"cmake_pch.cpp", "vendor/cmake_pch.h", "src/other.cpp"} {
+		if isCMakePCHMachinerySource(p) {
+			t.Errorf("project source %q must NOT be treated as machinery", p)
+		}
+	}
+}

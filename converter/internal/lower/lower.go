@@ -4887,7 +4887,7 @@ func lowerTargetDeps(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc targe
 	idToName, utilityIDs := lc.idToName, lc.utilityIDs
 	rejections := lc.rejections
 	traceLinkScope := tt.traceLinkScope
-	reuseOwners := pchReuseFromOwners(t, lc.cmakeBuild)
+	reuseOwners := pchReuseFromOwners(t, tt, lc.cmakeBuild)
 	// Lower dependencies. In-codebase target ids look like `<name>::@<hash>`
 	// where <name> is the CMake target name; out-of-tree find_package-
 	// imported targets carry a namespaced name like `Pkg::tgt::@<hash>`.
@@ -7253,6 +7253,70 @@ func cmakeTruthy(v string) bool {
 // returns a fresh slice so callers can't alias a shared one.
 func publicVisibility() []string { return []string{"//visibility:public"} }
 
+// pchReuseFromOwners names the OTHER targets whose cmake_pch artifacts
+// this target's compile fragments force-include AND that nothing
+// evidences a genuine link of — the drop-safe REUSE_FROM owner set.
+// cmake records the REUSE_FROM owner as a plain TargetDependency with
+// NO backtrace (probed: cmake 4.x writes no backtrace EVEN when the
+// same dep is also genuinely linked — target_link_libraries + REUSE_FROM
+// dedup into one entry), so the artifact in the consumer's own fragments
+// is the only reuse signal, and link evidence is the discriminator:
+// the trace's target_link_libraries ground truth (tt.traceLinkScope /
+// traceLinkLibs — also covers STATIC consumers, which have no link
+// step for fragments to witness) or the owner's artifact in the
+// consumer's link.commandFragments. An owner with link evidence keeps
+// its dep edge (dropping it would sever the only in-tree link channel:
+// lowerLinkAttribution's contract is that in-codebase names arrive via
+// t.Dependencies). An owner with NO link evidence drops at the call
+// site: the consumer's real input is the owner's mirror FILE (staged
+// via srcs), deps would be illegal for an executable-kind owner, and
+// even data poisons (a cc_test owner is implicitly testonly).
+func pchReuseFromOwners(t *fileapi.Target, tt targetTrace, cmakeBuild string) map[string]bool {
+	var owners map[string]bool
+	for _, cg := range t.CompileGroups {
+		_, _, arts := splitCompileFragments(cg.CompileCommandFragments)
+		for _, art := range arts {
+			owner := pchArtifactOwner(art, cmakeBuild)
+			if owner == "" || owner == t.Name || pchOwnerLinkEvidence(t, tt, owner) {
+				continue
+			}
+			if owners == nil {
+				owners = map[string]bool{}
+			}
+			owners[owner] = true
+		}
+	}
+	return owners
+}
+
+// pchOwnerLinkEvidence reports whether anything beyond the PCH reuse
+// evidences a genuine link of owner by this target: a recorded
+// target_link_libraries call naming it (the trace ground truth), or the
+// owner's conventional artifact name (lib<owner>.* / <owner>.*) in the
+// link command fragments.
+func pchOwnerLinkEvidence(t *fileapi.Target, tt targetTrace, owner string) bool {
+	if _, ok := tt.traceLinkScope[owner]; ok {
+		return true
+	}
+	for _, lib := range tt.traceLinkLibs {
+		if lib == owner {
+			return true
+		}
+	}
+	if t.Link == nil {
+		return false
+	}
+	for _, frag := range t.Link.CommandFragments {
+		for _, tok := range strings.Fields(frag.Fragment) {
+			base := filepath.Base(tok)
+			if strings.HasPrefix(base, "lib"+owner+".") || strings.HasPrefix(base, owner+".") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // isBuildOrderOnlyEdge reports whether a TargetDependency came
 // from an `add_dependencies(target dep)` call rather than a
 // target_link_libraries (or similar) — the former carries no
@@ -7267,35 +7331,6 @@ func publicVisibility() []string { return []string{"//visibility:public"} }
 // over-emit link edges for the macro case (safe but redundant)
 // vs miss build-order semantics for the direct case (currently
 // silent). The direct case is the common one.
-// pchReuseFromOwners names the OTHER targets whose cmake_pch artifacts
-// this target's compile fragments force-include — the REUSE_FROM owner
-// set. cmake records the REUSE_FROM owner as a plain TargetDependency
-// with NO backtrace (so the command-based isBuildOrderOnlyEdge check
-// can't see it); the owner-dir artifact in the consumer's own fragments
-// is the durable signal. Under the mirror lift the consumer references
-// the owner's mirror FILE via srcs, so the target edge is pure build
-// order — and for an executable-kind owner (a PCH-sharing test binary)
-// a deps entry is outright illegal: cc_binary/cc_test provide no
-// linkable CcInfo. A target genuinely LINKING its owner still wires the
-// dep through the link-fragment attribution channel.
-func pchReuseFromOwners(t *fileapi.Target, cmakeBuild string) map[string]bool {
-	var owners map[string]bool
-	for _, cg := range t.CompileGroups {
-		_, _, arts := splitCompileFragments(cg.CompileCommandFragments)
-		for _, art := range arts {
-			owner := pchArtifactOwner(art, cmakeBuild)
-			if owner == "" || owner == t.Name {
-				continue
-			}
-			if owners == nil {
-				owners = map[string]bool{}
-			}
-			owners[owner] = true
-		}
-	}
-	return owners
-}
-
 func isBuildOrderOnlyEdge(dep fileapi.TargetDependency, g fileapi.BacktraceGraph) bool {
 	if dep.Backtrace <= 0 || dep.Backtrace >= len(g.Nodes) {
 		return false
@@ -8501,9 +8536,12 @@ func isCMakePCHPath(p string) bool {
 // both listed in the declaring target's Sources. They're cmake-internal
 // bookkeeping, not project sources — the mirror lift (pch.go) preserves
 // the forced-include semantics, and the .gch precompilation has no
-// Bazel-side equivalent to feed.
+// Bazel-side equivalent to feed. Anchored on the CMakeFiles/ layout the
+// machinery always lives under, not the basename alone: a PROJECT
+// source legitimately named cmake_pch.* must not be silently skipped.
 func isCMakePCHMachinerySource(p string) bool {
-	return strings.HasPrefix(filepath.Base(p), "cmake_pch.")
+	return strings.HasPrefix(filepath.Base(p), "cmake_pch.") &&
+		strings.Contains(filepath.ToSlash(p), "CMakeFiles/")
 }
 
 // isPCHCreatorCompileGroup reports whether a compile group exists only

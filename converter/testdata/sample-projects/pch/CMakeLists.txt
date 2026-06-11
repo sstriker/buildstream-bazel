@@ -37,3 +37,12 @@ target_precompile_headers(unit_test PRIVATE pch.h <vector>)
 add_test(NAME unit_test COMMAND unit_test)
 add_executable(tool tool_main.cpp)
 target_precompile_headers(tool REUSE_FROM unit_test)
+
+# The canonical LINK + REUSE_FROM shape (the #595 review counterexample):
+# app genuinely links core AND shares its PCH. cmake dedups the two into
+# ONE backtrace-less dependency entry, so the converter must use link
+# evidence (trace target_link_libraries / link fragments) to keep the
+# deps edge — dropping it severs the only in-tree link channel.
+add_executable(app app_main.cpp)
+target_link_libraries(app PRIVATE core)
+target_precompile_headers(app REUSE_FROM core)

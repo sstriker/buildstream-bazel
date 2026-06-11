@@ -84,7 +84,7 @@ grep -q 'CMakeFiles.*cmake_pch' "$build" \
 # 4. Declaring target, REUSE_FROM consumer, and the SKIP-probe target are
 # all tagged.
 tag_count=$(grep -c "cmake-codegen-pch" "$build" || true)
-[ "$tag_count" -ge 5 ] || fail "expected the cmake-codegen-pch tag on core, user, mixed, unit_test AND tool (got $tag_count)"
+[ "$tag_count" -ge 6 ] || fail "expected the cmake-codegen-pch tag on core, user, mixed, unit_test, tool AND app (got $tag_count)"
 # 5. The REUSE_FROM consumer (user) got the OWNER's mirror — same path,
 # shared rule.
 awk '/name = "user"/{f=1} f{print} f&&/^\)/{exit}' "$build" | grep -qF '"cmake_pch/core/cmake_pch.hxx",' \
@@ -107,6 +107,13 @@ awk '/name = "tool"/{f=1} f{print} f&&/^\)/{exit}' "$build" | grep -qF '":unit_t
     && fail "REUSE_FROM owner target referenced by the consumer (deps is illegal for executable kinds; data poisons via testonly) — the mirror FILE in srcs is the only edge needed"
 awk '/name = "tool"/{f=1} f{print} f&&/^\)/{exit}' "$build" | grep -qF '"cmake_pch/unit_test/cmake_pch.hxx",' \
     || fail "cross-kind REUSE_FROM consumer missing the owner's mirror"
+# 9. LINK + REUSE_FROM (the canonical shape): cmake dedups the genuine
+# link and the PCH reuse into ONE backtrace-less dependency entry — the
+# link evidence must keep the deps edge while the mirror still rides.
+awk '/name = "app"/{f=1} f{print} f&&/^\)/{exit}' "$build" | grep -qF 'deps = [":core"]' \
+    || fail "link+REUSE_FROM consumer lost its genuine link dep"
+awk '/name = "app"/{f=1} f{print} f&&/^\)/{exit}' "$build" | grep -qF '"cmake_pch/core/cmake_pch.hxx",' \
+    || fail "link+REUSE_FROM consumer missing the owner's mirror"
 
 echo "ok  meta-cmake-pch: target_precompile_headers lifted to the mirror forced include (declaring + REUSE_FROM + SKIP + test-binary shapes)"
 
@@ -148,4 +155,11 @@ if ! (cd "$ws" && "$BZL" --output_user_root="$bz_cache" ${META_BAZEL_STARTUP_ARG
     exit 1
 fi
 
-echo "ok  meta-cmake-pch: PCH-reliant sources compile under Bazel via the mirror (incl. -Werror suppression + SKIP probes; no cmake)"
+# The link+REUSE_FROM binary must also RUN: exit 0 proves the kept deps
+# edge linked core's symbol and the shared mirror carried the macros.
+if ! "$ws/bazel-bin/app"; then
+    echo "FAIL: app exited non-zero — link+REUSE_FROM dep or mirror content wrong"
+    exit 1
+fi
+
+echo "ok  meta-cmake-pch: PCH-reliant sources compile under Bazel via the mirror (incl. -Werror suppression + SKIP + link+REUSE_FROM probes; no cmake)"
