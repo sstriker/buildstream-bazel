@@ -700,6 +700,25 @@ type Args struct {
 	// sibling cc_shared_library (real .so). Off by default — the static-collapse
 	// emit stays byte-identical.
 	EmitSharedLibraries bool
+
+	// OutDebugBundle, when non-empty, is a directory into which the
+	// converter copies its PRIMARY INPUT artifacts for offline
+	// debugging/replay — the cmake File API query+reply objects, the
+	// --trace-expand log (trace.jsonl), the ninja graph (build.ninja + the
+	// CMakeFiles/*.ninja includes), the compile database
+	// (compile_commands.json), the variable dump (cmake-to-bazel.vars.dump),
+	// CMakeCache.txt, and the configure log — for the OUTER configure AND
+	// every NESTED/recursive configure beneath it (each lives as a build-dir
+	// subdir with its own reply + trace). The capture is registered as a
+	// defer right after configure, so it fires on EVERY return path —
+	// including the lowering FAILURES that are the primary debugging case —
+	// before the fresh-configure temp build dir is deleted (LIFO ordering
+	// puts it ahead of that cleanup, so the inputs survive). The
+	// build-dir-relative layout is preserved, so the bundle is directly
+	// replayable: `--cmake-build-dir <bundle>` re-runs the offline path
+	// against the captured inputs. A debug aid only — a capture failure
+	// warns but never fails the conversion. Off by default.
+	OutDebugBundle string
 }
 
 // reservedCmakeDefine names cmake cache vars the converter drives itself —
@@ -797,6 +816,7 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.BoolVar(&a.ConversionTodos, "conversion-todos", true, "emit conversion-todos.json — the agent-actionable prompts for no-mechanical-form cmake constructs (add_test COMMAND cmake -P harnesses, filtered command edges with no Bazel analogue, install(SCRIPT)/install(CODE)). Default ON; written to --conversion-todos-report if set, else <out-build dir>/conversion-todos.json. Pass --conversion-todos=false to suppress.")
 	fs.StringVar(&a.ConversionTodosReport, "conversion-todos-report", "", "explicit destination for conversion-todos.json, overriding the <out-build dir>/conversion-todos.json default. The deterministic producer; the AI post-pass that consumes it is out of scope. See the no-mechanical-form-constructs item in ROADMAP.md.")
 	fs.StringVar(&a.ConversionTodosPreamble, "conversion-todos-preamble", "", "path to an operator-supplied preamble (prose, read verbatim) that replaces the built-in default in conversion-todos.json. Empty uses the built-in default (transition-to-plain-Bazel intent + brotli worked example). Only meaningful with --conversion-todos-report.")
+	fs.StringVar(&a.OutDebugBundle, "out-debug-bundle", "", "directory to capture the converter's PRIMARY INPUT artifacts into for offline debugging/replay: the cmake File API query+reply, the --trace-expand log (trace.jsonl), the ninja graph (build.ninja + CMakeFiles/*.ninja), compile_commands.json, the variable dump, CMakeCache.txt, and the configure log — for the OUTER configure AND every NESTED/recursive configure beneath it. The build-dir-relative layout is preserved, so `--cmake-build-dir <dir>` replays the offline path against the capture. Off by default; a capture failure warns but doesn't fail the run.")
 }
 
 // parseValidate runs the post-Parse validation and derivation logic — the

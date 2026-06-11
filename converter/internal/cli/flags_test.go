@@ -35,6 +35,17 @@ func TestParse_AcceptsSourceRoot(t *testing.T) {
 	}
 }
 
+func TestParse_AcceptsOutDebugBundle(t *testing.T) {
+	var stderr bytes.Buffer
+	args, code := Parse([]string{"--source-root", "/proj", "--out-debug-bundle", "/tmp/bundle"}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("code = %d, stderr=%q", code, stderr.String())
+	}
+	if args.OutDebugBundle != "/tmp/bundle" {
+		t.Errorf("OutDebugBundle = %q, want /tmp/bundle", args.OutDebugBundle)
+	}
+}
+
 // TestParse_AcceptsReplyDir pins the legacy offline path.
 func TestParse_AcceptsReplyDir(t *testing.T) {
 	var stderr bytes.Buffer

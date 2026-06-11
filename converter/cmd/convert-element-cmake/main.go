@@ -1361,6 +1361,22 @@ func run(a cli.Args) error {
 		cmakeVars = vars
 	}
 
+	// --out-debug-bundle: capture the converter's primary inputs (File API
+	// query+reply, trace, ninja, compile db, vars dump, cache, configure
+	// log) for the OUTER and every NESTED/recursive configure, for offline
+	// debugging/replay. Registered as a defer — and AFTER the fresh-
+	// configure path's `defer os.RemoveAll(bd)` above, so LIFO fires this
+	// FIRST — so the capture runs on EVERY return path, including the
+	// lowering FAILURES that are the primary debugging case, BEFORE the temp
+	// build dir is deleted (which would otherwise destroy exactly the inputs
+	// you want). On success it still fires at the end, after the warm nested
+	// re-configures have written their replies + traces. Args bind now
+	// (hostBuildDir/replyDir are set). Soft — a capture failure warns but
+	// never changes the run's exit status.
+	if a.OutDebugBundle != "" {
+		defer captureDebugBundle(a.OutDebugBundle, hostBuildDir, replyDir)
+	}
+
 	r, err := fileapi.Load(replyDir)
 	if err != nil {
 		return failure.New(failure.FileAPIMissing, "load reply: %v", err)
