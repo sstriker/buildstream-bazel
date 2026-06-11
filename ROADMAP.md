@@ -424,6 +424,25 @@ transition cleanly.
   `libc_top` / `all_files` so actions ship the sysroot. Larger; follows the
   `builtin_sysroot` item.
 
+- **Common compile flags → toolchain feature — SHIPPED (v1, opt-in
+  `--out-common-compile-flags-feature`); remaining: a self-contained
+  `defs.bzl` mode + defines.** v1 dedups the per-target `copts` repetition:
+  `commonflags.HoistCommonCopts` (converter/internal/emit/commonflags) finds the
+  longest copt PREFIX every cc target shares (cmake's project-wide
+  `CMAKE_<LANG>_FLAGS`), strips it from each target, tags them
+  `features = ["cmake_common_compile_flags"]`, and `commonflags.Emit` writes the
+  matching `feature()` `.bzl` the operator threads into whatever cc_toolchain the
+  build uses (converter-emitted, rules_cc auto, or their own — the same
+  operator-wired convention as sanitizerfeatures / the raw-flag lift). Prefix-only
+  so feature-flags-before-copts preserves cmake's order exactly; off by default
+  (byte-stable inline emission). **Remaining:** (1) a SELF-CONTAINED alternative
+  mode that needs no toolchain wiring — emit a shared `//:common_compile_flags.bzl`
+  defining `COMMON_COPTS`, `load()`ed by every BUILD as `copts = COMMON_COPTS +
+  [delta]` (works with the default toolchain out of the box; the toolchain-feature
+  mode is a no-op until the operator wires it); (2) extend the hoist to the common
+  `defines` prefix (today copts only); (3) survey-lens validation under a wired
+  toolchain. Sibling to the feature-flag lift above.
+
 - **Agent-actionable prompts — AI post-pass (consumer) remains.** The
   deterministic **producer** (`conversion-todos.json`, on by default, wired
   through to project B via the `<name>_converted` convert genrule + `stage-b`)
