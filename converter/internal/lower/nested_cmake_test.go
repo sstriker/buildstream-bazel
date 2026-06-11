@@ -3,8 +3,10 @@ package lower
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
@@ -236,5 +238,113 @@ func TestExecuteProcessAnchorSource_UmbrellaReanchor(t *testing.T) {
 		if got != tc.want || ok != tc.ok {
 			t.Errorf("%s: anchor(%q) = (%q, %v); want (%q, %v)", tc.name, tc.p, got, ok, tc.want, tc.ok)
 		}
+	}
+}
+
+// TestDetectNestedConfigures covers the driver-side worklist's detection
+// step over a nested build's raw trace: only LIFTABLE grandchild
+// configures surface (the guards mirror classifyNestedCMake +
+// recoverNestedCMakeCall, so detection and lift can't drift) — captured
+// output, relative -B under a moved WORKING_DIRECTORY, dirs outside the
+// nested build dir, and --build/--install companions all skip.
+func TestDetectNestedConfigures(t *testing.T) {
+	line := func(args ...string) string {
+		quoted := make([]string, len(args))
+		for i, a := range args {
+			quoted[i] = `"` + a + `"`
+		}
+		return `{"args":[` + strings.Join(quoted, ",") + `],"cmd":"execute_process","file":"/s/sub/CMakeLists.txt","line":5}`
+	}
+	trace := []byte(strings.Join([]string{
+		// Absolute -B under the nested build dir → detected.
+		line("COMMAND", "cmake", "-S", "/s/sub/subsub", "-B", "/b/subbuild/subsubbuild", "-G", "Ninja"),
+		// Relative -B (cwd contract = the nested build root) → detected.
+		line("COMMAND", "cmake", "-S", "/s/sub/other", "-B", "otherbuild"),
+		// Captured output: refuses at lowering → not staged.
+		line("COMMAND", "cmake", "-S", "/s/sub/cap", "-B", "/b/subbuild/capbuild", "OUTPUT_VARIABLE", "OUT"),
+		// Relative -B with a moved cwd: refuses at lowering → not staged.
+		line("COMMAND", "cmake", "-S", "/s/sub/moved", "-B", "movedbuild", "WORKING_DIRECTORY", "/b/subbuild/deps"),
+		// Build dir OUTSIDE the nested build dir → not liftable.
+		line("COMMAND", "cmake", "-S", "/s/sub/esc", "-B", "/tmp/escape"),
+		// --build companion: the configure's lift covers it → skipped.
+		line("COMMAND", "cmake", "--build", "/b/subbuild/subsubbuild"),
+	}, "\n") + "\n")
+	got := DetectNestedConfigures(trace, "/s/sub", "/b/subbuild")
+	want := map[string]string{
+		"subsubbuild": "/s/sub/subsub",
+		"otherbuild":  "/s/sub/other",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("detected = %v, want %v", got, want)
+	}
+	for rel, src := range want {
+		if got[rel] != src {
+			t.Errorf("detected[%q] = %q, want %q", rel, got[rel], src)
+		}
+	}
+	if DetectNestedConfigures(nil, "/s/sub", "/b/subbuild") != nil {
+		t.Error("nil trace must detect nothing")
+	}
+}
+
+// TestLowerOneNestedBuild_ThreadsChildren pins the recursion plumbing:
+// a NestedBuildInput's Children reach the recursive ToIR as its
+// Options.NestedBuilds, so the grandchild lowers inside the child and
+// the child package carries the (re-homed) grandchild rules when it
+// merges outward. The composition itself is exercised end-to-end by
+// scripts/meta-cmake-nested-cmake.sh's depth-2 fixture.
+func TestLowerOneNestedBuild_ThreadsChildren(t *testing.T) {
+	root := t.TempDir()
+	childSrc := filepath.Join(root, "sub")
+	childBuild := filepath.Join(root, "b", "subbuild")
+	grandSrc := filepath.Join(childSrc, "subsub")
+	grandBuild := filepath.Join(childBuild, "subsubbuild")
+	for _, d := range []string{childSrc, grandSrc, grandBuild} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The grandchild's configure wrote a header into its build dir; the
+	// child reply itself carries no targets (header-only chain link).
+	if err := os.WriteFile(filepath.Join(grandBuild, "subsub_config.h"), []byte("#define V 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	emptyReply := func(src, build string) *fileapi.Reply {
+		return &fileapi.Reply{
+			Codemodel: fileapi.Codemodel{
+				Paths:          fileapi.CodemodelPaths{Source: src, Build: build},
+				Configurations: []fileapi.Configuration{{Name: "Release"}},
+			},
+		}
+	}
+	nb := NestedBuildInput{
+		BuildRel:     "subbuild",
+		SrcDir:       childSrc,
+		Reply:        emptyReply(childSrc, childBuild),
+		HostBuildDir: childBuild,
+		Children: []NestedBuildInput{{
+			BuildRel:     "subsubbuild",
+			SrcDir:       grandSrc,
+			Reply:        emptyReply(grandSrc, grandBuild),
+			HostBuildDir: grandBuild,
+		}},
+	}
+	pkg, err := lowerOneNestedBuild(nb, Options{}, root)
+	if err != nil {
+		t.Fatalf("lowerOneNestedBuild: %v", err)
+	}
+	// The grandchild's configure-generated header bakes inside the CHILD
+	// lowering at the grandchild's child-relative home — proof the
+	// Children threading reached the recursive ToIR's nested pass.
+	found := false
+	for _, tgt := range pkg.Targets {
+		for _, out := range producerOuts(&tgt) {
+			if out == "subsubbuild/subsub_config.h" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("grandchild header not baked at its child-relative home; targets: %+v", pkg.Targets)
 	}
 }

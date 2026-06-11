@@ -113,6 +113,58 @@ func classifyNestedCMake(driver string, call shadow.ExecuteProcessCall) (Classif
 	}, true
 }
 
+// DetectNestedConfigures scans a nested build's trace for that build's
+// OWN nested cmake configures (the superbuild-chain shape) — the
+// driver-side worklist's detection step, run on each harvested trace to
+// decide which grandchild dirs to stage and traced-re-configure next.
+// srcDir/buildDir are the nested build the trace belongs to;
+// the returned map is grandchildBuildRel (relative to buildDir) →
+// grandchild source dir, exactly the sink shape runNestedCMakePass
+// consumes.
+//
+// Only shapes the lowering will actually LIFT are returned — the guards
+// mirror classifyNestedCMake + recoverNestedCMakeCall, so detection and
+// lift can't drift: captured-output calls, relative -B under a moved
+// WORKING_DIRECTORY, and build dirs not under buildDir are all skipped
+// here and left to the nested lowering's own refusal/warning paths.
+func DetectNestedConfigures(traceRaw []byte, srcDir, buildDir string) map[string]string {
+	if len(traceRaw) == 0 {
+		return nil
+	}
+	out := map[string]string{}
+	for _, call := range shadow.ExtractExecuteProcess(traceRaw, srcDir) {
+		if len(call.Commands) != 1 || len(call.Commands[0]) == 0 {
+			continue
+		}
+		shape, ok := parseNestedCMakeArgv(executeProcessDriverBasename(call.Commands[0][0]), call.Commands[0])
+		if !ok || shape.kind != "configure" {
+			continue
+		}
+		if call.OutputVariable != "" || call.OutputFile != "" || call.ErrorVariable != "" {
+			continue // captured output refuses at lowering; don't stage it
+		}
+		var rel string
+		if filepath.IsAbs(shape.buildDir) {
+			r, inside := relativeIfInside(buildDir, shape.buildDir)
+			if !inside || r == "" {
+				continue // outside (or equal to) this build dir — not liftable
+			}
+			rel = r
+		} else {
+			if call.WorkingDirectory != "" {
+				continue // moved cwd: the relative anchor would misname the dir
+			}
+			r, ok := relativeArgvBuildRel(shape.buildDir)
+			if !ok {
+				continue
+			}
+			rel = r
+		}
+		out[rel] = shape.srcDir
+	}
+	return out
+}
+
 // NestedBuildInput is one detected-and-replied nested build the driver
 // hands back into the second ToIR pass (Options.NestedBuilds): the
 // outer-build-relative nested build dir, the nested source dir as the
@@ -132,6 +184,22 @@ type NestedBuildInput struct {
 	// trace-less, recovering consumable outputs via the generic
 	// on-disk bakes only.
 	TraceRaw []byte
+	// Children are this nested build's OWN nested builds (the
+	// superbuild-chain shape: the sub-project's configure runs a
+	// grandchild cmake), harvested by the driver's worklist from
+	// this build's trace. Each child's BuildRel is relative to THIS
+	// build's dir. lowerOneNestedBuild threads them into the
+	// recursive ToIR's Options.NestedBuilds, so the whole
+	// merge/re-home/bake machinery composes level by level: the
+	// grandchild merges into the child package (child-relative
+	// re-homes), then the child package merges into the outer one
+	// (child-prefix re-homes apply on top). Empty when the trace
+	// surfaced no liftable grandchild configures, the driver's
+	// depth cap stopped the descent, or the cycle guard skipped a
+	// repeated dir — capped/skipped grandchildren then land in the
+	// child lowering's local sink and warn not-lifted, the same
+	// loud degradation every other nested failure takes.
+	Children []NestedBuildInput
 }
 
 // recoverNestedCMakeCall dispatches one BucketNestedCMake call inside
@@ -241,13 +309,19 @@ func lowerOneNestedBuild(nb NestedBuildInput, opts Options, hostSrc string) (*ir
 		ElementSourceRoot: rootAbs,
 		BuildDir:          nb.HostBuildDir,
 		TraceRaw:          nb.TraceRaw,
-		Imports:           opts.Imports,
-		BazelPackagePath:  opts.BazelPackagePath,
-		CMakeVars:         opts.CMakeVars,
-		Coverage:          opts.Coverage,
-		Todos:             opts.Todos,
-		Warnings:          opts.Warnings,
-		BakeIn:            opts.BakeIn,
+		// The superbuild-chain recursion: this build's own nested
+		// builds (driver-harvested from its trace) lower inside the
+		// recursive ToIR exactly as this one lowers inside its
+		// parent. Lifted children mark the local sink's NestedLifted,
+		// so only genuinely-unlifted grandchildren warn.
+		NestedBuilds:     nb.Children,
+		Imports:          opts.Imports,
+		BazelPackagePath: opts.BazelPackagePath,
+		CMakeVars:        opts.CMakeVars,
+		Coverage:         opts.Coverage,
+		Todos:            opts.Todos,
+		Warnings:         opts.Warnings,
+		BakeIn:           opts.BakeIn,
 	}
 	return ToIR(nb.Reply, nb.Graph, nestedOpts)
 }

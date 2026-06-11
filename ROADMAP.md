@@ -630,17 +630,6 @@ trees, optional-feature deps, codegen instances). Each member's
 
 ## Later (research / open questions)
 
-- **Nested-cmake recursion (superbuild chains).** The traced re-configure
-  of a nested build dir gives the nested lowering a full trace, so a
-  nested project's OWN nested-cmake calls are now detected — but they
-  land in the nested lowering's local sink and only surface as the loud
-  not-lifted warning. Lifting them needs a driver-side worklist (stage
-  queries into the grandchild dir, traced re-configure of the child,
-  recurse) with a depth cap and a build-dir cycle guard. Same-named
-  producer rules across SIBLING nested builds re-home with a
-  buildRel-prefixed rename already; cc_library/cc_binary name collisions
-  across nested builds still resolve by keep-the-first with a warning.
-
 - **configure_file LIFT tier inside nested lowerings.** With the nested
   trace now in hand, a nested `configure_file` is *recoverable* as the
   values-dict LIFT tier (`--lift-configure-file`, `KindCMakeConfigureFile`)
