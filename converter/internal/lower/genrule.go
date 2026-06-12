@@ -14,11 +14,18 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 // codegenContext carries state from genrule recovery and CTest
 // classification back into the consuming target's lowering.
 type codegenContext struct {
+	// Imports is the cross-element imports manifest (nil-safe resolver;
+	// may be nil in unit-shaped callers). The genrule tool lift uses it
+	// to rewrite absolute IMPORTED_LOCATION tool paths to
+	// $(execpath <label>) + tools entries (rewriteToolFromTarget).
+	Imports *manifest.Resolver
 	// Genrules is the list of synthesized ir.Target{Kind: KindGenrule}
 	// entries to append to the package.
 	Genrules []ir.Target
@@ -553,7 +560,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	// here: the per-target recovery path isn't reached under the workspace-root
 	// umbrella promotion (that surfaces on the standalone path).
 	rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, "", cc.BazelPackagePath)
-	rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName, cc.ExecArtifacts)
+	rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName, cc.ExecArtifacts, cc.Imports)
 	// Anchor declared outputs to $(RULEDIR)/<out> so a cmd that names its
 	// output as a literal arg (curl's `perl mk-lib1521.pl < curl.h lib1521.c`,
 	// where the script writes to argv) writes under bazel-out rather than a

@@ -1,7 +1,10 @@
 package lower
 
 import (
+	"path/filepath"
 	"strings"
+
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 // rewriteToolFromTarget walks a genrule cmd token-by-token and
@@ -22,17 +25,28 @@ import (
 //
 // artifactToName maps artifact paths (as cmake records them, i.e.
 // build-dir-relative) to the IR target name that produces them.
-// Empty / nil map → no rewriting, cmd returned unchanged.
+//
+// imports extends the lift to MANIFEST-PROVIDED tools: an ABSOLUTE
+// token matching an export's recorded IMPORTED_LOCATION
+// (imports.LookupLinkPath — the orchestrator stages each
+// IMPORTED_LOCATION_<CONFIG> path there) rewrites to
+// `$(execpath <bazel-label>)` with the full label in tools. Without
+// this, a genrule driving an imported tool (cmake resolved
+// `$<TARGET_FILE:Pkg::tool>` to the host-install absolute path at
+// configure time) keeps the raw host path — non-hermetic, and
+// invisible under sandboxed /tmp, the same class as the -idirafter
+// leak. In-tree lookup wins when both match (it shouldn't — the key
+// spaces are build-dir-relative vs absolute).
 //
 // Conservative tokenisation: splits on shell metacharacter
 // boundaries (whitespace, `&`, `|`, `;`, `(`, `)`, backticks,
 // dollar). A token matches only when it's an exact key in
-// artifactToName — partial-string matches (e.g. `prefix/bin/X`
-// containing `bin/X` as a suffix) don't rewrite. Conservative
-// because the alternative — substring rewrite — would corrupt
-// args like `--toolchain=bin/foo/include`.
-func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArtifacts map[string]bool) (string, []string) {
-	if cmd == "" || len(artifactToName) == 0 {
+// artifactToName / an exact manifest LinkPath — partial-string
+// matches (e.g. `prefix/bin/X` containing `bin/X` as a suffix)
+// don't rewrite. Conservative because the alternative — substring
+// rewrite — would corrupt args like `--toolchain=bin/foo/include`.
+func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArtifacts map[string]bool, imports *manifest.Resolver) (string, []string) {
+	if cmd == "" || (len(artifactToName) == 0 && imports.Empty()) {
 		return cmd, nil
 	}
 	var b strings.Builder
@@ -61,9 +75,33 @@ func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArt
 				tools = append(tools, ":"+name)
 			}
 		}
+		emitImported := func(label string) {
+			b.WriteString("$(execpath ")
+			b.WriteString(label)
+			b.WriteByte(')')
+			if !seenTools[label] {
+				seenTools[label] = true
+				tools = append(tools, label)
+			}
+		}
+		// resolveImported maps an absolute token onto a manifest
+		// export's label via its recorded IMPORTED_LOCATION.
+		resolveImported := func(p string) (string, bool) {
+			if !filepath.IsAbs(p) {
+				return "", false
+			}
+			if ex := imports.LookupLinkPath(p); ex != nil {
+				return ex.BazelLabel, true
+			}
+			return "", false
+		}
 		key := strings.TrimPrefix(tok, "./")
 		if name, ok := artifactToName[key]; ok {
 			emitTool(name)
+			return
+		}
+		if label, ok := resolveImported(tok); ok {
+			emitImported(label)
 			return
 		}
 		// `VAR=<artifact-path>` form: a custom command passes the tool as a
@@ -77,6 +115,11 @@ func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArt
 			if name, ok := artifactToName[val]; ok && val != "" && execArtifacts[val] {
 				b.WriteString(tok[:eq+1])
 				emitTool(name)
+				return
+			}
+			if label, ok := resolveImported(tok[eq+1:]); ok {
+				b.WriteString(tok[:eq+1])
+				emitImported(label)
 				return
 			}
 		}

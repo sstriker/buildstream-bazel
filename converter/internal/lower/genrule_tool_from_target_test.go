@@ -3,6 +3,8 @@ package lower
 import (
 	"reflect"
 	"testing"
+
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 func TestRewriteToolFromTarget(t *testing.T) {
@@ -89,7 +91,7 @@ func TestRewriteToolFromTarget(t *testing.T) {
 				m = nil
 				e = nil
 			}
-			gotCmd, gotTools := rewriteToolFromTarget(tc.in, m, e)
+			gotCmd, gotTools := rewriteToolFromTarget(tc.in, m, e, nil)
 			if gotCmd != tc.wantCmd {
 				t.Errorf("cmd:\n  in:   %q\n  got:  %q\n  want: %q", tc.in, gotCmd, tc.wantCmd)
 			}
@@ -97,5 +99,57 @@ func TestRewriteToolFromTarget(t *testing.T) {
 				t.Errorf("tools: got %v; want %v", gotTools, tc.wantTools)
 			}
 		})
+	}
+}
+
+// TestRewriteToolFromTarget_ImportsManifest covers the MANIFEST-provided
+// tool lift: an absolute token matching an export's recorded
+// IMPORTED_LOCATION (LookupLinkPath) rewrites to `$(execpath <label>)`
+// with the full label in tools — without it, a genrule driving an
+// imported tool keeps cmake's configure-time host-absolute path
+// verbatim (non-hermetic; invisible under sandboxed /tmp). Both the
+// driver-position and `VAR=<path>` forms lift; non-matching absolutes
+// and relative tokens stay verbatim.
+func TestRewriteToolFromTarget_ImportsManifest(t *testing.T) {
+	res, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "foo",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "Foo::gen",
+				BazelLabel:  "//elements/foo:gen",
+				LinkPaths:   []string{"/opt/foo/bin/gen"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd, tools := rewriteToolFromTarget(
+		"/opt/foo/bin/gen --out x.c && other -DGEN=/opt/foo/bin/gen -DOTHER=/usr/bin/m4 sub/gen",
+		nil, nil, res)
+	want := "$(execpath //elements/foo:gen) --out x.c && other -DGEN=$(execpath //elements/foo:gen) -DOTHER=/usr/bin/m4 sub/gen"
+	if cmd != want {
+		t.Errorf("cmd = %q\nwant %q", cmd, want)
+	}
+	if len(tools) != 1 || tools[0] != "//elements/foo:gen" {
+		t.Errorf("tools = %v, want exactly the manifest label once", tools)
+	}
+
+	// In-tree lookup wins over (and coexists with) the manifest path.
+	cmd, tools = rewriteToolFromTarget(
+		"bin/intree /opt/foo/bin/gen",
+		map[string]string{"bin/intree": "intree"}, map[string]bool{"bin/intree": true}, res)
+	if cmd != "$(location :intree) $(execpath //elements/foo:gen)" {
+		t.Errorf("mixed cmd = %q", cmd)
+	}
+	if len(tools) != 2 {
+		t.Errorf("mixed tools = %v", tools)
+	}
+
+	// Nil resolver: unchanged behavior (and no rewrite without in-tree map).
+	cmd, tools = rewriteToolFromTarget("/opt/foo/bin/gen --out x.c", nil, nil, nil)
+	if cmd != "/opt/foo/bin/gen --out x.c" || tools != nil {
+		t.Errorf("nil-resolver = (%q, %v), want verbatim", cmd, tools)
 	}
 }

@@ -12,6 +12,8 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
+
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 // standaloneTraceContext bundles the optional trace-derived inputs
@@ -352,10 +354,12 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// lookup.
 		rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath)
 		var execArtifacts map[string]bool
+		var ccImports *manifest.Resolver
 		if cc != nil {
 			execArtifacts = cc.ExecArtifacts
+			ccImports = cc.Imports
 		}
-		rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, artifactToName, execArtifacts)
+		rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, artifactToName, execArtifacts, ccImports)
 		// The tool-from-target lift hoisted the generator binary into
 		// `tools` and rewrote the cmd to $(location :tool); drop the
 		// now-redundant build artifact (e.g. the multi-config

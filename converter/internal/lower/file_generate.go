@@ -1669,6 +1669,14 @@ func extractTargetFileRefs(body []byte) []string {
 // `:name` labels resolve without an explicit srcs entry —
 // Bazel finds them via package-internal lookup, so they're
 // omitted from the srcs list.
+//
+// srcs (target config) is the DELIBERATE slot even when the
+// referenced target is an executable: a TARGET_FILE here is a
+// path EMBEDDED into the generated file (consumed by the built
+// system at its runtime), not a tool this action runs — so the
+// target-configuration artifact is the faithful referent.
+// Tools a genrule actually EXECUTES ride the separate
+// rewriteToolFromTarget lift, which uses tools/exec config.
 func resolveTargetFileLabels(names []string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver) (map[string]string, []string) {
 	if len(names) == 0 {
 		return nil, nil
