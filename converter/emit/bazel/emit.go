@@ -1309,6 +1309,8 @@ type ccView struct {
 	ImplementationDepsExpr     build.Expr
 	Linkstatic                 bool
 	Alwayslink                 bool
+	CudaRdc                    bool
+	HostLinkoptsExpr           build.Expr
 	Features                   []string
 	Tags                       []string
 	Visibility                 []string
@@ -1974,12 +1976,14 @@ func ccTargetCall(t ir.Target, opts Options) (*build.CallExpr, error) {
 		DefinesExpr:                attrExprAST(defines, escapeTokenizedPerPlatform(perPlatformAttr(t, "defines"))),
 		LocalDefinesExpr:           attrExprAST(escapeTokenizedList(sortedCopy(t.LocalDefines)), escapeTokenizedPerPlatform(perPlatformAttr(t, "local_defines"))),
 		LinkoptsExpr:               attrExprAST(linkopts, escapeTokenizedPerPlatform(perPlatformAttr(t, "linkopts"))),
+		HostLinkoptsExpr:           attrExprAST(escapeTokenizedList(append([]string(nil), t.HostLinkOpts...)), escapeTokenizedPerPlatform(perPlatformAttr(t, "host_linkopts"))),
 		AdditionalLinkerInputsExpr: attrExprAST(t.AdditionalLinkerInputs, nil),
 		DepsExpr:                   attrExprAST(deps, perPlatformAttr(t, "deps")),
 		DynamicDepsExpr:            attrExprAST(sortedCopy(t.DynamicDeps), nil),
 		ImplementationDepsExpr:     attrExprAST(implementationDeps, perPlatformAttr(t, "implementation_deps")),
 		Linkstatic:                 t.Linkstatic,
 		Alwayslink:                 t.Alwayslink,
+		CudaRdc:                    t.CudaRdc,
 		Features:                   sortedCopy(t.Features),
 		// Data lifts cmake's add_dependencies-derived build-order
 		// edges (set via the per-target backtrace recovery in

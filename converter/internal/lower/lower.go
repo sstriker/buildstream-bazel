@@ -1921,7 +1921,7 @@ func assembleLoweredPackage(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, o
 	// can't (no `.cu` compile action). Runs after the per-language split so
 	// it only catches WHOLE-target CUDA cases (the split already retagged
 	// mixed-language CUDA sub-libs). See retagCudaTargets.
-	retagCudaTargets(pkg)
+	retagCudaTargets(pkg, cudaRdcTargetNames(g))
 	// HEADER_FILE_ONLY reclassification — walk every target's
 	// srcs and move entries the trace's
 	// set_source_files_properties calls marked
@@ -6846,12 +6846,21 @@ func isCudaSrc(p string) bool {
 // compile path — safer to leave it and let the bazelidiom audit flag it).
 // Headers (.h/.hpp/.cuh/…) don't count as compiled srcs for this test, so a
 // cuda_library keeps its non-.cu headers in srcs/hdrs as usual.
-func retagCudaTargets(pkg *ir.Package) {
+func retagCudaTargets(pkg *ir.Package, rdcTargets map[string]bool) {
 	if pkg == nil {
 		return
 	}
 	for i := range pkg.Targets {
 		t := &pkg.Targets[i]
+		// Separable compilation (CUDA_SEPARABLE_COMPILATION → rules_cuda
+		// `rdc = True`): keyed by cmake target name, so it lands on
+		// whole-target CUDA rules (retagged below, or already cuda-kind).
+		// A split-produced CUDA sub-library carries a derived name and is
+		// not matched here — acceptable until a mixed-language separable
+		// target shows up in the corpus.
+		if rdcTargets[t.Name] {
+			t.CudaRdc = true
+		}
 		var cudaKind ir.Kind
 		switch t.Kind {
 		case ir.KindCCLibrary, ir.KindCCInterface:
@@ -6894,8 +6903,91 @@ func retagCudaTargets(pkg *ir.Package) {
 		}
 		if sawCuda && !sawNonCudaCompiled {
 			t.Kind = cudaKind
+			partitionCudaLinkopts(t)
 		}
 	}
+}
+
+// partitionCudaLinkopts rewrites a freshly-retagged CUDA target's link flags
+// for rules_cuda's split link model: plain `linkopts` there means the DEVICE
+// link command, and the cuda_binary/cuda_test macros silently DROP a plain
+// `linkopts` from the outer cc_binary (only `host_linkopts` survives their
+// rename pass) — so cmake's host link line emitted as `linkopts` never
+// reaches the final link (cudaOpenMP's -lgomp went missing exactly this way).
+//
+// cmake links CUDA targets through nvcc, so its link line MIXES host flags
+// with nvcc driver leftovers. Host-shaped tokens (-l/-L/-Wl,/-pthread/
+// -fopenmp/-shared/-rdynamic/-static*) move to HostLinkOpts; the CUDA
+// runtime libs (-lcudart*/-lcudadevrt/-lculibos) are dropped — rules_cuda's
+// toolchain owns runtime linking (same doctrine as the arch-flag drop), and
+// re-adding the static runtime beside the toolchain's shared one double-links
+// it. Everything else (nvcc link-driver flags like -lineinfo /
+// --extended-lambda, echoes of the compile copts) drops rather than riding
+// the device link. PerPlatform["linkopts"] arms (config/platform selects)
+// partition the same way into PerPlatform["host_linkopts"].
+func partitionCudaLinkopts(t *ir.Target) {
+	part := func(opts []string) (host []string) {
+		for _, o := range opts {
+			switch {
+			case o == "-lineinfo": // nvcc's debug-lineinfo flag, NOT -l ineinfo
+			case strings.HasPrefix(o, "-lcudart"), strings.HasPrefix(o, "-lcudadevrt"),
+				strings.HasPrefix(o, "-lculibos"):
+			case strings.HasPrefix(o, "-l"), strings.HasPrefix(o, "-L"),
+				strings.HasPrefix(o, "-Wl,"), o == "-pthread", o == "-fopenmp",
+				o == "-shared", o == "-rdynamic", strings.HasPrefix(o, "-static"):
+				host = append(host, o)
+			}
+		}
+		return host
+	}
+	t.HostLinkOpts = append(t.HostLinkOpts, part(t.LinkOpts)...)
+	t.LinkOpts = nil
+	if arms := t.PerPlatform["linkopts"]; len(arms) > 0 {
+		hostArms := map[string][]string{}
+		for cond, opts := range arms {
+			if host := part(opts); len(host) > 0 {
+				hostArms[cond] = host
+			}
+		}
+		delete(t.PerPlatform, "linkopts")
+		if len(hostArms) > 0 {
+			t.PerPlatform["host_linkopts"] = hostArms
+		}
+	}
+}
+
+// cudaRdcTargetNames scans the ninja graph for cmake's device-link edges and
+// returns the cmake target names built with CUDA_SEPARABLE_COMPILATION. The
+// File API exposes NO signal for the property (no compile fragment, no link
+// fragment — verified against cmake 4.x's codemodel for the cuda-samples cdp*
+// shapes); the only artifact is the `CUDA_…_DEVICE_LINKER__` build edge whose
+// output is `CMakeFiles/<target>.dir[/<Config>]/cmake_device_link.o`. Nil
+// graph → empty set (offline-replay paths).
+func cudaRdcTargetNames(g *ninja.Graph) map[string]bool {
+	if g == nil {
+		return nil
+	}
+	names := map[string]bool{}
+	collect := func(out string) {
+		if filepath.Base(out) != "cmake_device_link.o" {
+			return
+		}
+		for _, seg := range strings.Split(filepath.ToSlash(out), "/") {
+			if name, ok := strings.CutSuffix(seg, ".dir"); ok && name != "" {
+				names[name] = true
+				return
+			}
+		}
+	}
+	for _, b := range g.Builds {
+		for _, o := range b.Outputs {
+			collect(o)
+		}
+		for _, o := range b.ImplicitOuts {
+			collect(o)
+		}
+	}
+	return names
 }
 
 // reclassifyHeaderOnlySources walks every target in pkg.Targets
@@ -9017,7 +9109,11 @@ func collectDirHeaders(sourceRoot, absDir string) ([]string, error) {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(p))
-		if !cclang.IsHeaderExt(ext) {
+		// `.cuh` joins the walk here (not in cclang's universal header set —
+		// it's CUDA-contextual): a kernel header beside its `.cu`
+		// (cuda-samples' `<sample>_kernel.cuh` quote-includes) must stage
+		// like any sibling header or the include misses in Bazel's sandbox.
+		if !cclang.IsHeaderExt(ext) && ext != ".cuh" {
 			if ext != "" || !looksLikeCxxHeader(p) {
 				return nil
 			}
