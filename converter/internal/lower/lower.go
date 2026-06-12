@@ -1743,7 +1743,7 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 	var fileGenerates []fileGenerateOut
 	if traceDecoded {
 		var err error
-		fileGenerates, err = recoverFileGenerate(decodedFileGenerates, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, configureDirScopes, opts.LiftConfigureFile, opts.CMakeVars, genexTargets, opts.Imports, cc)
+		fileGenerates, err = recoverFileGenerate(decodedFileGenerates, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.BazelPackagePath, configureDirScopes, opts.LiftConfigureFile, opts.CMakeVars, genexTargets, opts.Imports, cc)
 		if err != nil {
 			return nil, nil, err
 		}
