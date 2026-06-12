@@ -52,16 +52,23 @@ mkdir -p "$root/bin" "$root/include" "$root/lib64/stubs" "$root/nvvm/libdevice"
 # PATH assumptions don't hold.
 if [ -d /usr/lib/nvidia-cuda-toolkit/bin ]; then
   for f in /usr/lib/nvidia-cuda-toolkit/bin/*; do
-    ln -sf "$f" "$root/bin/$(basename "$f")"
+    ln -sfn "$f" "$root/bin/$(basename "$f")"
   done
 fi
 for tool in ptxas fatbinary nvlink nvdisasm cuobjdump bin2c; do
   src="$(command -v "$tool" 2>/dev/null || true)"
-  [ -n "$src" ] && ln -sf "$(readlink -f "$src")" "$root/bin/$tool" || true
+  [ -n "$src" ] && ln -sfn "$(readlink -f "$src")" "$root/bin/$tool" || true
 done
-[ -e /usr/lib/nvidia-cuda-toolkit/bin/nvcc ] && ln -sf /usr/lib/nvidia-cuda-toolkit/bin/nvcc "$root/bin/nvcc" || true
+[ -e /usr/lib/nvidia-cuda-toolkit/bin/nvcc ] && ln -sfn /usr/lib/nvidia-cuda-toolkit/bin/nvcc "$root/bin/nvcc" || true
 
-# include/: CUDA headers (cuda_runtime.h et al.) live in /usr/include on Debian.
+# include/: CUDA headers (cuda_runtime.h et al.) live in /usr/include on
+# Debian. Covers the FULL toolkit-library surface, not just the runtime:
+# rules_cuda's component templates (BUILD.npp, BUILD.cufft, …) reference
+# headers like nppcore.h by NAME under <root>/include, so a missing family
+# fails the consumer's compile with "missing input file …/include/nppX.h"
+# (cuda-samples' 4_CUDA_Libraries group was the canary). The cccl dirs
+# (cub/ thrust/ cuda/ — libcudacxx) feed the cub/thrust samples; nvtx3/
+# the profiler-annotation ones.
 for h in /usr/include/cuda*.h /usr/include/device_*.h /usr/include/driver_*.h \
          /usr/include/builtin_types.h /usr/include/sm_*.h /usr/include/host_*.h \
          /usr/include/vector_types.h /usr/include/vector_functions*.h \
@@ -69,27 +76,39 @@ for h in /usr/include/cuda*.h /usr/include/device_*.h /usr/include/driver_*.h \
          /usr/include/surface_*.h /usr/include/library_types.h \
          /usr/include/math_constants.h /usr/include/common_functions.h \
          /usr/include/cuComplex.h /usr/include/crt /usr/include/nv \
-         /usr/include/cooperative_groups /usr/include/cooperative_groups.h; do
-  [ -e "$h" ] && ln -sf "$h" "$root/include/$(basename "$h")" || true
+         /usr/include/cooperative_groups /usr/include/cooperative_groups.h \
+         /usr/include/cublas*.h /usr/include/cufft*.h /usr/include/curand*.h \
+         /usr/include/cusolver*.h /usr/include/cusparse*.h /usr/include/npp*.h \
+         /usr/include/nvjpeg*.h /usr/include/nvrtc*.h /usr/include/nvml*.h \
+         /usr/include/nvJitLink*.h /usr/include/nvPTXCompiler*.h \
+         /usr/include/cub /usr/include/thrust /usr/include/cuda \
+         /usr/include/nvtx3; do
+  [ -e "$h" ] && ln -sfn "$h" "$root/include/$(basename "$h")" || true
 done
 
 # lib64/: runtime + the static libs rules_cuda's runtime target links
-# (libculibos.a / libcudart_static.a / libcudadevrt.a) from the multiarch dir.
+# (libculibos.a / libcudart_static.a / libcudadevrt.a) from the multiarch
+# dir, plus every toolkit math/image library a CUDAToolkit imported target
+# can name (cublas/cufft/curand/cusolver/cusparse/npp/nvjpeg/nvrtc/…).
 for l in /usr/lib/x86_64-linux-gnu/libcudart* /usr/lib/x86_64-linux-gnu/libcudadevrt* \
          /usr/lib/x86_64-linux-gnu/libculibos.a /usr/lib/x86_64-linux-gnu/libcupti* \
          /usr/lib/x86_64-linux-gnu/libnvToolsExt* /usr/lib/x86_64-linux-gnu/libnvrtc* \
-         /usr/lib/x86_64-linux-gnu/libcublas*; do
-  [ -e "$l" ] && ln -sf "$l" "$root/lib64/$(basename "$l")" || true
+         /usr/lib/x86_64-linux-gnu/libcublas* /usr/lib/x86_64-linux-gnu/libcufft* \
+         /usr/lib/x86_64-linux-gnu/libcurand* /usr/lib/x86_64-linux-gnu/libcusolver* \
+         /usr/lib/x86_64-linux-gnu/libcusparse* /usr/lib/x86_64-linux-gnu/libnpp* \
+         /usr/lib/x86_64-linux-gnu/libnvjpeg* /usr/lib/x86_64-linux-gnu/libnvjitlink* \
+         /usr/lib/x86_64-linux-gnu/libnvptxcompiler*; do
+  [ -e "$l" ] && ln -sfn "$l" "$root/lib64/$(basename "$l")" || true
 done
-[ -e /usr/lib/x86_64-linux-gnu/stubs/libcuda.so ] && ln -sf /usr/lib/x86_64-linux-gnu/stubs/libcuda.so "$root/lib64/stubs/libcuda.so" || true
+[ -e /usr/lib/x86_64-linux-gnu/stubs/libcuda.so ] && ln -sfn /usr/lib/x86_64-linux-gnu/stubs/libcuda.so "$root/lib64/stubs/libcuda.so" || true
 
 # nvvm/: libdevice bitcode + the nvvm lib dir (nvcc's device-IR backend).
 if [ -d /usr/lib/nvidia-cuda-toolkit/libdevice ]; then
   for d in /usr/lib/nvidia-cuda-toolkit/libdevice/*; do
-    [ -e "$d" ] && ln -sf "$d" "$root/nvvm/libdevice/$(basename "$d")" || true
+    [ -e "$d" ] && ln -sfn "$d" "$root/nvvm/libdevice/$(basename "$d")" || true
   done
 fi
-[ -d /usr/lib/cuda/nvvm/lib64 ] && ln -sf /usr/lib/cuda/nvvm/lib64 "$root/nvvm/lib64" || true
+[ -d /usr/lib/cuda/nvvm/lib64 ] && ln -sfn /usr/lib/cuda/nvvm/lib64 "$root/nvvm/lib64" || true
 
 if [ ! -e "$root/include/cuda_runtime.h" ] || [ ! -e "$root/bin/nvcc" ]; then
   echo "provision-cuda-root: assembly incomplete under $root (missing nvcc or cuda_runtime.h)" >&2
