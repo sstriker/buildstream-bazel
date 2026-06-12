@@ -530,10 +530,11 @@ func TestHarvest_PCForeignLibOwnership(t *testing.T) {
 	}
 }
 
-// TestHarvest_PCSingleLibSelfFallback: a pc whose ONE -l shares no
-// name affinity (zlib's `Libs: -lz`) still owns that library — and a
-// later multi-lib pc referencing -lz gets the dep edge, not the
-// artifact.
+// TestHarvest_PCSingleLibSelfFallback: name affinity is only an
+// ARBITER — a pc whose sole prefix-RESOLVED -l shares no name affinity
+// (zlib's `Libs: -lz -lm`, where -lm probes to nothing) still owns
+// that library, and a later multi-lib pc referencing -lz gets the dep
+// edge, not the artifact.
 func TestHarvest_PCSingleLibSelfFallback(t *testing.T) {
 	prefix := t.TempDir()
 	must := func(rel, body string) {
@@ -547,7 +548,10 @@ func TestHarvest_PCSingleLibSelfFallback(t *testing.T) {
 		}
 	}
 	must("lib/pkgconfig/user.pc", "Name: user\nVersion: 1\nLibs: -luser -lz\n")
-	must("lib/pkgconfig/zlib.pc", "Name: zlib\nVersion: 1\nLibs: -lz\n")
+	// -lm resolves to no prefix artifact (a system lib), so -lz is
+	// zlib's sole RESOLVED candidate — self despite the divergent name
+	// and the multi-token line.
+	must("lib/pkgconfig/zlib.pc", "Name: zlib\nVersion: 1\nLibs: -lz -lm\n")
 	must("lib/libuser.a", "!<arch>\n")
 	must("lib/libz.a", "!<arch>\n")
 
@@ -564,7 +568,10 @@ func TestHarvest_PCSingleLibSelfFallback(t *testing.T) {
 		t.Fatal("pkgconfig::zlib merged away")
 	}
 	if !sliceContains(zlib.LinkPaths, manifest.PrefixAnchor+"lib/libz.a") || !sliceContains(zlib.LinkLibraries, "z") {
-		t.Errorf("single-lib fallback must own libz: paths=%v libs=%v", zlib.LinkPaths, zlib.LinkLibraries)
+		t.Errorf("sole-resolved-lib fallback must own libz: paths=%v libs=%v", zlib.LinkPaths, zlib.LinkLibraries)
+	}
+	if !sliceContains(zlib.LinkLibraries, "m") {
+		t.Errorf("the unresolved system -lm must stay on zlib as a link name: %v", zlib.LinkLibraries)
 	}
 	user := byName["pkgconfig::user"]
 	if !sliceContains(user.Deps, "//p:zlib") || sliceContains(user.LinkPaths, manifest.PrefixAnchor+"lib/libz.a") {
@@ -637,6 +644,59 @@ set_target_properties(hdr::hdr PROPERTIES
 	for _, w := range warns {
 		if indexOf(w, "collides") >= 0 {
 			t.Errorf("dedup pair must not surface as a collision: %v", warns)
+		}
+	}
+}
+
+// TestHarvest_OpenSSLShape pins the openssl prefix layout end-to-end:
+// lib-prefixed pc names owning their stems (libssl.pc -> -lssl), a
+// meta .pc with Requires and no Libs of its own (openssl.pc), and an
+// unresolved system -l (-ldl) staying on its row as a link name.
+func TestHarvest_OpenSSLShape(t *testing.T) {
+	prefix := t.TempDir()
+	must := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(prefix, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("lib/pkgconfig/libcrypto.pc", "Name: OpenSSL-libcrypto\nVersion: 3\nLibs: -lcrypto\nLibs.private: -ldl -pthread\n")
+	must("lib/pkgconfig/libssl.pc", "Name: OpenSSL-libssl\nVersion: 3\nLibs: -lssl\nRequires.private: libcrypto\n")
+	must("lib/pkgconfig/openssl.pc", "Name: OpenSSL\nVersion: 3\nRequires: libssl libcrypto\n")
+	must("lib/libssl.a", "!<arch>\n")
+	must("lib/libcrypto.a", "!<arch>\n")
+
+	im, _, err := Harvest(prefix, "openssl", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]*manifest.Export{}
+	for _, ex := range im.Elements[0].Exports {
+		byName[ex.CMakeTarget] = ex
+	}
+	ssl, crypto, meta := byName["pkgconfig::libssl"], byName["pkgconfig::libcrypto"], byName["pkgconfig::openssl"]
+	if ssl == nil || crypto == nil || meta == nil {
+		t.Fatalf("all three openssl exports must survive: %v", im.Elements[0].Exports)
+	}
+	if !sliceContains(ssl.LinkPaths, manifest.PrefixAnchor+"lib/libssl.a") {
+		t.Errorf("libssl.pc must own libssl.a: %v", ssl.LinkPaths)
+	}
+	if !sliceContains(crypto.LinkPaths, manifest.PrefixAnchor+"lib/libcrypto.a") {
+		t.Errorf("libcrypto.pc must own libcrypto.a: %v", crypto.LinkPaths)
+	}
+	if !sliceContains(crypto.LinkLibraries, "dl") {
+		t.Errorf("unresolved system -ldl must stay on libcrypto: %v", crypto.LinkLibraries)
+	}
+	if !sliceContains(ssl.Deps, "//p:libcrypto") {
+		t.Errorf("libssl's Requires.private must resolve: %v", ssl.Deps)
+	}
+	for _, want := range []string{"//p:libssl", "//p:libcrypto"} {
+		if !sliceContains(meta.Deps, want) {
+			t.Errorf("openssl.pc meta deps missing %s: %v", want, meta.Deps)
 		}
 	}
 }

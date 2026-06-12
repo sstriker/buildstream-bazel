@@ -164,10 +164,11 @@ func (h *harvester) parsePC(name, body string) (*row, []pcForeign) {
 // generation time.
 //
 // Only SELF tokens — name affinity with the pc package per pcSelfLib,
-// or the sole -l of a single-lib package — land on the row here;
-// everything else returns as foreign for resolvePCForeign, so a -l
-// that names ANOTHER package's library can neither claim its artifact
-// nor drag this row into a bogus same-library merge.
+// or the package's sole prefix-resolved (or sole overall) -l — land on
+// the row here; everything else returns as foreign for
+// resolvePCForeign, so a -l that names ANOTHER package's library can
+// neither claim its artifact nor drag this row into a bogus
+// same-library merge.
 func (h *harvester) applyPCLibs(r *row, name, libsField string) []pcForeign {
 	var searchDirs []string
 	var toks []pcForeign
@@ -193,13 +194,34 @@ func (h *harvester) applyPCLibs(r *row, name, libsField string) []pcForeign {
 			self[i], anySelf = true, true
 		}
 	}
-	// No affinity match at all: a SINGLE -l is the package's own
-	// library under a divergent name (zlib's `Libs: -lz`). A multi-lib
-	// line with no match stays all-foreign — guessing an owner among
-	// several (an umbrella .pc aggregating other packages' libs) is
-	// exactly the over-claiming this split exists to stop.
-	if !anySelf && len(toks) == 1 {
-		self[0] = true
+	// No affinity match at all: name matching is only an ARBITER, so a
+	// package whose one real library carries a divergent name still
+	// owns it. Self is then the SOLE -l that resolves to an artifact in
+	// the prefix (zlib's `Libs: -lz -lm`: -lm probes to nothing — a
+	// system lib — leaving -lz the only resolved candidate), or the
+	// sole -l outright when nothing resolves (partial trees). A line
+	// with SEVERAL resolved candidates and no name match stays
+	// all-foreign — guessing an owner among them (an umbrella .pc
+	// aggregating other packages' libs) is exactly the over-claiming
+	// this split exists to stop.
+	if !anySelf {
+		resolved := -1
+		for i, t := range toks {
+			if len(t.paths) == 0 {
+				continue
+			}
+			if resolved >= 0 {
+				resolved = -1
+				break
+			}
+			resolved = i
+		}
+		switch {
+		case resolved >= 0:
+			self[resolved] = true
+		case len(toks) == 1:
+			self[0] = true
+		}
 	}
 	var foreign []pcForeign
 	for i, t := range toks {
