@@ -54,7 +54,7 @@ type fileGenerateOut struct {
 // Returns an empty slice with no error when calls is empty or
 // hostBuildDir is unset — preserves the pre-trace behavior for
 // offline runs without a stashed fixture.
-func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, dirScopes []dirScope, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ([]fileGenerateOut, error) {
+func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, labelRoot string, dirScopes []dirScope, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ([]fileGenerateOut, error) {
 	if len(calls) == 0 || hostBuildDir == "" {
 		return nil, nil
 	}
@@ -188,7 +188,7 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 			callForOut := call
 			callForOut.Output = outPath
 			name := configureFileGenruleName(rel) // reuse the gen_<path> namer
-			gen := buildFileGenerateGenrule(name, rel, body, callForOut, hostSrcDir, recordedSrcDir, dirScopes, liftEnabled, cmakeVars, genexTargets, imports, cc)
+			gen := buildFileGenerateGenrule(name, rel, body, callForOut, hostSrcDir, recordedSrcDir, recordedBuildDir, labelRoot, dirScopes, liftEnabled, cmakeVars, genexTargets, imports, cc)
 			cc.Genrules = append(cc.Genrules, gen)
 			cc.OutToGenrule[rel] = name
 
@@ -386,9 +386,19 @@ func liftFileGenerateGenex(name, outRel, inRel string, templateBody, rendered []
 	return genexLegacy
 }
 
-func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir string, dirScopes []dirScope, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ir.Target {
+func buildFileGenerateGenrule(name, outRel string, rendered []byte, call shadow.FileGenerateCall, hostSrcDir, recordedSrcDir, recordedBuildDir, labelRoot string, dirScopes []dirScope, liftEnabled bool, cmakeVars map[string]string, genexTargets map[string]genexeval.TargetInfo, imports *manifest.Resolver, cc *codegenContext) ir.Target {
 	opts, optErr := fileGenerateOptions(call)
-	bake := bakeFileTarget(name, outRel, rendered, fileGenerateTags(fileGenerateTagSet{}))
+	// The BAKE body re-anchors convert-time absolute paths to
+	// deterministic, action-resolvable forms (source tree →
+	// <labelRoot>/<rel>; build dir → the @BSB_GENDIR@ marker a
+	// consuming genrule substitutes at action time). `rendered`
+	// itself stays untouched — the lift's Substitute==rendered
+	// verification compares against cmake's real bytes.
+	baked, marked := reanchorResponseContent(rendered, recordedSrcDir, recordedBuildDir, labelRoot)
+	if marked && cc != nil && cc.GendirMarkedOuts != nil {
+		cc.GendirMarkedOuts[outRel] = true
+	}
+	bake := bakeFileTarget(name, outRel, baked, fileGenerateTags(fileGenerateTagSet{}))
 	if optErr != nil {
 		return bake
 	}

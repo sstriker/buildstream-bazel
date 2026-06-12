@@ -30,9 +30,17 @@ import (
 // rule, so the target keeps the single primary body rather than emitting a
 // lying arm.
 //
+// Each captured body is re-anchored with the SAME policy its target's
+// primary body got, so a path-spelling delta between a per-config
+// scratch dir (<buildDir>-cfg-<name>) and the multi-config dir can't
+// fabricate a select(): file_generate-driven bakes go through
+// reanchorResponseContent (exec-root form + @BSB_GENDIR@ markers),
+// everything else through the configure_file strip policy (prefix
+// removal, extended here to the -cfg-<name> scratch dirs).
+//
 // Returns the names of the targets that gained per-config content, for the
 // caller's stderr surfacing.
-func ApplyPerConfigBakes(pkg *ir.Package, bakes map[string]map[string][]byte) (applied []string) {
+func ApplyPerConfigBakes(pkg *ir.Package, bakes map[string]map[string][]byte, recordedSrcDir, recordedBuildDir, labelRoot string) (applied []string) {
 	if pkg == nil || len(bakes) == 0 {
 		return nil
 	}
@@ -45,10 +53,16 @@ func ApplyPerConfigBakes(pkg *ir.Package, bakes map[string]map[string][]byte) (a
 		if len(perCfg) == 0 {
 			continue
 		}
+		fileGenDriven := stringSliceContains(t.Tags, "cmake-codegen-driver=file_generate")
 		byLabel := make(map[string][]string, len(perCfg))
 		differs := false
 		ok := true
 		for cfg, body := range perCfg {
+			if fileGenDriven {
+				body, _ = reanchorResponseContent(body, recordedSrcDir, recordedBuildDir, labelRoot)
+			} else {
+				body = []byte(stripConvertTimePathsCfg(string(body), recordedSrcDir, recordedBuildDir))
+			}
 			lines, textOK := writeFileLines(body)
 			if !textOK {
 				ok = false

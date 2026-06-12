@@ -374,6 +374,18 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// bazel rejects as a missing output). split.go re-relativizes
 		// the $(RULEDIR)-relative path if the genrule moves packages.
 		rewrittenCmd = anchorGenruleOutputsToRuledir(rewrittenCmd, outs)
+		// Response-file family (the VTK wrap-hierarchy shape): strip
+		// ninja depfile plumbing, then route generated-src references
+		// through $(location) (and the @BSB_GENDIR@ sed preamble for
+		// marker-carrying bakes) so the action reads staged paths.
+		rewrittenCmd = dropNinjaDepfilePlumbing(rewrittenCmd, outs)
+		rewrittenCmd = rewriteGeneratedSrcRefs(rewrittenCmd, srcs, cc)
+		// The response files' -I roots expose the build dir's generated
+		// headers AND the source dirs' helper headers implicitly in
+		// cmake; mirror both visibilities as srcs (generated outs
+		// directly, source roots via shared per-root filegroups).
+		srcs = append(srcs, responseFileGeneratedHdrs(srcs, cc, bazelPackagePath)...)
+		srcs = append(srcs, responseFileSourceHdrGroups(srcs, cc, bazelPackagePath, cmakeSrc)...)
 		// Audit: when the trace shows this command carried generator
 		// expressions, tag whether its path-bearing genexes resolved to
 		// $(location) labels (portable) or baked a machine-specific

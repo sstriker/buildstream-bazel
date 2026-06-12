@@ -1,0 +1,362 @@
+package lower
+
+import (
+	"fmt"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+
+	"github.com/sstriker/buildstream-bazel/converter/ir"
+)
+
+// This file is the response-file half of the wrap-hierarchy genrule
+// family (VTK's vtkWrapHierarchy shape, generalized): custom commands
+// whose tool reads @<file> response files and positional data files
+// that are THEMSELVES file(GENERATE) bakes. Three coordinated
+// mechanical fixes make the recovered genrule executable:
+//
+//  1. dropNinjaDepfilePlumbing — the recovered cmd carries ninja's
+//     incrementality machinery (`-MF <out>.d` plus an `&&`-chained
+//     `cmake -E cmake_transform_depfile …` with an absolute cmake
+//     path). Bazel genrules don't consume depfiles; the plumbing
+//     writes outside the declared outs and references a host cmake.
+//  2. rewriteGeneratedSrcRefs — the cmd references staged generated
+//     srcs by their build-dir-relative spelling (`@Common/Core/
+//     CMakeFiles/x.args`), which doesn't resolve from the action's
+//     exec-root cwd. Rewriting to `$(location <src>)` makes Bazel
+//     hand the action the real staged path — and split's
+//     relocateGenruleSrcs relabels the reference in lockstep when
+//     the genrule and the producing package diverge.
+//  3. reanchorResponseContent — the BAKED response-file content
+//     embeds convert-time absolute paths. Source-tree paths
+//     re-anchor to the exec-root-relative element form
+//     (<labelRoot>/<rel>); build-dir paths (generated headers) have
+//     no static exec-root spelling — they live under the
+//     configuration's output root — so they re-anchor to a
+//     @BSB_GENDIR@ marker the CONSUMING genrule substitutes with
+//     $(GENDIR) via a sed preamble at action time (fix 2 emits the
+//     preamble for marker-carrying srcs, keyed on
+//     cc.GendirMarkedOuts).
+
+// bsbGendirMarker is the deterministic stand-in for the
+// configuration-dependent output root in baked response-file
+// content. Baking $(GENDIR) literally would be wrong (write_file
+// content is not Make-var expanded); baking the convert-time build
+// dir is non-deterministic across runs AND dangling at build time.
+const bsbGendirMarker = "@BSB_GENDIR@"
+
+// dropNinjaDepfilePlumbing strips ninja-incrementality depfile
+// machinery from a recovered custom-command cmd: any `&&`-chained
+// segment invoking `cmake -E cmake_transform_depfile`, and `-MF
+// <path>` flag pairs whose path ends in `.d` and is not a declared
+// out. Both are byproducts of cmake's Ninja generator wiring depfile
+// support into the wrapping tool invocation — semantically inert for
+// a sandboxed genrule whose inputs are fully declared.
+func dropNinjaDepfilePlumbing(cmd string, outs []string) string {
+	outSet := map[string]bool{}
+	for _, o := range outs {
+		outSet[o] = true
+	}
+	segments := strings.Split(cmd, " && ")
+	kept := segments[:0]
+	for _, seg := range segments {
+		if strings.Contains(seg, " -E cmake_transform_depfile ") {
+			continue
+		}
+		kept = append(kept, dropMFDepfileFlag(seg, outSet))
+	}
+	return strings.Join(kept, " && ")
+}
+
+// dropMFDepfileFlag removes `-MF <path>.d` pairs from one command
+// segment, keeping any pair whose path is a declared output (then
+// the depfile is a real product, not plumbing). Scan-and-splice so
+// the surrounding text — including whitespace inside quoted args —
+// stays byte-identical.
+func dropMFDepfileFlag(seg string, outs map[string]bool) string {
+	var b strings.Builder
+	for i := 0; i < len(seg); {
+		if strings.HasPrefix(seg[i:], "-MF ") && (i == 0 || seg[i-1] == ' ') {
+			pathStart := i + len("-MF ")
+			pathEnd := pathStart
+			for pathEnd < len(seg) && seg[pathEnd] != ' ' {
+				pathEnd++
+			}
+			path := seg[pathStart:pathEnd]
+			if strings.HasSuffix(path, ".d") && !outs[path] {
+				// Consume the pair plus ONE adjoining space so the
+				// neighbors don't fuse and no double space is left.
+				if pathEnd < len(seg) && seg[pathEnd] == ' ' {
+					pathEnd++
+				} else if i > 0 && b.Len() > 0 {
+					s := b.String()
+					b.Reset()
+					b.WriteString(strings.TrimSuffix(s, " "))
+				}
+				i = pathEnd
+				continue
+			}
+		}
+		b.WriteByte(seg[i])
+		i++
+	}
+	return b.String()
+}
+
+// rewriteGeneratedSrcRefs rewrites cmd references to GENERATED srcs
+// (entries another recovered rule produces, per cc.OutToGenrule) so
+// the action reads them from their real staged paths:
+//
+//   - plain generated srcs: `@<src>` → `@$(location <src>)`, bare
+//     `<src>` → `$(location <src>)`;
+//   - marker-carrying srcs (cc.GendirMarkedOuts — baked response
+//     files whose content embeds @BSB_GENDIR@): routed through a sed
+//     preamble that substitutes the marker with $(GENDIR) into a
+//     scratch copy, and the cmd references the scratch copy.
+//
+// Longest src first so an entry that prefixes another can't
+// half-rewrite it. Only whole-token occurrences rewrite (boundary
+// guard via replaceBareToken / the explicit @ form).
+func rewriteGeneratedSrcRefs(cmd string, srcs []string, cc *codegenContext) string {
+	if cc == nil {
+		return cmd
+	}
+	gen := make([]string, 0, len(srcs))
+	for _, s := range srcs {
+		if cc.OutToGenrule[s] != "" {
+			gen = append(gen, s)
+		}
+	}
+	if len(gen) == 0 {
+		return cmd
+	}
+	sort.Slice(gen, func(i, j int) bool { return len(gen[i]) > len(gen[j]) })
+
+	var sedLines []string
+	for _, s := range gen {
+		if !strings.Contains(cmd, s) {
+			continue
+		}
+		var ref string
+		if cc.GendirMarkedOuts[s] {
+			scratch := "$$BSB_RD/" + sanitizePathToNameStem(s)
+			sedLines = append(sedLines, fmt.Sprintf(
+				`sed -e 's|%s|$(GENDIR)|g' $(location %s) > %s`, bsbGendirMarker, s, scratch))
+			ref = scratch
+		} else {
+			ref = "$(location " + s + ")"
+		}
+		cmd = replaceBareToken(cmd, "@"+s, "@"+ref)
+		cmd = replaceBareToken(cmd, s, ref)
+	}
+	if len(sedLines) == 0 {
+		return cmd
+	}
+	return "BSB_RD=$$(mktemp -d) && " + strings.Join(sedLines, " && ") + " && " + cmd
+}
+
+// responseFileGeneratedHdrs returns the generated header outputs a
+// genrule's marker-carrying response files make reachable: for each
+// src whose bake content carries `-I` roots under the
+// @BSB_GENDIR@/<labelRoot>/ marker, every cc.OutToGenrule output
+// under that root with a header-ish extension. In the cmake build
+// those headers sit in the build-dir include root the `-I` names
+// (vtkValueFromString.h does `#include "vtkCommonCoreModule.h"`, the
+// configure-time export header) — the tool resolves them implicitly,
+// so the ninja edge never declares them as inputs and the recovered
+// genrule's srcs miss them. Mirroring the build-dir root's generated
+// header set into srcs restores cmake's visibility; everything is
+// label-addressable because each out is a recovered rule's product.
+func responseFileGeneratedHdrs(srcs []string, cc *codegenContext, bazelPackagePath string) []string {
+	if cc == nil || len(cc.GendirMarkedOuts) == 0 {
+		return nil
+	}
+	contentByOut := map[string][]string{}
+	for i := range cc.Genrules {
+		t := &cc.Genrules[i]
+		if t.Kind == ir.KindWriteFile && t.WriteFileOut != "" {
+			contentByOut[t.WriteFileOut] = t.WriteFileContent
+		}
+	}
+	rootPrefix := bsbGendirMarker + "/"
+	if p := strings.Trim(bazelPackagePath, "/"); p != "" {
+		rootPrefix += p + "/"
+	}
+	roots := map[string]bool{}
+	for _, s := range srcs {
+		if !cc.GendirMarkedOuts[s] {
+			continue
+		}
+		for _, line := range contentByOut[s] {
+			d, ok := strings.CutPrefix(strings.TrimSpace(line), "-I")
+			if !ok {
+				continue
+			}
+			d = strings.Trim(d, "'\"")
+			if rel, ok := strings.CutPrefix(d, rootPrefix); ok && rel != "" {
+				roots[strings.TrimSuffix(rel, "/")+"/"] = true
+			}
+		}
+	}
+	if len(roots) == 0 {
+		return nil
+	}
+	existing := make(map[string]bool, len(srcs))
+	for _, s := range srcs {
+		existing[s] = true
+	}
+	var add []string
+	for out := range cc.OutToGenrule {
+		if existing[out] || !isHeaderishPath(out) {
+			continue
+		}
+		for root := range roots {
+			if strings.HasPrefix(out, root) {
+				add = append(add, out)
+				break
+			}
+		}
+	}
+	sort.Strings(add)
+	return add
+}
+
+// responseFileSourceHdrGroups mirrors the SOURCE half of the response
+// files' include-root visibility: in cmake, `-I <srcdir>/Common/Core`
+// exposes every helper header under the dir on the real filesystem
+// (vtkSMPThreadLocal.h includes "SMP/Common/vtkSMPThreadLocalAPI.h" —
+// never a ninja input, never .data-listed), but a sandboxed genrule
+// sees only declared srcs. For each marked response file's
+// non-marker `-I` root under the element, a per-root header
+// filegroup is synthesized once (memoized in cc.RespfileHdrGroups —
+// the wrap-hierarchy genrules all -I the same module dirs) and the
+// genrule references it by label, keeping srcs compact. Returns the
+// ":<filegroup>" refs to append.
+func responseFileSourceHdrGroups(srcs []string, cc *codegenContext, bazelPackagePath, cmakeSrc string) []string {
+	if cc == nil || len(cc.GendirMarkedOuts) == 0 || cmakeSrc == "" {
+		return nil
+	}
+	contentByOut := map[string][]string{}
+	for i := range cc.Genrules {
+		t := &cc.Genrules[i]
+		if t.Kind == ir.KindWriteFile && t.WriteFileOut != "" {
+			contentByOut[t.WriteFileOut] = t.WriteFileContent
+		}
+	}
+	prefix := ""
+	if p := strings.Trim(bazelPackagePath, "/"); p != "" {
+		prefix = p + "/"
+	}
+	var refs []string
+	seenRef := map[string]bool{}
+	for _, s := range srcs {
+		if !cc.GendirMarkedOuts[s] {
+			continue
+		}
+		for _, line := range contentByOut[s] {
+			d, ok := strings.CutPrefix(strings.TrimSpace(line), "-I")
+			if !ok {
+				continue
+			}
+			d = strings.Trim(d, "'\"")
+			if strings.HasPrefix(d, bsbGendirMarker) || strings.Contains(d, "..") {
+				continue
+			}
+			rel := d
+			if prefix != "" {
+				if rel, ok = strings.CutPrefix(d, prefix); !ok {
+					continue
+				}
+			}
+			if rel == "" || filepath.IsAbs(rel) {
+				continue
+			}
+			name, exists := cc.RespfileHdrGroups[rel]
+			if !exists {
+				hdrs, err := discoverHeaders(cmakeSrc, []string{rel}, cc.HeaderWalkCache, cc.MissingIncludeDirs)
+				if err != nil || len(hdrs) == 0 {
+					cc.RespfileHdrGroups[rel] = "" // negative-cache
+					continue
+				}
+				name = "respfile_hdrs_" + sanitizePathToNameStem(rel)
+				cc.RespfileHdrGroups[rel] = name
+				cc.Genrules = append(cc.Genrules, ir.Target{
+					Name:       name,
+					Kind:       ir.KindFilegroup,
+					Srcs:       hdrs,
+					Visibility: []string{"//visibility:private"},
+				})
+			}
+			if name == "" {
+				continue
+			}
+			ref := ":" + name
+			if !seenRef[ref] {
+				seenRef[ref] = true
+				refs = append(refs, ref)
+			}
+		}
+	}
+	sort.Strings(refs)
+	return refs
+}
+
+// isHeaderishPath reports whether a path carries a header-family
+// extension (the include-resolution surface; matches the converter's
+// header recognition family).
+func isHeaderishPath(p string) bool {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".h", ".hh", ".hpp", ".hxx", ".inc", ".inl", ".ipp", ".def":
+		return true
+	}
+	return false
+}
+
+// stripConvertTimePathsCfg is reanchorConvertTimePaths' policy
+// (prefix removal → package-relative) extended to the per-config
+// scratch dirs (<buildDir>-cfg-<name>) the per-config bake passes
+// configure into — those carry the suffix the plain prefix strip
+// can't match, so a per-config body would otherwise keep raw scratch
+// paths its primary never had.
+func stripConvertTimePathsCfg(content, recordedSrcDir, recordedBuildDir string) string {
+	if recordedBuildDir != "" {
+		re := regexp.MustCompile(regexp.QuoteMeta(recordedBuildDir) + `(-cfg-[A-Za-z0-9_.+-]+)?/`)
+		content = re.ReplaceAllString(content, "")
+	}
+	if recordedSrcDir != "" {
+		content = strings.ReplaceAll(content, strings.TrimSuffix(recordedSrcDir, "/")+"/", "")
+	}
+	return content
+}
+
+// reanchorResponseContent rewrites convert-time absolute paths in
+// baked file(GENERATE) content into deterministic, action-resolvable
+// forms: source-tree paths to the exec-root-relative element form
+// (<labelRoot>/<rel>), build-dir paths — including the per-config
+// re-configure dirs (<buildDir>-cfg-<name>) — to
+// @BSB_GENDIR@/<labelRoot>/<rel>. Returns the rewritten body and
+// whether a build-dir path (the marker) was emitted, so the bake
+// site can register the out in cc.GendirMarkedOuts for the consumer
+// preamble. No-op (and marked=false) when the prefixes are empty or
+// absent from the body.
+func reanchorResponseContent(body []byte, recordedSrcDir, recordedBuildDir, labelRoot string) ([]byte, bool) {
+	content := string(body)
+	marked := false
+	root := strings.Trim(labelRoot, "/")
+	prefix := ""
+	if root != "" {
+		prefix = root + "/"
+	}
+	if recordedBuildDir != "" {
+		re := regexp.MustCompile(regexp.QuoteMeta(recordedBuildDir) + `(-cfg-[A-Za-z0-9_.+-]+)?/`)
+		if re.MatchString(content) {
+			content = re.ReplaceAllString(content, bsbGendirMarker+"/"+prefix)
+			marked = true
+		}
+	}
+	if recordedSrcDir != "" {
+		content = strings.ReplaceAll(content, strings.TrimSuffix(recordedSrcDir, "/")+"/", prefix)
+	}
+	return []byte(content), marked
+}

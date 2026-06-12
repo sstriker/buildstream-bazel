@@ -138,7 +138,7 @@ func runPerConfigBakes(ctx context.Context, a cli.Args, hostBuildDir string, tra
 			delete(bakes, rel)
 		}
 	}
-	if applied := lower.ApplyPerConfigBakes(pkg, bakes); len(applied) > 0 {
+	if applied := lower.ApplyPerConfigBakes(pkg, bakes, srcRoot, hostBuildDir, a.BazelPackagePath); len(applied) > 0 {
 		sort.Strings(applied)
 		fmt.Fprintf(os.Stderr, "convert-element-cmake: per-config bake: %d write_file body(ies) differ across build types; emitted content select() arms: %s\n", len(applied), strings.Join(applied, ", "))
 	}
