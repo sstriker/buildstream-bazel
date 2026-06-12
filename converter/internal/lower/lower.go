@@ -3314,6 +3314,25 @@ func lowerGeneratedSource(irt *ir.Target, t *fileapi.Target, src fileapi.TargetS
 			}
 		}
 	}
+	// Authoritative wiring signal: if another lift already emitted a producer
+	// for this exact build-dir output, attach to it instead of rejecting —
+	// regardless of cmake's IsGenerated flag or whether a ninja CUSTOM_COMMAND
+	// edge exists. configure_file / file(GENERATE) / execute_process record
+	// their outputs in cc.OutToGenrule with NO CUSTOM_COMMAND edge for
+	// recoverGenrule to find, so without this an IsGenerated source we DID
+	// recover (e.g. a file(GENERATE) output, or an execute_process output the
+	// project marked GENERATED via set_source_files_properties) would be
+	// falsely rejected here. Mirrors the ordinary-source build-dir path
+	// (recoverOrElideBuildDirSource); OutToGenrule keys are build-dir-relative.
+	if brel, inside := relativeIfInside(cmakeBuild, src.Path); inside {
+		if _, produced := cc.OutToGenrule[brel]; produced {
+			st.consumesCodegen = true
+			if sp := attachGeneratedSource(irt, brel, inCG, false, cc.CcEmbedSourceToHeader[brel]); sp != "" {
+				st.srcEmitPath[i] = sp
+			}
+			return nil
+		}
+	}
 	relOut, _, err := cc.recoverGenrule(src.Path, cmakeSrc, cmakeBuild, g)
 	if err != nil {
 		if rejections != nil {
