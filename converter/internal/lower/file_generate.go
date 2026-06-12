@@ -1074,10 +1074,13 @@ func buildGenexTargets(r *fileapi.Reply, recordedBuildDir string, probes []cmake
 }
 
 // foldInterfaceLibraryProbes folds probe-captured INTERFACE_*
-// aggregates and the OBJECT_LIBRARY Objects list into out. Non-empty
-// probe values override any convert-time aggregate already in the
-// entry (cmake's own generation-time evaluator is the source of
-// truth when it ran).
+// aggregates and the OBJECT_LIBRARY Objects list into out. A PRESENT
+// probe key overrides any convert-time aggregate already in the entry
+// — empty value included, since cmake's own generation-time evaluator
+// is the source of truth when it ran and an empty resolution is a real
+// answer. Properties the hook deliberately did NOT probe (the
+// $<COMPILE_LANGUAGE/…>-bearing skip in probe-genex.cmake) have no key
+// at all, so the trace-derived aggregate stands for exactly those.
 //
 // Probes for targets not already in out are normally skipped — the
 // codemodel is ground truth for "what targets exist" — with ONE

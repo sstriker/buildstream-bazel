@@ -688,6 +688,20 @@ trees, optional-feature deps, codegen instances). Each member's
 
 ## Later (research / open questions)
 
+- **Genex-probe language-conditional skip — transitive reach.** The
+  structural probe now skips a property whose RAW direct value carries
+  `$<COMPILE_LANGUAGE/…>` / `$<LINK_LANGUAGE/…>` (multi-language
+  projects otherwise abort the generate step: "Evaluation file to be
+  written multiple times with different content"). The scan is
+  direct-value only — the same reach as the probe's dangling-`::`
+  skip — so a language gate arriving TRANSITIVELY (a probed target
+  links a dependency whose interface carries the gate) still diverges
+  and aborts. Closing it needs a link-closure walk over raw interface
+  values in the hook (cycles, genex-bearing dep entries), or a
+  hook-side error trap cmake script doesn't offer. Demand signal: a
+  corpus member aborting with that message while its DIRECT properties
+  are clean.
+
 - **Stage textual-include-of-SOURCE siblings (`#include "x.cu"` /
   `#include "x.c"`).** The sibling-header staging walk covers header
   extensions (incl. `.cuh`), but cuda-samples' eigenvalues quote-includes a
