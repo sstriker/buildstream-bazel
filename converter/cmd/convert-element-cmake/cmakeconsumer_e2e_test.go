@@ -291,6 +291,103 @@ func mustMkdir(t *testing.T, path string) string {
 	return path
 }
 
+// TestE2E_CMakeConsumer_ImportedTool is the manifest-provided-TOOL
+// round trip (the protoc shape, generalized): the producer installs an
+// executable into its export set; the consumer's add_custom_command
+// drives it via $<TARGET_FILE:Tool::gen>, which cmake resolves to the
+// PREFIX-staged path at configure time. The gates compose across every
+// layer this slice touches:
+//
+//   - exports.json carries Tool::gen → //elements/toolpkg:gen with the
+//     anchored bin/ link_path (the producer half);
+//   - the bundle publishes add_executable(Tool::gen IMPORTED) and the
+//     synth-prefix staging stubs bin/gen (so the consumer's configure
+//     resolves TARGET_FILE against the prefix);
+//   - the consumer's converted genrule carries
+//     $(execpath //elements/toolpkg:gen) + the label in tools — the
+//     hostPrefix→anchor remap matching the manifest row (the #596
+//     consumer half, now fed by a generated manifest instead of a
+//     hand-written one).
+func TestE2E_CMakeConsumer_ImportedTool(t *testing.T) {
+	conv := lookupConverter(t)
+	if _, err := exec.LookPath("cmake"); err != nil {
+		t.Skipf("cmake not on PATH: %v", err)
+	}
+
+	// Producer: an installed, exported tool.
+	prodSrc := t.TempDir()
+	mustWrite(t, filepath.Join(prodSrc, "CMakeLists.txt"), `cmake_minimum_required(VERSION 3.20)
+project(toolpkg LANGUAGES C VERSION 1.0.0)
+add_executable(gen gen.c)
+install(TARGETS gen EXPORT toolTargets RUNTIME DESTINATION bin)
+install(EXPORT toolTargets FILE toolTargets.cmake NAMESPACE Tool:: DESTINATION lib/cmake/toolpkg)
+`)
+	mustWrite(t, filepath.Join(prodSrc, "gen.c"),
+		"#include <stdio.h>\nint main(void){puts(\"int gen_value(void){return 7;}\");return 0;}\n")
+
+	out := t.TempDir()
+	bundle := filepath.Join(out, "bundle")
+	exportsJSON := filepath.Join(out, "exports.json")
+	mustRun(t, exec.CommandContext(context.Background(), conv,
+		"--source-root", prodSrc,
+		"--bazel-package-path", "elements/toolpkg",
+		"--out-build", filepath.Join(out, "prod.BUILD"),
+		"--out-bundle-dir", bundle,
+		"--out-exports", exportsJSON,
+	))
+	if body, _ := os.ReadFile(exportsJSON); !strings.Contains(string(body), `"Tool::gen"`) ||
+		!strings.Contains(string(body), `"//elements/toolpkg:gen"`) ||
+		!strings.Contains(string(body), `"/opt/prefix/bin/gen"`) {
+		t.Fatalf("exports.json missing the tool row (Tool::gen → //elements/toolpkg:gen, anchored bin/gen):\n%s", body)
+	}
+	tgts, _ := os.ReadFile(filepath.Join(bundle, "lib", "cmake", "Tool", "ToolTargets.cmake"))
+	if !strings.Contains(string(tgts), "add_executable(Tool::gen IMPORTED)") {
+		t.Fatalf("bundle missing the IMPORTED executable:\n%s", tgts)
+	}
+	if _, err := os.Stat(filepath.Join(bundle, "bin", "gen")); err != nil {
+		t.Fatalf("synth-prefix staging did not stub bin/gen (EXISTS check + TARGET_FILE need it): %v", err)
+	}
+
+	// Consumer: a custom command drives the imported tool.
+	prefix := filepath.Join(out, "prefix")
+	mustRun(t, exec.CommandContext(context.Background(), "cp", "-r", bundle+"/.", mustMkdir(t, prefix)))
+
+	consSrc := t.TempDir()
+	mustWrite(t, filepath.Join(consSrc, "CMakeLists.txt"), `cmake_minimum_required(VERSION 3.20)
+project(cons LANGUAGES C VERSION 1.0.0)
+find_package(Tool CONFIG REQUIRED)
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/gen_out.c
+    COMMAND $<TARGET_FILE:Tool::gen> > ${CMAKE_CURRENT_BINARY_DIR}/gen_out.c
+    VERBATIM)
+add_library(cons STATIC cons.c ${CMAKE_CURRENT_BINARY_DIR}/gen_out.c)
+install(TARGETS cons ARCHIVE DESTINATION lib)
+`)
+	mustWrite(t, filepath.Join(consSrc, "cons.c"), "int gen_value(void);\nint c(void){return gen_value();}\n")
+
+	consBuild := filepath.Join(out, "cons.BUILD")
+	mustRun(t, exec.CommandContext(context.Background(), conv,
+		"--source-root", consSrc,
+		"--bazel-package-path", "elements/cons",
+		"--prefix-dir", prefix,
+		"--exports-in", exportsJSON,
+		"--out-build", consBuild,
+	))
+	body, err := os.ReadFile(consBuild)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "$(execpath //elements/toolpkg:gen)") {
+		t.Fatalf("consumer genrule cmd did not lift the prefix tool path to $(execpath //elements/toolpkg:gen):\n%s", body)
+	}
+	if !strings.Contains(string(body), `"//elements/toolpkg:gen"`) {
+		t.Fatalf("consumer genrule missing the tool label in tools:\n%s", body)
+	}
+	if strings.Contains(string(body), prefix) {
+		t.Fatalf("convert-time prefix path leaked into the consumer BUILD:\n%s", body)
+	}
+}
+
 // TestE2E_CMakeConsumer_ExportDepsClosure: the Export.Deps round trip
 // for the shape the field exists for — a HAND-WRITTEN manifest whose
 // export label is prebuilt-backed (models no deps), carrying its
