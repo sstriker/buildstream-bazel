@@ -99,21 +99,45 @@ transition cleanly.
 
 - **Expand the survey corpus: BuildBox + BDE (new cmake patterns).** Two
   projects that exercise idioms the current corpus doesn't:
-  - **BuildBox** (`gitlab.com/BuildGrid/buildbox`) — near-term add. A
-    monorepo of ~20 small tools (`common`, `commonmetrics`, `casd`,
-    `casupload*`, `fuse`, `run-{bubblewrap,hosttools,oci,userchroot}`,
-    `worker`, `recc`, …) gated by tri-state
-    `enable_tool`/`enable_linux_tool(AUTO/ON/OFF)` conditional enablement,
-    plus REAPI proto codegen through a CUSTOM `protoc_compile()` wrapper
-    (`cmake/BuildboxCommonProtoc.cmake`) — a different shape from the
-    standard `protobuf_generate`/`grpc_cpp_plugin` macros the grpc/protobuf
-    members use — and vendored-include third_party
-    (`include_directories(third_party/grpc/include)`).
-    `find_package(OpenSSL, Threads)`; grpc/protobuf already provisionable
-    for the corpus. Dogfooding value: it's BuildGrid/BuildStream-ecosystem
-    remote-execution tooling — the project's own domain. Stresses the
-    custom-protoc custom-command/genrule recovery + generated-proto-header
-    wiring, monorepo conditional-tool pruning, and vendored includes.
+  - **BuildBox** (`gitlab.com/BuildGrid/buildbox`) — ONBOARDED, structural
+    lenses GREEN; build-lens follow-on below. A monorepo of ~20 tools gated
+    by tri-state `enable_tool(AUTO/ON/OFF)`, with REAPI proto codegen through
+    a CUSTOM `protoc_compile()` wrapper (`cmake/BuildboxCommonProtoc.cmake`) —
+    a different shape from the standard `protobuf_generate`/`grpc_cpp_plugin`
+    macros the grpc/protobuf members use. Landed (`make fetch-buildbox` +
+    `scripts/build-lens/buildbox.conf`, core-scoped `TOOLS/OCI/TESTING off`;
+    needs the recent `/tmp/absl-install` for `absl::log_initialize`): the
+    custom protoc codegen recovers cleanly as 42 genrules, and rejections /
+    coverage / todos / narrowing-compat are all 0 (14 benign idiom findings).
+    **Build-lens follow-on (the gate for compile-db / build / symbol / ELF —
+    all 4 blocked on the same thing):**
+    - **Generalized hermetic-protoc genrule lift (converter change).** The
+      hermetic-protoc rewrite (host `protoc` → `$(execpath @protobuf//:protoc)`,
+      output → `$(RULEDIR)`, proto import-closure staging) lives in
+      `reanchorBuildDirCopyGenrule` (`converter/internal/lower/genrule.go`),
+      but is gated to grpc's `cd <builddir> && …` shape (the
+      `!strings.HasPrefix(rawCmd, "cd ")` return + the absolute-path-protoc
+      check) and is only reached from the ninja-recovered genrule path.
+      BuildBox's DIRECT `protoc …` (no `cd`) comes via the standalone
+      custom-command path (`standalone_genrules.go`), which never calls the
+      reanchorer — so its genrule keeps host `protoc`/`/usr/bin/grpc_cpp_plugin`,
+      host `--proto_path=/usr/include`, cmake-relative `--cpp_out=protos`, and
+      a `$(RULEDIR)//code.proto` double-slash. Plan: EXTRACT the
+      hermetic-protoc rewrite into a shared helper and call it from the
+      standalone path too, gated on the `cmake-codegen-driver=protoc` tag
+      (grpc's `cd` path untouched — no regression), handling the bare (not
+      just absolute) `protoc` driver, the `grpc_cpp_plugin` plugin swap, the
+      `--cpp_out`/`--grpc_out` output dir → `$(RULEDIR)`, the `--proto_path`
+      WKT (`/usr/include`) → hermetic well-known-types, and the proto-file
+      arg. Fixture-driven (a minimal direct-protoc `add_custom_command`
+      project) + the `$(RULEDIR)//` double-slash fix
+      (`anchorGenruleOutputsToRuledir`/`genruleSrcs` path-join).
+    - **`buildbox-imports.json` + MODULE deps.** Map the find_package imported
+      targets (`absl::*`, `protobuf::*`, `gRPC::grpc++`, `OpenSSL::SSL/Crypto`)
+      to `@BCR` labels and add the `EXTRA_BAZEL_DEPS` (abseil/protobuf/grpc/
+      boringssl), mirroring `grpc.conf` + `grpc-imports.json`.
+    With both, the build lens builds `//...`, and the symbol/ELF lenses get a
+    static/shared artifact pair (the ELF lens just shipped).
   - **BDE** (`github.com/bloomberg/bde`) — scoped/stretch add; start at ONE
     package group (`groups/bsl`), not the full tree. Metadata-driven target
     construction via a custom build system: the top-level
