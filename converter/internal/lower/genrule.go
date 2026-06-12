@@ -451,16 +451,26 @@ func (cc *codegenContext) recoverCmakeScriptGenrule(b *ninja.Build, cmd, cmakeSr
 	// bake declines (e.g. cmake not on PATH, script
 	// produced no output).
 	if cc.CMakeScriptBake {
-		rel, name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, script, buildDir, g)
+		_, name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, script, buildDir, g)
 		if ok {
-			return rel, name, nil
+			// Return the REQUESTED output, not the bake's primary out:
+			// a multi-output script (vtkEncodeString writes a .h + the
+			// symbol-defining .cxx) is consumed once per output, and
+			// handing every consumer the primary out misroutes the
+			// .cxx to hdrs (header extension) — the shader-string
+			// definitions then compile nowhere and every referencing
+			// link fails. Same contract as the cc_embed/cc_hash
+			// branches above; the sibling outputs are all registered
+			// in OutToGenrule by the bake.
+			return relOut, name, nil
 		}
 		liftReason = reason
 	}
 	if cc.CMakeScriptRunner != "" {
-		rel, name, reason, ok := liftCmakeScriptGenrule(cc, b, cmd, script, cmakeSrc, buildDir)
+		_, name, reason, ok := liftCmakeScriptGenrule(cc, b, cmd, script, cmakeSrc, buildDir)
 		if ok {
-			return rel, name, nil
+			// Same requested-output contract as the bake branch.
+			return relOut, name, nil
 		}
 		// Lift declined; preserve its structured reason
 		// for the refusal message below.

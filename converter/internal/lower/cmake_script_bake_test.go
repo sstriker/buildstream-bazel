@@ -351,3 +351,62 @@ func TestSanitizeForName(t *testing.T) {
 		}
 	}
 }
+
+// TestRecoverCmakeScriptGenrule_RequestedOutput pins the multi-output
+// contract: a script writing a .h + the symbol-defining .cxx (the
+// vtkEncodeString shape) is consumed once per output, and the
+// recovery must return the REQUESTED output, not the bake's primary
+// out — otherwise the .cxx consumer is handed the .h,
+// attachGeneratedSource routes it to hdrs by extension, and the
+// definition compiles nowhere (vtkProbeOpenGLVersion's undefined
+// shader-string symbols).
+func TestRecoverCmakeScriptGenrule_RequestedOutput(t *testing.T) {
+	cmakeBin, err := execLookPath("cmake")
+	if err != nil {
+		t.Skip("cmake not on PATH; bake test requires convert-host cmake")
+	}
+	src := t.TempDir()
+	build := t.TempDir()
+	scriptPath := filepath.Join(src, "encode.cmake")
+	if err := os.WriteFile(scriptPath, []byte(
+		"file(WRITE \"shader.h\" \"extern const char *s;\\n\")\n"+
+			"file(WRITE \"shader.cxx\" \"const char *s = \\\"x\\\";\\n\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &ninja.Graph{Vars: map[string]string{}, Rules: map[string]*ninja.Rule{}, Pools: map[string]*ninja.Pool{}}
+	g.Rules["CUSTOM_COMMAND"] = &ninja.Rule{
+		Name:         "CUSTOM_COMMAND",
+		Bindings:     map[string]string{"command": "$COMMAND"},
+		BindingOrder: []string{"command"},
+	}
+	b := &ninja.Build{
+		Outputs: []string{"shader.h", "shader.cxx"},
+		Rule:    "CUSTOM_COMMAND",
+		Bindings: map[string]string{
+			"COMMAND": cmakeBin + " -P " + scriptPath,
+		},
+		BindingOrder: []string{"COMMAND"},
+	}
+	g.Builds = append(g.Builds, b)
+	cc := newCodegenContext()
+	cc.CMakeBinary = cmakeBin
+	cc.CMakeScriptBake = true
+
+	// First consumer asks for the .cxx — must get the .cxx back even
+	// though the bake's primary out is the .h.
+	rel, _, err := cc.recoverGenrule(filepath.Join(build, "shader.cxx"), src, build, g)
+	if err != nil {
+		t.Fatalf("recoverGenrule(.cxx): %v", err)
+	}
+	if rel != "shader.cxx" {
+		t.Errorf("requested .cxx, got %q", rel)
+	}
+	// Second consumer (SeenBuilds reuse path) asks for the .h.
+	rel2, _, err := cc.recoverGenrule(filepath.Join(build, "shader.h"), src, build, g)
+	if err != nil {
+		t.Fatalf("recoverGenrule(.h): %v", err)
+	}
+	if rel2 != "shader.h" {
+		t.Errorf("requested .h, got %q", rel2)
+	}
+}
