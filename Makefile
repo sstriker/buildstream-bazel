@@ -346,6 +346,7 @@ e2e-meta-cmake-vcs-stamp-function: converter
 RENDER_GATES = \
 	scripts/meta-cmake-genex-probe.sh \
 	scripts/meta-cmake-genclass-textual-impl.sh \
+	scripts/meta-elf-fidelity.sh \
 	scripts/meta-file-generate.sh \
 	scripts/meta-cmake-genex-literal-twopass.sh \
 	scripts/meta-cmake-fileset-compiled-lib.sh \

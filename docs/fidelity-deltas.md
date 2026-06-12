@@ -249,6 +249,47 @@ the prose below mirrors what it implements.
 - Missing `--inherit-distro-hardening` when the operator wants
   symbol-set parity with the cmake build's hardening flags.
 
+### ELF dynamic-section classifier (shared-lib ABI)
+
+The symbol-set classifier above abstracts away binary structure — the
+right call for static `.a` archives, where section/relocation byte-diffs
+are toolchain noise. The dynamic/ABI surface a symbol-NAME set can't
+express is classified separately, by `cmd/elf-fidelity-compare`
+(`readelf -d` / `--version-info` on a cmake-built ELF vs a Bazel-built
+one). It handles BOTH ELF artifact kinds the converter produces: shared
+libraries (`.so`) and executables (PIE / `ET_EXEC`). DT_NEEDED and
+DT_RPATH/DT_RUNPATH carry a converter signal for both; SONAME and
+`.gnu.version_d` are library-specific and no-op cleanly on an executable
+(an exe carries neither). Deliberate non-goals: whole-ELF byte-diff
+(toolchain noise), an executable's `.gnu.version_r` version REQUIREMENTS,
+and PIE-vs-`ET_EXEC` type — all toolchain-determined, not converter
+signal.
+
+**Benign — informational; don't block:**
+- `DT_NEEDED` on a C/C++ runtime / libc-family soname only on one side
+  (`libc.so.6`, `libm.so.6`, `libstdc++.so.6`, `libgcc_s.so.1`,
+  `ld-linux-*`, …) — the hermetic Bazel toolchain and the host distro
+  toolchain link the runtime differently.
+- `SONAME` minor/patch suffix difference with the SAME ABI-major
+  (`libfoo.so.1` vs `libfoo.so.1.2.3`).
+- `DT_RUNPATH`-vs-`DT_RPATH` FORM difference over the same path set
+  (new-style tag vs legacy), and non-host-leak rpath entries.
+- Version node / NEEDED soname listed in the per-member allowlist
+  (`testdata/fidelity/<name>.elf-allowlist.txt`).
+- (Open: BuildID, distro-default NEEDED, version-node BASE = soname.)
+
+**Impactful — block / file as converter bug:**
+- A PROJECT (non-runtime) `DT_NEEDED` dropped from the Bazel side (lost
+  runtime dependency) or added on the Bazel side (over-linking).
+- `SONAME` ABI-MAJOR mismatch (`libfoo.so.1` vs `libfoo.so.2`) or a
+  missing SONAME on the Bazel side — a consumer links against the
+  soname, so the wrong/absent handle breaks the runtime link.
+- A `.gnu.version_d` version node present on only one side — the SAME
+  symbol names under a different version tag bind to a different
+  versioned symbol, an ABI break the nm-set compare passes clean.
+- A host-leak `DT_RPATH`/`DT_RUNPATH` (`/tmp/...`, `/home/...`, build /
+  scratch trees) baked into the Bazel artifact (hermeticity leak).
+
 ## Cross-fixture: distro hardening defaults
 
 **Symptom**: cmake-built artifacts reference `__*_chk` (FORTIFY_SOURCE) and
