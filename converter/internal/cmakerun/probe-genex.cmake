@@ -195,7 +195,31 @@ function(_cmtb_probe_genex)
         # properties can transitively pull in `$<CONFIG>`-bearing
         # generator expressions; emitting once per config is the
         # only safe shape under multi-config.
+        #
+        # Language-conditional values are NOT probeable: a
+        # $<COMPILE_LANGUAGE:…> / $<LINK_LANGUAGE:…> (or _LANG_AND_ID)
+        # arm makes cmake evaluate the file(GENERATE) content once per
+        # enabled language, and in a multi-language project the
+        # per-language results diverge — a fatal "Evaluation file to
+        # be written multiple times with different content" that
+        # aborts the whole generate step (and so the whole conversion,
+        # --probe-genex being default-on). The idiom is common exactly
+        # on INTERFACE libraries (`target_compile_options(hdr
+        # INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>)`).
+        # Skip the probe for THAT property only — raw direct-value
+        # scan, the same direct-only reach as the dangling-:: skip
+        # above (a language gate arriving transitively from a
+        # dependency's interface isn't seen here and still aborts;
+        # ROADMAP carries the gap). The rest of the target's surface
+        # still probes, the reader tolerates the missing file, and
+        # the trace-derived aggregate stands for the skipped
+        # property. Consumers are unaffected either way — their
+        # codemodel compile groups carry the per-TU resolved flags.
         foreach(_CMTB_PROP INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
+            get_target_property(_CMTB_RAW ${_CMTB_TGT} INTERFACE_${_CMTB_PROP})
+            if(_CMTB_RAW MATCHES "\\$<(COMPILE|LINK)_LANG")
+                continue()
+            endif()
             file(GENERATE
                 OUTPUT "${_CMTB_OUT_DIR}/interface_${_CMTB_PROP}.$<CONFIG>.txt"
                 CONTENT "$<TARGET_PROPERTY:${_CMTB_TGT},INTERFACE_${_CMTB_PROP}>")
@@ -207,8 +231,13 @@ function(_cmtb_probe_genex)
         # GenexProbe.Properties so consumers can route each into
         # the matching Bazel attribute (linkopts for rpath,
         # features = ["pic"] for PIC, etc.). Same per-config OUTPUT
-        # rationale as the INTERFACE_* loop above.
+        # rationale as the INTERFACE_* loop above, and the same
+        # language-conditional skip — these accept genexes too.
         foreach(_CMTB_PROP BUILD_RPATH INSTALL_RPATH POSITION_INDEPENDENT_CODE CXX_VISIBILITY_PRESET C_VISIBILITY_PRESET VISIBILITY_INLINES_HIDDEN ENABLE_EXPORTS SOVERSION VERSION AUTOMOC AUTOUIC AUTORCC EXCLUDE_FROM_ALL MSVC_RUNTIME_LIBRARY JOB_POOL_COMPILE JOB_POOL_LINK CXX_EXTENSIONS C_EXTENSIONS)
+            get_target_property(_CMTB_RAW ${_CMTB_TGT} ${_CMTB_PROP})
+            if(_CMTB_RAW MATCHES "\\$<(COMPILE|LINK)_LANG")
+                continue()
+            endif()
             file(GENERATE
                 OUTPUT "${_CMTB_OUT_DIR}/property_${_CMTB_PROP}.$<CONFIG>.txt"
                 CONTENT "$<TARGET_PROPERTY:${_CMTB_TGT},${_CMTB_PROP}>")

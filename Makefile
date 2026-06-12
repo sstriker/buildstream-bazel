@@ -380,6 +380,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-interface-genex-defines.sh \
 	scripts/meta-cmake-platform-partition-tier2.sh \
 	scripts/meta-cmake-probe-genex-duplicate-subdir.sh \
+	scripts/meta-cmake-probe-genex-compile-language.sh \
 	scripts/meta-cmake-probe-genex-object-library.sh \
 	scripts/meta-cmake-probe-genex-utility.sh \
 	scripts/meta-cmake-round2-fallback.sh \
