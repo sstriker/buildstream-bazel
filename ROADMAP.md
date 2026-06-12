@@ -283,36 +283,33 @@ transition cleanly.
   compile-db lenses already widen their fixed-fixture CI gates to the
   corpus).
 
-- **ELF dynamic-section fidelity lens (shared-lib ABI) — after the
-  symbol-fidelity lens.** The symbol-fidelity lens compares the
-  EXPORTED-SYMBOL SETS of cmake- vs Bazel-built STATIC archives (`nm`),
-  plus a `strings` host-path hermeticity check; it deliberately abstracts
-  away binary structure — the right call for `.a`, where section /
-  relocation byte-diffs are pure toolchain noise (a naive readelf byte
-  diff would be redundant and noisy, NOT worth it). What it leaves
-  unchecked is the SHARED-library dynamic/ABI surface a symbol-NAME set
-  can't express: for a `.so` the dynamic section carries the **SONAME**,
-  the **DT_NEEDED** runtime-dependency list, **symbol versioning**
-  (`.gnu.version_d` version nodes / version-script tags — the SAME symbol
-  names with different version tags is an ABI break the nm-set compare
-  passes clean), and **DT_RPATH/DT_RUNPATH** (which also pins embedded
-  host paths more precisely than the `strings` scan). An ELF-diff lens
-  reads these from cmake's `.so` vs the converted `cc_shared_library`'s
-  `.so` (via `readelf -d` / `-V`) and classifies deltas benign vs
-  impactful, reusing the symbol lens's whole shape: opt-in
-  `SURVEY_ELF_FIDELITY`, per-member `scripts/build-lens/<name>.elffidelity`
-  (`ELFID_TARGET` / `ELFID_ARTIFACT`), `testdata/fidelity/<name>.elf-allowlist.txt`,
-  a `cmd/fidelity-compare`-style classifier, `<out>/<name>/elf-fidelity.json`,
-  and pipeline-last ordering (structural → build → symbol → elf). It pairs
-  with the in-flight **Faithful SHARED-library conversion** work — that
-  lift is exactly where SONAME / DT_NEEDED / versioning fidelity needs
-  proving, and `SURVEY_SHARED=1` already produces the `.so` side, so the
-  lens has both artifacts in hand. Scope to the dynamic/ABI metadata
-  above; do NOT attempt full section / relocation byte-diff. Open:
-  enumerate the benign dynamic-delta classes (BuildID, distro-default
-  NEEDED such as libc / libgcc_s, RUNPATH-vs-RPATH form, version-node
-  SONAME suffix) before seeding members — the `docs/fidelity-deltas.md`
-  benign/impactful split is the model.
+- **ELF dynamic-section fidelity lens (shared-lib ABI) — TOOL SHIPPED
+  (v1); survey wiring remaining.** The shared-library sibling of the
+  symbol-fidelity lens: where that lens compares EXPORTED-SYMBOL SETS of
+  STATIC archives (`nm`) and deliberately abstracts away binary structure
+  (the right call for `.a` — section/relocation byte-diffs are toolchain
+  noise), this lens reads the `.so` dynamic/ABI surface a symbol-NAME set
+  can't express — **SONAME**, the **DT_NEEDED** runtime-dependency list,
+  **symbol versioning** (`.gnu.version_d` nodes — the SAME symbol names
+  under different version tags is an ABI break the nm-set compare passes
+  clean), and **DT_RPATH/DT_RUNPATH** (host-leak hermeticity). SHIPPED:
+  `cmd/elf-fidelity-compare` (`readelf`-based extractor + benign/impactful
+  classifier mirroring `cmd/fidelity-compare`'s shape — allowlist, JSON
+  report, exit codes), the `docs/fidelity-deltas.md` "ELF dynamic-section
+  classifier" taxonomy, and the self-contained `meta-elf-fidelity.sh` gate
+  (builds two `.so`s, proves clean→exit 0 and host-leak-RUNPATH +
+  dropped-version-node→exit 1, allowlist suppresses). REMAINING: wire it
+  into `run-survey.sh` as the 8th, pipeline-last lens (opt-in
+  `SURVEY_ELF_FIDELITY`, after the symbol lens, only when the build lens
+  passed), driven by a per-member `scripts/build-lens/<name>.elffidelity`
+  (`ELFID_TARGET` / `ELFID_ARTIFACT`) + `testdata/fidelity/<name>.elf-allowlist.txt`,
+  reporting `<out>/<name>/elf-fidelity.json`. It pairs with the in-flight
+  **Faithful SHARED-library conversion** work — `SURVEY_SHARED=1` produces
+  the `cc_shared_library` `.so`, and cmake `BUILD_SHARED_LIBS=ON` the
+  reference `.so`. Open before seeding members: confirm the benign classes
+  on real `.so`s (BuildID, distro-default NEEDED, version-node BASE =
+  soname) and decide whether the lens runs under `SURVEY_SHARED` or
+  forces shared just for the artifact pair.
 
 - **Source-narrowing-compatibility lens — SHIPPED (v1, opt-in
   `SURVEY_NARROWING_COMPAT=1`).** `scripts/narrowing-compat-lens.sh` (wired into
