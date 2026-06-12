@@ -135,6 +135,23 @@ func rewriteGeneratedSrcRefs(cmd string, srcs []string, cc *codegenContext) stri
 	return "BSB_RD=$$(mktemp -d) && " + strings.Join(sedLines, " && ") + " && " + cmd
 }
 
+// stripConvertTimePathsCfg is reanchorConvertTimePaths' policy
+// (prefix removal → package-relative) extended to the per-config
+// scratch dirs (<buildDir>-cfg-<name>) the per-config bake passes
+// configure into — those carry the suffix the plain prefix strip
+// can't match, so a per-config body would otherwise keep raw scratch
+// paths its primary never had.
+func stripConvertTimePathsCfg(content, recordedSrcDir, recordedBuildDir string) string {
+	if recordedBuildDir != "" {
+		re := regexp.MustCompile(regexp.QuoteMeta(recordedBuildDir) + `(-cfg-[A-Za-z0-9_.+-]+)?/`)
+		content = re.ReplaceAllString(content, "")
+	}
+	if recordedSrcDir != "" {
+		content = strings.ReplaceAll(content, strings.TrimSuffix(recordedSrcDir, "/")+"/", "")
+	}
+	return content
+}
+
 // reanchorResponseContent rewrites convert-time absolute paths in
 // baked file(GENERATE) content into deterministic, action-resolvable
 // forms: source-tree paths to the exec-root-relative element form
