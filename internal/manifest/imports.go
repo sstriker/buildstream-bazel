@@ -58,6 +58,14 @@ type Element struct {
 	UmbrellaDeps []string `json:"umbrella_deps,omitempty"`
 }
 
+// PrefixAnchor is the canonical virtual token that anchors cross-element
+// prefix paths in manifests (link_paths and kin): no filesystem path of
+// that name exists; consumers remap real prefix paths onto it before
+// lookup, and producers emit anchored paths so the two sides meet. The
+// value is part of the manifest CONTRACT — this is its single home
+// (converter/internal/lower.ManifestPrefixAnchor aliases it).
+const PrefixAnchor = "/opt/prefix/"
+
 // Export wires one CMake imported target name to a Bazel label.
 type Export struct {
 	// CMakeTarget is the namespaced name a downstream consumer's

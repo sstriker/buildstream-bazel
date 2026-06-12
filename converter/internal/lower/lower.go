@@ -446,8 +446,9 @@ const manifestPrefixAnchor = ManifestPrefixAnchor
 // producer emitting cross-element link_paths in its exports.json
 // (convert-element-cmake --out-exports) anchors them with this token so
 // they match a consumer's synth-prefix link fragment after lower's
-// hostPrefix→anchor rewrite.
-const ManifestPrefixAnchor = "/opt/prefix/"
+// hostPrefix→anchor rewrite. The canonical home is the manifest
+// CONTRACT itself (manifest.PrefixAnchor); this aliases it.
+const ManifestPrefixAnchor = manifest.PrefixAnchor
 
 // ccLinkableSrcExts are non-header extensions that are still valid `srcs`
 // entries for a cc_library/cc_binary — precompiled objects/archives and

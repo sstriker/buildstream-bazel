@@ -117,3 +117,18 @@ func TestGenerate_NameCollision(t *testing.T) {
 		t.Error("colliding wrapper names must error")
 	}
 }
+
+// TestGenerate_HeaderGlobSurface: the hdrs glob covers the full
+// header-ish family, not just *.h — with allow_empty a too-narrow
+// pattern fails SILENTLY (abseil ships .inc; C++ prefixes .hpp etc.).
+func TestGenerate_HeaderGlobSurface(t *testing.T) {
+	build, _, err := Generate(sampleManifest(), "prebuilts/greet", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"include/**/*.h"`, `"include/**/*.inc"`, `"include/**/*.hpp"`, `"include/**/*.def"`} {
+		if !strings.Contains(string(build), want) {
+			t.Errorf("hdrs glob missing %s:\n%s", want, build)
+		}
+	}
+}

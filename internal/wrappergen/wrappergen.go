@@ -18,12 +18,9 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
-// prefixAnchor is the manifest's virtual prefix-path anchor — the same
-// token as converter/internal/lower.ManifestPrefixAnchor (not
-// importable from a top-level cmd; the value is part of the manifest
-// CONTRACT, anchoring link_paths of orchestrator- and hand-written
-// manifests alike).
-const prefixAnchor = "/opt/prefix/"
+// headerGlobExts is the header-surface extension family the wrapper
+// hdrs glob covers (matching the converter's header recognition).
+var headerGlobExts = []string{"h", "hh", "hpp", "hxx", "inc", "inl", "ipp", "def"}
 
 // Generate renders the wrapper BUILD for every selected element's
 // exports and returns it together with the rewritten manifest:
@@ -109,11 +106,23 @@ func Generate(im *manifest.Imports, pkgPath, element string) ([]byte, *manifest.
 			incs = []string{"include"}
 		}
 		if len(incs) > 0 {
-			globs := make([]string, 0, len(incs))
+			// The full header-ish surface, not just *.h: host-install
+			// prefixes ship .inc (abseil), .hpp/.hh/.hxx/.ipp (C++), and
+			// .def/.inl — and with allow_empty a too-narrow glob fails
+			// SILENTLY (the wrapper builds, consumers miss textual
+			// includes). Same extension family the converter's header
+			// machinery recognizes.
+			globs := make([]string, 0, len(incs)*len(headerGlobExts))
 			for _, inc := range incs {
-				globs = append(globs, fmt.Sprintf("%q", path.Join(inc, "**", "*.h")))
+				for _, ext := range headerGlobExts {
+					globs = append(globs, fmt.Sprintf("%q", path.Join(inc, "**", "*."+ext)))
+				}
 			}
-			fmt.Fprintf(&b, "    hdrs = glob(\n        [%s],\n        allow_empty = True,\n    ),\n", strings.Join(globs, ", "))
+			fmt.Fprintf(&b, "    hdrs = glob(\n        [\n")
+			for _, g := range globs {
+				fmt.Fprintf(&b, "            %s,\n", g)
+			}
+			fmt.Fprintf(&b, "        ],\n        allow_empty = True,\n    ),\n")
 			sorted := append([]string(nil), incs...)
 			sort.Strings(sorted)
 			b.WriteString("    includes = [\n")
@@ -167,7 +176,7 @@ func wrapperDeps(ex *manifest.Export, name, archiveRel string, oldToNew map[stri
 // header-only / INTERFACE shape).
 func archivePath(ex *manifest.Export) string {
 	for _, lp := range ex.LinkPaths {
-		if rel, ok := strings.CutPrefix(lp, prefixAnchor); ok && rel != "" {
+		if rel, ok := strings.CutPrefix(lp, manifest.PrefixAnchor); ok && rel != "" {
 			return rel
 		}
 	}
