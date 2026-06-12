@@ -33,6 +33,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/internal/harvest"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/wrappergen"
 )
@@ -601,5 +602,127 @@ install(TARGETS cons ARCHIVE DESTINATION lib)
 	}
 	if strings.Contains(string(got), `"//prebuilts/greet:base"`) || strings.Contains(string(got), "//old/prebuilts") {
 		t.Fatalf("consumer must wire ONLY the wrapper (closure rides Bazel transitivity; no double-wiring):\n%s", got)
+	}
+}
+
+// TestE2E_CMakeConsumer_HarvestRealInstallTree closes the full
+// bst-artifact story: a producer is REALLY built and installed by
+// cmake (so lib/cmake/<Pkg>/ carries cmake's own generator-written
+// Targets files, genexes and all — not our synthesized grammar), the
+// install tree is harvested into a manifest (DIRECT deps: core→base,
+// the exported tool row), the wrapper generator materializes it, and a
+// consumer converted against the REWRITTEN manifest wires exactly one
+// direct edge per imported target. harvest → wrapper-gen → convert,
+// with zero hand-written manifest content anywhere.
+func TestE2E_CMakeConsumer_HarvestRealInstallTree(t *testing.T) {
+	conv := lookupConverter(t)
+	cmakeBin, err := exec.LookPath("cmake")
+	if err != nil {
+		t.Skipf("cmake not on PATH: %v", err)
+	}
+
+	prodSrc := t.TempDir()
+	mustWrite(t, filepath.Join(prodSrc, "CMakeLists.txt"), `cmake_minimum_required(VERSION 3.20)
+project(greetpkg LANGUAGES C VERSION 1.0.0)
+add_library(base STATIC base.c)
+add_library(core STATIC core.c)
+target_link_libraries(core PUBLIC base)
+target_include_directories(core PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+add_executable(gen gen.c)
+install(TARGETS core base gen EXPORT greetTargets
+    ARCHIVE DESTINATION lib
+    RUNTIME DESTINATION bin)
+install(DIRECTORY include/ DESTINATION include)
+install(EXPORT greetTargets FILE greetTargets.cmake NAMESPACE Greet:: DESTINATION lib/cmake/Greet)
+install(FILES GreetConfig.cmake DESTINATION lib/cmake/Greet)
+`)
+	mustWrite(t, filepath.Join(prodSrc, "GreetConfig.cmake"),
+		`include("${CMAKE_CURRENT_LIST_DIR}/greetTargets.cmake")`+"\n")
+	mustWrite(t, filepath.Join(prodSrc, "base.c"), "int base_v(void){return 1;}\n")
+	mustWrite(t, filepath.Join(prodSrc, "core.c"), "int base_v(void);\nint core_v(void){return base_v();}\n")
+	mustWrite(t, filepath.Join(prodSrc, "gen.c"), "int main(void){return 0;}\n")
+	mustWrite(t, filepath.Join(prodSrc, "include", "core.h"), "int core_v(void);\n")
+
+	out := t.TempDir()
+	buildDir := filepath.Join(out, "build")
+	prefix := filepath.Join(out, "prefix")
+	for _, args := range [][]string{
+		{"-S", prodSrc, "-B", buildDir, "-DCMAKE_BUILD_TYPE=Release"},
+		{"--build", buildDir},
+		{"--install", buildDir, "--prefix", prefix},
+	} {
+		mustRun(t, exec.CommandContext(context.Background(), cmakeBin, args...))
+	}
+
+	// Harvest the REAL install tree.
+	im, warns, err := harvest.Harvest(prefix, "greetpkg", "prebuilts/greet")
+	if err != nil {
+		t.Fatalf("Harvest: %v", err)
+	}
+	for _, w := range warns {
+		t.Logf("harvest warning: %s", w)
+	}
+	byName := map[string]*manifest.Export{}
+	for _, ex := range im.Elements[0].Exports {
+		byName[ex.CMakeTarget] = ex
+	}
+	core := byName["Greet::core"]
+	if core == nil {
+		t.Fatalf("Greet::core not harvested; exports: %+v", im.Elements[0].Exports)
+	}
+	if len(core.Deps) != 1 || core.Deps[0] != "//prebuilts/greet:base" {
+		t.Fatalf("core.Deps = %v, want the DIRECT dep on base (real cmake INTERFACE_LINK_LIBRARIES)", core.Deps)
+	}
+	if gen := byName["Greet::gen"]; gen == nil || len(gen.LinkPaths) == 0 || gen.LinkPaths[0] != manifest.PrefixAnchor+"bin/gen" {
+		t.Fatalf("exported tool row = %+v, want anchored bin/gen", byName["Greet::gen"])
+	}
+
+	// Generator: wrappers + deps-free manifest.
+	build, rewritten, err := wrappergen.Generate(im, "prebuilts/greet", "")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(string(build), `":core_archive",
+        "//prebuilts/greet:base",`) {
+		t.Fatalf("wrapper BUILD missing the materialized direct dep:\n%s", build)
+	}
+	wrappedJSON := filepath.Join(out, "exports.wrapped.json")
+	if err := wrappergen.WriteManifest(wrappedJSON, rewritten); err != nil {
+		t.Fatal(err)
+	}
+	if body, _ := os.ReadFile(wrappedJSON); strings.Contains(string(body), `"deps"`) {
+		t.Fatalf("rewritten manifest must be deps-free:\n%s", body)
+	}
+
+	// Consumer against the real prefix + rewritten manifest.
+	consSrc := t.TempDir()
+	mustWrite(t, filepath.Join(consSrc, "CMakeLists.txt"), `cmake_minimum_required(VERSION 3.20)
+project(cons LANGUAGES C VERSION 1.0.0)
+find_package(Greet CONFIG REQUIRED)
+add_library(cons STATIC cons.c)
+target_link_libraries(cons PUBLIC Greet::core)
+install(TARGETS cons ARCHIVE DESTINATION lib)
+`)
+	mustWrite(t, filepath.Join(consSrc, "cons.c"), "int c(void){return 0;}\n")
+
+	consBuild := filepath.Join(out, "cons.BUILD")
+	mustRun(t, exec.CommandContext(context.Background(), conv,
+		"--source-root", consSrc,
+		"--bazel-package-path", "elements/cons",
+		"--prefix-dir", prefix,
+		"--exports-in", wrappedJSON,
+		"--out-build", consBuild,
+	))
+	got, err := os.ReadFile(consBuild)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `"//prebuilts/greet:core"`) {
+		t.Fatalf("consumer BUILD missing the wrapper label:\n%s", got)
+	}
+	if strings.Contains(string(got), `"//prebuilts/greet:base"`) {
+		t.Fatalf("consumer must wire ONLY the wrapper (closure rides Bazel transitivity):\n%s", got)
 	}
 }
