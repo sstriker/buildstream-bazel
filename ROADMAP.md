@@ -631,6 +631,17 @@ trees, optional-feature deps, codegen instances). Each member's
 
 ## Later (research / open questions)
 
+- **Stage textual-include-of-SOURCE siblings (`#include "x.cu"` /
+  `#include "x.c"`).** The sibling-header staging walk covers header
+  extensions (incl. `.cuh`), but cuda-samples' eigenvalues quote-includes a
+  `.cu` from its `.cuh` kernels (`bisect_util.cu` — the classic
+  one-definition-per-arch idiom), which never stages and the compile misses
+  it in the sandbox. Needs either an include-scan-driven staging channel or
+  per-extension opt-in to the walk; cc_binary's no-hdrs-slot drop
+  (quasirandomGenerator_nvrtc's `.cuh`) is the same family. Both samples are
+  pruned in `cuda-samples.conf` until then (eigenvalues is the only
+  non-toolkit-floor entry there).
+
 - **Conversion-latency: AST-direct BUILD emit (drop the text→Parse→Format
   round-trip).** Profiling real corpus converts (`--cpuprofile` + `--out-timings`)
   showed cmake's own configure dominates wall-clock (80–90% on small projects,
