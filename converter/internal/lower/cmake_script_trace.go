@@ -154,13 +154,17 @@ func TraceCmakeScript(ctx context.Context, cmakeBin, scriptPath string, dArgs []
 	}
 
 	tracePath := filepath.Join(tmpDir, "trace.jsonl")
+	// -D cache args must PRECEDE -P: cmake treats everything after
+	// the script path as CMAKE_ARGV script arguments, not variables
+	// (a trailing -DALL_SQL_IN=... silently expands to "" inside the
+	// script).
 	argv := []string{
 		"--trace-expand",
 		"--trace-format=json-v1",
 		"--trace-redirect=" + tracePath,
-		"-P", scriptPath,
 	}
 	argv = append(argv, dArgs...)
+	argv = append(argv, "-P", scriptPath)
 
 	tctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
