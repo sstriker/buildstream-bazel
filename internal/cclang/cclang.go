@@ -70,3 +70,25 @@ func IsHeaderExt(ext string) bool {
 func IsHeader(path string) bool {
 	return headerExts[strings.ToLower(filepath.Ext(path))]
 }
+
+// textualImplHeaderExts are the subset of headerExts whose files are, by
+// convention, NON-self-contained implementation fragments meant to be textually
+// #included into another translation unit — template definitions (.txx/.tcc/
+// .ipp), inline implementations (.inl), and x-macro / code-fragment lists
+// (.def/.inc). Such a fragment can't be compiled or parsed on its own, so when a
+// sibling actually #includes one it belongs in `textual_hdrs`, not `hdrs` (a
+// Bazel parse_headers / layering_check build would otherwise try to compile the
+// fragment standalone and fail). The self-contained header extensions
+// (.h/.hh/.hpp/.hxx/.h++) are deliberately NOT here — they're ordinary headers.
+var textualImplHeaderExts = map[string]bool{
+	".inl": true, ".txx": true, ".tcc": true, ".ipp": true, ".def": true, ".inc": true,
+}
+
+// IsTextualImplHeader reports whether path's extension names a non-self-contained
+// textual implementation header (template-impl / inline-impl / x-macro fragment;
+// see textualImplHeaderExts) — the genclass idiom where a header textually
+// #includes its implementation. Case-insensitive. Used by the textual-include
+// routing to send such a file to textual_hdrs rather than hdrs.
+func IsTextualImplHeader(path string) bool {
+	return textualImplHeaderExts[strings.ToLower(filepath.Ext(path))]
+}
