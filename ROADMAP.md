@@ -32,20 +32,23 @@ transition cleanly.
 ## Next
 
 - **Faithful SHARED-library conversion (`cc_shared_library`) — remaining:
-  LLVM/VTK re-green + edge cases.** The WHOLE POINT of shared is FIDELITY —
+  LLVM re-green + edge cases.** The WHOLE POINT of shared is FIDELITY —
   to build what cmake would actually build (the survey forces
   `BUILD_SHARED_LIBS=OFF` for simplicity, but static is NOT the project's
   default; that forced-static is the deviation this work removes). The lift
   (`--emit-shared-libraries`, survey `SURVEY_SHARED=1`) is validated green on
-  24 members: the original 9 probes (zlib, fmt, libxml2, brotli multi-lib,
+  25 members: the original 9 probes (zlib, fmt, libxml2, brotli multi-lib,
   curl multi-package + the SIGSEGV root-cause, glog, spdlog, mbedtls
   multi-lib, protobuf) plus the 2026-06-12 corpus sweep (libpng, catch2,
   googletest, glm, nlohmann-json, boost-core, eigen, abseil, cryptoauthlib,
   zstd, libevent — after the dynamic_deps-on-cc_library fix it surfaced —
-  sdl, OpenBLAS, openblas-clapack). Default emit is byte-identical (opt-in).
+  sdl, OpenBLAS, openblas-clapack, and VTK: 2,884 targets, full `bazel build
+  //...` green, the +156 over the static sweep being the cc_shared_library
+  wrappers). Default emit is byte-identical (opt-in).
   **Remaining:** grpc (blocked on the lens regression tracked under Now —
   its red is mode-independent, so it neither blocks nor validates shared),
-  the heavy LLVM/VTK; carry the `.so` in runfiles for `bazel run`/test;
+  the heavy LLVM (needs a bigger-disk host — the one member not coverable
+  in a web-session container); carry the `.so` in runfiles for `bazel run`/test;
   `MODULE_LIBRARY` dlopen semantics; and consider flipping `SURVEY_SHARED`
   to the DEFAULT once the corpus is green under it (so green + the fidelity
   lens run against the config cmake produces).
