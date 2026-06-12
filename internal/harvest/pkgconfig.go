@@ -59,40 +59,7 @@ func (h *harvester) applyPC(name, body string) {
 		}
 	}
 	r := &row{cmakeTarget: "pkgconfig::" + name, origin: "pkgconfig " + name + ".pc"}
-	var searchDirs []string
-	for _, tok := range strings.Fields(fields["Libs"] + " " + fields["Libs.private"]) {
-		switch {
-		case strings.HasPrefix(tok, "-L"):
-			searchDirs = append(searchDirs, strings.TrimPrefix(tok, "-L"))
-		case strings.HasPrefix(tok, "-l"):
-			lib := strings.TrimPrefix(tok, "-l")
-			r.linkLibs = appendUnique(r.linkLibs, lib)
-			// Resolve the archive in the prefix so the row carries the
-			// path key the tool/fragment lifts, wrapper-gen, AND the
-			// same-library dedup need. The probe covers lib64 and
-			// versioned sonames (libfoo.so.1.2.3 with no plain .so) —
-			// a miss here is what lets a bundle+pc pair slip past path
-			// identity and collide at generation time.
-			dirs := append(append([]string{}, searchDirs...),
-				filepath.Join(h.prefix, "lib"), filepath.Join(h.prefix, "lib64"))
-			for _, d := range dirs {
-				for _, ext := range []string{".a", ".so"} {
-					cand := filepath.Join(d, "lib"+lib+ext)
-					if _, err := os.Stat(cand); err == nil {
-						if anchored, ok := h.anchoredFromImportPrefix(cand); ok {
-							r.linkPaths = appendUnique(r.linkPaths, anchored)
-						}
-					}
-				}
-				if matches, _ := filepath.Glob(filepath.Join(d, "lib"+lib+".so.*")); len(matches) > 0 {
-					sort.Strings(matches)
-					if anchored, ok := h.anchoredFromImportPrefix(matches[0]); ok {
-						r.linkPaths = appendUnique(r.linkPaths, anchored)
-					}
-				}
-			}
-		}
-	}
+	h.applyPCLibs(r, fields["Libs"]+" "+fields["Libs.private"])
 	for _, tok := range strings.Fields(fields["Cflags"]) {
 		if d, ok := strings.CutPrefix(tok, "-I"); ok {
 			if anchored, ok := h.anchoredFromImportPrefix(d); ok {
@@ -114,6 +81,50 @@ func (h *harvester) applyPC(name, body string) {
 		return
 	}
 	h.addRow(r)
+}
+
+// applyPCLibs walks the Libs/Libs.private token stream: -L dirs feed
+// the probe's search path, each -l<name> records the link name AND
+// resolves the artifact in the prefix — the path key the tool/fragment
+// lifts, wrapper-gen, and the same-library dedup need. The probe
+// covers lib64 and versioned sonames (libfoo.so.1.2.3 with no plain
+// .so): a miss here is what lets a bundle+pc pair slip past path
+// identity and collide at generation time.
+func (h *harvester) applyPCLibs(r *row, libsField string) {
+	var searchDirs []string
+	for _, tok := range strings.Fields(libsField) {
+		switch {
+		case strings.HasPrefix(tok, "-L"):
+			searchDirs = append(searchDirs, strings.TrimPrefix(tok, "-L"))
+		case strings.HasPrefix(tok, "-l"):
+			lib := strings.TrimPrefix(tok, "-l")
+			r.linkLibs = appendUnique(r.linkLibs, lib)
+			dirs := append(append([]string{}, searchDirs...),
+				filepath.Join(h.prefix, "lib"), filepath.Join(h.prefix, "lib64"))
+			for _, d := range dirs {
+				h.probeArtifact(r, d, lib)
+			}
+		}
+	}
+}
+
+// probeArtifact records the anchored path of lib<name>.{a,so} (or the
+// first versioned soname) under dir, when present.
+func (h *harvester) probeArtifact(r *row, dir, lib string) {
+	for _, ext := range []string{".a", ".so"} {
+		cand := filepath.Join(dir, "lib"+lib+ext)
+		if _, err := os.Stat(cand); err == nil {
+			if anchored, ok := h.anchoredFromImportPrefix(cand); ok {
+				r.linkPaths = appendUnique(r.linkPaths, anchored)
+			}
+		}
+	}
+	if matches, _ := filepath.Glob(filepath.Join(dir, "lib"+lib+".so.*")); len(matches) > 0 {
+		sort.Strings(matches)
+		if anchored, ok := h.anchoredFromImportPrefix(matches[0]); ok {
+			r.linkPaths = appendUnique(r.linkPaths, anchored)
+		}
+	}
 }
 
 // splitPCRequires splits a Requires list — comma- or space-separated
