@@ -139,12 +139,19 @@ func underPrefix(path, prefix string) bool {
 // Timeout is hard-coded at 60s — well past any reasonable cmake
 // -P script's runtime; longer scripts likely have an
 // infinite-loop bug.
-func TraceCmakeScript(ctx context.Context, cmakeBin, scriptPath string, dArgs []string) ([]byte, error) {
+func TraceCmakeScript(ctx context.Context, cmakeBin, scriptPath string, dArgs []string, workDir string) ([]byte, error) {
 	tmpDir, err := os.MkdirTemp("", "cmake-script-trace-*")
 	if err != nil {
 		return nil, fmt.Errorf("mktmpdir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
+	// workDir reproduces the custom command's WORKING_DIRECTORY so
+	// cwd-relative reads (a script-mode `include(x.cmake)`) resolve
+	// the way the real invocation's would; empty keeps the isolated
+	// scratch cwd (the historical shape).
+	if workDir == "" {
+		workDir = tmpDir
+	}
 
 	tracePath := filepath.Join(tmpDir, "trace.jsonl")
 	argv := []string{
@@ -159,7 +166,7 @@ func TraceCmakeScript(ctx context.Context, cmakeBin, scriptPath string, dArgs []
 	defer cancel()
 
 	cmd := exec.CommandContext(tctx, cmakeBin, argv...)
-	cmd.Dir = tmpDir
+	cmd.Dir = workDir
 	// Sandbox the script's env — script may consult $HOME / locale
 	// / etc. Match the cmakerun.Configure shape so the trace
 	// reflects the same environment the configure step ran in.

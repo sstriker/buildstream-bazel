@@ -261,6 +261,14 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			continue
 		}
 
+		// The complement: in-source WORKING_DIRECTORY, BUILD-dir outputs
+		// (VTK's proj.db). Reconstructs both trees in scratch dirs —
+		// see tryWorkdirBuildOutGenrule.
+		if t, ok := tryWorkdirBuildOutGenrule(b, cmd, srcs, outs, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath, artifactToName, cc); ok {
+			out = append(out, t)
+			continue
+		}
+
 		// A standalone `cmake -P <script>` custom command can't run under Bazel
 		// (no cmake on the executor), so emitting it as a raw genrule produces
 		// an unrunnable rule (LLVM's VCSRevision.h: `cmake -P
