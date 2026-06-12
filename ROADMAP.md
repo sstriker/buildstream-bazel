@@ -17,36 +17,16 @@ transition cleanly.
 
 - **Green the remaining heavyweight corpus members: vtk (tail), cuda-samples.**
   25/26 are green (protobuf + sdl + vtk + grpc landed). Remaining:
-  - **vtk** — configures + converts with 0 rejections, and the 2026-06-10
-    re-run under the data-label + fused-source fixes ANALYZES fully green
-    (2,527 targets; previously an 80-missing-input hard abort on IOInfovis).
-    The `--keep_going` recount: **6,606/6,608 actions ran, 2,405/2,527
-    top-level targets built, exactly 3 ROOT failures** (the rest of the gap
-    is transitively blocked by them). REMAINING TAIL (well-diagnosed):
-    - **wrap-hierarchy genrule EXECUTION** (`vtkCommonCore-hierarchy.txt` et
-      al.): analysis staging is fixed (the `.args`/`.data` response files are
-      real cross-package labels now), but the genrule cmd still references
-      them by cmake build-dir-relative path (`@Common/Core/CMakeFiles/…args`)
-      instead of `$(location …)`, carries ninja depfile plumbing (`-MF …d` +
-      `cmake -E cmake_transform_depfile …` with an absolute cmake path), and
-      the BAKED args/data content embeds convert-time absolute `-I`/source
-      paths that need re-anchoring to exec-root form. Three mechanical fixes
-      in the genrule-rewrite family.
-    - **proj_db** (`cmake -P generate_proj_db.cmake` fails at
-      `include(sql_filelist.cmake)` — relative include not staged in the
-      genrule's cwd at build time; plus the `$<TARGET_FILE:VTK::sqlitebin>`
-      built-tool reference, see the built-tool genrule recovery note in
-      `scripts/build-lens/vtk.conf`).
-    - **vtkProbeOpenGLVersion LINK** (1 binary): undefined `vtkFXAAFilterFS`
-      / `vtkTextureObjectVS` — vtkEncodeString-generated shader-string
-      symbols (the cc_embed lift) not reaching the probe binary's link;
-      likely a missing dep edge or alwayslink on the embedded-shader objects
-      under static archive linking. Distinct mechanism from the two genrule
-      items.
-    - The earlier ~19 configure_file same-dir config-header failures
-      (`kwsysPrivate.h` / `proj_config.h` / `pugiconfig.hpp`) had their
-      converter fix shipped previously; the 2026-06-10 sweep shows no
-      compile-phase recurrences of that class.
+  - **vtk** — all three 2026-06-10 ROOT failures have converter fixes
+    (wrap-hierarchy genrule execution: all 119 hierarchy genrules build;
+    proj_db: the workdir-buildout lift produces the real 7.2 MB SQLite db;
+    vtkProbeOpenGLVersion: the requested-output script-recovery fix compiles
+    the 33 vtkEncodeString shader .cxx files and the probe binary links).
+    REMAINING: a full `bazel build //...` lens re-run on the fixed converter
+    to confirm the member goes green end-to-end (the per-target proofs above
+    were validated against the real tree per fix; the whole-graph sweep is
+    the acceptance check), then update vtk.conf's stale proj_db KNOWN BUILD
+    BLOCKER note.
   - **cuda-samples** — a surveyed sample builds GREEN (needs CUDA provisioned:
     `apt-get install nvidia-cuda-toolkit gcc-12` + `scripts/provision-cuda-root.sh`
     → `BSB_CUDA_ROOT`; `BSB_CUDA_HOST_CC=/usr/bin/gcc-12`). `cpp/0_Introduction/
