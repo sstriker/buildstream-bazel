@@ -322,33 +322,35 @@ transition cleanly.
   compile-db lenses already widen their fixed-fixture CI gates to the
   corpus).
 
-- **ELF dynamic-section fidelity lens (shared libs + executables) — TOOL
-  SHIPPED (v1); survey wiring remaining.** The dynamic-section sibling of
-  the symbol-fidelity lens: where that lens compares EXPORTED-SYMBOL SETS
-  of STATIC archives (`nm`) and deliberately abstracts away binary
-  structure (the right call for `.a` — section/relocation byte-diffs are
-  toolchain noise), this lens reads the dynamic/ABI surface a symbol-NAME
-  set can't express, on BOTH a `.so` and an executable (PIE / `ET_EXEC`) — **SONAME**, the **DT_NEEDED** runtime-dependency list,
-  **symbol versioning** (`.gnu.version_d` nodes — the SAME symbol names
-  under different version tags is an ABI break the nm-set compare passes
-  clean), and **DT_RPATH/DT_RUNPATH** (host-leak hermeticity). SHIPPED:
-  `cmd/elf-fidelity-compare` (`readelf`-based extractor + benign/impactful
-  classifier mirroring `cmd/fidelity-compare`'s shape — allowlist, JSON
-  report, exit codes), the `docs/fidelity-deltas.md` "ELF dynamic-section
-  classifier" taxonomy, and the self-contained `meta-elf-fidelity.sh` gate
-  (builds two `.so`s, proves clean→exit 0 and host-leak-RUNPATH +
-  dropped-version-node→exit 1, allowlist suppresses). REMAINING: wire it
-  into `run-survey.sh` as the 8th, pipeline-last lens (opt-in
-  `SURVEY_ELF_FIDELITY`, after the symbol lens, only when the build lens
-  passed), driven by a per-member `scripts/build-lens/<name>.elffidelity`
-  (`ELFID_TARGET` / `ELFID_ARTIFACT`) + `testdata/fidelity/<name>.elf-allowlist.txt`,
-  reporting `<out>/<name>/elf-fidelity.json`. It pairs with the in-flight
-  **Faithful SHARED-library conversion** work — `SURVEY_SHARED=1` produces
-  the `cc_shared_library` `.so`, and cmake `BUILD_SHARED_LIBS=ON` the
-  reference `.so`. Open before seeding members: confirm the benign classes
-  on real `.so`s (BuildID, distro-default NEEDED, version-node BASE =
-  soname) and decide whether the lens runs under `SURVEY_SHARED` or
-  forces shared just for the artifact pair.
+- **ELF dynamic-section fidelity lens (shared libs + executables) —
+  SHIPPED (v1, opt-in `SURVEY_ELF_FIDELITY`); seed more members.** The
+  dynamic-section sibling of the symbol-fidelity lens: where that lens
+  compares EXPORTED-SYMBOL SETS of STATIC archives (`nm`) and deliberately
+  abstracts away binary structure (the right call for `.a` —
+  section/relocation byte-diffs are toolchain noise), this lens reads the
+  dynamic/ABI surface a symbol-NAME set can't express, on BOTH a `.so` and
+  an executable (PIE / `ET_EXEC`) — **SONAME**, the **DT_NEEDED**
+  runtime-dependency list, **symbol versioning** (`.gnu.version_d` nodes —
+  the SAME symbol names under different version tags is an ABI break the
+  nm-set compare passes clean), and **DT_RPATH/DT_RUNPATH** (host-leak
+  hermeticity). SHIPPED: `cmd/elf-fidelity-compare` (`readelf`-based
+  extractor + benign/impactful classifier mirroring `cmd/fidelity-compare`'s
+  shape), the `docs/fidelity-deltas.md` "ELF dynamic-section classifier"
+  taxonomy, the self-contained `meta-elf-fidelity.sh` gate, and the
+  8th, pipeline-last `run-survey.sh` lens (`SURVEY_ELF_FIDELITY`, after the
+  symbol lens, build-lens-gated) — driven by
+  `scripts/build-lens/<name>.elffidelity` (`ELFID_TARGET` / `ELFID_ARTIFACT`)
+  + `testdata/fidelity/<name>.elf-allowlist.txt`, reporting
+  `<out>/<name>/elf-fidelity.json`. It pairs with **Faithful
+  SHARED-library conversion**: it requires `SURVEY_SHARED=1` (the build
+  lens then converts with `--emit-shared-libraries` and builds the
+  `cc_shared_library` `.so`, which the lens REUSES — dynamic metadata is
+  config-invariant) and builds the cmake side with `BUILD_SHARED_LIBS=ON`;
+  without `SURVEY_SHARED` it self-skips. REMAINING: seeded with `fmt`;
+  add `.elffidelity` configs across the shared-validated corpus (zlib,
+  libxml2, brotli, curl, glog, spdlog, mbedtls, protobuf) and curate each
+  `.elf-allowlist.txt` against the real benign classes (BuildID, distro
+  NEEDED, version-node BASE = soname) as members come online.
 
 - **Source-narrowing-compatibility lens — SHIPPED (v1, opt-in
   `SURVEY_NARROWING_COMPAT=1`).** `scripts/narrowing-compat-lens.sh` (wired into

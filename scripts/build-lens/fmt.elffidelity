@@ -1,0 +1,8 @@
+# ELF dynamic-section fidelity lens config for fmt (8th survey lens,
+# SURVEY_ELF_FIDELITY — pairs with SURVEY_SHARED=1). Compares the converted
+# Bazel cc_shared_library libfmt.so against cmake's BUILD_SHARED_LIBS=ON
+# libfmt.so: SONAME, DT_NEEDED, .gnu.version_d, DT_RPATH/DT_RUNPATH. Benign
+# deltas (distro-runtime NEEDED, soname version suffix, …) auto-classified;
+# anything left over is listed in testdata/fidelity/fmt.elf-allowlist.txt.
+ELFID_TARGET=fmt
+ELFID_ARTIFACT=libfmt.so
