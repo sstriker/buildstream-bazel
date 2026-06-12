@@ -114,3 +114,47 @@ func TestEmit_NoCuda_NoCudaLoad(t *testing.T) {
 		t.Errorf("non-CUDA package must not load rules_cuda; got:\n%s", out)
 	}
 }
+
+// TestEmit_CudaRdc: CudaRdc renders rules_cuda's `rdc = True` (forwarded by
+// the cuda_binary macro to its inner cuda_library); unset emits no attr.
+func TestEmit_CudaRdc(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "cdp", Kind: ir.KindCudaBinary, Srcs: []string{"cdp.cu"}, CudaRdc: true},
+		{Name: "plain", Kind: ir.KindCudaBinary, Srcs: []string{"plain.cu"}},
+	}}
+	out, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	got := string(out)
+	if !strings.Contains(got, "rdc = True") {
+		t.Errorf("missing rdc = True for separable-compilation target; got:\n%s", got)
+	}
+	if strings.Count(got, "rdc = True") != 1 {
+		t.Errorf("rdc must render only on the marked target; got:\n%s", got)
+	}
+}
+
+// TestEmit_CudaHostLinkopts: HostLinkOpts renders as rules_cuda's
+// `host_linkopts` (the macro renames it onto the outer cc_binary's
+// linkopts; a plain `linkopts` would be silently dropped from the host
+// link).
+func TestEmit_CudaHostLinkopts(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{
+		Name:         "omp",
+		Kind:         ir.KindCudaBinary,
+		Srcs:         []string{"omp.cu"},
+		HostLinkOpts: []string{"-lgomp"},
+	}}}
+	out, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	got := string(out)
+	if !strings.Contains(got, "host_linkopts = [\"-lgomp\"]") {
+		t.Errorf("missing host_linkopts; got:\n%s", got)
+	}
+	if strings.Contains(got, "\n    linkopts") {
+		t.Errorf("plain linkopts must not render for the partitioned target; got:\n%s", got)
+	}
+}

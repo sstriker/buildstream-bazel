@@ -15,26 +15,6 @@ transition cleanly.
 
 ## Next
 
-- **Green the last heavyweight corpus member: cuda-samples.**
-  25/26 are green (protobuf + sdl + grpc landed; vtk confirmed green
-  end-to-end 2026-06-12 — full `bazel build //...` over the converted
-  workspace, 2728 targets, zero failures). Remaining:
-  - **cuda-samples** — a surveyed sample builds GREEN (needs CUDA provisioned:
-    `apt-get install nvidia-cuda-toolkit gcc-12` + `scripts/provision-cuda-root.sh`
-    → `BSB_CUDA_ROOT`; `BSB_CUDA_HOST_CC=/usr/bin/gcc-12`). `cpp/0_Introduction/
-    vectorAdd` converts 0-rej and `bazel build //...` completes. REMAINING for the
-    FULL suite: the `find_package(CUDAToolkit)` library group (a
-    `cuda-samples-imports.json` mapping `CUDA::cublas` etc. → `@cuda//:…`) and the
-    `9_CUDA_Tile`/tileiras whole-tree configure prune (or keep surveying buildable
-    sample subdirs).
-
-  DISK NOTE: the real ceiling is ~37 GB, and a clean session has ~25 GB free —
-  ample for grpc/vtk builds. The earlier "disk-blocked" reading was stale
-  prior-session survey dirs (`g-*`, `revisit`, `final-val`, …) accumulating under
-  `/home/user/`; reclaim them between runs. Always `df /` + `du -xsh
-  /home/user/*` before concluding disk is the limit, and clean per-project
-  `.bzcache`/`build-ws` under `--out-dir/<member>/`.
-
 - **Faithful SHARED-library conversion (`cc_shared_library`) — remaining:
   corpus-wide re-green + edge cases.** The WHOLE POINT of shared is FIDELITY —
   to build what cmake would actually build (the survey forces
@@ -623,6 +603,17 @@ trees, optional-feature deps, codegen instances). Each member's
   build-tracer-on-CI fixture so the trace-driven sibling gate can run too.
 
 ## Later (research / open questions)
+
+- **Stage textual-include-of-SOURCE siblings (`#include "x.cu"` /
+  `#include "x.c"`).** The sibling-header staging walk covers header
+  extensions (incl. `.cuh`), but cuda-samples' eigenvalues quote-includes a
+  `.cu` from its `.cuh` kernels (`bisect_util.cu` — the classic
+  one-definition-per-arch idiom), which never stages and the compile misses
+  it in the sandbox. Needs either an include-scan-driven staging channel or
+  per-extension opt-in to the walk; cc_binary's no-hdrs-slot drop
+  (quasirandomGenerator_nvrtc's `.cuh`) is the same family. Both samples are
+  pruned in `cuda-samples.conf` until then (eigenvalues is the only
+  non-toolkit-floor entry there).
 
 - **genclass textual-impl includes: angle-include form.** The
   textual-include router now detects a header that textually `#include`s

@@ -612,6 +612,26 @@ type Target struct {
 	Linkstatic bool
 	Alwayslink bool
 
+	// HostLinkOpts (KindCuda* only) renders rules_cuda's `host_linkopts`
+	// — the HOST-side link flags (-lgomp, -Wl,-rpath…). On rules_cuda
+	// rules plain `linkopts` means the DEVICE link command, and the
+	// cuda_binary/cuda_test macros silently DROP a plain `linkopts` from
+	// the outer cc_binary (only `host_linkopts` survives their rename
+	// pass), so host libs emitted there never reach the final link.
+	// lower partitions cmake's CUDA link line into this field.
+	HostLinkOpts []string
+
+	// CudaRdc (KindCuda* only) renders rules_cuda's `rdc = True` —
+	// relocatable device code, cmake's CUDA_SEPARABLE_COMPILATION. The
+	// codemodel exposes no per-target property for it; lower detects it
+	// from the ninja graph's device-link edge (the
+	// `CMakeFiles/<target>.dir/.../cmake_device_link.o` output cmake
+	// emits only for separable-compilation targets). Without it, device
+	// code that launches kernels from __device__/__global__ functions
+	// (CUDA dynamic parallelism) fails nvcc with "requires separate
+	// compilation mode".
+	CudaRdc bool
+
 	// SharedLibName, when non-empty, marks a KindCCLibrary that cmake declared
 	// as a SHARED_LIBRARY / MODULE_LIBRARY: the cc_library is the static
 	// implementation, and emit ALSO renders a sibling `cc_shared_library`

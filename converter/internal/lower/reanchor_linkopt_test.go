@@ -357,3 +357,22 @@ func TestReanchorLinkOptTokenWithInput(t *testing.T) {
 		})
 	}
 }
+
+// TestDropNvccArchFlagsFromCmd pins the genrule-side arch-flag drop:
+// the driver-API fatbin shape loses its baked CMAKE_CUDA_ARCHITECTURES
+// -gencode list (both spellings) while every other token — the tool,
+// -fatbin, -o, the source — survives byte-identically, and a non-nvcc
+// cmd passes through untouched even if a token smells like an arch flag.
+func TestDropNvccArchFlagsFromCmd(t *testing.T) {
+	in := "nvcc -Wno-deprecated-gpu-targets -gencode=arch=compute_75,code=sm_75 -gencode=arch=compute_120,code=sm_120 -gencode arch=compute_90,code=sm_90 --generate-code arch=compute_80,code=sm_80 -o $(RULEDIR)/k.fatbin -fatbin k.cu"
+	want := "nvcc -Wno-deprecated-gpu-targets -o $(RULEDIR)/k.fatbin -fatbin k.cu"
+	if got := dropNvccArchFlagsFromCmd(in); got != want {
+		t.Errorf("dropNvccArchFlagsFromCmd:\n got %q\nwant %q", got, want)
+	}
+	// The rewriteGenruleCmd gate: a non-nvcc command keeps arch-shaped
+	// tokens (only nvcc invocations opt into the drop).
+	nonNvcc := "mytool -gencode=arch=compute_75,code=sm_75 input.txt"
+	if got := rewriteGenruleCmd(nonNvcc, "", "", "", ""); got != nonNvcc {
+		t.Errorf("non-nvcc cmd mutated: %q", got)
+	}
+}

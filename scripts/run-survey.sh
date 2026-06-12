@@ -269,11 +269,23 @@ try_bazel_build() {
     #                       workspace root — emits labels like //elements/zstd/lib:…
     #                       that only resolve when the WHOLE repo is staged under
     #                       elements/zstd/. Default empty → overlay $_bb_src.
+    #   CONFIGURE_PRUNE_SUBDIRS space-separated "<rel-cmakelists>:<subdir>" pairs —
+    #                       consumed by the MAIN LOOP (not here): the whole
+    #                       survey of the project (diagnostics, config
+    #                       detection, AND this build lens) runs against a
+    #                       PRUNED COPY of the source tree with each named
+    #                       `add_subdirectory(<subdir>)` line commented out in
+    #                       <rel-cmakelists> — for a tree whose one un-guarded
+    #                       subdir can't configure on the provisioned toolchain
+    #                       (cuda-samples' 9_CUDA_Tile: `find_program(tileiras
+    #                       REQUIRED)` + Tile-IR-only nvcc flags, both
+    #                       CUDA-13-only). The original clone is never modified.
     CONVERT_FLAGS=""
     BAZEL_FLAGS=""
     EXTRA_BAZEL_DEPS=""
     EMIT_INSTALL_EXPORT=1
     ELEMENT_SOURCE_ROOT=""
+    CONFIGURE_PRUNE_SUBDIRS=""
     # Per-project override of the global SURVEY_SPLIT_PACKAGES (empty → inherit).
     # A member whose emit isn't split-package-clean yet (grpc's protoc `gens/`
     # codegen: the sub-package move would need $(RULEDIR)/<root> and cross-package
@@ -604,6 +616,46 @@ for entry in $projects; do
             printf '%s' "$DIAG_CONVERT_FLAGS"
         )"
     fi
+
+    # CONFIGURE_PRUNE_SUBDIRS (per-project conf knob, "<rel-cmakelists>:<subdir>"
+    # pairs): survey a PRUNED COPY of the source tree with each named
+    # `add_subdirectory(<subdir>)` line commented out — for a tree whose one
+    # un-guarded subdir can't configure on the provisioned toolchain
+    # (cuda-samples' 9_CUDA_Tile: `find_program(tileiras REQUIRED)` + Tile-IR
+    # nvcc flags, both CUDA-13-only). Staged HERE, before any pass runs, so the
+    # diagnostics convert, detect_configs, and the build lens all see the same
+    # pruned tree through $src; the original clone is never modified. Each
+    # pair's <rel-cmakelists> anchors at the nearest ancestor of $src that
+    # carries it (a scoped survey of one sample subdir prunes the same
+    # repo-root file the whole-tree survey does); entries whose file resolves
+    # nowhere are skipped — the prune target isn't in this survey's view.
+    prune_subdirs="$(
+        CONFIGURE_PRUNE_SUBDIRS=""
+        [ -f "$_diag_conf" ] && { . "$_diag_conf" >/dev/null 2>&1 || true; }
+        printf '%s' "$CONFIGURE_PRUNE_SUBDIRS"
+    )"
+    for _pp in $prune_subdirs; do
+        _pp_file="${_pp%%:*}"
+        _pp_dir="${_pp#*:}"
+        _pp_base="$src"
+        while [ "$_pp_base" != "/" ] && [ ! -f "$_pp_base/$_pp_file" ]; do
+            _pp_base="$(dirname "$_pp_base")"
+        done
+        [ -f "$_pp_base/$_pp_file" ] || continue
+        case "$src" in
+        "$proj_out"/*) ;; # later pair: already staged, prune in place
+        *)
+            _pp_root="$proj_out/pruned-src"
+            rm -rf "$_pp_root"
+            mkdir -p "$_pp_root"
+            cp -a "$_pp_base/." "$_pp_root/"
+            src="$_pp_root${src#"$_pp_base"}"
+            _pp_base="$_pp_root"
+            ;;
+        esac
+        sed -i "s|^\\([[:space:]]*\\)add_subdirectory(${_pp_dir})|\\1# pruned by run-survey (CONFIGURE_PRUNE_SUBDIRS): add_subdirectory(${_pp_dir})|" \
+            "$_pp_base/$_pp_file"
+    done
 
     # The survey runs each project standalone, so out-of-tree
     # find_package(...) deps (e.g. protobuf's find_package(ZLIB))

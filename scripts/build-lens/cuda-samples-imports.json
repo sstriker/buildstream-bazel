@@ -1,0 +1,106 @@
+{
+  "version": 1,
+  "elements": [
+    {
+      "name": "cuda-toolkit",
+      "exports": [
+        {
+          "cmake_target": "CUDA::cudart",
+          "bazel_label": "@cuda//:cuda_runtime"
+        },
+        {
+          "cmake_target": "CUDA::cudart_static",
+          "bazel_label": "@cuda//:cuda_runtime_static"
+        },
+        {
+          "cmake_target": "CUDA::cuda_driver",
+          "bazel_label": "@cuda//:cuda"
+        },
+        {
+          "cmake_target": "CUDA::cublas",
+          "bazel_label": "@cuda//:cublas"
+        },
+        {
+          "cmake_target": "CUDA::cufft",
+          "bazel_label": "@cuda//:cufft"
+        },
+        {
+          "cmake_target": "CUDA::cufft_static",
+          "bazel_label": "@cuda//:cufft_static"
+        },
+        {
+          "cmake_target": "CUDA::curand",
+          "bazel_label": "@cuda//:curand"
+        },
+        {
+          "cmake_target": "CUDA::cusolver",
+          "bazel_label": "@cuda//:cusolver"
+        },
+        {
+          "cmake_target": "CUDA::cusparse",
+          "bazel_label": "@cuda//:cusparse"
+        },
+        {
+          "cmake_target": "CUDA::nvrtc",
+          "bazel_label": "@cuda//:nvrtc"
+        },
+        {
+          "cmake_target": "CUDA::nvjpeg",
+          "bazel_label": "@cuda//:nvjpeg"
+        },
+        {
+          "cmake_target": "CUDA::nvml",
+          "bazel_label": "@cuda//:nvml"
+        },
+        {
+          "cmake_target": "CUDA::nvtx3",
+          "bazel_label": "@cuda//:nvtx3"
+        },
+        {
+          "cmake_target": "CUDA::nppc",
+          "bazel_label": "@cuda//:nppc"
+        },
+        {
+          "cmake_target": "CUDA::nppial",
+          "bazel_label": "@cuda//:nppial"
+        },
+        {
+          "cmake_target": "CUDA::nppicc",
+          "bazel_label": "@cuda//:nppicc"
+        },
+        {
+          "cmake_target": "CUDA::nppidei",
+          "bazel_label": "@cuda//:nppidei"
+        },
+        {
+          "cmake_target": "CUDA::nppif",
+          "bazel_label": "@cuda//:nppif"
+        },
+        {
+          "cmake_target": "CUDA::nppig",
+          "bazel_label": "@cuda//:nppig"
+        },
+        {
+          "cmake_target": "CUDA::nppim",
+          "bazel_label": "@cuda//:nppim"
+        },
+        {
+          "cmake_target": "CUDA::nppist",
+          "bazel_label": "@cuda//:nppist"
+        },
+        {
+          "cmake_target": "CUDA::nppisu",
+          "bazel_label": "@cuda//:nppisu"
+        },
+        {
+          "cmake_target": "CUDA::nppitc",
+          "bazel_label": "@cuda//:nppitc"
+        },
+        {
+          "cmake_target": "CUDA::npps",
+          "bazel_label": "@cuda//:npps"
+        }
+      ]
+    }
+  ]
+}

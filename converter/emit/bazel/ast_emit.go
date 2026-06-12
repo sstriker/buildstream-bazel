@@ -465,6 +465,10 @@ func ccViewToCall(v ccView) *build.CallExpr {
 	setIfNonNil(r, "defines", v.DefinesExpr)
 	setIfNonNil(r, "local_defines", v.LocalDefinesExpr)
 	setIfNonNil(r, "linkopts", v.LinkoptsExpr)
+	// rules_cuda's HOST-side link flags (lower's partitionCudaLinkopts fills
+	// this only for KindCuda* targets; plain `linkopts` there is the DEVICE
+	// link, and the cuda_binary/cuda_test macros drop it from the host link).
+	setIfNonNil(r, "host_linkopts", v.HostLinkoptsExpr)
 	setIfNonNil(r, "additional_linker_inputs", v.AdditionalLinkerInputsExpr)
 	setIfNonNil(r, "deps", v.DepsExpr)
 	setIfNonNil(r, "dynamic_deps", v.DynamicDepsExpr)
@@ -480,6 +484,11 @@ func ccViewToCall(v ccView) *build.CallExpr {
 	}
 	if v.Alwayslink {
 		r.SetAttr("alwayslink", boolIdent(true))
+	}
+	// rules_cuda's relocatable-device-code attr (lower sets CudaRdc only on
+	// KindCuda* targets, from the ninja device-link edge).
+	if v.CudaRdc {
+		r.SetAttr("rdc", boolIdent(true))
 	}
 	setListIfNonEmpty(r, "features", v.Features)
 	setListIfNonEmpty(r, "tags", v.Tags)
