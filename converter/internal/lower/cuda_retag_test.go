@@ -302,3 +302,21 @@ func TestPartitionCudaLinkopts(t *testing.T) {
 		t.Errorf("stale linkopts arms survived")
 	}
 }
+
+// TestRetagCudaTargets_RdcPlacement: a MIXED-language separable target's
+// device-link edge must mark the split's CUDA sub-library
+// (<cmake-target>_cuda), never the cc wrapper — cc_binary has no `rdc`
+// attribute and rendering it there fails analysis ("no such attribute").
+func TestRetagCudaTargets_RdcPlacement(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "mergeSort", Kind: ir.KindCCBinary, Srcs: []string{"host.cpp"}},
+		{Name: "mergeSort_cuda", Kind: ir.KindCudaLibrary, Srcs: []string{"mergeSort.cu"}},
+	}}
+	retagCudaTargets(pkg, map[string]bool{"mergeSort": true})
+	if got := findTarget(pkg, "mergeSort"); got == nil || got.CudaRdc || got.Kind != ir.KindCCBinary {
+		t.Errorf("cc wrapper must stay cc_binary without CudaRdc: kind=%v rdc=%v", got.Kind, got.CudaRdc)
+	}
+	if got := findTarget(pkg, "mergeSort_cuda"); got == nil || !got.CudaRdc {
+		t.Errorf("split CUDA sub-library must carry CudaRdc")
+	}
+}

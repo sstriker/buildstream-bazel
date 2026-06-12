@@ -6852,15 +6852,6 @@ func retagCudaTargets(pkg *ir.Package, rdcTargets map[string]bool) {
 	}
 	for i := range pkg.Targets {
 		t := &pkg.Targets[i]
-		// Separable compilation (CUDA_SEPARABLE_COMPILATION → rules_cuda
-		// `rdc = True`): keyed by cmake target name, so it lands on
-		// whole-target CUDA rules (retagged below, or already cuda-kind).
-		// A split-produced CUDA sub-library carries a derived name and is
-		// not matched here — acceptable until a mixed-language separable
-		// target shows up in the corpus.
-		if rdcTargets[t.Name] {
-			t.CudaRdc = true
-		}
 		var cudaKind ir.Kind
 		switch t.Kind {
 		case ir.KindCCLibrary, ir.KindCCInterface:
@@ -6869,6 +6860,17 @@ func retagCudaTargets(pkg *ir.Package, rdcTargets map[string]bool) {
 			cudaKind = ir.KindCudaBinary
 		case ir.KindCCTest:
 			cudaKind = ir.KindCudaTest
+		case ir.KindCudaLibrary, ir.KindCudaBinary, ir.KindCudaTest:
+			// Already a CUDA rule — the per-language split's sub-library
+			// (named <cmake-target>_cuda). Separable compilation
+			// (CUDA_SEPARABLE_COMPILATION → rules_cuda `rdc = True`)
+			// lands HERE for a mixed-language target: the cc wrapper
+			// keeps the host link and must NOT carry the attr
+			// (cc_binary has no `rdc`).
+			if rdcTargets[t.Name] || rdcTargets[strings.TrimSuffix(t.Name, "_cuda")] {
+				t.CudaRdc = true
+			}
+			continue
 		default:
 			continue
 		}
@@ -6904,6 +6906,11 @@ func retagCudaTargets(pkg *ir.Package, rdcTargets map[string]bool) {
 		if sawCuda && !sawNonCudaCompiled {
 			t.Kind = cudaKind
 			partitionCudaLinkopts(t)
+			// Whole-target separable compilation: the retagged rule is
+			// the one place the attr can live.
+			if rdcTargets[t.Name] {
+				t.CudaRdc = true
+			}
 		}
 	}
 }

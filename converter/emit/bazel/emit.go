@@ -1983,8 +1983,10 @@ func ccTargetCall(t ir.Target, opts Options) (*build.CallExpr, error) {
 		ImplementationDepsExpr:     attrExprAST(implementationDeps, perPlatformAttr(t, "implementation_deps")),
 		Linkstatic:                 t.Linkstatic,
 		Alwayslink:                 t.Alwayslink,
-		CudaRdc:                    t.CudaRdc,
-		Features:                   sortedCopy(t.Features),
+		// Defensive kind gate: `rdc` exists only on rules_cuda rules —
+		// rendering it on a cc_* rule is an analysis-time error.
+		CudaRdc:  t.CudaRdc && isCudaKind(t.Kind),
+		Features: sortedCopy(t.Features),
 		// Data lifts cmake's add_dependencies-derived build-order
 		// edges (set via the per-target backtrace recovery in
 		// lower). cc_test additionally appends t.TestData below
