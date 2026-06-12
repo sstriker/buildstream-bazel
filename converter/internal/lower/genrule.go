@@ -451,7 +451,7 @@ func (cc *codegenContext) recoverCmakeScriptGenrule(b *ninja.Build, cmd, cmakeSr
 	// bake declines (e.g. cmake not on PATH, script
 	// produced no output).
 	if cc.CMakeScriptBake {
-		_, name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, script, buildDir, g)
+		name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, script, buildDir, g)
 		if ok {
 			// Return the REQUESTED output, not the bake's primary out:
 			// a multi-output script (vtkEncodeString writes a .h + the
@@ -460,14 +460,15 @@ func (cc *codegenContext) recoverCmakeScriptGenrule(b *ninja.Build, cmd, cmakeSr
 			// .cxx to hdrs (header extension) — the shader-string
 			// definitions then compile nowhere and every referencing
 			// link fails. Same contract as the cc_embed/cc_hash
-			// branches above; the sibling outputs are all registered
-			// in OutToGenrule by the bake.
+			// branches above; the sibling outputs — implicit
+			// (BYPRODUCTS) ones included, per genruleOuts — are all
+			// registered in OutToGenrule by the bake.
 			return relOut, name, nil
 		}
 		liftReason = reason
 	}
 	if cc.CMakeScriptRunner != "" {
-		_, name, reason, ok := liftCmakeScriptGenrule(cc, b, cmd, script, cmakeSrc, buildDir)
+		name, reason, ok := liftCmakeScriptGenrule(cc, b, cmd, script, cmakeSrc, buildDir)
 		if ok {
 			// Same requested-output contract as the bake branch.
 			return relOut, name, nil
@@ -690,17 +691,29 @@ func sanitizePathToNameStem(rel string) string {
 	return sb.String()
 }
 
-// genruleOuts returns build statement outputs as package-relative paths.
-// Implicit outs that resolve to the same file as an explicit out (via the
-// `${cmake_ninja_workdir}<name>` redundancy CMake emits) are filtered.
+// genruleOuts returns build statement outputs — explicit AND implicit — as
+// package-relative paths. Implicit outs matter because BuildFor indexes
+// them too: a consumer can reference a BYPRODUCTS file (ninja's
+// `build out | byproduct :` shape), and a recovery that omits it from the
+// emitted genrule's outs hands that consumer a path no target produces.
+// Entries carrying unexpanded ninja variable references are dropped —
+// cmake's Ninja generator shadows every real custom-command output with a
+// `${cmake_ninja_workdir}<name>` implicit out, which has no meaning at
+// Bazel emission time (same filtering as the standalone pass's
+// filterOutVarRefs).
 func genruleOuts(b *ninja.Build, buildDir string) []string {
 	seen := map[string]struct{}{}
 	var out []string
-	for _, o := range b.Outputs {
-		if rel, ok := relativeIfInsideRelaxed(buildDir, o); ok {
-			if _, dup := seen[rel]; !dup {
-				seen[rel] = struct{}{}
-				out = append(out, rel)
+	for _, list := range [][]string{b.Outputs, b.ImplicitOuts} {
+		for _, o := range list {
+			if strings.Contains(o, "${") {
+				continue
+			}
+			if rel, ok := relativeIfInsideRelaxed(buildDir, o); ok {
+				if _, dup := seen[rel]; !dup {
+					seen[rel] = struct{}{}
+					out = append(out, rel)
+				}
 			}
 		}
 	}

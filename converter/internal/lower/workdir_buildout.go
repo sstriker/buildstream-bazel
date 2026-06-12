@@ -8,8 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/sstriker/buildstream-bazel/internal/manifest"
-
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
@@ -36,9 +34,10 @@ import (
 //
 // When --cmake-script-trace is on and the command is a `cmake -P`
 // script, the script runs under the REAL working dir at convert time
-// (with relative -D path values redirected into a throwaway scratch
-// so the probe can't write into the source tree) and the trace's
-// source-class reads join srcs — the channel that catches
+// (with path-shaped / declared-output -D values redirected into a
+// throwaway scratch to keep the probe's writes out of the source
+// tree — see appendScriptTraceReads for the exact rule) and the
+// trace's source-class reads join srcs — the channel that catches
 // `include(sql_filelist.cmake)`, which no ninja DEPENDS declares.
 func tryWorkdirBuildOutGenrule(b *ninja.Build, cmd string, srcs, outs []string, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath string, artifactToName map[string]string, cc *codegenContext) (ir.Target, bool) {
 	if cc == nil {
@@ -57,22 +56,42 @@ func tryWorkdirBuildOutGenrule(b *ninja.Build, cmd string, srcs, outs []string, 
 	if _, inSrc := inSourceOutputs(outs, cmakeSrc); inSrc {
 		return ir.Target{}, false
 	}
+	// inSourceOutputs is all-or-nothing, so a MIXED edge (build-relative
+	// outs plus an absolute in-source or out-of-tree out) reaches here.
+	// The dual-scratch emit only knows how to land build-dir-RELATIVE
+	// outs (they become Bazel outs entries and `cp "$$bld/<o>"` sources;
+	// an absolute path is invalid as either) — decline so the edge falls
+	// through to the bake / raw-emit / refusal paths.
+	for _, o := range outs {
+		if filepath.IsAbs(o) {
+			return ir.Target{}, false
+		}
+	}
+	// The $$root re-anchoring keys on the exec-root source prefix that
+	// rewriteGenruleCmd spells onto source-tree paths — the join of the
+	// element's landing package and the umbrella segment (its srcBase).
+	// When BOTH are empty (convert-at-root / fidelity-harness mode),
+	// source paths come out bare-relative, indistinguishable from the
+	// stripped build-dir paths this lift re-points under $$bld — the
+	// emitted genrule would point the script and its source reads at an
+	// empty scratch dir. Decline instead.
+	srcBase := umbrellaPrefix
+	if bazelPackagePath != "" {
+		srcBase = filepath.ToSlash(filepath.Join(bazelPackagePath, umbrellaPrefix))
+	}
+	if strings.Trim(srcBase, "/") == "" {
+		return ir.Target{}, false
+	}
 
 	// Convert-time script trace: discover the reads the cd'd script
 	// makes beyond ninja's DEPENDS (best-effort — the script may die
 	// at a built-tool exec; reads before that still classify).
 	if cc.CMakeScriptTrace && cc.CMakeBinary != "" && usesCmakeScriptMode(cmd) {
-		srcs = appendScriptTraceReads(cmd, srcs, cmakeSrc, buildDir, wdAbs, cc)
+		srcs = appendScriptTraceReads(cmd, srcs, outs, cmakeSrc, buildDir, wdAbs, cc)
 	}
 
 	body := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath)
-	var execArtifacts map[string]bool
-	var imports *manifest.Resolver
-	if cc != nil {
-		execArtifacts = cc.ExecArtifacts
-		imports = cc.Imports
-	}
-	body, tools := rewriteToolFromTarget(body, artifactToName, execArtifacts, imports, cc.HostPrefixDir)
+	body, tools := rewriteToolFromTarget(body, artifactToName, cc.ExecArtifacts, cc.Imports, cc.HostPrefixDir)
 	srcs = dropLiftedToolSrcs(srcs, tools, artifactToName)
 
 	name := genruleNameFor(b, buildDir)
@@ -81,7 +100,7 @@ func tryWorkdirBuildOutGenrule(b *ninja.Build, cmd string, srcs, outs []string, 
 		Kind:         ir.KindGenrule,
 		Srcs:         srcs,
 		GenruleOuts:  outs,
-		GenruleCmd:   buildWorkdirBuildOutGenrule(body, filepath.ToSlash(wd), srcs, outs, bazelPackagePath),
+		GenruleCmd:   buildWorkdirBuildOutGenrule(body, filepath.ToSlash(wd), srcs, outs, srcBase),
 		GenruleTools: tools,
 		Tags:         []string{"cmake-codegen-standalone-custom-command", "cmake-codegen-workdir-buildout"},
 		Visibility:   []string{"//visibility:private"},
@@ -94,12 +113,17 @@ func tryWorkdirBuildOutGenrule(b *ninja.Build, cmd string, srcs, outs []string, 
 
 // appendScriptTraceReads runs the command's cmake -P script under its
 // real working dir with --trace and appends the classified
-// source-class reads to srcs. Relative -D path values are redirected
-// into a throwaway scratch dir first so the probe writes nothing into
-// the source tree. Failures (script aborts at a not-yet-built tool)
-// degrade silently to the partial trace — this channel only ADDS
-// inputs the static recovery missed.
-func appendScriptTraceReads(cmd string, srcs []string, cmakeSrc, buildDir, wdAbs string, cc *codegenContext) []string {
+// source-class reads to srcs. Relative -D values that are path-shaped
+// (contain a slash) or name a declared output are redirected into a
+// throwaway scratch dir first so the probe's writes land there rather
+// than in the source tree (the cd'd cwd). Slash-less values that
+// aren't outputs stay verbatim — they're value-args (-DVERSION=9.4.2),
+// and mangling them into scratch paths would change what the script
+// does; a script that writes such a value as a cwd-relative file is a
+// residual probe-side write this channel accepts. Failures (script
+// aborts at a not-yet-built tool) degrade silently to the partial
+// trace — this channel only ADDS inputs the static recovery missed.
+func appendScriptTraceReads(cmd string, srcs, outs []string, cmakeSrc, buildDir, wdAbs string, cc *codegenContext) []string {
 	scriptArg := extractCmakeScriptPath(cmd)
 	if scriptArg == "" {
 		return srcs
@@ -113,10 +137,15 @@ func appendScriptTraceReads(cmd string, srcs []string, cmakeSrc, buildDir, wdAbs
 		return srcs
 	}
 	defer os.RemoveAll(scratch)
+	outSet := map[string]bool{}
+	for _, o := range outs {
+		outSet[path.Clean(filepath.ToSlash(o))] = true
+	}
 	var dArgs []string
 	for _, a := range extractCmakePDashArgs(cmd) {
 		if name, val, ok := strings.Cut(a, "="); ok && val != "" &&
-			!filepath.IsAbs(val) && strings.Contains(val, "/") {
+			!filepath.IsAbs(val) &&
+			(strings.Contains(val, "/") || outSet[path.Clean(filepath.ToSlash(val))]) {
 			a = name + "=" + filepath.Join(scratch, filepath.FromSlash(path.Clean(val)))
 		}
 		dArgs = append(dArgs, a)
@@ -138,23 +167,29 @@ func appendScriptTraceReads(cmd string, srcs []string, cmakeSrc, buildDir, wdAbs
 // protected; quoted-space args carry the same caveat as the rest of
 // this family):
 //
-//   - $(location/execpath …) and <labelRoot>/… exec-root references
-//     absolutize via $$root (the pre-cd exec root);
+//   - $(location/execpath …) and <srcBase>/… exec-root references
+//     absolutize via $$root (the pre-cd exec root); srcBase is the
+//     same package+umbrella join rewriteGenruleCmd anchored the
+//     source-tree paths with (the caller guarantees it's non-empty);
 //   - relative path tokens — build-tree references whose absolute
 //     prefix rewriteGenruleCmd stripped — re-point under $$bld,
 //     path.Clean'd (cmake spells outputs with `lib/../` noise);
-//     declared outs copy from there to $(RULEDIR) afterwards.
+//     declared outs copy from there to $(RULEDIR) afterwards. A
+//     slash-containing token qualifies on shape alone; a slash-less
+//     token (a build-ROOT-level output like `proj.db`) only when it
+//     names a declared out — bare words are otherwise flags, tool
+//     names, or wd-relative reads the cd already resolves.
 //
 // Extension-less $$bld paths pre-create as directories (the `cmake
 // -E copy <file> <dir>` recovered-cp shape needs the dest dir);
 // every other $$bld path pre-creates its parent.
-func buildWorkdirBuildOutGenrule(body, wd string, srcs, outs []string, bazelPackagePath string) string {
+func buildWorkdirBuildOutGenrule(body, wd string, srcs, outs []string, srcBase string) string {
 	outSet := map[string]bool{}
 	for _, o := range outs {
-		outSet[o] = true
+		outSet[path.Clean(o)] = true
 	}
 	labelRootPrefix := ""
-	if p := strings.Trim(bazelPackagePath, "/"); p != "" {
+	if p := strings.Trim(srcBase, "/"); p != "" {
 		labelRootPrefix = p + "/"
 	}
 
@@ -175,7 +210,8 @@ func buildWorkdirBuildOutGenrule(body, wd string, srcs, outs []string, bazelPack
 			tokens[i] = flagName + "$$root/" + val
 		case labelRootPrefix != "" && strings.HasPrefix(val, labelRootPrefix):
 			tokens[i] = flagName + "$$root/" + val
-		case !strings.HasPrefix(val, "-") && strings.Contains(val, "/") && !filepath.IsAbs(val) && !strings.Contains(val, "\x00"):
+		case !strings.HasPrefix(val, "-") && !filepath.IsAbs(val) && !strings.Contains(val, "\x00") &&
+			(strings.Contains(val, "/") || outSet[path.Clean(val)]):
 			clean := path.Clean(val)
 			tokens[i] = flagName + "$$bld/" + clean
 			if !seenBld[clean] {

@@ -58,3 +58,48 @@ func TestTryWorkdirBuildOutGenrule_Gates(t *testing.T) {
 		t.Error("in-source outputs belong to tryInSourceWorkdirGenrule")
 	}
 }
+
+// TestBuildWorkdirBuildOutGenrule_RootLevelOut pins the slash-less
+// (build-root-level) output case: a declared out like `proj.db` has
+// no "/" for the path-shape heuristic to key on, so the outSet match
+// must re-point it under $$bld — otherwise the trailing copy reads
+// from a $$bld path nothing wrote to and the genrule always fails.
+// Slash-less NON-out words (the script name resolved by the cd, bare
+// flags) must stay untouched.
+func TestBuildWorkdirBuildOutGenrule_RootLevelOut(t *testing.T) {
+	body := "cmake -DPROJ_DB=proj.db -P e/data/gen.cmake && touch proj.db done.marker"
+	got := buildWorkdirBuildOutGenrule(body,
+		"data",
+		[]string{"data/gen.cmake"},
+		[]string{"proj.db"},
+		"e")
+	for _, want := range []string{
+		`-DPROJ_DB=$$bld/proj.db`,
+		`touch $$bld/proj.db done.marker`,
+		`&& cp "$$bld/proj.db" "$(RULEDIR)/proj.db"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "$$bld/done.marker") {
+		t.Errorf("slash-less non-out word hijacked to $$bld:\n%s", got)
+	}
+}
+
+// TestTryWorkdirBuildOutGenrule_MoreGates: a mixed edge with an
+// ABSOLUTE out slips past the all-or-nothing inSourceOutputs check
+// but can't land as a Bazel outs entry — decline. An empty
+// package+umbrella srcBase (convert-at-root mode) leaves source
+// tokens indistinguishable from build-relative ones — decline.
+func TestTryWorkdirBuildOutGenrule_MoreGates(t *testing.T) {
+	cc := newCodegenContext()
+	if _, ok := tryWorkdirBuildOutGenrule(nil, "cd /src/d && tool", nil,
+		[]string{"out.db", "/src/d/side.txt"}, "/src", "/bld", "", "e", nil, cc); ok {
+		t.Error("mixed edge with absolute out must decline")
+	}
+	if _, ok := tryWorkdirBuildOutGenrule(nil, "cd /src/d && tool", nil,
+		[]string{"out.db"}, "/src", "/bld", "", "", nil, cc); ok {
+		t.Error("empty package+umbrella (convert-at-root) must decline")
+	}
+}

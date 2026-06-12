@@ -129,12 +129,17 @@ func underPrefix(path, prefix string) bool {
 // the convert host's environment.
 //
 // Side-effect risk: cmake -P scripts are arbitrary cmake code
-// and can call `execute_process`, `file(REMOVE)`, etc. We run
-// in a fresh tmp dir as workDir so any `file(WRITE)` /
-// `file(REMOVE)` stays contained, but `execute_process(COMMAND
-// rm -rf /...)` can still escape. The lift's `--cmake-script-trace`
-// flag is therefore opt-in; operators acknowledge the risk by
-// passing it.
+// and can call `execute_process`, `file(REMOVE)`, etc. With
+// workDir == "" the script runs in a fresh tmp dir so any
+// `file(WRITE)` / `file(REMOVE)` stays contained; a caller that
+// passes a real workDir (the workdir-buildout lift reproduces
+// the command's in-source WORKING_DIRECTORY so cwd-relative
+// reads resolve) gives up that containment for cwd-relative
+// writes, and is responsible for redirecting the script's
+// output args elsewhere (see appendScriptTraceReads). Either
+// way `execute_process(COMMAND rm -rf /...)` can escape. The
+// lift's `--cmake-script-trace` flag is therefore opt-in;
+// operators acknowledge the risk by passing it.
 //
 // Timeout is hard-coded at 60s — well past any reasonable cmake
 // -P script's runtime; longer scripts likely have an
