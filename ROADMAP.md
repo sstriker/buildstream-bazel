@@ -602,6 +602,23 @@ trees, optional-feature deps, codegen instances). Each member's
   `--trace-source-root` is wired but no e2e job exercises it yet. Add a
   build-tracer-on-CI fixture so the trace-driven sibling gate can run too.
 
+- **pkg-config harvester: `${pcfiledir}` substvar.** The harvester
+  (`internal/harvest/pkgconfig.go`) parses `.pc` files directly (no `pkg-config`
+  binary) and expands `${var}` substvars — top-down nested definitions plus
+  `--define-prefix` relocation (the file's build-time `prefix=` is overridden by
+  the harvest seed) are understood and tested. The gap is pkg-config's built-in
+  **`${pcfiledir}`** (the directory containing the `.pc`): `vars` is seeded with
+  `prefix` only, so `${pcfiledir}` expands to empty. The increasingly-common
+  fully-relocatable idiom that derives paths from it rather than `prefix`
+  (`libdir=${pcfiledir}/../lib`, `Cflags: -I${pcfiledir}/../include`) then
+  silently drops its `-L`/`-I`. Fix is small and localized: seed
+  `vars["pcfiledir"]` (and `pc_sysrootdir`) from the `.pc` file's own directory in
+  `parsePkgConfig` before `parsePC` (the file path is already in hand), with a
+  fixture mirroring a pcfiledir-relocatable `.pc`. Lower-priority sibling edges,
+  same area: expansion is order-dependent (per-line accumulation vs pkg-config's
+  lazy any-order resolution — a define-after-use `.pc` mis-expands to empty), and
+  `$$` isn't unescaped to a literal `$`.
+
 ## Later (research / open questions)
 
 - **Stage textual-include-of-SOURCE siblings (`#include "x.cu"` /
