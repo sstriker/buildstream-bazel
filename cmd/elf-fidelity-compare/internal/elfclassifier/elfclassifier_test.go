@@ -52,6 +52,29 @@ func hasDelta(deltas []Delta, kind string) bool {
 	return false
 }
 
+// TestSonameBaseAndMajor locks the suffix-aware soname parsing: the qualifying
+// `.so` is the version suffix, not a `.so` embedded mid-name.
+func TestSonameBaseAndMajor(t *testing.T) {
+	cases := []struct{ in, base, major string }{
+		{"libfoo.so", "libfoo.so", "libfoo.so"},
+		{"libfoo.so.1", "libfoo.so", "libfoo.so.1"},
+		{"libfoo.so.1.2.3", "libfoo.so", "libfoo.so.1"},
+		{"libc.so.6", "libc.so", "libc.so.6"},
+		// `.so` embedded mid-name must not mis-base on the embedded occurrence.
+		{"libfoo.software.so.1", "libfoo.software.so", "libfoo.software.so.1"},
+		{"libsomething.so.2", "libsomething.so", "libsomething.so.2"},
+		{"noext", "noext", "noext"},
+	}
+	for _, c := range cases {
+		if got := sonameBase(c.in); got != c.base {
+			t.Errorf("sonameBase(%q) = %q, want %q", c.in, got, c.base)
+		}
+		if got := sonameMajor(c.in); got != c.major {
+			t.Errorf("sonameMajor(%q) = %q, want %q", c.in, got, c.major)
+		}
+	}
+}
+
 // TestCompare_IdenticalSharedObjects: two .so's built with the same soname +
 // version node compare clean (no impactful deltas), with the shared facts
 // reported.

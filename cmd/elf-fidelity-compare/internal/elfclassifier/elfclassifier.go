@@ -257,12 +257,30 @@ func classifySoname(rep *Report, cmake, bazel string, allowed Allowlist) {
 // sonameBase strips the trailing version components after `.so` so
 // libfoo.so.1.2.3 and libfoo.so.1 share the base "libfoo.so". Used for
 // distro-runtime FAMILY matching (libc.so.6 -> libc.so).
+//
+// The qualifying `.so` is the SUFFIX one — followed by end-of-string or
+// `.<digit>` (the version) — scanned right-to-left so a `.so` MID-name
+// (libfoo.software.so.1) doesn't mis-base on the embedded occurrence.
 func sonameBase(s string) string {
-	i := strings.Index(s, ".so")
-	if i < 0 {
+	best := -1
+	for i := 0; ; {
+		j := strings.Index(s[i:], ".so")
+		if j < 0 {
+			break
+		}
+		after := i + j + len(".so")
+		switch {
+		case after == len(s): // ends in ".so" (no version)
+			best = after
+		case s[after] == '.' && after+1 < len(s) && s[after+1] >= '0' && s[after+1] <= '9':
+			best = after // ".so" followed by ".<digit>"
+		}
+		i = i + j + len(".so")
+	}
+	if best < 0 {
 		return s
 	}
-	return s[:i+len(".so")]
+	return s[:best]
 }
 
 // sonameMajor keeps the FIRST version component after `.so` — the ABI-major.
