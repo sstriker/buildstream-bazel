@@ -50,10 +50,14 @@ func Harvest(prefixDir, element, labelPkg string) (*manifest.Imports, []string, 
 		return nil, nil, fmt.Errorf("prefix %s is not a directory", prefixDir)
 	}
 	h := &harvester{
-		prefix:   prefixDir,
-		labelPkg: labelPkg,
-		byName:   map[string]*row{},
-		byPath:   map[string]*row{},
+		prefix:     prefixDir,
+		realPrefix: prefixDir,
+		labelPkg:   labelPkg,
+		byName:     map[string]*row{},
+		byPath:     map[string]*row{},
+	}
+	if rp, err := filepath.EvalSymlinks(prefixDir); err == nil {
+		h.realPrefix = rp
 	}
 	if err := h.parseBundles(); err != nil {
 		return nil, nil, err
@@ -75,15 +79,40 @@ type row struct {
 	depRefs     []string // cmake `NS::x` or pc names, resolved late
 	deps        []string // resolved labels
 	aliasOf     string   // alias rows point at their underlying target
+	origin      string   // provenance for diagnostics ("bundle", "pkgconfig <name>", "bin")
+}
+
+// mergeInto folds a same-library row harvested from another channel
+// into its claimant: the union of both channels' keys survives on ONE
+// row (the dropped channel's -l name keeps the LookupLinkLibrary
+// redirect alive; its Requires deps keep resolving), and the merged
+// row's name registers as an ALIAS in byName so dep references to it
+// resolve to the claimant.
+func (h *harvester) mergeInto(claimant, dup *row) {
+	for _, l := range dup.linkLibs {
+		claimant.linkLibs = appendUnique(claimant.linkLibs, l)
+	}
+	for _, inc := range dup.includes {
+		claimant.includes = appendUnique(claimant.includes, inc)
+	}
+	for _, lp := range dup.linkPaths {
+		claimant.linkPaths = appendUnique(claimant.linkPaths, lp)
+		if key := h.canonicalKey(lp); h.byPath[key] == nil {
+			h.byPath[key] = claimant
+		}
+	}
+	claimant.depRefs = append(claimant.depRefs, dup.depRefs...)
+	h.byName[dup.cmakeTarget] = claimant
 }
 
 type harvester struct {
-	prefix   string
-	labelPkg string
-	rows     []*row
-	byName   map[string]*row // cmake target / pc name → row
-	byPath   map[string]*row // anchored artifact path → row (dedup pc-vs-bundle)
-	warnings []string
+	prefix     string
+	realPrefix string // EvalSymlinks(prefix) — base for canonicalized anchoring
+	labelPkg   string
+	rows       []*row
+	byName     map[string]*row // cmake target / pc name → row
+	byPath     map[string]*row // canonicalKey(anchored path) → row (dedup pc-vs-bundle)
+	warnings   []string
 }
 
 func (h *harvester) warnf(format string, args ...any) {
@@ -94,6 +123,35 @@ func (h *harvester) label(cmakeTarget string) string {
 	return "//" + h.labelPkg + ":" + wrappergen.WrapperName(cmakeTarget)
 }
 
+// sameLibraryClaimant returns the existing row that already describes
+// r's library, through either identity signal: a shared artifact path
+// (byPath) or a shared consumer-facing wrapper name — the same
+// collision imports-wrapper-gen would reject, here recognized EARLY
+// as "one library, two channels" when exactly one side carries an
+// artifact-less description (the header-only / unresolvable-probe
+// shapes that path identity can't see).
+func (h *harvester) sameLibraryClaimant(r *row) *row {
+	for _, lp := range r.linkPaths {
+		if prev, ok := h.byPath[h.canonicalKey(lp)]; ok {
+			return prev
+		}
+	}
+	want := wrappergen.WrapperName(r.cmakeTarget)
+	for _, prev := range h.rows {
+		if prev.aliasOf == "" && wrappergen.WrapperName(prev.cmakeTarget) == want {
+			// Same wrapper name across channels: only treat as the
+			// same library when the artifact evidence doesn't
+			// CONTRADICT (both carrying distinct artifacts means two
+			// real libraries that happen to collide — surfaced by the
+			// collision check instead).
+			if len(prev.linkPaths) == 0 || len(r.linkPaths) == 0 {
+				return prev
+			}
+		}
+	}
+	return nil
+}
+
 func (h *harvester) addRow(r *row) *row {
 	if prev, ok := h.byName[r.cmakeTarget]; ok {
 		return prev
@@ -101,8 +159,8 @@ func (h *harvester) addRow(r *row) *row {
 	h.rows = append(h.rows, r)
 	h.byName[r.cmakeTarget] = r
 	for _, lp := range r.linkPaths {
-		if _, claimed := h.byPath[lp]; !claimed {
-			h.byPath[lp] = r
+		if key := h.canonicalKey(lp); h.byPath[key] == nil {
+			h.byPath[key] = r
 		}
 	}
 	return r
@@ -140,6 +198,23 @@ func (h *harvester) resolveDeps() {
 }
 
 func (h *harvester) manifest(element string) *manifest.Imports {
+	// Consumer-facing wrapper names must be unique for the generator;
+	// genuinely distinct targets that collide post-sanitization are
+	// surfaced HERE with channel provenance — a far earlier and richer
+	// diagnostic than the generator's late name-collision error.
+	byWrapper := map[string]*row{}
+	for _, r := range h.rows {
+		if r.aliasOf != "" {
+			continue
+		}
+		name := wrappergen.WrapperName(r.cmakeTarget)
+		if prev, dup := byWrapper[name]; dup {
+			h.warnf("wrapper name %q collides: %s (%s) vs %s (%s) — imports-wrapper-gen will refuse; disambiguate before generating",
+				name, prev.cmakeTarget, prev.origin, r.cmakeTarget, r.origin)
+			continue
+		}
+		byWrapper[name] = r
+	}
 	rows := append([]*row(nil), h.rows...)
 	sort.Slice(rows, func(i, j int) bool { return rows[i].cmakeTarget < rows[j].cmakeTarget })
 	exports := make([]*manifest.Export, 0, len(rows))
@@ -180,19 +255,23 @@ func (h *harvester) collectBareBinaries(element string) {
 			continue
 		}
 		anchored := manifest.PrefixAnchor + "bin/" + e.Name()
-		if _, claimed := h.byPath[anchored]; claimed {
+		if h.byPath[h.canonicalKey(anchored)] != nil {
 			continue
 		}
 		h.addRow(&row{
 			cmakeTarget: element + "::bin/" + e.Name(),
 			linkPaths:   []string{anchored},
+			origin:      "bin",
 		})
 	}
 }
 
 // anchoredFromImportPrefix maps a `${_IMPORT_PREFIX}/<rel>` value (or
 // an absolute path under the harvested prefix) onto the manifest's
-// anchored form; ("", false) for anything else.
+// anchored form; ("", false) for anything else. The OBSERVED spelling
+// is kept — consumer-side LookupLinkPath matches trace spellings
+// verbatim, so the manifest must carry whatever the channel saw;
+// same-library identity canonicalizes separately via canonicalKey.
 func (h *harvester) anchoredFromImportPrefix(v string) (string, bool) {
 	if rel, ok := strings.CutPrefix(v, "${_IMPORT_PREFIX}/"); ok {
 		return manifest.PrefixAnchor + rel, true
@@ -203,6 +282,27 @@ func (h *harvester) anchoredFromImportPrefix(v string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// canonicalKey resolves an anchored path's symlinks against the
+// harvested tree, returning the canonical anchored spelling for byPath
+// identity. A symlinked soname otherwise gives the same file two keys
+// (the libfoo.so dev link a .pc probe finds vs the libfoo.so.1.2.3
+// realpath a bundle's IMPORTED_LOCATION carries) — path identity
+// misses, and since both rows then "carry artifacts", the name-match
+// guard reads a true duplicate as a genuine collision. Paths that
+// don't resolve on disk (partial trees) or escape the prefix keep
+// their literal spelling as the key.
+func (h *harvester) canonicalKey(anchored string) string {
+	rel := strings.TrimPrefix(anchored, manifest.PrefixAnchor)
+	resolved, err := filepath.EvalSymlinks(filepath.Join(h.prefix, filepath.FromSlash(rel)))
+	if err != nil {
+		return anchored
+	}
+	if rrel, err := filepath.Rel(h.realPrefix, resolved); err == nil && !strings.HasPrefix(rrel, "..") {
+		return manifest.PrefixAnchor + filepath.ToSlash(rrel)
+	}
+	return anchored
 }
 
 func appendUnique(s []string, v string) []string {

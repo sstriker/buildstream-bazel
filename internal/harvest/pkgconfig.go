@@ -3,6 +3,7 @@ package harvest
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
@@ -57,29 +58,8 @@ func (h *harvester) applyPC(name, body string) {
 			}
 		}
 	}
-	r := &row{cmakeTarget: "pkgconfig::" + name}
-	var searchDirs []string
-	for _, tok := range strings.Fields(fields["Libs"] + " " + fields["Libs.private"]) {
-		switch {
-		case strings.HasPrefix(tok, "-L"):
-			searchDirs = append(searchDirs, strings.TrimPrefix(tok, "-L"))
-		case strings.HasPrefix(tok, "-l"):
-			lib := strings.TrimPrefix(tok, "-l")
-			r.linkLibs = appendUnique(r.linkLibs, lib)
-			// Resolve the archive in the prefix so the row carries the
-			// path key the tool/fragment lifts and wrapper-gen need.
-			for _, d := range append(searchDirs, filepath.Join(h.prefix, "lib")) {
-				for _, ext := range []string{".a", ".so"} {
-					cand := filepath.Join(d, "lib"+lib+ext)
-					if _, err := os.Stat(cand); err == nil {
-						if anchored, ok := h.anchoredFromImportPrefix(cand); ok {
-							r.linkPaths = appendUnique(r.linkPaths, anchored)
-						}
-					}
-				}
-			}
-		}
-	}
+	r := &row{cmakeTarget: "pkgconfig::" + name, origin: "pkgconfig " + name + ".pc"}
+	h.applyPCLibs(r, fields["Libs"]+" "+fields["Libs.private"])
 	for _, tok := range strings.Fields(fields["Cflags"]) {
 		if d, ok := strings.CutPrefix(tok, "-I"); ok {
 			if anchored, ok := h.anchoredFromImportPrefix(d); ok {
@@ -90,14 +70,61 @@ func (h *harvester) applyPC(name, body string) {
 	for _, req := range splitPCRequires(fields["Requires"] + "," + fields["Requires.private"]) {
 		r.depRefs = append(r.depRefs, "pkgconfig::"+req)
 	}
-	// Bundle-claimed artifact → the bundle row wins; drop the pc row.
-	for _, lp := range r.linkPaths {
-		if _, claimed := h.byPath[lp]; claimed {
-			h.warnf("pkgconfig %s: artifact %s already harvested from a cmake bundle; pc row skipped", name, lp)
-			return
-		}
+	// Same library already harvested (artifact identity OR matching
+	// consumer-facing name with no contradicting artifact): MERGE the
+	// pc channel's keys into the claimant instead of dropping them —
+	// the -l name keeps the LookupLinkLibrary redirect alive and the
+	// Requires deps keep resolving (the pc name registers as an alias).
+	if claimant := h.sameLibraryClaimant(r); claimant != nil {
+		h.warnf("pkgconfig %s: same library as %s (%s); channels merged", name, claimant.cmakeTarget, claimant.origin)
+		h.mergeInto(claimant, r)
+		return
 	}
 	h.addRow(r)
+}
+
+// applyPCLibs walks the Libs/Libs.private token stream: -L dirs feed
+// the probe's search path, each -l<name> records the link name AND
+// resolves the artifact in the prefix — the path key the tool/fragment
+// lifts, wrapper-gen, and the same-library dedup need. The probe
+// covers lib64 and versioned sonames (libfoo.so.1.2.3 with no plain
+// .so): a miss here is what lets a bundle+pc pair slip past path
+// identity and collide at generation time.
+func (h *harvester) applyPCLibs(r *row, libsField string) {
+	var searchDirs []string
+	for _, tok := range strings.Fields(libsField) {
+		switch {
+		case strings.HasPrefix(tok, "-L"):
+			searchDirs = append(searchDirs, strings.TrimPrefix(tok, "-L"))
+		case strings.HasPrefix(tok, "-l"):
+			lib := strings.TrimPrefix(tok, "-l")
+			r.linkLibs = appendUnique(r.linkLibs, lib)
+			dirs := append(append([]string{}, searchDirs...),
+				filepath.Join(h.prefix, "lib"), filepath.Join(h.prefix, "lib64"))
+			for _, d := range dirs {
+				h.probeArtifact(r, d, lib)
+			}
+		}
+	}
+}
+
+// probeArtifact records the anchored path of lib<name>.{a,so} (or the
+// first versioned soname) under dir, when present.
+func (h *harvester) probeArtifact(r *row, dir, lib string) {
+	for _, ext := range []string{".a", ".so"} {
+		cand := filepath.Join(dir, "lib"+lib+ext)
+		if _, err := os.Stat(cand); err == nil {
+			if anchored, ok := h.anchoredFromImportPrefix(cand); ok {
+				r.linkPaths = appendUnique(r.linkPaths, anchored)
+			}
+		}
+	}
+	if matches, _ := filepath.Glob(filepath.Join(dir, "lib"+lib+".so.*")); len(matches) > 0 {
+		sort.Strings(matches)
+		if anchored, ok := h.anchoredFromImportPrefix(matches[0]); ok {
+			r.linkPaths = appendUnique(r.linkPaths, anchored)
+		}
+	}
 }
 
 // splitPCRequires splits a Requires list — comma- or space-separated
