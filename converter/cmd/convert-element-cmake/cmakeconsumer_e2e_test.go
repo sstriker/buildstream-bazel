@@ -32,6 +32,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
+	"github.com/sstriker/buildstream-bazel/internal/wrappergen"
 )
 
 func TestE2E_CMakeConsumer_FindPackageAgainstBundle(t *testing.T) {
@@ -487,5 +490,116 @@ install(TARGETS cons ARCHIVE DESTINATION lib)
 		if !strings.Contains(string(got), want) {
 			t.Fatalf("consumer BUILD missing %s (declared closure not wired; the consumer only names Greeter::core):\n%s", want, got)
 		}
+	}
+}
+
+// TestE2E_CMakeConsumer_WrapperGeneratorRoundTrip completes the loop
+// the Export.Deps invariant describes: a hand-written prebuilt-backed
+// manifest (closure in Deps) runs through imports-wrapper-gen, which
+// materializes the closure as REAL Bazel deps on synthesized wrappers
+// and CLEARS Deps in its output manifest. A consumer converted against
+// the REWRITTEN manifest wires exactly ONE direct edge — the wrapper —
+// with the closure riding Bazel transitivity; converting against the
+// ORIGINAL manifest (the previous test) wires the closure directly.
+// Together the two pin both halves of the invariant.
+func TestE2E_CMakeConsumer_WrapperGeneratorRoundTrip(t *testing.T) {
+	conv := lookupConverter(t)
+	if _, err := exec.LookPath("cmake"); err != nil {
+		t.Skipf("cmake not on PATH: %v", err)
+	}
+
+	// The same producer/bundle as the closure test (the bundle is only
+	// needed so the consumer's find_package configures).
+	prodSrc := t.TempDir()
+	mustWrite(t, filepath.Join(prodSrc, "CMakeLists.txt"), `cmake_minimum_required(VERSION 3.20)
+project(greetpkg LANGUAGES C VERSION 1.0.0)
+add_library(core STATIC core.c)
+target_include_directories(core PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+install(TARGETS core EXPORT greetTargets ARCHIVE DESTINATION lib)
+install(DIRECTORY include/ DESTINATION include)
+install(EXPORT greetTargets FILE greetTargets.cmake NAMESPACE Greeter:: DESTINATION lib/cmake/greetpkg)
+`)
+	mustWrite(t, filepath.Join(prodSrc, "core.c"), "int core_v(void){return 1;}\n")
+	mustWrite(t, filepath.Join(prodSrc, "include", "core.h"), "int core_v(void);\n")
+
+	out := t.TempDir()
+	bundle := filepath.Join(out, "bundle")
+	mustRun(t, exec.CommandContext(context.Background(), conv,
+		"--source-root", prodSrc,
+		"--bazel-package-path", "elements/greetlib",
+		"--out-build", filepath.Join(out, "prod.BUILD"),
+		"--out-bundle-dir", bundle,
+	))
+
+	// Hand-written prebuilt-backed manifest: core's closure in Deps.
+	hand := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "greetlib",
+			Exports: []*manifest.Export{
+				{
+					CMakeTarget: "Greeter::core",
+					BazelLabel:  "//old/prebuilts:core",
+					LinkPaths:   []string{"/opt/prefix/lib/libcore.a"},
+					Deps:        []string{"//old/prebuilts:base"},
+				},
+				{
+					CMakeTarget: "Greeter::base",
+					BazelLabel:  "//old/prebuilts:base",
+					LinkPaths:   []string{"/opt/prefix/lib/libbase.a"},
+				},
+			},
+		}},
+	}
+
+	// Generator: wrappers + rewritten manifest.
+	build, rewritten, err := wrappergen.Generate(hand, "prebuilts/greet", "")
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if !strings.Contains(string(build), `":core_archive",
+        "//prebuilts/greet:base",`) {
+		t.Fatalf("wrapper BUILD missing the materialized closure:\n%s", build)
+	}
+	wrappedJSON := filepath.Join(out, "exports.wrapped.json")
+	if err := wrappergen.WriteManifest(wrappedJSON, rewritten); err != nil {
+		t.Fatal(err)
+	}
+	if body, _ := os.ReadFile(wrappedJSON); strings.Contains(string(body), `"deps"`) {
+		t.Fatalf("rewritten manifest must clear Deps (consume-and-clear):\n%s", body)
+	}
+
+	// Consumer against the REWRITTEN manifest: exactly one direct edge.
+	prefix := filepath.Join(out, "prefix")
+	mustRun(t, exec.CommandContext(context.Background(), "cp", "-r", bundle+"/.", mustMkdir(t, prefix)))
+	consSrc := t.TempDir()
+	mustWrite(t, filepath.Join(consSrc, "CMakeLists.txt"), `cmake_minimum_required(VERSION 3.20)
+project(cons LANGUAGES C VERSION 1.0.0)
+find_package(Greeter CONFIG REQUIRED)
+add_library(cons STATIC cons.c)
+target_link_libraries(cons PUBLIC Greeter::core)
+install(TARGETS cons ARCHIVE DESTINATION lib)
+`)
+	mustWrite(t, filepath.Join(consSrc, "cons.c"), "int c(void){return 0;}\n")
+
+	consBuild := filepath.Join(out, "cons.BUILD")
+	mustRun(t, exec.CommandContext(context.Background(), conv,
+		"--source-root", consSrc,
+		"--bazel-package-path", "elements/cons",
+		"--prefix-dir", prefix,
+		"--exports-in", wrappedJSON,
+		"--out-build", consBuild,
+	))
+	got, err := os.ReadFile(consBuild)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), `"//prebuilts/greet:core"`) {
+		t.Fatalf("consumer BUILD missing the wrapper label:\n%s", got)
+	}
+	if strings.Contains(string(got), `"//prebuilts/greet:base"`) || strings.Contains(string(got), "//old/prebuilts") {
+		t.Fatalf("consumer must wire ONLY the wrapper (closure rides Bazel transitivity; no double-wiring):\n%s", got)
 	}
 }
