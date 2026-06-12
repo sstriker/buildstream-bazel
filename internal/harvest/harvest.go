@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -231,12 +230,3 @@ func walkFiles(root string, match func(string) bool) []string {
 	return out
 }
 
-// trimQuotes strips one layer of double quotes.
-func trimQuotes(s string) string {
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		return s[1 : len(s)-1]
-	}
-	return s
-}
-
-var _ = path.Join // keep path imported for siblings
