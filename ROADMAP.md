@@ -97,6 +97,45 @@ transition cleanly.
   baseline. This is the acceptance gate, distinct from the per-change
   re-validation the dev loop already does.
 
+- **Expand the survey corpus: BuildBox + BDE (new cmake patterns).** Two
+  projects that exercise idioms the current corpus doesn't:
+  - **BuildBox** (`gitlab.com/BuildGrid/buildbox`) — near-term add. A
+    monorepo of ~20 small tools (`common`, `commonmetrics`, `casd`,
+    `casupload*`, `fuse`, `run-{bubblewrap,hosttools,oci,userchroot}`,
+    `worker`, `recc`, …) gated by tri-state
+    `enable_tool`/`enable_linux_tool(AUTO/ON/OFF)` conditional enablement,
+    plus REAPI proto codegen through a CUSTOM `protoc_compile()` wrapper
+    (`cmake/BuildboxCommonProtoc.cmake`) — a different shape from the
+    standard `protobuf_generate`/`grpc_cpp_plugin` macros the grpc/protobuf
+    members use — and vendored-include third_party
+    (`include_directories(third_party/grpc/include)`).
+    `find_package(OpenSSL, Threads)`; grpc/protobuf already provisionable
+    for the corpus. Dogfooding value: it's BuildGrid/BuildStream-ecosystem
+    remote-execution tooling — the project's own domain. Stresses the
+    custom-protoc custom-command/genrule recovery + generated-proto-header
+    wiring, monorepo conditional-tool pruning, and vendored includes.
+  - **BDE** (`github.com/bloomberg/bde`) — scoped/stretch add; start at ONE
+    package group (`groups/bsl`), not the full tree. Metadata-driven target
+    construction via a custom build system: the top-level
+    `find_package(BdeBuildSystem REQUIRED)` (bde-tools / BBS — a plain
+    `cmake -B build` FAILS without it on `CMAKE_PREFIX_PATH`, so the fetch /
+    SessionStart step must provision bde-tools), and each package-group
+    builds via a single `bbs_setup_target_uor(${target})` that reads `*.mem`
+    (component membership) + `*.dep` (dependency) metadata to enumerate
+    sources/deps instead of explicit `add_library(...)`. Hierarchy groups →
+    packages → components, each a `.h`+`.cpp`+`.t.cpp` *test-driver* triple
+    → thousands of tiny libs + per-component test executables;
+    `bbs_emit_pkg_config` emits `.pc` files (exercises the pkg-config
+    harvester). HONEST CAVEAT: the converter consumes the File API
+    codemodel, which already resolves the `.mem`/`.dep` metadata and the
+    `bbs_*` functions, so the metadata-driven novelty is largely invisible
+    to the converter — the genuinely new stress is SCALE (llvm/vtk tier),
+    per-component `.t.cpp` test targets at scale, and generated-`.pc`
+    consumption. Scoping to one group bounds the cost.
+  Both need the standard corpus wiring: a `make fetch-<member>` rule + a
+  `scripts/build-lens/<member>.conf` (see `docs/survey-corpus.md`'s member
+  table + the existing confs as the template).
+
 - **Make the host-system-library fallback EXPLICIT (hermeticity boundary).**
   When a `find_package`/`target_link_libraries` link fragment resolves to a
   standard system library (`/usr/lib*`, `/lib*`, `/usr/local/lib*`) and the
