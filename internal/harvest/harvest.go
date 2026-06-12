@@ -229,4 +229,3 @@ func walkFiles(root string, match func(string) bool) []string {
 	sort.Strings(out)
 	return out
 }
-
