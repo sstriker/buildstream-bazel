@@ -1698,6 +1698,13 @@ func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string, al
 	libs := cmakecfg.ImportableTargets(pkg)
 	exports := make([]*manifest.Export, 0, len(libs)+len(aliases))
 	for _, lib := range libs {
+		// Deps stays EMPTY for producer-emitted exports BY DESIGN: the
+		// BazelLabel is a real converted rule whose own deps Bazel
+		// resolves transitively. Filling it would double-wire every
+		// consumer with direct edges to the export's internals — the
+		// over-emit shape the link attribution's trace-gated drop
+		// exists to avoid. Deps is for labels that DON'T model their
+		// own deps (see manifest.Export.Deps).
 		ex := &manifest.Export{
 			CMakeTarget:            nsPrefix + lib.Name,
 			BazelLabel:             label(lib.Name),

@@ -384,3 +384,108 @@ install(TARGETS cons ARCHIVE DESTINATION lib)
 		t.Fatalf("convert-time prefix path leaked into the consumer BUILD:\n%s", body)
 	}
 }
+
+// TestE2E_CMakeConsumer_ExportDepsClosure: the Export.Deps round trip
+// for the shape the field exists for — a HAND-WRITTEN manifest whose
+// export label is prebuilt-backed (models no deps), carrying its
+// declared closure. The consumer links ONLY Greeter::core; its
+// converted BUILD must wire core's label AND the closure labels (the
+// missing-symbols mechanisms). The producer side asserts the INVERSE
+// invariant: a converted element's generated exports.json carries NO
+// deps field — its labels are real rules, and filling Deps would
+// double-wire consumers with direct edges the trace-gated drop exists
+// to avoid.
+func TestE2E_CMakeConsumer_ExportDepsClosure(t *testing.T) {
+	conv := lookupConverter(t)
+	if _, err := exec.LookPath("cmake"); err != nil {
+		t.Skipf("cmake not on PATH: %v", err)
+	}
+
+	// Producer half: generated manifests honor the empty-Deps invariant.
+	prodSrc := t.TempDir()
+	mustWrite(t, filepath.Join(prodSrc, "CMakeLists.txt"), `cmake_minimum_required(VERSION 3.20)
+project(greetpkg LANGUAGES C VERSION 1.0.0)
+add_library(base STATIC base.c)
+add_library(core STATIC core.c)
+target_link_libraries(core PUBLIC base)
+target_include_directories(core PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+install(TARGETS core base EXPORT greetTargets ARCHIVE DESTINATION lib)
+install(DIRECTORY include/ DESTINATION include)
+install(EXPORT greetTargets FILE greetTargets.cmake NAMESPACE Greeter:: DESTINATION lib/cmake/greetpkg)
+`)
+	mustWrite(t, filepath.Join(prodSrc, "base.c"), "int base_v(void){return 1;}\n")
+	mustWrite(t, filepath.Join(prodSrc, "core.c"), "int base_v(void);\nint core_v(void){return base_v();}\n")
+	mustWrite(t, filepath.Join(prodSrc, "include", "core.h"), "int core_v(void);\n")
+
+	out := t.TempDir()
+	bundle := filepath.Join(out, "bundle")
+	generatedJSON := filepath.Join(out, "generated-exports.json")
+	mustRun(t, exec.CommandContext(context.Background(), conv,
+		"--source-root", prodSrc,
+		"--bazel-package-path", "elements/greetlib",
+		"--out-build", filepath.Join(out, "prod.BUILD"),
+		"--out-bundle-dir", bundle,
+		"--out-exports", generatedJSON,
+	))
+	if body, _ := os.ReadFile(generatedJSON); strings.Contains(string(body), `"deps"`) {
+		t.Fatalf("converted element's exports.json must not fill Deps (invariant: Deps = unmodeled closure):\n%s", body)
+	}
+
+	// Consumer half: a HAND-WRITTEN manifest models the prebuilt-backed
+	// shape — same cmake names, but the labels point at a prebuilts
+	// package and core's row declares its closure.
+	handJSON := filepath.Join(out, "hand-exports.json")
+	mustWrite(t, handJSON, `{
+  "version": 1,
+  "elements": [
+    {
+      "name": "greetlib",
+      "exports": [
+        {
+          "cmake_target": "Greeter::core",
+          "bazel_label": "//prebuilts/greet:core",
+          "deps": ["//prebuilts/greet:base"]
+        },
+        {
+          "cmake_target": "Greeter::base",
+          "bazel_label": "//prebuilts/greet:base"
+        }
+      ]
+    }
+  ]
+}
+`)
+
+	prefix := filepath.Join(out, "prefix")
+	mustRun(t, exec.CommandContext(context.Background(), "cp", "-r", bundle+"/.", mustMkdir(t, prefix)))
+
+	consSrc := t.TempDir()
+	mustWrite(t, filepath.Join(consSrc, "CMakeLists.txt"), `cmake_minimum_required(VERSION 3.20)
+project(cons LANGUAGES C VERSION 1.0.0)
+find_package(Greeter CONFIG REQUIRED)
+add_library(cons STATIC cons.c)
+target_link_libraries(cons PUBLIC Greeter::core)
+install(TARGETS cons ARCHIVE DESTINATION lib)
+`)
+	mustWrite(t, filepath.Join(consSrc, "cons.c"), "int c(void){return 0;}\n")
+
+	consBuild := filepath.Join(out, "cons.BUILD")
+	mustRun(t, exec.CommandContext(context.Background(), conv,
+		"--source-root", consSrc,
+		"--bazel-package-path", "elements/cons",
+		"--prefix-dir", prefix,
+		"--exports-in", handJSON,
+		"--out-build", consBuild,
+	))
+	got, err := os.ReadFile(consBuild)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"//prebuilts/greet:core"`, `"//prebuilts/greet:base"`} {
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("consumer BUILD missing %s (declared closure not wired; the consumer only names Greeter::core):\n%s", want, got)
+		}
+	}
+}

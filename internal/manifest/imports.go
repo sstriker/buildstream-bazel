@@ -49,6 +49,13 @@ type Element struct {
 	// elements without a find_package whole-tree include (the common case).
 	UmbrellaLabel        string   `json:"umbrella_label,omitempty"`
 	UmbrellaIncludeRoots []string `json:"umbrella_include_roots,omitempty"`
+
+	// UmbrellaDeps is the dependency closure of the umbrella target —
+	// the labels a synthesized umbrella cc_library re-exports (the
+	// structured home of what used to live in a side-channel deps.txt;
+	// the build-lens .conf umbrella synthesis reads it from here).
+	// Informational for lower; consumed by workspace-synthesis tooling.
+	UmbrellaDeps []string `json:"umbrella_deps,omitempty"`
 }
 
 // Export wires one CMake imported target name to a Bazel label.
@@ -73,6 +80,32 @@ type Export struct {
 	// fragments or pkg-config-like names) the import expands into. Most
 	// imports won't set this; included for completeness.
 	LinkLibraries []string `json:"link_libraries,omitempty"`
+
+	// Deps are absolute Bazel labels the consumer must wire ALONGSIDE
+	// BazelLabel when it imports this export — the import's own
+	// requirements that Bazel transitivity cannot recover on its own:
+	// the labels that carry no dep modeling (a bare cc_import over a
+	// prebuilt archive), where cmake's flattened link line is
+	// deliberately dropped for transitive-only archives (the
+	// trace-gated drop) and a STATIC consumer has no link line at all.
+	// Wired with the same PUBLIC/PRIVATE scope as the export itself.
+	//
+	// INVARIANT: Deps non-empty ⇔ BazelLabel does NOT model its own
+	// deps. Producer-emitted manifests for converted elements leave it
+	// EMPTY — their labels are real rules whose deps Bazel resolves;
+	// filling it would double-wire consumers with direct edges to the
+	// export's internals (the over-emit shape the trace-gated drop
+	// exists to avoid). Hand-written host-install manifests list the
+	// closure explicitly; a wrapper-synthesis generator that
+	// materializes the closure as real cc_library deps must CLEAR
+	// Deps in its output manifest to preserve the invariant.
+	//
+	// Resolution is ONE level — the consumer wires this list verbatim
+	// and never chases a listed label's own Export.Deps (a label that
+	// arrives via another export's closure is not re-consulted). A
+	// hand-written manifest must therefore list each export's FULL
+	// transitive closure, not just direct deps.
+	Deps []string `json:"deps,omitempty"`
 
 	// LinkPaths is the set of absolute paths the cmake codemodel records
 	// for this import in `target.link.commandFragments[role="libraries"]`.

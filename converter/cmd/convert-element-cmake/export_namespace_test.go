@@ -229,3 +229,27 @@ func TestBuildExportsDoc_InstalledExecutable(t *testing.T) {
 		t.Errorf("executables carry no -l semantics; LinkLibraries = %v", gen.LinkLibraries)
 	}
 }
+
+// TestBuildExportsDoc_NoDepsForConvertedElements pins the Export.Deps
+// INVARIANT on the producer side: converted elements' export rows
+// leave Deps EMPTY — BazelLabel is a real rule whose own deps Bazel
+// resolves, and filling Deps would double-wire every consumer with
+// direct edges to the export's internals (the over-emit shape the
+// link attribution's trace-gated drop exists to avoid). Deps is the
+// UNMODELED closure: hand-written prebuilt-backed manifests only.
+func TestBuildExportsDoc_NoDepsForConvertedElements(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "greetpkg",
+		Targets: []ir.Target{
+			{Name: "core", Kind: ir.KindCCLibrary, ArtifactName: "libcore.a",
+				Deps: []string{":base", "@abseil-cpp//absl/strings:strings"}},
+			{Name: "base", Kind: ir.KindCCLibrary, ArtifactName: "libbase.a"},
+		},
+	}
+	doc := buildExportsDoc(pkg, "greetpkg", "Greeter::", "elements/greetlib", nil, false)
+	for _, ex := range doc.Elements[0].Exports {
+		if len(ex.Deps) != 0 {
+			t.Errorf("%s: producer-emitted Deps must stay empty (invariant: Deps = unmodeled closure); got %v", ex.CMakeTarget, ex.Deps)
+		}
+	}
+}

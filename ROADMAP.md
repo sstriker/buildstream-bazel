@@ -16,11 +16,12 @@ transition cleanly.
 ## Next
 
 - **Reproducible `find_package` host-installs.** The grpc/protobuf build-lens
-  `.conf` files hardcode `/tmp/absl-install` (host-installed abseil) and the
-  umbrella deps list is a snapshot of the pinned abseil. Fold the abseil (and
-  protobuf, for grpc) host-installs into the `SessionStart` hook so the lens is
-  reproducible without a manual prep step. (Carried from protobuf; grpc itself
-  is green.)
+  `.conf` files hardcode `/tmp/absl-install` (host-installed abseil). Fold the
+  abseil (and protobuf, for grpc) host-installs into the `SessionStart` hook so
+  the lens is reproducible without a manual prep step. (Carried from protobuf;
+  grpc itself is green. The umbrella deps snapshot moved into structured form —
+  `umbrella_deps` in the imports manifests, synthesized by the `.conf`s from
+  there — so only the host-install staging remains.)
 
 - **Green the remaining heavyweight corpus members: vtk (tail), cuda-samples.**
   25/26 are green (protobuf + sdl + vtk + grpc landed). Remaining:
