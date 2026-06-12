@@ -1716,8 +1716,14 @@ func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string, al
 		// the produced lib's link name + synth-prefix-anchored path so
 		// the consumer's link-fragment redirect (LookupLinkLibrary /
 		// LookupLinkPath) maps it to this element whether it resolved
-		// against our prefix or the host.
-		if name := linkLibName(lib.ArtifactName); name != "" {
+		// against our prefix or the host. INSTALLED executables carry
+		// the anchored bin/ path unconditionally (no -l semantics):
+		// it's the key the genrule tool lift (rewriteToolFromTarget)
+		// matches when a consumer's custom command drives the tool by
+		// its prefix-resolved $<TARGET_FILE:Pkg::tool> path.
+		if lib.Kind == ir.KindCCBinary || lib.Kind == ir.KindCCTest {
+			ex.LinkPaths = []string{lower.ManifestPrefixAnchor + installRel(lib)}
+		} else if name := linkLibName(lib.ArtifactName); name != "" {
 			ex.LinkLibraries = []string{name}
 			ex.LinkPaths = []string{lower.ManifestPrefixAnchor + installRel(lib)}
 		}

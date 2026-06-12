@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -90,4 +91,58 @@ func TestEmit_HelloWorld_Bundle(t *testing.T) {
 			t.Errorf("%s mismatch\n--- got ---\n%s\n--- want ---\n%s", name, got, want)
 		}
 	}
+}
+
+// TestEmit_InstalledExecutable: an INSTALLED executable publishes as an
+// IMPORTED executable (the protobuf::protoc shape — install(TARGETS
+// <exe> EXPORT) sets ship tools downstreams drive via
+// $<TARGET_FILE:Pkg::tool>): add_executable(... IMPORTED), per-config
+// IMPORTED_LOCATION at the bin/ install path (no link-interface
+// languages — executables have none), and the EXISTS-check entry so the
+// synth prefix stubs the path. A NON-installed executable stays
+// filtered (it never lands in the prefix tree). Aliases to executables
+// render via add_executable(... ALIAS ...).
+func TestEmit_InstalledExecutable(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "toolpkg",
+		Targets: []ir.Target{
+			{Name: "gen", Kind: ir.KindCCBinary, ArtifactName: "gen", InstallDest: "bin"},
+			{Name: "scratch", Kind: ir.KindCCBinary, ArtifactName: "scratch"}, // not installed
+			{Name: "core", Kind: ir.KindCCLibrary, ArtifactName: "libcore.a", LinkLanguage: "C"},
+		},
+	}
+	bundle, err := cmakecfg.Emit(pkg, cmakecfg.Options{
+		Namespace:   "Tool::",
+		PackageName: "Tool",
+		Aliases:     []cmakecfg.Alias{{Name: "Tool::Gen", Underlying: "gen"}},
+	})
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	tgts := string(bundle.Files["ToolTargets.cmake"])
+	if !strings.Contains(tgts, "add_executable(Tool::gen IMPORTED)") {
+		t.Errorf("installed executable not published as IMPORTED executable:\n%s", tgts)
+	}
+	if !strings.Contains(tgts, "add_executable(Tool::Gen ALIAS Tool::gen)") {
+		t.Errorf("alias to executable must render via add_executable:\n%s", tgts)
+	}
+	if strings.Contains(tgts, "scratch") {
+		t.Errorf("non-installed executable must stay filtered:\n%s", tgts)
+	}
+	rel := string(bundle.Files["ToolTargets-release.cmake"])
+	if !strings.Contains(rel, `IMPORTED_LOCATION_RELEASE "${_IMPORT_PREFIX}/bin/gen"`) {
+		t.Errorf("executable IMPORTED_LOCATION missing the bin/ install path:\n%s", rel)
+	}
+	if strings.Contains(rel, "IMPORTED_LINK_INTERFACE_LANGUAGES_RELEASE \"\"") ||
+		regexpMustFind(rel, `Tool::gen PROPERTIES\n  IMPORTED_LINK`) {
+		t.Errorf("executables must not carry link-interface languages:\n%s", rel)
+	}
+	if !strings.Contains(rel, `_cmake_import_check_files_for_Tool::gen "${_IMPORT_PREFIX}/bin/gen"`) {
+		t.Errorf("EXISTS-check entry missing for the executable (synth prefix needs the stub):\n%s", rel)
+	}
+}
+
+func regexpMustFind(s, pattern string) bool {
+	ok, err := regexp.MatchString(pattern, s)
+	return err == nil && ok
 }
