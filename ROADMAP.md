@@ -7,6 +7,22 @@ transition cleanly.
 
 ## Now
 
+- **grpc build-lens regression (NOT shared-specific — static control fails
+  identically).** As of 2026-06-12 the grpc lens run is red in BOTH link
+  modes at the same spot: `grpc_cpp_plugin`'s compile picks protobuf headers
+  whose `FileDescriptor::name()` returns `string_view` (grpc v1.68's
+  generator code wants `std::string`). Root shape: the find_package
+  ATTRIBUTION of `/tmp/protobuf-install/lib/lib{protoc,upb,utf8_validity}.a`
+  missed (the emitted target carries
+  `cmake-codegen-find-package-attribution-missed=…` tags, the fragments are
+  ELIDED, and no `@protobuf//:protoc_lib` dep is wired) — the conf's GREEN
+  record says those attributed at green time. Pins are unchanged (grpc
+  v1.68.0, BCR protobuf resolves 33.4, host protobuf-install 31.1 rebuilt by
+  install-survey-deps.sh). Suspects: a converter-side attribution change
+  since the grpc greening, or the rebuilt host install differing from the
+  green-era one. Needs a bisect against the green-era converter or an
+  install-tree diff; evidence preserved in the tags + this note.
+
 - **CI baseline.** A handful of e2e jobs (`cmake + bwrap`,
   `bazel build downstream`) fail intermittently for environment reasons
   (cmake-config bundle staging on the CI runner; userns / fuse permissions on
@@ -27,8 +43,9 @@ transition cleanly.
   googletest, glm, nlohmann-json, boost-core, eigen, abseil, cryptoauthlib,
   zstd, libevent — after the dynamic_deps-on-cc_library fix it surfaced —
   sdl, OpenBLAS, openblas-clapack). Default emit is byte-identical (opt-in).
-  **Remaining:** grpc (its dep-provisioned shared run is in flight), the
-  heavy LLVM/VTK; carry the `.so` in runfiles for `bazel run`/test;
+  **Remaining:** grpc (blocked on the lens regression tracked under Now —
+  its red is mode-independent, so it neither blocks nor validates shared),
+  the heavy LLVM/VTK; carry the `.so` in runfiles for `bazel run`/test;
   `MODULE_LIBRARY` dlopen semantics; and consider flipping `SURVEY_SHARED`
   to the DEFAULT once the corpus is green under it (so green + the fidelity
   lens run against the config cmake produces).
