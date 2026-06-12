@@ -168,12 +168,30 @@ transition cleanly.
         grammar. A new tool adds a small enrichment (often none — the base
         swap+anchor suffices), not a new lift path. Fixture-driven (a minimal
         direct-`add_custom_command` codegen project).
+    - **Proto package/import LAYOUT (the harder sub-problem, found while
+      starting the implementation).** The host-tool swap alone is NOT enough
+      for BuildBox: `protoc_compile` runs
+      `protoc --proto_path=<protos-root> … --cpp_out=<dest> <protos-root>/x.proto`
+      where the proto IMPORT structure is rooted at one `protos/` dir
+      (`build/bazel/remote/…`, `google/rpc/…` import each other), but the
+      converter SPLIT each proto dir into its own Bazel package — so
+      `--proto_path`/import resolution has no consistent root post-split. This
+      is the same class grpc solved (grpc.conf: emit/split re-relativizes the
+      genrule's `$(RULEDIR)/gens` output-root on the move into the `gens/`
+      sub-package). DESIGN FORK to settle before building this: keep BuildBox's
+      protos under a SINGLE root package (imports resolve naturally; simpler),
+      vs replicate grpc's per-package split + `gens`-root re-relativization
+      (consistent with `--split-packages`). The general tool-swap core (above)
+      is validatable NOW on a SIMPLE single-package protoc fixture (one
+      `.proto`, no cross-package imports), independent of this fork.
     - **`buildbox-imports.json` + MODULE deps.** Map the find_package imported
       targets (`absl::*`, `protobuf::*`, `gRPC::grpc++`, `OpenSSL::SSL/Crypto`)
       to `@BCR` labels and add the `EXTRA_BAZEL_DEPS` (abseil/protobuf/grpc/
       boringssl), mirroring `grpc.conf` + `grpc-imports.json`.
-    With both, the build lens builds `//...`, and the symbol/ELF lenses get a
-    static/shared artifact pair (the ELF lens just shipped).
+    Staging: (1) general tool-swap core + simple single-package fixture +
+    double-slash fix (grpc untouched); (2) the proto layout fork above;
+    (3) imports-manifest + WKT → `bazel build //...` green. With all three,
+    the symbol/ELF lenses get a static/shared artifact pair (ELF lens shipped).
   - **BDE** (`github.com/bloomberg/bde`) — scoped/stretch add; start at ONE
     package group (`groups/bsl`), not the full tree. Metadata-driven target
     construction via a custom build system: the top-level
