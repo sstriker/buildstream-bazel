@@ -2473,9 +2473,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		),
 	}
 
-	cc := newCodegenContext()
-	cc.Imports = opts.Imports
-	cc.HostPrefixDir = opts.HostPrefixDir
+	cc := newCodegenContextFor(opts)
 	cc.BazelPackagePath = opts.BazelPackagePath
 	cc.CMakeScriptRunner = opts.CMakeScriptRunner
 	cc.CMakeScriptTrace = opts.CMakeScriptTrace

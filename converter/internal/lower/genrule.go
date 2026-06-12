@@ -363,6 +363,16 @@ func (cc *codegenContext) hasSynthesizedTarget(name string) bool {
 	return false
 }
 
+// newCodegenContextFor wraps newCodegenContext with the Options-derived
+// fields the genrule recovery paths read (the imports manifest + the
+// synth-prefix root for the anchored tool-path remap).
+func newCodegenContextFor(opts Options) *codegenContext {
+	cc := newCodegenContext()
+	cc.Imports = opts.Imports
+	cc.HostPrefixDir = opts.HostPrefixDir
+	return cc
+}
+
 func newCodegenContext() *codegenContext {
 	return &codegenContext{
 		OutToGenrule:               map[string]string{},
