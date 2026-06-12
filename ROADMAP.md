@@ -15,18 +15,10 @@ transition cleanly.
 
 ## Next
 
-- **Green the remaining heavyweight corpus members: vtk (tail), cuda-samples.**
-  25/26 are green (protobuf + sdl + vtk + grpc landed). Remaining:
-  - **vtk** — all three 2026-06-10 ROOT failures have converter fixes
-    (wrap-hierarchy genrule execution: all 119 hierarchy genrules build;
-    proj_db: the workdir-buildout lift produces the real 7.2 MB SQLite db;
-    vtkProbeOpenGLVersion: the requested-output script-recovery fix compiles
-    the 33 vtkEncodeString shader .cxx files and the probe binary links).
-    REMAINING: a full `bazel build //...` lens re-run on the fixed converter
-    to confirm the member goes green end-to-end (the per-target proofs above
-    were validated against the real tree per fix; the whole-graph sweep is
-    the acceptance check), then update vtk.conf's stale proj_db KNOWN BUILD
-    BLOCKER note.
+- **Green the last heavyweight corpus member: cuda-samples.**
+  25/26 are green (protobuf + sdl + grpc landed; vtk confirmed green
+  end-to-end 2026-06-12 — full `bazel build //...` over the converted
+  workspace, 2728 targets, zero failures). Remaining:
   - **cuda-samples** — a surveyed sample builds GREEN (needs CUDA provisioned:
     `apt-get install nvidia-cuda-toolkit gcc-12` + `scripts/provision-cuda-root.sh`
     → `BSB_CUDA_ROOT`; `BSB_CUDA_HOST_CC=/usr/bin/gcc-12`). `cpp/0_Introduction/

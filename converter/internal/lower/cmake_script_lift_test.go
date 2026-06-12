@@ -280,3 +280,63 @@ func TestExtractCmakePScriptPositionalArgs(t *testing.T) {
 		})
 	}
 }
+
+// TestRecoverGenrule_CmakeScriptLift_RequestedOutput pins the
+// requested-output contract on the RUNNER-LIFT arm (the bake arm has
+// its own pin in cmake_script_bake_test.go): a multi-output edge is
+// consumed once per output, and each consumer must get back the
+// output it asked for — not the edge's first out.
+func TestRecoverGenrule_CmakeScriptLift_RequestedOutput(t *testing.T) {
+	const (
+		buildDir = "/tmp/build"
+		cmakeSrc = "/src/project"
+	)
+	g := &ninja.Graph{
+		Vars:  map[string]string{},
+		Rules: map[string]*ninja.Rule{},
+		Pools: map[string]*ninja.Pool{},
+	}
+	g.Rules["CUSTOM_COMMAND"] = &ninja.Rule{
+		Name:         "CUSTOM_COMMAND",
+		Bindings:     map[string]string{"command": "$COMMAND"},
+		BindingOrder: []string{"command"},
+	}
+	g.Builds = []*ninja.Build{{
+		Outputs: []string{"gen/shader.h", "gen/shader.cxx"},
+		Rule:    "CUSTOM_COMMAND",
+		Bindings: map[string]string{
+			"COMMAND": "/usr/bin/cmake -P /src/project/scripts/encode.cmake",
+		},
+		BindingOrder: []string{"COMMAND"},
+	}}
+
+	cc := newCodegenContext()
+	cc.CMakeScriptRunner = "//tools:cmake-script-runner"
+
+	// First consumer asks for the SECOND output — must get it back.
+	relOut, name, err := cc.recoverGenrule(buildDir+"/gen/shader.cxx", cmakeSrc, buildDir, g)
+	if err != nil {
+		t.Fatalf("lift returned error: %v", err)
+	}
+	if relOut != "gen/shader.cxx" {
+		t.Errorf("requested gen/shader.cxx, got %q", relOut)
+	}
+	// Second consumer (SeenBuilds reuse path) asks for the first.
+	relOut2, name2, err := cc.recoverGenrule(buildDir+"/gen/shader.h", cmakeSrc, buildDir, g)
+	if err != nil {
+		t.Fatalf("lift (reuse) returned error: %v", err)
+	}
+	if relOut2 != "gen/shader.h" {
+		t.Errorf("requested gen/shader.h, got %q", relOut2)
+	}
+	if name != name2 {
+		t.Errorf("consumers of one edge got different genrules: %q vs %q", name, name2)
+	}
+	// Both outputs declared on the single emitted genrule.
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules: got %d, want 1", len(cc.Genrules))
+	}
+	if got := cc.Genrules[0].GenruleOuts; len(got) != 2 {
+		t.Errorf("GenruleOuts = %v, want both outputs", got)
+	}
+}

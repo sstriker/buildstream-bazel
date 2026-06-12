@@ -58,17 +58,20 @@ func dirExists(p string) bool {
 //     file(WRITE) calls; `execute_process(COMMAND rm -rf /...)`
 //     would still execute for real. Opt-in flag is the gate.
 //
-// Returns (relOut, name, reason, ok). ok=true on a clean bake;
-// reason carries a structured diagnostic on failure (cmake
-// non-zero exit, missing output files, etc.) that the caller
-// surfaces in the refusal message.
-func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, buildDir string, g *ninja.Graph) (relOut, name, reason string, ok bool) {
+// Returns (name, reason, ok) — name is the genrule for the FIRST declared
+// output; every output (explicit and implicit alike, per genruleOuts) gets
+// its own baked target registered in cc.OutToGenrule, and callers map a
+// consumer to the specific output it requested via that index. ok=true on
+// a clean bake; reason carries a structured diagnostic on failure (cmake
+// non-zero exit, missing output files, etc.) that the caller surfaces in
+// the refusal message.
+func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, buildDir string, g *ninja.Graph) (name, reason string, ok bool) {
 	if cc.CMakeBinary == "" {
-		return "", "", "cmake binary not on PATH at convert time — --cmake-script-bake requires the convert host to have cmake available", false
+		return "", "cmake binary not on PATH at convert time — --cmake-script-bake requires the convert host to have cmake available", false
 	}
 	outs := genruleOuts(b, buildDir)
 	if len(outs) == 0 {
-		return "", "", "", false
+		return "", "", false
 	}
 
 	// Producer-chain pre-bake: libpng's genchk.cmake reads
@@ -92,12 +95,12 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	if g != nil {
 		for _, in := range b.Inputs {
 			if reason, ok := bakeProducerChain(cc, g, in, buildDir); !ok {
-				return "", "", "producer-chain bake of input " + in + ": " + reason, false
+				return "", "producer-chain bake of input " + in + ": " + reason, false
 			}
 		}
 		for _, in := range b.ImplicitInputs {
 			if reason, ok := bakeProducerChain(cc, g, in, buildDir); !ok {
-				return "", "", "producer-chain bake of implicit input " + in + ": " + reason, false
+				return "", "producer-chain bake of implicit input " + in + ": " + reason, false
 			}
 		}
 	}
@@ -147,7 +150,7 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	} else {
 		tmpDir, err := os.MkdirTemp("", "cmake-script-bake-*")
 		if err != nil {
-			return "", "", fmt.Sprintf("mktmpdir: %v", err), false
+			return "", fmt.Sprintf("mktmpdir: %v", err), false
 		}
 		defer os.RemoveAll(tmpDir)
 		workDir = tmpDir
@@ -186,10 +189,10 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	// time (VTK: 238 runs ≈ 95s of a 126s multi-config translation).
 	if res, hit := cc.ScriptBakeRuns[b]; hit {
 		if res != nil {
-			return "", "", fmt.Sprintf("cmake -P %s failed at convert time: %v", scriptArg, res), false
+			return "", fmt.Sprintf("cmake -P %s failed at convert time: %v", scriptArg, res), false
 		}
 	} else if err := runScriptExec(cc.CMakeBinary, argv, workDir); err != nil {
-		return "", "", fmt.Sprintf("cmake -P %s failed at convert time: %v", scriptArg, err), false
+		return "", fmt.Sprintf("cmake -P %s failed at convert time: %v", scriptArg, err), false
 	}
 
 	// Read each declared output's bytes. The script's
@@ -212,7 +215,7 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 			// may have baked the absolute path in.
 			body, err = os.ReadFile(filepath.Join(buildDir, out))
 			if err != nil {
-				return "", "", fmt.Sprintf("cmake -P bake of %q ran but didn't produce output %q (looked in %s and %s): %v",
+				return "", fmt.Sprintf("cmake -P bake of %q ran but didn't produce output %q (looked in %s and %s): %v",
 					scriptArg, out, workDir, buildDir, err), false
 			}
 		}
@@ -237,12 +240,11 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 		cc.Genrules = append(cc.Genrules, gen)
 		cc.OutToGenrule[e.out] = e.name
 		if i == 0 {
-			relOut = e.out
 			name = e.name
 		}
 	}
 	cc.SeenBuilds[b] = name
-	return relOut, name, "", true
+	return name, "", true
 }
 
 // bakeProducerChain recurses to bake any CUSTOM_COMMAND build
@@ -287,7 +289,7 @@ func bakeProducerChain(cc *codegenContext, g *ninja.Graph, inputPath, buildDir s
 	// Mark in-progress to break any pathological cycles (a valid
 	// ninja graph is acyclic, but defensive).
 	cc.SeenBuilds[producer] = ""
-	_, _, reason, ok := bakeCmakeScriptGenrule(cc, producer, cmd, script, buildDir, g)
+	_, reason, ok := bakeCmakeScriptGenrule(cc, producer, cmd, script, buildDir, g)
 	if !ok {
 		delete(cc.SeenBuilds, producer)
 		return reason, false

@@ -22,10 +22,13 @@ import (
 //	    tags = ["cmake-codegen-cmake-script-lift", ...],
 //	)
 //
-// Returns (relOut, name, reason, ok). ok=true on success; reason
-// is empty. ok=false means the lift declined; reason carries a
-// structured diagnostic for the caller's refusal message
-// (empty reason ⇒ the caller's generic message stands).
+// Returns (name, reason, ok) — every ninja-edge output is declared
+// in the genrule's outs and registered in cc.OutToGenrule, so the
+// caller maps each consumer to the specific output it requested via
+// that index. ok=true on success; reason is empty. ok=false means
+// the lift declined; reason carries a structured diagnostic for the
+// caller's refusal message (empty reason ⇒ the caller's generic
+// message stands).
 //
 // When CMakeScriptTrace is on, the lift runs the script under
 // `cmake --trace --trace-format=json-v1 -P <script>` at convert
@@ -47,16 +50,16 @@ import (
 // vtkHashSource shape) work cleanly; configure_file-derived
 // scripts with hardcoded absolute paths fail because the paths
 // don't exist on the action's sandbox filesystem.
-func liftCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, cmakeSrc, buildDir string) (relOut, name, reason string, ok bool) {
+func liftCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, cmakeSrc, buildDir string) (name, reason string, ok bool) {
 	scriptRel, ok := relativeIfInside(cmakeSrc, scriptArg)
 	if !ok {
-		return "", "", "script path %q is not under the source root — typical of configure_file-derived scripts whose hardcoded /tmp/build paths won't survive Bazel's sandbox", false
+		return "", "script path %q is not under the source root — typical of configure_file-derived scripts whose hardcoded /tmp/build paths won't survive Bazel's sandbox", false
 	}
 	dArgs := extractCmakePDashArgs(cmd)
 
 	outs := genruleOuts(b, buildDir)
 	if len(outs) == 0 {
-		return "", "", "", false
+		return "", "", false
 	}
 	srcs := genruleSrcs(b, cmakeSrc, buildDir, "")
 	srcs = appendUnique(srcs, scriptRel)
@@ -72,7 +75,7 @@ func liftCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	if cc.CMakeScriptTrace && cc.CMakeBinary != "" {
 		traceRaw, err := TraceCmakeScript(context.Background(), cc.CMakeBinary, scriptArg, dArgs, "")
 		if err != nil {
-			return "", "", fmt.Sprintf("cmake --trace -P %s failed: %v — convert-time trace required for --cmake-script-trace; rerun without it (sandbox miss may occur at Bazel build time) or fix the script", scriptArg, err), false
+			return "", fmt.Sprintf("cmake --trace -P %s failed: %v — convert-time trace required for --cmake-script-trace; rerun without it (sandbox miss may occur at Bazel build time) or fix the script", scriptArg, err), false
 		}
 		cls := ClassifyScriptTrace(traceRaw, cmakeSrc, buildDir)
 
@@ -81,7 +84,7 @@ func liftCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 		// convert time is more actionable than a runtime
 		// sandbox miss.
 		if len(cls.UnknownPaths) > 0 {
-			return "", "", fmt.Sprintf("cmake -P script reads %d path(s) outside source/build/sysroot — Bazel's sandbox won't have these:\n  %s",
+			return "", fmt.Sprintf("cmake -P script reads %d path(s) outside source/build/sysroot — Bazel's sandbox won't have these:\n  %s",
 				len(cls.UnknownPaths), strings.Join(cls.UnknownPaths, "\n  ")), false
 		}
 
@@ -90,7 +93,7 @@ func liftCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 		// now (queued for a follow-up — current shape: refuse
 		// unresolved build paths so the diagnostic is honest).
 		if len(cls.BuildPaths) > 0 {
-			return "", "", fmt.Sprintf("cmake -P script reads %d path(s) under the build dir — these are likely cmake-side configure-time outputs and need explicit producer-lift wiring (not yet implemented):\n  %s",
+			return "", fmt.Sprintf("cmake -P script reads %d path(s) under the build dir — these are likely cmake-side configure-time outputs and need explicit producer-lift wiring (not yet implemented):\n  %s",
 				len(cls.BuildPaths), strings.Join(cls.BuildPaths, "\n  ")), false
 		}
 
@@ -132,7 +135,7 @@ func liftCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	for _, o := range outs {
 		cc.OutToGenrule[o] = name
 	}
-	return outs[0], name, "", true
+	return name, "", true
 }
 
 // extractCmakePDashArgs walks the recovered command and returns

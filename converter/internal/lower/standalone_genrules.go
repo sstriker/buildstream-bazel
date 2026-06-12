@@ -283,7 +283,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// into pkg.Targets before this pass runs) and skip the raw emit.
 		if cc != nil && cc.CMakeScriptBake && usesCmakeScriptMode(cmd) {
 			n := len(cc.Genrules)
-			if _, _, _, ok := bakeCmakeScriptGenrule(cc, b, cmd, extractCmakeScriptPath(cmd), buildDir, g); ok {
+			if _, _, ok := bakeCmakeScriptGenrule(cc, b, cmd, extractCmakeScriptPath(cmd), buildDir, g); ok {
 				out = append(out, cc.Genrules[n:]...)
 				cc.Genrules = cc.Genrules[:n]
 				continue

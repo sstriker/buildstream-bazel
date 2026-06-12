@@ -80,15 +80,15 @@ func TestBakeCmakeScriptGenrule_RunsCmakeAndEmbedsOutput(t *testing.T) {
 	cc.CMakeBinary = cmakeBin
 
 	cmd := cmakeBin + " -P " + scriptPath
-	rel, name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g)
+	name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g)
 	if !ok {
 		t.Fatalf("bake failed: reason=%q", reason)
 	}
-	if rel != "out.txt" {
-		t.Errorf("rel = %q, want out.txt", rel)
-	}
 	if name == "" {
 		t.Fatal("name empty")
+	}
+	if cc.OutToGenrule["out.txt"] == "" {
+		t.Error("out.txt not registered in OutToGenrule")
 	}
 	if len(cc.Genrules) != 1 {
 		t.Fatalf("Genrules len = %d, want 1", len(cc.Genrules))
@@ -165,12 +165,12 @@ endif()
 	cc := newCodegenContext()
 	cc.CMakeBinary = cmakeBin
 	cmd := cmakeBin + " -P " + scriptPath + " a.txt"
-	rel, _, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g)
+	_, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g)
 	if !ok {
 		t.Fatalf("bake failed (positional arg not forwarded?): reason=%q", reason)
 	}
-	if rel != "a.txt" {
-		t.Errorf("rel = %q, want a.txt", rel)
+	if cc.OutToGenrule["a.txt"] == "" {
+		t.Error("a.txt not registered in OutToGenrule")
 	}
 	if len(cc.Genrules) != 1 {
 		t.Fatalf("Genrules len = %d, want 1", len(cc.Genrules))
@@ -236,12 +236,12 @@ endif()
 	cc := newCodegenContext()
 	cc.CMakeBinary = cmakeBin
 	cmd := cmakeBin + " -DOUTPUT=a.txt -P " + scriptPath
-	rel, _, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g)
+	_, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g)
 	if !ok {
 		t.Fatalf("bake failed (-D arg ordering bug?): reason=%q", reason)
 	}
-	if rel != "a.txt" {
-		t.Errorf("rel = %q, want a.txt", rel)
+	if cc.OutToGenrule["a.txt"] == "" {
+		t.Error("a.txt not registered in OutToGenrule")
 	}
 	if len(cc.Genrules) != 1 {
 		t.Fatalf("Genrules len = %d, want 1", len(cc.Genrules))
@@ -310,12 +310,12 @@ file(WRITE "step2.txt" "${STEP1}step2\n")
 	// Bake the consumer; bakeProducerChain should pre-bake the
 	// producer so step1.txt exists in buildDir when consumer runs.
 	cmd := cmakeBin + " -P " + consumerPath
-	rel, _, reason, ok := bakeCmakeScriptGenrule(cc, consumerBuild, cmd, consumerPath, build, g)
+	_, reason, ok := bakeCmakeScriptGenrule(cc, consumerBuild, cmd, consumerPath, build, g)
 	if !ok {
 		t.Fatalf("chain bake failed: reason=%q", reason)
 	}
-	if rel != "step2.txt" {
-		t.Errorf("rel = %q, want step2.txt", rel)
+	if cc.OutToGenrule["step2.txt"] == "" {
+		t.Error("step2.txt not registered in OutToGenrule")
 	}
 	// Two genrules emitted: producer + consumer (chain).
 	if len(cc.Genrules) != 2 {
@@ -329,7 +329,7 @@ func TestBakeCmakeScriptGenrule_NoCmakeRefuses(t *testing.T) {
 	cc := newCodegenContext()
 	cc.CMakeBinary = "" // not available
 	b := &ninja.Build{Outputs: []string{"foo"}}
-	_, _, reason, ok := bakeCmakeScriptGenrule(cc, b, "cmake -P /x/y.cmake", "/x/y.cmake", "/build", nil)
+	_, reason, ok := bakeCmakeScriptGenrule(cc, b, "cmake -P /x/y.cmake", "/x/y.cmake", "/build", nil)
 	if ok {
 		t.Fatal("expected refusal when CMakeBinary empty; got ok")
 	}
@@ -408,5 +408,63 @@ func TestRecoverCmakeScriptGenrule_RequestedOutput(t *testing.T) {
 	}
 	if rel2 != "shader.h" {
 		t.Errorf("requested .h, got %q", rel2)
+	}
+}
+
+// TestRecoverCmakeScriptGenrule_ImplicitOutConsumer pins the
+// BYPRODUCTS shape: a consumer can reference a file the ninja edge
+// declares as an IMPLICIT out (`build out | byproduct :`), because
+// BuildFor indexes implicit outs too. The bake must materialize and
+// register that file like any explicit out — otherwise the consumer
+// is handed a path no target produces (a dangling reference the
+// build only catches as a missing-input error much later).
+func TestRecoverCmakeScriptGenrule_ImplicitOutConsumer(t *testing.T) {
+	cmakeBin, err := execLookPath("cmake")
+	if err != nil {
+		t.Skip("cmake not on PATH; bake test requires convert-host cmake")
+	}
+	src := t.TempDir()
+	build := t.TempDir()
+	scriptPath := filepath.Join(src, "gen.cmake")
+	if err := os.WriteFile(scriptPath, []byte(
+		"file(WRITE \"main.txt\" \"main\\n\")\n"+
+			"file(WRITE \"side.txt\" \"side\\n\")\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &ninja.Graph{Vars: map[string]string{}, Rules: map[string]*ninja.Rule{}, Pools: map[string]*ninja.Pool{}}
+	g.Rules["CUSTOM_COMMAND"] = &ninja.Rule{
+		Name:         "CUSTOM_COMMAND",
+		Bindings:     map[string]string{"command": "$COMMAND"},
+		BindingOrder: []string{"command"},
+	}
+	b := &ninja.Build{
+		Outputs:      []string{"main.txt"},
+		ImplicitOuts: []string{"side.txt", "${cmake_ninja_workdir}main.txt"},
+		Rule:         "CUSTOM_COMMAND",
+		Bindings: map[string]string{
+			"COMMAND": cmakeBin + " -P " + scriptPath,
+		},
+		BindingOrder: []string{"COMMAND"},
+	}
+	g.Builds = append(g.Builds, b)
+	cc := newCodegenContext()
+	cc.CMakeBinary = cmakeBin
+	cc.CMakeScriptBake = true
+
+	rel, _, err := cc.recoverGenrule(filepath.Join(build, "side.txt"), src, build, g)
+	if err != nil {
+		t.Fatalf("recoverGenrule(implicit out): %v", err)
+	}
+	if rel != "side.txt" {
+		t.Errorf("requested side.txt, got %q", rel)
+	}
+	if cc.OutToGenrule["side.txt"] == "" {
+		t.Error("implicit out side.txt not registered in OutToGenrule")
+	}
+	// The ${cmake_ninja_workdir} shadow must NOT surface as an out.
+	for o := range cc.OutToGenrule {
+		if strings.Contains(o, "${") {
+			t.Errorf("ninja-var shadow leaked into OutToGenrule: %q", o)
+		}
 	}
 }
