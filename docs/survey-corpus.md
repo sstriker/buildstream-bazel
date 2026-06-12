@@ -432,6 +432,7 @@ the Makefile (`make fetch-*` clones each at its pinned tag).
 | **grpc** | Deep transitive deps + many `install(FILES)` directives + bundled `third_party` (zlib submodule). Surfaced the install_files name-collision bug (`include/grpc` vs `include/grpc++`). Needs `--recurse-submodules` to configure. | github.com/grpc/grpc (`GRPC_VERSION`) | `make fetch-grpc` |
 | **llvm** | Large stress test; `ENABLE_EXPORTS`, PCH, TableGen generated sources, forward-declared include dirs. | github.com/llvm/llvm-project (`LLVM_VERSION`) — **survey the `llvm/` subdir** | `make fetch-llvm` |
 | **VTK** | Large; heavy `cmake -P` codegen (`vtkEncodeString`), `target_precompile_headers`, version-stamp probes. | github.com/Kitware/VTK mirror (`VTK_VERSION`) | `make fetch-vtk` |
+| **buildbox** | BuildStream-ecosystem REAPI tooling monorepo (gitlab). New patterns: a CUSTOM `protoc_compile()` codegen wrapper (`cmake/BuildboxCommonProtoc.cmake`) — distinct from the grpc/protobuf members' standard `protobuf_generate`/`grpc_cpp_plugin` macros — and a ~20-tool monorepo gated by tri-state `enable_tool(AUTO/ON/OFF)`. CORE-scoped (TOOLS/OCI/TESTING off). Structural lenses GREEN; build lens is a follow-on (grpc-class hermetic-protoc + imports-manifest). Needs a recent abseil (`absl::log_initialize` > apt's) — `/tmp/absl-install` from `install-survey-deps.sh`. | gitlab.com/BuildGrid/buildbox/buildbox (`BUILDBOX_VERSION`) | `make fetch-buildbox` |
 
 `fetch-survey` fetches the cheap four (abseil, protobuf, googletest,
 eigen). llvm and vtk are large, so fetch them explicitly with
