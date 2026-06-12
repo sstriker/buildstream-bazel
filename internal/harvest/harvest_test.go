@@ -199,3 +199,148 @@ func TestSplitPCRequires_NoSpaceConstraint(t *testing.T) {
 		}
 	}
 }
+
+// TestHarvest_ChannelMerge pins the same-library dedup hardening:
+// (a) a .pc whose artifact a bundle claims MERGES its channel keys
+// (the -l name keeping the LookupLinkLibrary redirect alive, the
+// Requires deps resolving via the alias registration) instead of
+// dropping them; (b) a header-only .pc matching a bundle target's
+// wrapper NAME (no artifact to match by path) merges too; (c) a
+// versioned-soname-only lib (libv.so.1.2.3, no plain .so) still
+// resolves through the widened probe, so path identity catches it.
+func TestHarvest_ChannelMerge(t *testing.T) {
+	prefix := t.TempDir()
+	must := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(prefix, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("lib/cmake/Core/CoreTargets.cmake", `add_library(Core::core STATIC IMPORTED)
+add_library(Core::iface INTERFACE IMPORTED)
+add_library(Core::v SHARED IMPORTED)
+set_target_properties(Core::core PROPERTIES
+  IMPORTED_LOCATION "${_IMPORT_PREFIX}/lib/libcore.a"
+)
+set_target_properties(Core::v PROPERTIES
+  IMPORTED_LOCATION "${_IMPORT_PREFIX}/lib/libv.so.1.2.3"
+)
+`)
+	// (a) path-identity merge: core.pc resolves the bundle's archive.
+	must("lib/pkgconfig/core.pc", `Name: core
+Version: 1
+Requires: dep
+Libs: -lcore
+`)
+	must("lib/pkgconfig/dep.pc", `Name: dep
+Version: 1
+Libs: -ldep
+`)
+	// (b) name-identity merge: iface.pc is header-only (no Libs), the
+	// bundle's Core::iface carries no artifact either.
+	must("lib/pkgconfig/iface.pc", `Name: iface
+Version: 1
+Cflags: -I${prefix}/include
+`)
+	// (c) versioned soname only — no plain .so.
+	must("lib/pkgconfig/v.pc", `Name: v
+Version: 1
+Libs: -lv
+`)
+	must("lib/libcore.a", "!<arch>\n")
+	must("lib/libdep.a", "!<arch>\n")
+	must("lib/libv.so.1.2.3", "\x7fELF\n")
+	must("include/core.h", "#pragma once\n")
+
+	im, warns, err := Harvest(prefix, "core", "prebuilts/core")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]*manifest.Export{}
+	for _, ex := range im.Elements[0].Exports {
+		byName[ex.CMakeTarget] = ex
+	}
+	// (a): one row for core, union of channels.
+	if byName["pkgconfig::core"] != nil {
+		t.Errorf("pc core must merge into the bundle row, not duplicate")
+	}
+	core := byName["Core::core"]
+	if core == nil {
+		t.Fatal("Core::core missing")
+	}
+	if !sliceContains(core.LinkLibraries, "core") {
+		t.Errorf("merged -l key lost (LookupLinkLibrary redirect would go dark): %v", core.LinkLibraries)
+	}
+	if !sliceContains(core.Deps, "//prebuilts/core:dep") {
+		t.Errorf("merged pc Requires dep lost: %v", core.Deps)
+	}
+	// (b): header-only name merge.
+	if byName["pkgconfig::iface"] != nil {
+		t.Errorf("header-only pc with a name-matching bundle target must merge")
+	}
+	if iface := byName["Core::iface"]; iface == nil || !sliceContains(iface.InterfaceIncludes, "include") {
+		t.Errorf("merged header-only includes lost: %+v", byName["Core::iface"])
+	}
+	// (c): versioned soname resolved → path identity → merged.
+	if byName["pkgconfig::v"] != nil {
+		t.Errorf("versioned-soname pc must dedup via the widened probe")
+	}
+	mergeWarns := 0
+	for _, w := range warns {
+		if indexOf(w, "channels merged") >= 0 {
+			mergeWarns++
+		}
+	}
+	if mergeWarns != 3 {
+		t.Errorf("expected 3 channel-merge notices, got %d: %v", mergeWarns, warns)
+	}
+}
+
+// TestHarvest_GenuineCollisionWarns: two DISTINCT targets (both with
+// artifacts) whose wrapper names collide post-sanitization stay
+// separate rows and surface a provenance-carrying warning — the early,
+// rich form of the generator's late name-collision error.
+func TestHarvest_GenuineCollisionWarns(t *testing.T) {
+	prefix := t.TempDir()
+	p := filepath.Join(prefix, "lib/cmake/X/XTargets.cmake")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(`add_library(A::util STATIC IMPORTED)
+add_library(B::util STATIC IMPORTED)
+set_target_properties(A::util PROPERTIES
+  IMPORTED_LOCATION "${_IMPORT_PREFIX}/lib/liba.a"
+)
+set_target_properties(B::util PROPERTIES
+  IMPORTED_LOCATION "${_IMPORT_PREFIX}/lib/libb.a"
+)
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, warns, err := Harvest(prefix, "x", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, w := range warns {
+		if indexOf(w, `wrapper name "util" collides`) >= 0 && indexOf(w, "A::util") >= 0 && indexOf(w, "B::util") >= 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the provenance-carrying collision warning; got %v", warns)
+	}
+}
+
+func sliceContains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}

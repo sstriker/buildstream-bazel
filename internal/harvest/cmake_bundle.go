@@ -42,19 +42,19 @@ func (h *harvester) applyDeclaration(c cmakeCall) {
 	switch c.name {
 	case "add_library":
 		if len(c.args) >= 3 && strings.EqualFold(c.args[1], "ALIAS") {
-			h.addRow(&row{cmakeTarget: c.args[0], aliasOf: c.args[2]})
+			h.addRow(&row{cmakeTarget: c.args[0], aliasOf: c.args[2], origin: "bundle"})
 			return
 		}
 		if hasArg(c.args, "IMPORTED") {
-			h.addRow(&row{cmakeTarget: c.args[0]})
+			h.addRow(&row{cmakeTarget: c.args[0], origin: "bundle"})
 		}
 	case "add_executable":
 		if len(c.args) >= 3 && strings.EqualFold(c.args[1], "ALIAS") {
-			h.addRow(&row{cmakeTarget: c.args[0], aliasOf: c.args[2]})
+			h.addRow(&row{cmakeTarget: c.args[0], aliasOf: c.args[2], origin: "bundle"})
 			return
 		}
 		if hasArg(c.args, "IMPORTED") {
-			h.addRow(&row{cmakeTarget: c.args[0]})
+			h.addRow(&row{cmakeTarget: c.args[0], origin: "bundle"})
 		}
 	}
 }
