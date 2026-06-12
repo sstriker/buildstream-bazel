@@ -91,6 +91,14 @@ type Export struct {
 	// labels of the export target's deps that are themselves exports;
 	// hand-written host-install manifests list the closure explicitly.
 	// Wired with the same PUBLIC/PRIVATE scope as the export itself.
+	//
+	// Resolution is ONE level — the consumer wires this list verbatim
+	// and never chases a listed label's own Export.Deps (a label that
+	// arrives via another export's closure is not re-consulted). A
+	// hand-written manifest must therefore list each export's FULL
+	// transitive closure, not just direct deps; producer-emitted
+	// manifests don't need recursion because every listed label is
+	// backed by a real Bazel rule whose own deps Bazel resolves.
 	Deps []string `json:"deps,omitempty"`
 
 	// LinkPaths is the set of absolute paths the cmake codemodel records
