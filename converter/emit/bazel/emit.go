@@ -1979,7 +1979,7 @@ func ccTargetCall(t ir.Target, opts Options) (*build.CallExpr, error) {
 		HostLinkoptsExpr:           attrExprAST(escapeTokenizedList(append([]string(nil), t.HostLinkOpts...)), escapeTokenizedPerPlatform(perPlatformAttr(t, "host_linkopts"))),
 		AdditionalLinkerInputsExpr: attrExprAST(t.AdditionalLinkerInputs, nil),
 		DepsExpr:                   attrExprAST(deps, perPlatformAttr(t, "deps")),
-		DynamicDepsExpr:            attrExprAST(sortedCopy(t.DynamicDeps), nil),
+		DynamicDepsExpr:            dynamicDepsExpr(t),
 		ImplementationDepsExpr:     attrExprAST(implementationDeps, perPlatformAttr(t, "implementation_deps")),
 		Linkstatic:                 t.Linkstatic,
 		Alwayslink:                 t.Alwayslink,
@@ -2072,6 +2072,20 @@ func adaptFortranView(v *ccView) {
 // isCudaKind reports whether k is one of the rules_cuda rule kinds.
 func isCudaKind(k ir.Kind) bool {
 	return k == ir.KindCudaLibrary || k == ir.KindCudaBinary || k == ir.KindCudaTest
+}
+
+// dynamicDepsExpr renders DynamicDeps only for the kinds whose rule HAS the
+// attribute — `dynamic_deps` exists on cc_binary/cc_test (the linking rules;
+// cc_shared_library's own arm renders via SharedLibDynamicDeps), and on
+// nothing else. A defensive mirror of lower's wireDynamicDeps kind gate:
+// rendering the attr on cc_library is an analysis-time "no such attribute"
+// error that takes the whole package down (libevent's static-variant
+// libraries were the canary).
+func dynamicDepsExpr(t ir.Target) build.Expr {
+	if t.Kind != ir.KindCCBinary && t.Kind != ir.KindCCTest {
+		return nil
+	}
+	return attrExprAST(sortedCopy(t.DynamicDeps), nil)
 }
 
 // adaptCudaView rewrites a ccView assembled for a CUDA target so it only

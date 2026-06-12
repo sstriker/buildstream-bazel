@@ -320,3 +320,21 @@ func TestRetagCudaTargets_RdcPlacement(t *testing.T) {
 		t.Errorf("split CUDA sub-library must carry CudaRdc")
 	}
 }
+
+// TestWireDynamicDeps_KindGate: a cc_library consumer of a shared sibling
+// keeps its plain deps edge and gets NO DynamicDeps (cc_library has no such
+// attribute); cc_binary consumers get the `_shared` wiring.
+func TestWireDynamicDeps_KindGate(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "impl", Kind: ir.KindCCLibrary, SharedLibName: "libimpl.so"},
+		{Name: "static_variant", Kind: ir.KindCCLibrary, Deps: []string{":impl"}},
+		{Name: "tool", Kind: ir.KindCCBinary, Deps: []string{":impl"}},
+	}}
+	wireDynamicDeps(pkg)
+	if got := findTarget(pkg, "static_variant"); len(got.DynamicDeps) != 0 {
+		t.Errorf("cc_library consumer must not carry DynamicDeps: %v", got.DynamicDeps)
+	}
+	if got := findTarget(pkg, "tool"); len(got.DynamicDeps) != 1 || got.DynamicDeps[0] != ":impl_shared" {
+		t.Errorf("cc_binary consumer wiring = %v; want [:impl_shared]", got.DynamicDeps)
+	}
+}
