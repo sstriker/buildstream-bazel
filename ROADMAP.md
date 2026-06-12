@@ -615,6 +615,19 @@ trees, optional-feature deps, codegen instances). Each member's
   pruned in `cuda-samples.conf` until then (eigenvalues is the only
   non-toolkit-floor entry there).
 
+- **genclass textual-impl includes: angle-include form.** The
+  textual-include router now detects a header that textually `#include`s
+  its implementation (a `.cc` or a non-self-contained impl header
+  `.inl/.tcc/.ipp/.txx/.def/.inc`) and routes the impl to `textual_hdrs`
+  — but only for **quote-form** includes (`#include "foo.inl"`, the glm /
+  VTK `.txx` shape), matching the existing scanner's deliberate
+  quote-only design. Libraries that use **angle-form** impl includes —
+  Boost.Asio's `#include <boost/asio/impl/io_context.ipp>`, libstdc++'s
+  `<bits/foo.tcc>` — aren't caught: those resolve against `-I` roots, so
+  catching them needs the scanner to resolve angle includes against the
+  target's include dirs. Until then an angle-included `.ipp`/`.tcc` stays
+  in `hdrs` (works on a plain build; a `parse_headers`/`layering_check`
+  build would try to compile the fragment standalone).
 - **Conversion-latency: AST-direct BUILD emit (drop the text→Parse→Format
   round-trip).** Profiling real corpus converts (`--cpuprofile` + `--out-timings`)
   showed cmake's own configure dominates wall-clock (80–90% on small projects,

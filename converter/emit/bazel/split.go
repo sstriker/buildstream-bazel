@@ -854,10 +854,17 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 	for k, v := range pkg.SubPackages {
 		p.sub[k] = v
 	}
-	// Index every generated output (genrule outs + write_file out) so a
-	// cross-package reference to one isn't double-declared via exports_files()
-	// (see splitPlan.genOuts). Paths are element-root-relative slash form, the
-	// same shape as headersIn entries — compared raw like the rest of split.go.
+	// Index every generated output (genrule outs + write_file out +
+	// cmake_configure_file out) so a cross-package reference to one isn't
+	// double-declared via exports_files() (see splitPlan.genOuts). A
+	// configure_file / file(GENERATE) lift produces its `out` at build time
+	// exactly like a genrule or write_file does, so a consumer in another
+	// package reaches it through the producing rule's output label
+	// (//pkg:out) — emitting exports_files() for it is both wrong (the file
+	// isn't a source) and a load error (the package already declares the
+	// file as a generated output, so the same label can't also be a source).
+	// Paths are element-root-relative slash form, the same shape as headersIn
+	// entries — compared raw like the rest of split.go.
 	for _, t := range pkg.Targets {
 		for _, o := range t.GenruleOuts {
 			p.genOuts[o] = true
@@ -866,6 +873,10 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 		if t.WriteFileOut != "" {
 			p.genOuts[t.WriteFileOut] = true
 			p.genOutProducer[t.WriteFileOut] = t.Name
+		}
+		if t.CMakeConfigureFile != nil && t.CMakeConfigureFile.Out != "" {
+			p.genOuts[t.CMakeConfigureFile.Out] = true
+			p.genOutProducer[t.CMakeConfigureFile.Out] = t.Name
 		}
 	}
 	indexCodegenToolRoots(p, pkg)

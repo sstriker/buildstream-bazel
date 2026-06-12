@@ -281,3 +281,50 @@ func TestEmitSplit_DataFilePaths_RewrittenPerPackage(t *testing.T) {
 		t.Errorf("cross-package-consumed producer should be publicized:\n%s", genArgsRule)
 	}
 }
+
+// A cmake_configure_file output consumed cross-package must be reached through
+// the producing rule's output label (//pkg:out), NOT exports_files()'d. The
+// configure_file / file(GENERATE) lift produces its `out` at build time just
+// like a genrule or write_file, so it belongs in splitPlan.genOuts — without
+// that, splitFileLabel records a bogus exports_files() for the generated file,
+// which both misrepresents it as a source and fails to load (the package
+// already declares the same label as a generated output).
+func TestEmitSplit_ConfigureFileOut_CrossPackageLabelNotExportsFiles(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "p",
+		Targets: []ir.Target{
+			// gen/ holds the configure_file output plus a real cc target that
+			// makes gen/ a Bazel package (deepestPkg).
+			{Name: "genlib", Kind: ir.KindCCLibrary, Srcs: []string{"gen/genlib.cpp"}},
+			{
+				Name:               "gen_config_h",
+				Kind:               ir.KindCMakeConfigureFile,
+				CMakeConfigureFile: &ir.CMakeConfigureFileSpec{Out: "gen/config.h", Template: "gen/config.h.in"},
+			},
+			// A consumer in lib/ that lists the generated header (element-root
+			// relative) in hdrs — the cross-package case.
+			{Name: "consumer", Kind: ir.KindCCLibrary, Srcs: []string{"lib/consumer.cpp"}, Hdrs: []string{"gen/config.h"}},
+		},
+		SubPackages: map[string]string{"genlib": "gen", "consumer": "lib"},
+	}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/p"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	gen := string(tree["gen"])
+	lib := string(tree["lib"])
+
+	// The producing package must NOT exports_files() the generated header.
+	if strings.Contains(gen, "exports_files") {
+		t.Errorf("gen/ package must not exports_files() the configure_file-generated header:\n%s", gen)
+	}
+	// The producing rule is still emitted in gen/.
+	if !strings.Contains(gen, `name = "gen_config_h"`) {
+		t.Errorf("gen/ package missing the cmake_configure_file rule:\n%s", gen)
+	}
+	// The consumer reaches the generated header through the producing rule's
+	// cross-package output label, not a path or an exports_files reference.
+	if !strings.Contains(lib, `hdrs = ["//elements/p/gen:config.h"]`) {
+		t.Errorf("consumer should reference the generated header by cross-package label:\n%s", lib)
+	}
+}

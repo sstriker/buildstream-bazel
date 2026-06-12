@@ -178,6 +178,71 @@ func TestSynthesizeTextualSourceIncludeLibs(t *testing.T) {
 	}
 }
 
+// TestSynthesizeTextualSourceIncludeLibs_GenclassHeaderInclude pins the
+// genclass / template-implementation-include idiom: a HEADER textually
+// #includes its implementation file, and that impl belongs in textual_hdrs
+// rather than hdrs. Modeled on glm (`glm/common.hpp` ends with `#include
+// "detail/func_common.inl"`) and the VTK `.txx` / literal `#include "x.cc"`
+// shapes. Two impls exercised: a non-self-contained impl header (.inl, which the
+// extension classifier routed to hdrs and must be MOVED to textual_hdrs) and a
+// compiled-source impl (.cc, which is staged into textual_hdrs and was never in
+// srcs since the target doesn't compile it). The includer is a header, so the
+// scan only sees it once t.Hdrs is part of the includer set.
+func TestSynthesizeTextualSourceIncludeLibs_GenclassHeaderInclude(t *testing.T) {
+	hostSrc := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(hostSrc, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// glm-style: a public header pulls in its .inl impl and a .cc definition.
+	write("glm/common.hpp", "#pragma once\nint clamp(int);\n#include \"detail/func_common.inl\"\n#include \"detail/func_common.cc\"\n")
+	write("glm/detail/func_common.inl", "inline int clamp(int x){return x;}\n")
+	write("glm/detail/func_common.cc", "int clamp_impl(int x){return x;}\n")
+
+	pkg := &ir.Package{
+		Targets: []ir.Target{
+			{
+				Name: "glm",
+				Kind: ir.KindCCLibrary,
+				// Header-only library: the includer + the .inl impl live in hdrs
+				// (the extension classifier put the .inl there); the .cc impl is
+				// NOT compiled (genclass), so it isn't in srcs.
+				Hdrs: []string{"glm/common.hpp", "glm/detail/func_common.inl"},
+			},
+		},
+		SubPackages: map[string]string{"glm": ""},
+	}
+	var warn bytes.Buffer
+	synthesizeTextualSourceIncludeLibs(pkg, hostSrc, true, &warn)
+
+	lib := findTarget(pkg, "glm")
+	if lib == nil {
+		t.Fatalf("glm target vanished: %+v", pkg.Targets)
+	}
+	// Both impls land in the library's own textual_hdrs (cc_library has the slot).
+	wantTextual := []string{"glm/detail/func_common.cc", "glm/detail/func_common.inl"}
+	if !reflect.DeepEqual(lib.TextualHdrs, wantTextual) {
+		t.Errorf("glm TextualHdrs = %v, want %v", lib.TextualHdrs, wantTextual)
+	}
+	// The .inl moved OUT of hdrs (it's non-self-contained); the public header
+	// stays in hdrs.
+	if stringSliceContains(lib.Hdrs, "glm/detail/func_common.inl") {
+		t.Errorf("the textually-included .inl impl must move out of hdrs: %v", lib.Hdrs)
+	}
+	if !stringSliceContains(lib.Hdrs, "glm/common.hpp") {
+		t.Errorf("the public includer header must stay in hdrs: %v", lib.Hdrs)
+	}
+	// The includer's bytes drove the detection → declared source-byte read.
+	if !stringSliceContains(pkg.SourceByteReads, "glm/common.hpp") {
+		t.Errorf("SourceByteReads should include the genclass header: %v", pkg.SourceByteReads)
+	}
+}
+
 // TestFindTextualSourceIncludes_AbsoluteRejected: an absolute include
 // (`#include "/src/os.cc"`) must be rejected outright. Without the guard,
 // filepath.Join("test", "/src/os.cc") folds to "test/src/os.cc" — which we

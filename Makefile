@@ -345,6 +345,7 @@ e2e-meta-cmake-vcs-stamp-function: converter
 # self-skips its bazel-build half), so it's safe to invoke unconditionally.
 RENDER_GATES = \
 	scripts/meta-cmake-genex-probe.sh \
+	scripts/meta-cmake-genclass-textual-impl.sh \
 	scripts/meta-file-generate.sh \
 	scripts/meta-cmake-genex-literal-twopass.sh \
 	scripts/meta-cmake-fileset-compiled-lib.sh \
@@ -377,6 +378,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-install-files-pkg.sh \
 	scripts/meta-cmake-interface-genex-defines.sh \
 	scripts/meta-cmake-platform-partition-tier2.sh \
+	scripts/meta-cmake-probe-genex-duplicate-subdir.sh \
 	scripts/meta-cmake-probe-genex-object-library.sh \
 	scripts/meta-cmake-probe-genex-utility.sh \
 	scripts/meta-cmake-round2-fallback.sh \
