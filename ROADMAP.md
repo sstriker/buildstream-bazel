@@ -15,6 +15,24 @@ transition cleanly.
 
 ## Next
 
+- **Imports-manifest harvester (`cmd/imports-harvest`) — manifests from
+  installed trees.** Given an install-shaped prefix (a bst artifact
+  checkout, a host-install dir), parse its `lib/cmake/<Pkg>/*Targets*.cmake`
+  bundles (cmake's own serialized export graph: IMPORTED targets incl.
+  executables, IMPORTED_LOCATION → anchored link_paths,
+  INTERFACE_INCLUDE_DIRECTORIES, INTERFACE_LINK_LIBRARIES → DIRECT deps)
+  plus `.pc` files (Requires/Libs for bundle-less libs) and stray `bin/`
+  executables, and emit a complete imports manifest. Deps stay DIRECT —
+  the pipeline pairs with `imports-wrapper-gen`, whose wrappers give Bazel
+  transitivity the closure (no flattening; the generator's output manifest
+  is deps-free per the Export.Deps invariant). Labels synthesize against
+  the wrapper package up front, so the generator is label-idempotent.
+  V1 residue: genex handling in INTERFACE_LINK_LIBRARIES is conservative
+  ($<LINK_ONLY:x> unwraps, config arms pick the primary, others warn+skip),
+  cmake builtin pseudo-targets via a small table (Threads::Threads →
+  pthread). Eventually subsumes the host-install bullet below: harvested
+  artifacts replace hand-written manifests and /tmp prep steps.
+
 - **Reproducible `find_package` host-installs.** The grpc/protobuf build-lens
   `.conf` files hardcode `/tmp/absl-install` (host-installed abseil). Fold the
   abseil (and protobuf, for grpc) host-installs into the `SessionStart` hook so
