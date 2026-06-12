@@ -300,6 +300,63 @@ Libs: -lv
 	}
 }
 
+// TestHarvest_SymlinkSonameIdentity: the bundle's IMPORTED_LOCATION
+// carries the realpath (libs.so.1.2.3) while the .pc probe finds the
+// dev symlink (libs.so → libs.so.1.2.3). Without canonical byPath
+// keys the same file gets two anchored spellings — path identity
+// misses, both rows "carry artifacts", and the name guard reads the
+// true duplicate as a genuine collision. canonicalKey folds the
+// spellings so the channels merge; the manifest still records the
+// OBSERVED spellings (consumer lookups match trace spellings
+// verbatim).
+func TestHarvest_SymlinkSonameIdentity(t *testing.T) {
+	prefix := t.TempDir()
+	must := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(prefix, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("lib/cmake/S/STargets.cmake", `add_library(S::s SHARED IMPORTED)
+set_target_properties(S::s PROPERTIES
+  IMPORTED_LOCATION "${_IMPORT_PREFIX}/lib/libs.so.1.2.3"
+)
+`)
+	must("lib/pkgconfig/s.pc", "Name: s\nVersion: 1\nLibs: -ls\n")
+	must("lib/libs.so.1.2.3", "\x7fELF\n")
+	if err := os.Symlink("libs.so.1.2.3", filepath.Join(prefix, "lib", "libs.so")); err != nil {
+		t.Fatal(err)
+	}
+	im, warns, err := Harvest(prefix, "s", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]*manifest.Export{}
+	for _, ex := range im.Elements[0].Exports {
+		byName[ex.CMakeTarget] = ex
+	}
+	if byName["pkgconfig::s"] != nil {
+		t.Errorf("symlink-spelled pc artifact must merge into the bundle row, not duplicate")
+	}
+	s := byName["S::s"]
+	if s == nil {
+		t.Fatal("S::s missing")
+	}
+	if !sliceContains(s.LinkPaths, manifest.PrefixAnchor+"lib/libs.so.1.2.3") ||
+		!sliceContains(s.LinkPaths, manifest.PrefixAnchor+"lib/libs.so") {
+		t.Errorf("merged row must keep BOTH observed spellings for consumer lookups: %v", s.LinkPaths)
+	}
+	for _, w := range warns {
+		if indexOf(w, "collides") >= 0 {
+			t.Errorf("true duplicate misread as a genuine collision: %v", w)
+		}
+	}
+}
+
 // TestHarvest_GenuineCollisionWarns: two DISTINCT targets (both with
 // artifacts) whose wrapper names collide post-sanitization stay
 // separate rows and surface a provenance-carrying warning — the early,

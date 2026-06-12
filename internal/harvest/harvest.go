@@ -50,10 +50,14 @@ func Harvest(prefixDir, element, labelPkg string) (*manifest.Imports, []string, 
 		return nil, nil, fmt.Errorf("prefix %s is not a directory", prefixDir)
 	}
 	h := &harvester{
-		prefix:   prefixDir,
-		labelPkg: labelPkg,
-		byName:   map[string]*row{},
-		byPath:   map[string]*row{},
+		prefix:     prefixDir,
+		realPrefix: prefixDir,
+		labelPkg:   labelPkg,
+		byName:     map[string]*row{},
+		byPath:     map[string]*row{},
+	}
+	if rp, err := filepath.EvalSymlinks(prefixDir); err == nil {
+		h.realPrefix = rp
 	}
 	if err := h.parseBundles(); err != nil {
 		return nil, nil, err
@@ -93,8 +97,8 @@ func (h *harvester) mergeInto(claimant, dup *row) {
 	}
 	for _, lp := range dup.linkPaths {
 		claimant.linkPaths = appendUnique(claimant.linkPaths, lp)
-		if _, claimed := h.byPath[lp]; !claimed {
-			h.byPath[lp] = claimant
+		if key := h.canonicalKey(lp); h.byPath[key] == nil {
+			h.byPath[key] = claimant
 		}
 	}
 	claimant.depRefs = append(claimant.depRefs, dup.depRefs...)
@@ -102,12 +106,13 @@ func (h *harvester) mergeInto(claimant, dup *row) {
 }
 
 type harvester struct {
-	prefix   string
-	labelPkg string
-	rows     []*row
-	byName   map[string]*row // cmake target / pc name → row
-	byPath   map[string]*row // anchored artifact path → row (dedup pc-vs-bundle)
-	warnings []string
+	prefix     string
+	realPrefix string // EvalSymlinks(prefix) — base for canonicalized anchoring
+	labelPkg   string
+	rows       []*row
+	byName     map[string]*row // cmake target / pc name → row
+	byPath     map[string]*row // canonicalKey(anchored path) → row (dedup pc-vs-bundle)
+	warnings   []string
 }
 
 func (h *harvester) warnf(format string, args ...any) {
@@ -127,7 +132,7 @@ func (h *harvester) label(cmakeTarget string) string {
 // shapes that path identity can't see).
 func (h *harvester) sameLibraryClaimant(r *row) *row {
 	for _, lp := range r.linkPaths {
-		if prev, ok := h.byPath[lp]; ok {
+		if prev, ok := h.byPath[h.canonicalKey(lp)]; ok {
 			return prev
 		}
 	}
@@ -154,8 +159,8 @@ func (h *harvester) addRow(r *row) *row {
 	h.rows = append(h.rows, r)
 	h.byName[r.cmakeTarget] = r
 	for _, lp := range r.linkPaths {
-		if _, claimed := h.byPath[lp]; !claimed {
-			h.byPath[lp] = r
+		if key := h.canonicalKey(lp); h.byPath[key] == nil {
+			h.byPath[key] = r
 		}
 	}
 	return r
@@ -250,7 +255,7 @@ func (h *harvester) collectBareBinaries(element string) {
 			continue
 		}
 		anchored := manifest.PrefixAnchor + "bin/" + e.Name()
-		if _, claimed := h.byPath[anchored]; claimed {
+		if h.byPath[h.canonicalKey(anchored)] != nil {
 			continue
 		}
 		h.addRow(&row{
@@ -263,7 +268,10 @@ func (h *harvester) collectBareBinaries(element string) {
 
 // anchoredFromImportPrefix maps a `${_IMPORT_PREFIX}/<rel>` value (or
 // an absolute path under the harvested prefix) onto the manifest's
-// anchored form; ("", false) for anything else.
+// anchored form; ("", false) for anything else. The OBSERVED spelling
+// is kept — consumer-side LookupLinkPath matches trace spellings
+// verbatim, so the manifest must carry whatever the channel saw;
+// same-library identity canonicalizes separately via canonicalKey.
 func (h *harvester) anchoredFromImportPrefix(v string) (string, bool) {
 	if rel, ok := strings.CutPrefix(v, "${_IMPORT_PREFIX}/"); ok {
 		return manifest.PrefixAnchor + rel, true
@@ -274,6 +282,27 @@ func (h *harvester) anchoredFromImportPrefix(v string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// canonicalKey resolves an anchored path's symlinks against the
+// harvested tree, returning the canonical anchored spelling for byPath
+// identity. A symlinked soname otherwise gives the same file two keys
+// (the libfoo.so dev link a .pc probe finds vs the libfoo.so.1.2.3
+// realpath a bundle's IMPORTED_LOCATION carries) — path identity
+// misses, and since both rows then "carry artifacts", the name-match
+// guard reads a true duplicate as a genuine collision. Paths that
+// don't resolve on disk (partial trees) or escape the prefix keep
+// their literal spelling as the key.
+func (h *harvester) canonicalKey(anchored string) string {
+	rel := strings.TrimPrefix(anchored, manifest.PrefixAnchor)
+	resolved, err := filepath.EvalSymlinks(filepath.Join(h.prefix, filepath.FromSlash(rel)))
+	if err != nil {
+		return anchored
+	}
+	if rrel, err := filepath.Rel(h.realPrefix, resolved); err == nil && !strings.HasPrefix(rrel, "..") {
+		return manifest.PrefixAnchor + filepath.ToSlash(rrel)
+	}
+	return anchored
 }
 
 func appendUnique(s []string, v string) []string {

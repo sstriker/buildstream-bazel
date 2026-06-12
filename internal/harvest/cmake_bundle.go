@@ -111,8 +111,8 @@ func (h *harvester) applyProperty(r *row, key, value string) {
 	case strings.HasPrefix(key, "IMPORTED_LOCATION"):
 		if anchored, ok := h.anchoredFromImportPrefix(value); ok {
 			r.linkPaths = appendUnique(r.linkPaths, anchored)
-			if _, claimed := h.byPath[anchored]; !claimed {
-				h.byPath[anchored] = r
+			if k := h.canonicalKey(anchored); h.byPath[k] == nil {
+				h.byPath[k] = r
 			}
 		}
 	}
