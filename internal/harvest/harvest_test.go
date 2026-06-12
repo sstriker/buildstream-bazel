@@ -461,3 +461,182 @@ func sliceContains(s []string, v string) bool {
 	}
 	return false
 }
+
+// TestHarvest_PCForeignLibOwnership pins the .pc -l ownership rule: a
+// Libs token naming ANOTHER package's library (spelled as a raw -l
+// instead of a Requires) must neither claim that artifact nor drag the
+// two packages into a same-library merge — in EITHER parse order. The
+// reference resolves as a dep edge on the owner; both packages keep
+// their own labels.
+func TestHarvest_PCForeignLibOwnership(t *testing.T) {
+	prefix := t.TempDir()
+	must := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(prefix, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Owner parses FIRST (abc < foo): pre-fix, foo's -labc resolved to
+	// the path abc already claimed → sameLibraryClaimant fused foo
+	// into abc and pkgconfig::foo lost its label.
+	must("lib/pkgconfig/abc.pc", "Name: abc\nVersion: 1\nLibs: -labc\n")
+	must("lib/pkgconfig/foo.pc", "Name: foo\nVersion: 1\nLibs: -lfoo -labc\n")
+	// Owner parses LATER (bar < zee): pre-fix, bar's -lzee claimed
+	// libzee first and zee.pc merged into bar — first one won.
+	must("lib/pkgconfig/bar.pc", "Name: bar\nVersion: 1\nLibs: -lbar -lzee\n")
+	must("lib/pkgconfig/zee.pc", "Name: zee\nVersion: 1\nLibs: -lzee\n")
+	for _, lib := range []string{"abc", "foo", "bar", "zee"} {
+		must("lib/lib"+lib+".a", "!<arch>\n")
+	}
+
+	im, _, err := Harvest(prefix, "x", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]*manifest.Export{}
+	for _, ex := range im.Elements[0].Exports {
+		byName[ex.CMakeTarget] = ex
+	}
+	for _, name := range []string{"abc", "foo", "bar", "zee"} {
+		ex := byName["pkgconfig::"+name]
+		if ex == nil {
+			t.Fatalf("pkgconfig::%s lost its export (merged away): have %v", name, im.Elements[0].Exports)
+		}
+		if want := "//p:" + name; ex.BazelLabel != want {
+			t.Errorf("pkgconfig::%s label = %q, want its own %q", name, ex.BazelLabel, want)
+		}
+		if !sliceContains(ex.LinkPaths, manifest.PrefixAnchor+"lib/lib"+name+".a") {
+			t.Errorf("pkgconfig::%s lost its own artifact: %v", name, ex.LinkPaths)
+		}
+	}
+	for _, c := range []struct{ from, to string }{{"foo", "abc"}, {"bar", "zee"}} {
+		from := byName["pkgconfig::"+c.from]
+		if !sliceContains(from.Deps, "//p:"+c.to) {
+			t.Errorf("%s's foreign -l%s must resolve as a dep edge: %v", c.from, c.to, from.Deps)
+		}
+		if sliceContains(from.LinkPaths, manifest.PrefixAnchor+"lib/lib"+c.to+".a") {
+			t.Errorf("%s must not claim %s's artifact: %v", c.from, c.to, from.LinkPaths)
+		}
+		if sliceContains(from.LinkLibraries, c.to) {
+			t.Errorf("%s must not carry the -l name %s owns: %v", c.from, c.to, from.LinkLibraries)
+		}
+		if to := byName["pkgconfig::"+c.to]; !sliceContains(to.LinkLibraries, c.to) {
+			t.Errorf("the -l name must live on its owner %s: %v", c.to, to.LinkLibraries)
+		}
+	}
+}
+
+// TestHarvest_PCSingleLibSelfFallback: a pc whose ONE -l shares no
+// name affinity (zlib's `Libs: -lz`) still owns that library — and a
+// later multi-lib pc referencing -lz gets the dep edge, not the
+// artifact.
+func TestHarvest_PCSingleLibSelfFallback(t *testing.T) {
+	prefix := t.TempDir()
+	must := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(prefix, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("lib/pkgconfig/user.pc", "Name: user\nVersion: 1\nLibs: -luser -lz\n")
+	must("lib/pkgconfig/zlib.pc", "Name: zlib\nVersion: 1\nLibs: -lz\n")
+	must("lib/libuser.a", "!<arch>\n")
+	must("lib/libz.a", "!<arch>\n")
+
+	im, _, err := Harvest(prefix, "x", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]*manifest.Export{}
+	for _, ex := range im.Elements[0].Exports {
+		byName[ex.CMakeTarget] = ex
+	}
+	zlib := byName["pkgconfig::zlib"]
+	if zlib == nil {
+		t.Fatal("pkgconfig::zlib merged away")
+	}
+	if !sliceContains(zlib.LinkPaths, manifest.PrefixAnchor+"lib/libz.a") || !sliceContains(zlib.LinkLibraries, "z") {
+		t.Errorf("single-lib fallback must own libz: paths=%v libs=%v", zlib.LinkPaths, zlib.LinkLibraries)
+	}
+	user := byName["pkgconfig::user"]
+	if !sliceContains(user.Deps, "//p:zlib") || sliceContains(user.LinkPaths, manifest.PrefixAnchor+"lib/libz.a") {
+		t.Errorf("user's -lz must be a dep edge on zlib: deps=%v paths=%v", user.Deps, user.LinkPaths)
+	}
+}
+
+// TestHarvest_BundleBareAndNamespacedDedup pins the same-library fold
+// for cmake's old-style + namespaced export pair: `foo` alongside
+// `foo::foo`. Path identity folds the pair sharing one
+// IMPORTED_LOCATION; the artifact-less pair (INTERFACE/header-only)
+// folds by the bare/namespaced name rule. Both names stay visible as
+// exports resolving to ONE label, and no wrapper-name collision warns.
+func TestHarvest_BundleBareAndNamespacedDedup(t *testing.T) {
+	prefix := t.TempDir()
+	must := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(prefix, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("lib/cmake/Foo/FooTargets.cmake", `add_library(foo STATIC IMPORTED)
+add_library(foo::foo STATIC IMPORTED)
+set_target_properties(foo PROPERTIES
+  IMPORTED_LOCATION "${_IMPORT_PREFIX}/lib/libfoo.a"
+)
+set_target_properties(foo::foo PROPERTIES
+  IMPORTED_LOCATION "${_IMPORT_PREFIX}/lib/libfoo.a"
+)
+add_library(hdr INTERFACE IMPORTED)
+add_library(hdr::hdr INTERFACE IMPORTED)
+set_target_properties(hdr::hdr PROPERTIES
+  INTERFACE_INCLUDE_DIRECTORIES "${_IMPORT_PREFIX}/include"
+)
+`)
+	must("lib/libfoo.a", "!<arch>\n")
+	must("include/hdr.h", "#pragma once\n")
+
+	im, warns, err := Harvest(prefix, "x", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]*manifest.Export{}
+	for _, ex := range im.Elements[0].Exports {
+		byName[ex.CMakeTarget] = ex
+	}
+	for _, pair := range [][2]string{{"foo", "foo::foo"}, {"hdr", "hdr::hdr"}} {
+		bare, ns := byName[pair[0]], byName[pair[1]]
+		if bare == nil || ns == nil {
+			t.Fatalf("both names must stay visible as exports: %v", im.Elements[0].Exports)
+		}
+		if bare.BazelLabel != ns.BazelLabel {
+			t.Errorf("%s and %s must share one label: %q vs %q", pair[0], pair[1], bare.BazelLabel, ns.BazelLabel)
+		}
+	}
+	// The folded header-only pair keeps the claimant's includes.
+	hasIncludes := false
+	for _, name := range []string{"hdr", "hdr::hdr"} {
+		if ex := byName[name]; ex != nil && sliceContains(ex.InterfaceIncludes, "include") {
+			hasIncludes = true
+		}
+	}
+	if !hasIncludes {
+		t.Error("folded header-only pair lost its includes")
+	}
+	for _, w := range warns {
+		if indexOf(w, "collides") >= 0 {
+			t.Errorf("dedup pair must not surface as a collision: %v", warns)
+		}
+	}
+}

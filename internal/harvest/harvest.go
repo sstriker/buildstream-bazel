@@ -62,6 +62,7 @@ func Harvest(prefixDir, element, labelPkg string) (*manifest.Imports, []string, 
 	if err := h.parseBundles(); err != nil {
 		return nil, nil, err
 	}
+	h.dedupBundleRows()
 	if err := h.parsePkgConfig(); err != nil {
 		return nil, nil, err
 	}
@@ -105,6 +106,96 @@ func (h *harvester) mergeInto(claimant, dup *row) {
 	}
 	claimant.depRefs = append(claimant.depRefs, dup.depRefs...)
 	h.byName[dup.cmakeTarget] = claimant
+}
+
+// dedupBundleRows folds bundle rows that describe ONE library under
+// two exported names — the old-style + namespaced export pair (cmake's
+// `install(EXPORT)` with both a NAMESPACE and bare OLD_STYLE names, or
+// a bundle shipping `foo` alongside `foo::foo`). Without the fold the
+// pair survives as two rows whose wrapper names collide at generation
+// time instead of resolving as one library with two names.
+//
+// Two identity signals, same vocabulary as sameLibraryClaimant:
+//
+//   - shared artifact: a row whose IMPORTED_LOCATION canonicalizes to
+//     a path another row already claims is the same library, whatever
+//     the names say;
+//   - the bare/namespaced name pair (`foo` + `ns::foo`) when artifact
+//     evidence doesn't CONTRADICT — both sides carrying distinct
+//     artifacts means two real libraries, left to the collision
+//     warning.
+//
+// The duplicate survives as an ALIAS row (both names stay visible in
+// the manifest, one label), with its keys folded into the claimant.
+func (h *harvester) dedupBundleRows() {
+	for _, r := range h.rows {
+		if r.aliasOf != "" {
+			continue
+		}
+		var owner *row
+		for _, lp := range r.linkPaths {
+			if prev := h.claimantOf(h.byPath[h.canonicalKey(lp)]); prev != nil && prev != r {
+				owner = prev
+				break
+			}
+		}
+		if owner == nil {
+			continue
+		}
+		h.warnf("%s: same artifact as %s (%s); names folded onto one export", r.cmakeTarget, owner.cmakeTarget, owner.origin)
+		h.foldDuplicate(owner, r)
+	}
+	for _, r := range h.rows {
+		if r.aliasOf != "" || strings.Contains(r.cmakeTarget, "::") {
+			continue
+		}
+		for _, prev := range h.rows {
+			if prev == r || prev.aliasOf != "" || !strings.HasSuffix(prev.cmakeTarget, "::"+r.cmakeTarget) {
+				continue
+			}
+			if prev.kind != r.kind {
+				// A bare library and a namespaced executable (or vice
+				// versa) sharing a stem are not the same export.
+				continue
+			}
+			if len(prev.linkPaths) > 0 && len(r.linkPaths) > 0 {
+				// Both carry artifacts: the path pass above already
+				// folded the same-artifact case, so these are two real
+				// libraries — leave them to the collision warning.
+				continue
+			}
+			claimant, dup := prev, r
+			if len(r.linkPaths) > 0 {
+				claimant, dup = r, prev
+			}
+			h.warnf("%s: old-style name for %s; names folded onto one export", dup.cmakeTarget, claimant.cmakeTarget)
+			h.foldDuplicate(claimant, dup)
+			break
+		}
+	}
+}
+
+// foldDuplicate merges dup's keys into claimant and demotes dup to an
+// alias row: its export survives (the duplicate NAME stays resolvable,
+// pointing at the claimant's label) but carries no keys of its own.
+func (h *harvester) foldDuplicate(claimant, dup *row) {
+	h.mergeInto(claimant, dup)
+	dup.aliasOf = claimant.cmakeTarget
+	dup.includes, dup.linkLibs, dup.linkPaths = nil, nil, nil
+	dup.depRefs, dup.deps = nil, nil
+}
+
+// claimantOf chases an alias row to its underlying claimant — byPath
+// entries registered before a fold can still point at the demoted row.
+// nil passes through; an unresolvable alias name returns the row as-is.
+func (h *harvester) claimantOf(r *row) *row {
+	if r == nil || r.aliasOf == "" {
+		return r
+	}
+	if u, ok := h.byName[r.aliasOf]; ok {
+		return u
+	}
+	return r
 }
 
 type harvester struct {
