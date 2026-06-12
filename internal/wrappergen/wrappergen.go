@@ -64,7 +64,7 @@ func Generate(im *manifest.Imports, pkgPath, element string) ([]byte, *manifest.
 			if ex == nil {
 				continue
 			}
-			name := wrapperName(ex.CMakeTarget)
+			name := WrapperName(ex.CMakeTarget)
 			if prev, dup := nameSeen[name]; dup {
 				return nil, nil, fmt.Errorf("wrapper name %q collides (%s vs %s); disambiguate the manifest", name, prev, ex.CMakeTarget)
 			}
@@ -183,10 +183,12 @@ func archivePath(ex *manifest.Export) string {
 	return ""
 }
 
-// wrapperName derives the consumer-facing target name from the cmake
+// WrapperName derives the consumer-facing target name from the cmake
 // name: the segment after the last "::", with label-hostile runes
-// folded to underscores.
-func wrapperName(cmakeTarget string) string {
+// folded to underscores. Exported so manifest PRODUCERS (the
+// harvester) can synthesize labels that match the names this
+// generator will emit — label-idempotent generation.
+func WrapperName(cmakeTarget string) string {
 	name := cmakeTarget
 	if i := strings.LastIndex(name, "::"); i >= 0 {
 		name = name[i+2:]
