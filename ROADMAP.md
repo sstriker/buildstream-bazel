@@ -111,27 +111,40 @@ transition cleanly.
     coverage / todos / narrowing-compat are all 0 (14 benign idiom findings).
     **Build-lens follow-on (the gate for compile-db / build / symbol / ELF —
     all 4 blocked on the same thing):**
-    - **Generalized hermetic-protoc genrule lift (converter change).** The
-      hermetic-protoc rewrite (host `protoc` → `$(execpath @protobuf//:protoc)`,
-      output → `$(RULEDIR)`, proto import-closure staging) lives in
+    - **Generalized host-codegen-tool hermeticization (converter change;
+      protoc as the first driver).** The reusable mechanism is "a codegen
+      tool invoked from a host path / `find_program` → swap it for its
+      hermetic Bazel exec label (`$(execpath @repo//:tool)`) + anchor outputs
+      to `$(RULEDIR)` + stage the input closure + add it to `tools`" — the
+      same shape covers protoc/`grpc_cpp_plugin`, `flatc`, `thrift`, Qt
+      `moc`/`uic`, `bison`/`flex`, a project's own python generator, etc.
+      Today that swap is HARDCODED (`@protobuf//:protoc`) and buried in
       `reanchorBuildDirCopyGenrule` (`converter/internal/lower/genrule.go`),
-      but is gated to grpc's `cd <builddir> && …` shape (the
+      gated to grpc's `cd <builddir> && …` shape (the
       `!strings.HasPrefix(rawCmd, "cd ")` return + the absolute-path-protoc
-      check) and is only reached from the ninja-recovered genrule path.
+      check) and only reached from the ninja-recovered genrule path —
       BuildBox's DIRECT `protoc …` (no `cd`) comes via the standalone
-      custom-command path (`standalone_genrules.go`), which never calls the
-      reanchorer — so its genrule keeps host `protoc`/`/usr/bin/grpc_cpp_plugin`,
-      host `--proto_path=/usr/include`, cmake-relative `--cpp_out=protos`, and
-      a `$(RULEDIR)//code.proto` double-slash. Plan: EXTRACT the
-      hermetic-protoc rewrite into a shared helper and call it from the
-      standalone path too, gated on the `cmake-codegen-driver=protoc` tag
-      (grpc's `cd` path untouched — no regression), handling the bare (not
-      just absolute) `protoc` driver, the `grpc_cpp_plugin` plugin swap, the
-      `--cpp_out`/`--grpc_out` output dir → `$(RULEDIR)`, the `--proto_path`
-      WKT (`/usr/include`) → hermetic well-known-types, and the proto-file
-      arg. Fixture-driven (a minimal direct-protoc `add_custom_command`
-      project) + the `$(RULEDIR)//` double-slash fix
-      (`anchorGenruleOutputsToRuledir`/`genruleSrcs` path-join).
+      custom-command path (`standalone_genrules.go`), which never calls it,
+      so its genrule keeps host `protoc`/`/usr/bin/grpc_cpp_plugin`, host
+      `--proto_path=/usr/include`, cmake-relative `--cpp_out=protos`, and a
+      `$(RULEDIR)//code.proto` double-slash. Plan, split general vs
+      per-driver:
+      - **General core:** EXTRACT the host-tool→hermetic-label swap +
+        RULEDIR output-anchoring + input staging into a shared helper reached
+        from BOTH the ninja and standalone paths (grpc's `cd` path untouched —
+        no regression). Drive the tool→label swap from a tool-label MAP (the
+        natural extension of the imports-manifest, which already maps
+        find_package imported targets → `@BCR`; a `find_program`'d tool is the
+        same idea, a `tools` section), so `protoc → @protobuf//:protoc`,
+        `grpc_cpp_plugin → @grpc//…`, `flatc → @flatbuffers//:flatc` are DATA,
+        not converter code. The `$(RULEDIR)//` double-slash fix
+        (`anchorGenruleOutputsToRuledir`/`genruleSrcs` path-join) is general.
+      - **Per-driver (thin), keyed on `cmake-codegen-driver=<tool>`:** the
+        protoc-SPECIFIC enrichment — `.proto` import-closure walk,
+        well-known-types (`/usr/include`), the `--cpp_out`/`--proto_path` flag
+        grammar. A new tool adds a small enrichment (often none — the base
+        swap+anchor suffices), not a new lift path. Fixture-driven (a minimal
+        direct-`add_custom_command` codegen project).
     - **`buildbox-imports.json` + MODULE deps.** Map the find_package imported
       targets (`absl::*`, `protobuf::*`, `gRPC::grpc++`, `OpenSSL::SSL/Crypto`)
       to `@BCR` labels and add the `EXTRA_BAZEL_DEPS` (abseil/protobuf/grpc/
