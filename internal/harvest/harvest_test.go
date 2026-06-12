@@ -144,6 +144,9 @@ func TestHarvest_ExecutablesAliasesAndPC(t *testing.T) {
 	if gen == nil || len(gen.LinkPaths) != 1 || gen.LinkPaths[0] != manifest.PrefixAnchor+"bin/gen" {
 		t.Fatalf("Greet::gen = %+v, want anchored bin/gen", gen)
 	}
+	if gen.Kind != manifest.KindExecutable {
+		t.Errorf("add_executable IMPORTED must mark kind=executable (wrapper-gen emits a filegroup, not a cc_library): %+v", gen)
+	}
 	alias := byName["Greet::Greet"]
 	if alias == nil || alias.BazelLabel != "//prebuilts/greet:core" {
 		t.Errorf("alias must resolve to the underlying's label: %+v", alias)
@@ -154,6 +157,12 @@ func TestHarvest_ExecutablesAliasesAndPC(t *testing.T) {
 	stray := byName["greet::bin/stray-tool"]
 	if stray == nil || len(stray.LinkPaths) != 1 || stray.LinkPaths[0] != manifest.PrefixAnchor+"bin/stray-tool" {
 		t.Errorf("stray binary row = %+v", stray)
+	}
+	if stray != nil && stray.Kind != manifest.KindExecutable {
+		t.Errorf("bare bin/ row must mark kind=executable: %+v", stray)
+	}
+	if core := byName["Greet::core"]; core != nil && core.Kind != "" {
+		t.Errorf("library export must keep the default kind: %+v", core)
 	}
 	extra := byName["pkgconfig::extra"]
 	if extra == nil {
@@ -354,6 +363,57 @@ set_target_properties(S::s PROPERTIES
 		if indexOf(w, "collides") >= 0 {
 			t.Errorf("true duplicate misread as a genuine collision: %v", w)
 		}
+	}
+}
+
+// TestHarvest_CycleBreak: mutual .pc Requires (a real shape — circular
+// C libraries reference each other) must NOT survive into Deps: Bazel
+// rejects cyclic deps once wrappergen materializes them. One edge of
+// the cycle is dropped deterministically with a warning naming the
+// cycle path; the other survives.
+func TestHarvest_CycleBreak(t *testing.T) {
+	prefix := t.TempDir()
+	must := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(prefix, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("lib/pkgconfig/alpha.pc", "Name: alpha\nVersion: 1\nRequires: beta\nLibs: -lalpha\n")
+	must("lib/pkgconfig/beta.pc", "Name: beta\nVersion: 1\nRequires: alpha\nLibs: -lbeta\n")
+	must("lib/libalpha.a", "!<arch>\n")
+	must("lib/libbeta.a", "!<arch>\n")
+	im, warns, err := Harvest(prefix, "c", "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]*manifest.Export{}
+	for _, ex := range im.Elements[0].Exports {
+		byName[ex.CMakeTarget] = ex
+	}
+	a, b := byName["pkgconfig::alpha"], byName["pkgconfig::beta"]
+	if a == nil || b == nil {
+		t.Fatal("rows missing")
+	}
+	aDepsB, bDepsA := sliceContains(a.Deps, "//p:beta"), sliceContains(b.Deps, "//p:alpha")
+	if aDepsB && bDepsA {
+		t.Errorf("cycle survived into Deps (Bazel will reject): alpha.Deps=%v beta.Deps=%v", a.Deps, b.Deps)
+	}
+	if !aDepsB && !bDepsA {
+		t.Errorf("cycle break must drop ONE edge, not both: alpha.Deps=%v beta.Deps=%v", a.Deps, b.Deps)
+	}
+	warned := false
+	for _, w := range warns {
+		if indexOf(w, "dependency cycle") >= 0 {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("cycle break must warn with the cycle path; warnings: %v", warns)
 	}
 }
 

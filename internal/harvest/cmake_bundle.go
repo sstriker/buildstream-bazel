@@ -54,7 +54,7 @@ func (h *harvester) applyDeclaration(c cmakeCall) {
 			return
 		}
 		if hasArg(c.args, "IMPORTED") {
-			h.addRow(&row{cmakeTarget: c.args[0], origin: "bundle"})
+			h.addRow(&row{cmakeTarget: c.args[0], origin: "bundle", kind: manifest.KindExecutable})
 		}
 	}
 }

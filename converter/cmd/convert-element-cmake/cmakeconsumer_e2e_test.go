@@ -675,8 +675,12 @@ install(FILES GreetConfig.cmake DESTINATION lib/cmake/Greet)
 	if len(core.Deps) != 1 || core.Deps[0] != "//prebuilts/greet:base" {
 		t.Fatalf("core.Deps = %v, want the DIRECT dep on base (real cmake INTERFACE_LINK_LIBRARIES)", core.Deps)
 	}
-	if gen := byName["Greet::gen"]; gen == nil || len(gen.LinkPaths) == 0 || gen.LinkPaths[0] != manifest.PrefixAnchor+"bin/gen" {
+	gen := byName["Greet::gen"]
+	if gen == nil || len(gen.LinkPaths) == 0 || gen.LinkPaths[0] != manifest.PrefixAnchor+"bin/gen" {
 		t.Fatalf("exported tool row = %+v, want anchored bin/gen", byName["Greet::gen"])
+	}
+	if gen.Kind != manifest.KindExecutable {
+		t.Fatalf("real cmake add_executable export must harvest kind=executable: %+v", gen)
 	}
 
 	// Generator: wrappers + deps-free manifest.
@@ -687,6 +691,16 @@ install(FILES GreetConfig.cmake DESTINATION lib/cmake/Greet)
 	if !strings.Contains(string(build), `":core_archive",
         "//prebuilts/greet:base",`) {
 		t.Fatalf("wrapper BUILD missing the materialized direct dep:\n%s", build)
+	}
+	// The installed tool (the protoc shape) must come out as a
+	// file-shaped target, not an ELF program wrapped in cc_import.
+	if !strings.Contains(string(build), `filegroup(
+    name = "gen",
+    srcs = [
+        "bin/gen",
+    ],
+)`) || strings.Contains(string(build), `"gen_archive"`) {
+		t.Fatalf("executable export must generate a filegroup, not cc_import/cc_library:\n%s", build)
 	}
 	wrappedJSON := filepath.Join(out, "exports.wrapped.json")
 	if err := wrappergen.WriteManifest(wrappedJSON, rewritten); err != nil {
