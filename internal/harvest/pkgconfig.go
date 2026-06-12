@@ -11,10 +11,23 @@ import (
 
 // parsePkgConfig folds lib/pkgconfig/*.pc + share/pkgconfig/*.pc into
 // rows — the fallback channel for libraries that ship no cmake bundle.
-// A pc package whose -L/-l resolution lands on an artifact a bundle
-// row already claims is skipped entirely (the bundle is richer).
 // Requires/Requires.private are the DIRECT dep edges, recorded as pc
 // names and resolved against other pc rows in resolveDeps.
+//
+// Three phases, because a Libs line mixes a package's OWN library with
+// libraries it merely links against (`Libs: -lfoo -labc` where abc has
+// its own abc.pc), and treating every -l as owned fuses unrelated
+// packages — whichever side parses first claims the artifact and the
+// other merges into it as a duplicate, losing its label:
+//
+//  1. parse every .pc, classifying each -l as SELF (name affinity
+//     with the pc package, see pcSelfLib) or FOREIGN;
+//  2. place each row — same-library identity and byPath claims use
+//     SELF artifacts only;
+//  3. resolve FOREIGN references against the now-complete ownership
+//     map: an artifact another row owns becomes a dep edge on the
+//     owner (order-independent); an unowned one stays here with the
+//     keys, as the sole describer.
 func (h *harvester) parsePkgConfig() error {
 	var files []string
 	for _, dir := range []string{"lib/pkgconfig", "share/pkgconfig"} {
@@ -22,17 +35,86 @@ func (h *harvester) parsePkgConfig() error {
 			return strings.HasSuffix(p, ".pc")
 		})...)
 	}
+	type pending struct {
+		r       *row
+		foreign []pcForeign
+	}
+	var pendings []pending
 	for _, f := range files {
 		body, err := os.ReadFile(f)
 		if err != nil {
 			return err
 		}
-		h.applyPC(strings.TrimSuffix(filepath.Base(f), ".pc"), string(body))
+		r, foreign := h.parsePC(strings.TrimSuffix(filepath.Base(f), ".pc"), string(body))
+		pendings = append(pendings, pending{r, foreign})
+	}
+	// Placement: same library already harvested (SELF-artifact identity
+	// OR matching consumer-facing name with no contradicting artifact):
+	// MERGE the pc channel's keys into the claimant instead of dropping
+	// them — the -l name keeps the LookupLinkLibrary redirect alive and
+	// the Requires deps keep resolving (the pc name registers as an
+	// alias). The surviving row carries the pc's foreign references.
+	surviving := make([]*row, len(pendings))
+	for i, p := range pendings {
+		if claimant := h.sameLibraryClaimant(p.r); claimant != nil {
+			name := strings.TrimPrefix(p.r.cmakeTarget, "pkgconfig::")
+			h.warnf("pkgconfig %s: same library as %s (%s); channels merged", name, claimant.cmakeTarget, claimant.origin)
+			h.mergeInto(claimant, p.r)
+			surviving[i] = claimant
+			continue
+		}
+		h.addRow(p.r)
+		surviving[i] = p.r
+	}
+	for i, p := range pendings {
+		h.resolvePCForeign(surviving[i], p.foreign)
 	}
 	return nil
 }
 
-func (h *harvester) applyPC(name, body string) {
+// pcForeign is one Libs -l token that pcSelfLib did NOT tie to the pc
+// package itself, with the artifact candidates the probe resolved for
+// it — ownership is decided late, in resolvePCForeign.
+type pcForeign struct {
+	lib   string
+	paths []string // anchored
+}
+
+// resolvePCForeign settles a row's foreign -l references once every
+// channel's SELF claims are registered. An artifact another row owns
+// turns into a DIRECT dep edge on the owner — the .pc spelled a
+// dependency as a raw -l instead of a Requires entry, and first-parse
+// order must not decide which package keeps its label. The -l name
+// joins the OWNER's link_libraries (it names the owner's artifact, so
+// the LookupLinkLibrary redirect lands there). Unowned references keep
+// today's shape: this row carries the name + any resolved paths and
+// claims them, as the only description the prefix has.
+func (h *harvester) resolvePCForeign(r *row, foreign []pcForeign) {
+	for _, fr := range foreign {
+		var owner *row
+		for _, p := range fr.paths {
+			if prev := h.claimantOf(h.byPath[h.canonicalKey(p)]); prev != nil {
+				owner = prev
+				break
+			}
+		}
+		if owner != nil && owner != r {
+			owner.linkLibs = appendUnique(owner.linkLibs, fr.lib)
+			r.depRefs = append(r.depRefs, owner.cmakeTarget)
+			h.warnf("%s: Libs -l%s resolves to an artifact %s owns; recorded as a dep edge, not claimed", r.cmakeTarget, fr.lib, owner.cmakeTarget)
+			continue
+		}
+		r.linkLibs = appendUnique(r.linkLibs, fr.lib)
+		for _, p := range fr.paths {
+			r.linkPaths = appendUnique(r.linkPaths, p)
+			if k := h.canonicalKey(p); h.byPath[k] == nil {
+				h.byPath[k] = r
+			}
+		}
+	}
+}
+
+func (h *harvester) parsePC(name, body string) (*row, []pcForeign) {
 	vars := map[string]string{"prefix": strings.TrimSuffix(h.prefix, "/")}
 	fields := map[string]string{}
 	for _, line := range strings.Split(body, "\n") {
@@ -59,7 +141,7 @@ func (h *harvester) applyPC(name, body string) {
 		}
 	}
 	r := &row{cmakeTarget: "pkgconfig::" + name, origin: "pkgconfig " + name + ".pc"}
-	h.applyPCLibs(r, fields["Libs"]+" "+fields["Libs.private"])
+	foreign := h.applyPCLibs(r, name, fields["Libs"]+" "+fields["Libs.private"])
 	for _, tok := range strings.Fields(fields["Cflags"]) {
 		if d, ok := strings.CutPrefix(tok, "-I"); ok {
 			if anchored, ok := h.anchoredFromImportPrefix(d); ok {
@@ -70,61 +152,118 @@ func (h *harvester) applyPC(name, body string) {
 	for _, req := range splitPCRequires(fields["Requires"] + "," + fields["Requires.private"]) {
 		r.depRefs = append(r.depRefs, "pkgconfig::"+req)
 	}
-	// Same library already harvested (artifact identity OR matching
-	// consumer-facing name with no contradicting artifact): MERGE the
-	// pc channel's keys into the claimant instead of dropping them —
-	// the -l name keeps the LookupLinkLibrary redirect alive and the
-	// Requires deps keep resolving (the pc name registers as an alias).
-	if claimant := h.sameLibraryClaimant(r); claimant != nil {
-		h.warnf("pkgconfig %s: same library as %s (%s); channels merged", name, claimant.cmakeTarget, claimant.origin)
-		h.mergeInto(claimant, r)
-		return
-	}
-	h.addRow(r)
+	return r, foreign
 }
 
 // applyPCLibs walks the Libs/Libs.private token stream: -L dirs feed
-// the probe's search path, each -l<name> records the link name AND
-// resolves the artifact in the prefix — the path key the tool/fragment
-// lifts, wrapper-gen, and the same-library dedup need. The probe
-// covers lib64 and versioned sonames (libfoo.so.1.2.3 with no plain
-// .so): a miss here is what lets a bundle+pc pair slip past path
-// identity and collide at generation time.
-func (h *harvester) applyPCLibs(r *row, libsField string) {
+// the probe's search path, each -l<name> resolves its artifact in the
+// prefix — the path key the tool/fragment lifts, wrapper-gen, and the
+// same-library dedup need. The probe covers lib64 and versioned
+// sonames (libfoo.so.1.2.3 with no plain .so): a miss here is what
+// lets a bundle+pc pair slip past path identity and collide at
+// generation time.
+//
+// Only SELF tokens — name affinity with the pc package per pcSelfLib,
+// or the package's sole prefix-resolved (or sole overall) -l — land on
+// the row here; everything else returns as foreign for
+// resolvePCForeign, so a -l that names ANOTHER package's library can
+// neither claim its artifact nor drag this row into a bogus
+// same-library merge.
+func (h *harvester) applyPCLibs(r *row, name, libsField string) []pcForeign {
 	var searchDirs []string
+	var toks []pcForeign
 	for _, tok := range strings.Fields(libsField) {
 		switch {
 		case strings.HasPrefix(tok, "-L"):
 			searchDirs = append(searchDirs, strings.TrimPrefix(tok, "-L"))
 		case strings.HasPrefix(tok, "-l"):
 			lib := strings.TrimPrefix(tok, "-l")
-			r.linkLibs = appendUnique(r.linkLibs, lib)
 			dirs := append(append([]string{}, searchDirs...),
 				filepath.Join(h.prefix, "lib"), filepath.Join(h.prefix, "lib64"))
+			var paths []string
 			for _, d := range dirs {
-				h.probeArtifact(r, d, lib)
+				paths = h.appendProbedArtifacts(paths, d, lib)
 			}
+			toks = append(toks, pcForeign{lib, paths})
 		}
 	}
+	self := make([]bool, len(toks))
+	anySelf := false
+	for i, t := range toks {
+		if pcSelfLib(name, t.lib) {
+			self[i], anySelf = true, true
+		}
+	}
+	// No affinity match at all: name matching is only an ARBITER, so a
+	// package whose one real library carries a divergent name still
+	// owns it. Self is then the SOLE -l that resolves to an artifact in
+	// the prefix (zlib's `Libs: -lz -lm`: -lm probes to nothing — a
+	// system lib — leaving -lz the only resolved candidate), or the
+	// sole -l outright when nothing resolves (partial trees). A line
+	// with SEVERAL resolved candidates and no name match stays
+	// all-foreign — guessing an owner among them (an umbrella .pc
+	// aggregating other packages' libs) is exactly the over-claiming
+	// this split exists to stop.
+	if !anySelf {
+		resolved := -1
+		for i, t := range toks {
+			if len(t.paths) == 0 {
+				continue
+			}
+			if resolved >= 0 {
+				resolved = -1
+				break
+			}
+			resolved = i
+		}
+		switch {
+		case resolved >= 0:
+			self[resolved] = true
+		case len(toks) == 1:
+			self[0] = true
+		}
+	}
+	var foreign []pcForeign
+	for i, t := range toks {
+		if self[i] {
+			r.linkLibs = appendUnique(r.linkLibs, t.lib)
+			for _, p := range t.paths {
+				r.linkPaths = appendUnique(r.linkPaths, p)
+			}
+			continue
+		}
+		foreign = append(foreign, t)
+	}
+	return foreign
 }
 
-// probeArtifact records the anchored path of lib<name>.{a,so} (or the
-// first versioned soname) under dir, when present.
-func (h *harvester) probeArtifact(r *row, dir, lib string) {
+// pcSelfLib reports whether a Libs `-l<lib>` plausibly names the pc
+// package's OWN library: the pc name and the lib stem match exactly or
+// modulo a `lib` prefix on either side, case-insensitively (libpng16.pc
+// → -lpng16, SDL2.pc → -lsdl2).
+func pcSelfLib(pcName, lib string) bool {
+	n, l := strings.ToLower(pcName), strings.ToLower(lib)
+	return n == l || n == "lib"+l || l == "lib"+n
+}
+
+// appendProbedArtifacts appends the anchored path of lib<name>.{a,so}
+// (or the first versioned soname) under dir, when present.
+func (h *harvester) appendProbedArtifacts(paths []string, dir, lib string) []string {
 	for _, ext := range []string{".a", ".so"} {
 		cand := filepath.Join(dir, "lib"+lib+ext)
 		if _, err := os.Stat(cand); err == nil {
 			if anchored, ok := h.anchoredFromImportPrefix(cand); ok {
-				r.linkPaths = appendUnique(r.linkPaths, anchored)
+				paths = appendUnique(paths, anchored)
 			}
 		}
 	}
 	if matches, _ := filepath.Glob(filepath.Join(dir, "lib"+lib+".so.*")); len(matches) > 0 {
 		sort.Strings(matches)
 		if anchored, ok := h.anchoredFromImportPrefix(matches[0]); ok {
-			r.linkPaths = appendUnique(r.linkPaths, anchored)
+			paths = appendUnique(paths, anchored)
 		}
 	}
+	return paths
 }
 
 // splitPCRequires splits a Requires list — comma- or space-separated
