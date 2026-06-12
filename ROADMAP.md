@@ -113,9 +113,6 @@ transition cleanly.
   `.conf` `BUILD_TESTING`/`*_TESTS=OFF`). The remaining members scope tests out
   via a `.conf` flag, each for a concrete reason — to enable, resolve that
   reason:
-  - **spdlog** (`SPDLOG_BUILD_TESTS=OFF`): tests need `find_package(Catch2 3)`.
-    Catch2 IS a corpus member (3.5.3) — wire it cross-element via the imports
-    manifest + a host-install prefix (the protobuf↔absl pattern).
   - **nlohmann-json** (`JSON_BuildTests=OFF`): tests `#include` a generated
     `test_data.hpp` whose data is a `git clone` of `json_test_data` (network) —
     stage the data dir + point `JSON_TestDataDirectory` at it.

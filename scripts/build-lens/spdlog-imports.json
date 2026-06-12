@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "elements": [
+    {
+      "name": "catch2",
+      "umbrella_label": "@catch2//:catch2",
+      "umbrella_include_roots": ["/tmp/catch2-install/include"],
+      "exports": [
+        {
+          "cmake_target": "Catch2::Catch2",
+          "bazel_label": "@catch2//:catch2",
+          "link_paths": ["/tmp/catch2-install/lib/libCatch2.a"]
+        },
+        {
+          "cmake_target": "Catch2::Catch2WithMain",
+          "bazel_label": "@catch2//:catch2_main",
+          "link_paths": ["/tmp/catch2-install/lib/libCatch2Main.a"]
+        }
+      ]
+    }
+  ]
+}
