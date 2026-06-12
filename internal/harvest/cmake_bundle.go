@@ -64,6 +64,9 @@ func (h *harvester) applyProperties(c cmakeCall) {
 	var kv []string
 	switch c.name {
 	case "set_target_properties":
+		// Export bundles write one target per call; the multi-target
+		// form (set_target_properties(t1 t2 ... PROPERTIES ...)) never
+		// appears in generator output, so only args[0] is applied.
 		i := indexArg(c.args, "PROPERTIES")
 		if i < 1 {
 			return

@@ -184,3 +184,18 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+// TestSplitPCRequires_NoSpaceConstraint pins the "name>=1.2" shape:
+// the name splits at the operator instead of dropping silently.
+func TestSplitPCRequires_NoSpaceConstraint(t *testing.T) {
+	got := splitPCRequires("foo>=1.2, bar , baz >= 3")
+	want := []string{"foo", "bar", "baz"}
+	if len(got) != len(want) {
+		t.Fatalf("splitPCRequires = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("splitPCRequires[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}

@@ -110,9 +110,14 @@ func splitPCRequires(s string) []string {
 			continue
 		}
 		// "name", "name >= 1.2": the name is the first field; a bare
-		// operator/version continuation is consumed with it.
+		// operator/version continuation is consumed with it. The
+		// no-space constraint shape ("name>=1.2") splits at the
+		// operator — dropping it silently would lose a real dep edge.
 		name := fields[0]
-		if name == "" || strings.ContainsAny(name, "<>=") {
+		if i := strings.IndexAny(name, "<>="); i >= 0 {
+			name = name[:i]
+		}
+		if name == "" {
 			continue
 		}
 		out = append(out, name)
