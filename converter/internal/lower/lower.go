@@ -7961,7 +7961,42 @@ func rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath
 	if strippedCdSubdir != "" {
 		cmd = qualifyRedirectBasenames(cmd, strippedCdSubdir)
 	}
+	// nvcc GPU-arch flags in a recovered custom command (the driver-API
+	// fatbin shape: `nvcc -gencode=arch=compute_75,... -fatbin kernel.cu`)
+	// get the same treatment the rule-side copts/linkopts already do
+	// (isNvccArchFlag): the list is CMAKE_CUDA_ARCHITECTURES baked at
+	// configure time and routinely names arches the provisioned nvcc
+	// REJECTS outright (cuda-samples hard-sets Blackwell compute_100/110/120;
+	// CUDA 12.0 fails "Unsupported gpu architecture") — arch selection is a
+	// toolchain concern, not the graph's. Gated on the command actually
+	// invoking nvcc so non-CUDA genrules are untouched.
+	if strings.Contains(cmd, "nvcc") {
+		cmd = dropNvccArchFlagsFromCmd(cmd)
+	}
 	return cmd
+}
+
+// dropNvccArchFlagsFromCmd removes nvcc GPU-arch selection tokens from a
+// genrule cmd: the one-token `-gencode=arch=…` / `--generate-code=…` forms
+// (isNvccArchFlag) and the two-token `-gencode arch=…` spelling. Other
+// tokens — including quoted multi-space args — pass through byte-identically
+// (split/join on single spaces preserves the original spacing).
+func dropNvccArchFlagsFromCmd(cmd string) string {
+	toks := strings.Split(cmd, " ")
+	out := toks[:0]
+	skipNext := false
+	for _, t := range toks {
+		switch {
+		case skipNext:
+			skipNext = false
+		case t == "-gencode" || t == "--generate-code":
+			skipNext = true
+		case isNvccArchFlag(t):
+		default:
+			out = append(out, t)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // replaceBareAnchorAtBoundary replaces `anchor` (no trailing slash)
