@@ -150,3 +150,39 @@ func TestSplitCompileFragments_ShellEscapedDefine(t *testing.T) {
 		}
 	}
 }
+
+// TestRetagCudaTargets_PerPlatformSrcs: a platform-guarded `.cu` executable
+// (cuda-samples' systemWideAtomics: `if(Linux) add_executable(x x.cu)`)
+// folds its ONLY compiled src into a PerPlatform srcs select arm, leaving
+// flat Srcs empty — the retag must see the arms or the target stays a
+// cc_binary whose nvcc-flag copts fail under gcc. A mixed arm (a C TU in
+// another platform's arm) still blocks the retag.
+func TestRetagCudaTargets_PerPlatformSrcs(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{
+			Name: "guarded",
+			Kind: ir.KindCCBinary,
+			PerPlatform: map[string]map[string][]string{
+				"srcs": {"@platforms//os:linux": {"systemWideAtomics.cu"}},
+			},
+		},
+		{
+			Name: "mixedarms",
+			Kind: ir.KindCCBinary,
+			PerPlatform: map[string]map[string][]string{
+				"srcs": {
+					"@platforms//os:linux":  {"k.cu"},
+					"@platforms//os:darwin": {"host.c"},
+				},
+			},
+		},
+	}}
+	retagCudaTargets(pkg)
+
+	if got := findTarget(pkg, "guarded"); got == nil || got.Kind != ir.KindCudaBinary {
+		t.Errorf("guarded Kind = %v; want KindCudaBinary (per-platform .cu must retag)", got.Kind)
+	}
+	if got := findTarget(pkg, "mixedarms"); got == nil || got.Kind != ir.KindCCBinary {
+		t.Errorf("mixedarms Kind = %v; want KindCCBinary (mixed arms must not retag)", got.Kind)
+	}
+}

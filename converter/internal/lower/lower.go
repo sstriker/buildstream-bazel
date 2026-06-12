@@ -6865,21 +6865,32 @@ func retagCudaTargets(pkg *ir.Package) {
 		}
 		// Inspect compiled sources only (skip headers): the target is a CUDA
 		// target iff it has at least one `.cu` and every compiled src is `.cu`.
+		// PerPlatform srcs arms count too — a platform-guarded `.cu` executable
+		// (cuda-samples' systemWideAtomics: `if(Linux) add_executable(x x.cu)`)
+		// folds its ONLY compiled src into the `@platforms//os:linux` select
+		// arm, leaving flat Srcs empty; skipping the arms left it a cc_binary
+		// whose nvcc-flag copts then failed under gcc.
 		sawCuda := false
 		sawNonCudaCompiled := false
-		for _, s := range t.Srcs {
-			ext := ""
-			if dot := strings.LastIndex(s, "."); dot >= 0 {
-				ext = strings.ToLower(s[dot:])
+		scan := func(srcs []string) {
+			for _, s := range srcs {
+				ext := ""
+				if dot := strings.LastIndex(s, "."); dot >= 0 {
+					ext = strings.ToLower(s[dot:])
+				}
+				if cclang.IsHeaderExt(ext) || ext == ".cuh" {
+					continue // a header in srcs (incl. CUDA `.cuh`) — not a compiled TU
+				}
+				if isCudaSrc(s) {
+					sawCuda = true
+				} else {
+					sawNonCudaCompiled = true
+				}
 			}
-			if cclang.IsHeaderExt(ext) || ext == ".cuh" {
-				continue // a header in srcs (incl. CUDA `.cuh`) — not a compiled TU
-			}
-			if isCudaSrc(s) {
-				sawCuda = true
-			} else {
-				sawNonCudaCompiled = true
-			}
+		}
+		scan(t.Srcs)
+		for _, arm := range t.PerPlatform["srcs"] {
+			scan(arm)
 		}
 		if sawCuda && !sawNonCudaCompiled {
 			t.Kind = cudaKind
