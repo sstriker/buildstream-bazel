@@ -6,7 +6,6 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmakecfg"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
-	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 // TestBuildExportsDoc checks the producer-side exports manifest: each
@@ -187,40 +186,26 @@ func TestExportNamespaceForPackage(t *testing.T) {
 	}
 }
 
-// TestBuildExportsDoc_DepsClosure: each export row carries the labels
-// of the OTHER exports its target depends on (absolutized) plus
-// cross-element absolute labels the producer's own conversion resolved
-// — the declared closure consumers wire alongside bazel_label
-// (manifest.Export.Deps). Internal non-exported deps stay out: their
-// labels are implementation detail covered by Bazel transitivity.
-func TestBuildExportsDoc_DepsClosure(t *testing.T) {
+// TestBuildExportsDoc_NoDepsForConvertedElements pins the Export.Deps
+// INVARIANT on the producer side: converted elements' export rows
+// leave Deps EMPTY — BazelLabel is a real rule whose own deps Bazel
+// resolves, and filling Deps would double-wire every consumer with
+// direct edges to the export's internals (the over-emit shape the
+// link attribution's trace-gated drop exists to avoid). Deps is the
+// UNMODELED closure: hand-written prebuilt-backed manifests only.
+func TestBuildExportsDoc_NoDepsForConvertedElements(t *testing.T) {
 	pkg := &ir.Package{
 		Name: "greetpkg",
 		Targets: []ir.Target{
 			{Name: "core", Kind: ir.KindCCLibrary, ArtifactName: "libcore.a",
-				Deps:               []string{":base", ":internal", "@abseil-cpp//absl/strings:strings"},
-				ImplementationDeps: []string{":hidden"}},
+				Deps: []string{":base", "@abseil-cpp//absl/strings:strings"}},
 			{Name: "base", Kind: ir.KindCCLibrary, ArtifactName: "libbase.a"},
-			{Name: "hidden", Kind: ir.KindCCLibrary, ArtifactName: "libhidden.a"},
-			{Name: "internal", Kind: ir.KindGenrule}, // not importable
 		},
 	}
 	doc := buildExportsDoc(pkg, "greetpkg", "Greeter::", "elements/greetlib", nil, false)
-	var core *manifest.Export
 	for _, ex := range doc.Elements[0].Exports {
-		if ex.CMakeTarget == "Greeter::core" {
-			core = ex
+		if len(ex.Deps) != 0 {
+			t.Errorf("%s: producer-emitted Deps must stay empty (invariant: Deps = unmodeled closure); got %v", ex.CMakeTarget, ex.Deps)
 		}
-	}
-	if core == nil {
-		t.Fatal("Greeter::core missing")
-	}
-	want := []string{
-		"//elements/greetlib:base",
-		"//elements/greetlib:hidden",
-		"@abseil-cpp//absl/strings:strings",
-	}
-	if !reflect.DeepEqual(core.Deps, want) {
-		t.Errorf("core.Deps = %v, want %v (sorted: exported siblings absolutized + cross-element pass-through; :internal excluded)", core.Deps, want)
 	}
 }

@@ -1696,18 +1696,20 @@ func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string, al
 	// non-bundle elements emit byte-identical exports.json.
 	bundleLabel, importLabels := cmakeBundleLabels(pkg, bazelPkgPath)
 	libs := cmakecfg.ImportableTargets(pkg)
-	exported := make(map[string]bool, len(libs))
-	for _, lib := range libs {
-		exported[lib.Name] = true
-	}
 	exports := make([]*manifest.Export, 0, len(libs)+len(aliases))
 	for _, lib := range libs {
+		// Deps stays EMPTY for producer-emitted exports BY DESIGN: the
+		// BazelLabel is a real converted rule whose own deps Bazel
+		// resolves transitively. Filling it would double-wire every
+		// consumer with direct edges to the export's internals — the
+		// over-emit shape the link attribution's trace-gated drop
+		// exists to avoid. Deps is for labels that DON'T model their
+		// own deps (see manifest.Export.Deps).
 		ex := &manifest.Export{
 			CMakeTarget:            nsPrefix + lib.Name,
 			BazelLabel:             label(lib.Name),
 			CMakeConfigBundleLabel: bundleLabel,
 			CMakeImportLabels:      importLabels,
-			Deps:                   exportDepLabels(lib, exported, label),
 		}
 		// B: variable-only Find modules (no <Pkg>::<Pkg> target)
 		// resolve via ${<Pkg>_LIBRARIES} → a path or -l<name>. Carry
@@ -1790,39 +1792,6 @@ func hasTag(tags []string, want string) bool {
 		}
 	}
 	return false
-}
-
-// exportDepLabels projects an export target's dep edges onto the
-// manifest's Export.Deps: labels of OTHER exports of this element
-// (":name" deps absolutized when the name is itself exported) plus
-// cross-element absolute labels the producer's own conversion already
-// resolved (//... or @... — e.g. the abseil labels a grpc-shaped
-// element imported). The closure is what lets a consumer that wires
-// only this export still link transitively when BazelLabel is
-// prebuilt/cc_import-backed (see manifest.Export.Deps); for fully
-// converted elements it's redundant with Bazel transitivity but
-// harmless. Internal non-exported deps are skipped — their labels are
-// implementation detail and Bazel transitivity covers them through
-// BazelLabel's own rule.
-func exportDepLabels(t ir.Target, exported map[string]bool, label func(string) string) []string {
-	var out []string
-	seen := map[string]bool{}
-	for _, d := range append(append([]string{}, t.Deps...), t.ImplementationDeps...) {
-		resolved := ""
-		switch {
-		case strings.HasPrefix(d, ":") && exported[d[1:]]:
-			resolved = label(d[1:])
-		case strings.HasPrefix(d, "//") || strings.HasPrefix(d, "@"):
-			resolved = d
-		}
-		if resolved == "" || seen[resolved] {
-			continue
-		}
-		seen[resolved] = true
-		out = append(out, resolved)
-	}
-	sort.Strings(out)
-	return out
 }
 
 // linkLibName derives the linker -l<name> from a library artifact

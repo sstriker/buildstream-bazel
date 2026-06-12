@@ -288,21 +288,23 @@ func mustMkdir(t *testing.T, path string) string {
 	return path
 }
 
-// TestE2E_CMakeConsumer_ExportDepsClosure: the Export.Deps round trip.
-// The producer's exported `core` PUBLIC-links its exported `base`; the
-// consumer links ONLY Greeter::core. cmake dedups nothing here — the
-// consumer simply never names base — so without the declared closure
-// the consumer's BUILD would carry core's label alone, and a
-// prebuilt-backed core (cc_import) would link short (the
-// missing-symbols mechanisms). The gates: exports.json's core row
-// carries base's label in deps, and the consumer's converted BUILD
-// wires BOTH labels from naming just one.
+// TestE2E_CMakeConsumer_ExportDepsClosure: the Export.Deps round trip
+// for the shape the field exists for — a HAND-WRITTEN manifest whose
+// export label is prebuilt-backed (models no deps), carrying its
+// declared closure. The consumer links ONLY Greeter::core; its
+// converted BUILD must wire core's label AND the closure labels (the
+// missing-symbols mechanisms). The producer side asserts the INVERSE
+// invariant: a converted element's generated exports.json carries NO
+// deps field — its labels are real rules, and filling Deps would
+// double-wire consumers with direct edges the trace-gated drop exists
+// to avoid.
 func TestE2E_CMakeConsumer_ExportDepsClosure(t *testing.T) {
 	conv := lookupConverter(t)
 	if _, err := exec.LookPath("cmake"); err != nil {
 		t.Skipf("cmake not on PATH: %v", err)
 	}
 
+	// Producer half: generated manifests honor the empty-Deps invariant.
 	prodSrc := t.TempDir()
 	mustWrite(t, filepath.Join(prodSrc, "CMakeLists.txt"), `cmake_minimum_required(VERSION 3.20)
 project(greetpkg LANGUAGES C VERSION 1.0.0)
@@ -322,19 +324,42 @@ install(EXPORT greetTargets FILE greetTargets.cmake NAMESPACE Greeter:: DESTINAT
 
 	out := t.TempDir()
 	bundle := filepath.Join(out, "bundle")
-	exportsJSON := filepath.Join(out, "exports.json")
+	generatedJSON := filepath.Join(out, "generated-exports.json")
 	mustRun(t, exec.CommandContext(context.Background(), conv,
 		"--source-root", prodSrc,
 		"--bazel-package-path", "elements/greetlib",
 		"--out-build", filepath.Join(out, "prod.BUILD"),
 		"--out-bundle-dir", bundle,
-		"--out-exports", exportsJSON,
+		"--out-exports", generatedJSON,
 	))
-	body, _ := os.ReadFile(exportsJSON)
-	if !strings.Contains(string(body), `"deps"`) ||
-		!strings.Contains(string(body), `"//elements/greetlib:base"`) {
-		t.Fatalf("exports.json core row missing the deps closure (//elements/greetlib:base):\n%s", body)
+	if body, _ := os.ReadFile(generatedJSON); strings.Contains(string(body), `"deps"`) {
+		t.Fatalf("converted element's exports.json must not fill Deps (invariant: Deps = unmodeled closure):\n%s", body)
 	}
+
+	// Consumer half: a HAND-WRITTEN manifest models the prebuilt-backed
+	// shape — same cmake names, but the labels point at a prebuilts
+	// package and core's row declares its closure.
+	handJSON := filepath.Join(out, "hand-exports.json")
+	mustWrite(t, handJSON, `{
+  "version": 1,
+  "elements": [
+    {
+      "name": "greetlib",
+      "exports": [
+        {
+          "cmake_target": "Greeter::core",
+          "bazel_label": "//prebuilts/greet:core",
+          "deps": ["//prebuilts/greet:base"]
+        },
+        {
+          "cmake_target": "Greeter::base",
+          "bazel_label": "//prebuilts/greet:base"
+        }
+      ]
+    }
+  ]
+}
+`)
 
 	prefix := filepath.Join(out, "prefix")
 	mustRun(t, exec.CommandContext(context.Background(), "cp", "-r", bundle+"/.", mustMkdir(t, prefix)))
@@ -354,16 +379,16 @@ install(TARGETS cons ARCHIVE DESTINATION lib)
 		"--source-root", consSrc,
 		"--bazel-package-path", "elements/cons",
 		"--prefix-dir", prefix,
-		"--exports-in", exportsJSON,
+		"--exports-in", handJSON,
 		"--out-build", consBuild,
 	))
 	got, err := os.ReadFile(consBuild)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"//elements/greetlib:core"`, `"//elements/greetlib:base"`} {
+	for _, want := range []string{`"//prebuilts/greet:core"`, `"//prebuilts/greet:base"`} {
 		if !strings.Contains(string(got), want) {
-			t.Fatalf("consumer BUILD missing %s (Export.Deps closure not wired; the consumer only names Greeter::core):\n%s", want, got)
+			t.Fatalf("consumer BUILD missing %s (declared closure not wired; the consumer only names Greeter::core):\n%s", want, got)
 		}
 	}
 }
