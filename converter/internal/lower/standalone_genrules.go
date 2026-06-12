@@ -381,8 +381,11 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		rewrittenCmd = dropNinjaDepfilePlumbing(rewrittenCmd, outs)
 		rewrittenCmd = rewriteGeneratedSrcRefs(rewrittenCmd, srcs, cc)
 		// The response files' -I roots expose the build dir's generated
-		// headers implicitly in cmake; mirror that visibility as srcs.
+		// headers AND the source dirs' helper headers implicitly in
+		// cmake; mirror both visibilities as srcs (generated outs
+		// directly, source roots via shared per-root filegroups).
 		srcs = append(srcs, responseFileGeneratedHdrs(srcs, cc, bazelPackagePath)...)
+		srcs = append(srcs, responseFileSourceHdrGroups(srcs, cc, bazelPackagePath, cmakeSrc)...)
 		// Audit: when the trace shows this command carried generator
 		// expressions, tag whether its path-bearing genexes resolved to
 		// $(location) labels (portable) or baked a machine-specific

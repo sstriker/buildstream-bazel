@@ -204,6 +204,86 @@ func responseFileGeneratedHdrs(srcs []string, cc *codegenContext, bazelPackagePa
 	return add
 }
 
+// responseFileSourceHdrGroups mirrors the SOURCE half of the response
+// files' include-root visibility: in cmake, `-I <srcdir>/Common/Core`
+// exposes every helper header under the dir on the real filesystem
+// (vtkSMPThreadLocal.h includes "SMP/Common/vtkSMPThreadLocalAPI.h" —
+// never a ninja input, never .data-listed), but a sandboxed genrule
+// sees only declared srcs. For each marked response file's
+// non-marker `-I` root under the element, a per-root header
+// filegroup is synthesized once (memoized in cc.RespfileHdrGroups —
+// the wrap-hierarchy genrules all -I the same module dirs) and the
+// genrule references it by label, keeping srcs compact. Returns the
+// ":<filegroup>" refs to append.
+func responseFileSourceHdrGroups(srcs []string, cc *codegenContext, bazelPackagePath, cmakeSrc string) []string {
+	if cc == nil || len(cc.GendirMarkedOuts) == 0 || cmakeSrc == "" {
+		return nil
+	}
+	contentByOut := map[string][]string{}
+	for i := range cc.Genrules {
+		t := &cc.Genrules[i]
+		if t.Kind == ir.KindWriteFile && t.WriteFileOut != "" {
+			contentByOut[t.WriteFileOut] = t.WriteFileContent
+		}
+	}
+	prefix := ""
+	if p := strings.Trim(bazelPackagePath, "/"); p != "" {
+		prefix = p + "/"
+	}
+	var refs []string
+	seenRef := map[string]bool{}
+	for _, s := range srcs {
+		if !cc.GendirMarkedOuts[s] {
+			continue
+		}
+		for _, line := range contentByOut[s] {
+			d, ok := strings.CutPrefix(strings.TrimSpace(line), "-I")
+			if !ok {
+				continue
+			}
+			d = strings.Trim(d, "'\"")
+			if strings.HasPrefix(d, bsbGendirMarker) || strings.Contains(d, "..") {
+				continue
+			}
+			rel := d
+			if prefix != "" {
+				if rel, ok = strings.CutPrefix(d, prefix); !ok {
+					continue
+				}
+			}
+			if rel == "" || filepath.IsAbs(rel) {
+				continue
+			}
+			name, exists := cc.RespfileHdrGroups[rel]
+			if !exists {
+				hdrs, err := discoverHeaders(cmakeSrc, []string{rel}, cc.HeaderWalkCache, cc.MissingIncludeDirs)
+				if err != nil || len(hdrs) == 0 {
+					cc.RespfileHdrGroups[rel] = "" // negative-cache
+					continue
+				}
+				name = "respfile_hdrs_" + sanitizePathToNameStem(rel)
+				cc.RespfileHdrGroups[rel] = name
+				cc.Genrules = append(cc.Genrules, ir.Target{
+					Name:       name,
+					Kind:       ir.KindFilegroup,
+					Srcs:       hdrs,
+					Visibility: []string{"//visibility:private"},
+				})
+			}
+			if name == "" {
+				continue
+			}
+			ref := ":" + name
+			if !seenRef[ref] {
+				seenRef[ref] = true
+				refs = append(refs, ref)
+			}
+		}
+	}
+	sort.Strings(refs)
+	return refs
+}
+
 // isHeaderishPath reports whether a path carries a header-family
 // extension (the include-resolution surface; matches the converter's
 // header recognition family).

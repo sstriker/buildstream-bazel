@@ -73,6 +73,13 @@ type codegenContext struct {
 	// this set.
 	GendirMarkedOuts map[string]bool
 
+	// RespfileHdrGroups memoizes the per-include-root header
+	// filegroups responseFileSourceHdrGroups synthesizes (source-root
+	// relative dir → filegroup name), so the ~40 wrap-hierarchy-style
+	// genrules that all -I the same module dirs share one filegroup
+	// per root instead of each listing hundreds of headers.
+	RespfileHdrGroups map[string]string
+
 	// CcEmbedSourceToHeader maps a cc_embed lift's generated SOURCE output
 	// (the .cxx, which lands in the consuming target's srcs) to its sibling
 	// generated HEADER output (the .h). A target that compiles the source
@@ -385,6 +392,7 @@ func newCodegenContext() *codegenContext {
 	return &codegenContext{
 		OutToGenrule:               map[string]string{},
 		GendirMarkedOuts:           map[string]bool{},
+		RespfileHdrGroups:          map[string]string{},
 		CcEmbedSourceToHeader:      map[string]string{},
 		StampVars:                  map[string]string{},
 		bakeTodoDisposition:        map[string]todos.Disposition{},
