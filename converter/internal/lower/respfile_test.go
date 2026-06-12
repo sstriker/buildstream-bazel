@@ -3,6 +3,8 @@ package lower
 import (
 	"strings"
 	"testing"
+
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // TestDropNinjaDepfilePlumbing pins the VTK wrap-hierarchy shape: the
@@ -62,6 +64,40 @@ func TestRewriteGeneratedSrcRefs_GendirMarker(t *testing.T) {
 	}
 	if strings.Contains(got, "tool CMakeFiles/x.data") {
 		t.Errorf("raw spelling survived:\n%s", got)
+	}
+}
+
+// TestResponseFileGeneratedHdrs: a marker-carrying response file's
+// -I roots under @BSB_GENDIR@/<labelRoot>/ expose the build dir's
+// generated headers implicitly (cmake's visibility); the genrule's
+// srcs gain every recovered header-ish output under those roots —
+// the export-header shape (#include "vtkCommonCoreModule.h") that no
+// ninja edge ever declares as an input.
+func TestResponseFileGeneratedHdrs(t *testing.T) {
+	cc := newCodegenContext()
+	cc.GendirMarkedOuts["CMakeFiles/x.args"] = true
+	cc.OutToGenrule["CMakeFiles/x.args"] = "gen_args"
+	cc.OutToGenrule["Common/Core/vtkCommonCoreModule.h"] = "gen_mod"
+	cc.OutToGenrule["Common/Core/vtkABINamespace.h"] = "gen_abi"
+	cc.OutToGenrule["Other/place.h"] = "gen_other"
+	cc.OutToGenrule["Common/Core/proj.db"] = "gen_db"
+	cc.Genrules = append(cc.Genrules, ir.Target{
+		Kind:         ir.KindWriteFile,
+		WriteFileOut: "CMakeFiles/x.args",
+		WriteFileContent: []string{
+			"-I'elements/vtk/Common/Core'",
+			"-I'@BSB_GENDIR@/elements/vtk/Common/Core'",
+			"",
+		},
+	})
+	srcs := []string{"CMakeFiles/x.args", "Common/Core/vtkABINamespace.h"}
+	got := responseFileGeneratedHdrs(srcs, cc, "elements/vtk")
+	want := []string{"Common/Core/vtkCommonCoreModule.h"}
+	if len(got) != 1 || got[0] != want[0] {
+		t.Errorf("got %v, want %v (already-present + non-header + out-of-root excluded)", got, want)
+	}
+	if more := responseFileGeneratedHdrs([]string{"plain.txt"}, cc, "elements/vtk"); more != nil {
+		t.Errorf("non-marked srcs must add nothing: %v", more)
 	}
 }
 

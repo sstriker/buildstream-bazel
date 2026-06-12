@@ -380,6 +380,9 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// marker-carrying bakes) so the action reads staged paths.
 		rewrittenCmd = dropNinjaDepfilePlumbing(rewrittenCmd, outs)
 		rewrittenCmd = rewriteGeneratedSrcRefs(rewrittenCmd, srcs, cc)
+		// The response files' -I roots expose the build dir's generated
+		// headers implicitly in cmake; mirror that visibility as srcs.
+		srcs = append(srcs, responseFileGeneratedHdrs(srcs, cc, bazelPackagePath)...)
 		// Audit: when the trace shows this command carried generator
 		// expressions, tag whether its path-bearing genexes resolved to
 		// $(location) labels (portable) or baked a machine-specific

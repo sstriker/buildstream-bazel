@@ -2,9 +2,12 @@ package lower
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 // This file is the response-file half of the wrap-hierarchy genrule
@@ -133,6 +136,83 @@ func rewriteGeneratedSrcRefs(cmd string, srcs []string, cc *codegenContext) stri
 		return cmd
 	}
 	return "BSB_RD=$$(mktemp -d) && " + strings.Join(sedLines, " && ") + " && " + cmd
+}
+
+// responseFileGeneratedHdrs returns the generated header outputs a
+// genrule's marker-carrying response files make reachable: for each
+// src whose bake content carries `-I` roots under the
+// @BSB_GENDIR@/<labelRoot>/ marker, every cc.OutToGenrule output
+// under that root with a header-ish extension. In the cmake build
+// those headers sit in the build-dir include root the `-I` names
+// (vtkValueFromString.h does `#include "vtkCommonCoreModule.h"`, the
+// configure-time export header) — the tool resolves them implicitly,
+// so the ninja edge never declares them as inputs and the recovered
+// genrule's srcs miss them. Mirroring the build-dir root's generated
+// header set into srcs restores cmake's visibility; everything is
+// label-addressable because each out is a recovered rule's product.
+func responseFileGeneratedHdrs(srcs []string, cc *codegenContext, bazelPackagePath string) []string {
+	if cc == nil || len(cc.GendirMarkedOuts) == 0 {
+		return nil
+	}
+	contentByOut := map[string][]string{}
+	for i := range cc.Genrules {
+		t := &cc.Genrules[i]
+		if t.Kind == ir.KindWriteFile && t.WriteFileOut != "" {
+			contentByOut[t.WriteFileOut] = t.WriteFileContent
+		}
+	}
+	rootPrefix := bsbGendirMarker + "/"
+	if p := strings.Trim(bazelPackagePath, "/"); p != "" {
+		rootPrefix += p + "/"
+	}
+	roots := map[string]bool{}
+	for _, s := range srcs {
+		if !cc.GendirMarkedOuts[s] {
+			continue
+		}
+		for _, line := range contentByOut[s] {
+			d, ok := strings.CutPrefix(strings.TrimSpace(line), "-I")
+			if !ok {
+				continue
+			}
+			d = strings.Trim(d, "'\"")
+			if rel, ok := strings.CutPrefix(d, rootPrefix); ok && rel != "" {
+				roots[strings.TrimSuffix(rel, "/")+"/"] = true
+			}
+		}
+	}
+	if len(roots) == 0 {
+		return nil
+	}
+	existing := make(map[string]bool, len(srcs))
+	for _, s := range srcs {
+		existing[s] = true
+	}
+	var add []string
+	for out := range cc.OutToGenrule {
+		if existing[out] || !isHeaderishPath(out) {
+			continue
+		}
+		for root := range roots {
+			if strings.HasPrefix(out, root) {
+				add = append(add, out)
+				break
+			}
+		}
+	}
+	sort.Strings(add)
+	return add
+}
+
+// isHeaderishPath reports whether a path carries a header-family
+// extension (the include-resolution surface; matches the converter's
+// header recognition family).
+func isHeaderishPath(p string) bool {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".h", ".hh", ".hpp", ".hxx", ".inc", ".inl", ".ipp", ".def":
+		return true
+	}
+	return false
 }
 
 // stripConvertTimePathsCfg is reanchorConvertTimePaths' policy
