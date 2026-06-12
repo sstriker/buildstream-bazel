@@ -233,6 +233,17 @@ else
   log "WARNING: no go; cannot install buildifier"
 fi
 
+# --- find_package host-installs (survey deps) -----------------------------
+# Abseil installs by default (cheap, idempotent — protobuf's lens needs it);
+# protobuf + re2 (grpc's deeper graph) ride the BSB_PROVISION_GRPC_DEPS=1
+# opt-in inside the script (heavy protobuf build). This makes the
+# protobuf/grpc lens runs reproducible with no manual prep step.
+if [ -f "$CLAUDE_PROJECT_DIR/tools/install-survey-deps.sh" ]; then
+  sh "$CLAUDE_PROJECT_DIR/tools/install-survey-deps.sh" || log "WARNING: install-survey-deps.sh reported failures (see above)"
+else
+  log "WARNING: tools/install-survey-deps.sh missing; protobuf/grpc lens runs need manual prep"
+fi
+
 # --- CUDA toolkit (opt-in) -----------------------------------------------
 if [ "${BSB_PROVISION_CUDA:-}" = "1" ]; then
   if command -v nvcc >/dev/null 2>&1; then

@@ -49,6 +49,74 @@ install_abseil() {
 
 install_abseil || true
 
+# grpc's deeper find_package deps: protobuf + re2, both built AGAINST the
+# abseil install above (matching grpc.conf's CMAKE_PREFIX_PATH=/tmp/
+# absl-install;/tmp/protobuf-install;/tmp/re2-install). Protobuf is a
+# heavy build (~10+ min), so both are gated behind BSB_PROVISION_GRPC_DEPS=1
+# — the same opt-in pattern the SessionStart hook uses for CUDA.
+PROTOBUF_DIR=${PROTOBUF_DIR:-/tmp/protobuf}
+PROTOBUF_INSTALL=${PROTOBUF_INSTALL:-/tmp/protobuf-install}
+RE2_DIR=${RE2_DIR:-/tmp/re2}
+RE2_INSTALL=${RE2_INSTALL:-/tmp/re2-install}
+
+install_protobuf() {
+  if [ -f "$PROTOBUF_INSTALL/lib/libprotobuf.a" ]; then
+    log "protobuf already installed at $PROTOBUF_INSTALL (skip)"
+    return 0
+  fi
+  [ -f "$ABSL_INSTALL/lib/libabsl_base.a" ] || { log "WARNING: abseil install missing; protobuf install needs it"; return 1; }
+  if [ ! -d "$PROTOBUF_DIR" ]; then
+    log "fetching protobuf source"
+    ( cd "$repo_root" && make fetch-protobuf ) >&2 || { log "WARNING: fetch-protobuf failed"; return 1; }
+  fi
+  command -v cmake >/dev/null 2>&1 || { log "WARNING: no cmake; cannot install protobuf"; return 1; }
+  log "installing protobuf → $PROTOBUF_INSTALL (against $ABSL_INSTALL; PIC, C++17)"
+  if cmake -S "$PROTOBUF_DIR" -B /tmp/protobuf-build -G Ninja \
+        -DCMAKE_INSTALL_PREFIX="$PROTOBUF_INSTALL" \
+        -Dprotobuf_BUILD_TESTS=OFF -Dprotobuf_ABSL_PROVIDER=package \
+        -DCMAKE_PREFIX_PATH="$ABSL_INSTALL" \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_CXX_STANDARD=17 \
+        -DCMAKE_BUILD_TYPE=Release >&2 \
+     && cmake --build /tmp/protobuf-build --target install >&2; then
+    log "protobuf installed"
+  else
+    log "WARNING: protobuf install failed — the grpc lens will not convert"
+    return 1
+  fi
+}
+
+install_re2() {
+  if [ -f "$RE2_INSTALL/lib/libre2.a" ]; then
+    log "re2 already installed at $RE2_INSTALL (skip)"
+    return 0
+  fi
+  [ -f "$ABSL_INSTALL/lib/libabsl_base.a" ] || { log "WARNING: abseil install missing; re2 install needs it"; return 1; }
+  if [ ! -d "$RE2_DIR" ]; then
+    log "fetching re2 source"
+    ( cd "$repo_root" && make fetch-re2 ) >&2 || { log "WARNING: fetch-re2 failed"; return 1; }
+  fi
+  command -v cmake >/dev/null 2>&1 || { log "WARNING: no cmake; cannot install re2"; return 1; }
+  log "installing re2 → $RE2_INSTALL (against $ABSL_INSTALL; PIC, C++17)"
+  if cmake -S "$RE2_DIR" -B /tmp/re2-build -G Ninja \
+        -DCMAKE_INSTALL_PREFIX="$RE2_INSTALL" -DRE2_BUILD_TESTING=OFF \
+        -DCMAKE_PREFIX_PATH="$ABSL_INSTALL" \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_CXX_STANDARD=17 \
+        -DCMAKE_BUILD_TYPE=Release >&2 \
+     && cmake --build /tmp/re2-build --target install >&2; then
+    log "re2 installed"
+  else
+    log "WARNING: re2 install failed — the grpc lens will not convert"
+    return 1
+  fi
+}
+
+if [ "${BSB_PROVISION_GRPC_DEPS:-}" = "1" ]; then
+  install_protobuf || true
+  install_re2 || true
+else
+  log "grpc deps not requested (set BSB_PROVISION_GRPC_DEPS=1 for protobuf-install/re2-install)"
+fi
+
 # SDL: system OpenGL / GLES / EGL dev headers. SDL's cmake auto-enables the
 # OpenGL, OpenGL ES (incl. the legacy GLES1 render backend whose
 # <GLES/glplatform.h> SDL does NOT vendor — it ships GLES2/GLES3/EGL/KHR under
