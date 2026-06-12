@@ -2713,6 +2713,17 @@ func newLinkDepRouter(irt *ir.Target) *linkDepRouter {
 	return &linkDepRouter{irt: irt, seen: seen, allowsImplementationDeps: kindAllowsImplementationDeps(irt.Kind)}
 }
 
+// addExport wires a manifest export: its BazelLabel plus every
+// Export.Deps label, all with the same scope. The deps ride along
+// because Bazel transitivity can't recover them for prebuilt/
+// cc_import-backed labels (see manifest.Export.Deps).
+func (rt *linkDepRouter) addExport(ex *manifest.Export, private bool) {
+	rt.add(ex.BazelLabel, private)
+	for _, d := range ex.Deps {
+		rt.add(d, private)
+	}
+}
+
 func (rt *linkDepRouter) add(label string, private bool) {
 	if rt.seen[label] {
 		return
@@ -2813,7 +2824,7 @@ func routeNonAbsLibraryFragment(irt *ir.Target, rt *linkDepRouter, path string, 
 	}
 	if name, ok := linkLibFlagName(path); ok {
 		if export := imports.LookupLinkLibrary(name); export != nil {
-			rt.add(export.BazelLabel, scopeIsPrivate(traceLinkScope, export.CMakeTarget))
+			rt.addExport(export, scopeIsPrivate(traceLinkScope, export.CMakeTarget))
 			return
 		}
 	}
@@ -2918,7 +2929,7 @@ func attributeUnresolvedLibPath(irt *ir.Target, rt *linkDepRouter, t *fileapi.Ta
 		// link_libraries), redirect to it instead of linking
 		// the host -l<name>.
 		if export := imports.LookupLinkLibrary(name); export != nil {
-			rt.add(export.BazelLabel, scopeIsPrivate(traceLinkScope, export.CMakeTarget))
+			rt.addExport(export, scopeIsPrivate(traceLinkScope, export.CMakeTarget))
 			return
 		}
 		flag := "-l" + name
@@ -3078,7 +3089,13 @@ func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 			if len(directTraceLibs) > 0 && !directTraceLibs[export.CMakeTarget] {
 				continue
 			}
-			rt.add(export.BazelLabel, scopeIsPrivate(traceLinkScope, export.CMakeTarget))
+			// addExport (not bare add): the export's manifest-declared
+			// Deps ride along, which is what makes the transitive-only
+			// drop above SOUND for prebuilt-backed labels — the dropped
+			// flattened archives re-enter through the directly-named
+			// export's declared closure instead of its (nonexistent)
+			// Bazel-side deps.
+			rt.addExport(export, scopeIsPrivate(traceLinkScope, export.CMakeTarget))
 			continue
 		}
 		attributeUnresolvedLibPath(irt, rt, t, path, imports, findPkgAttrib, traceLinkScope)
@@ -3141,7 +3158,7 @@ func lowerLinkAttribution(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc 
 		rt := newLinkDepRouter(irt)
 		for _, lib := range traceLinkLibs {
 			if export := imports.LookupCMakeTarget(lib); export != nil {
-				rt.add(export.BazelLabel, traceLinkScope != nil && traceLinkScope[lib] == "PRIVATE")
+				rt.addExport(export, traceLinkScope != nil && traceLinkScope[lib] == "PRIVATE")
 			}
 		}
 	}
@@ -4937,8 +4954,11 @@ func lowerTargetDeps(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc targe
 	seenDep := map[string]bool{}
 	for _, dep := range t.Dependencies {
 		// Resolve label; routing decision (Deps vs
-		// ImplementationDeps) folds in after.
+		// ImplementationDeps) folds in after. exportDeps carries a
+		// manifest export's declared closure (Export.Deps) when the
+		// label resolved through the manifest.
 		var label string
+		var exportDeps []string
 		//nolint:nestif // inside the grandfathered lowerTarget giant; folds into its ROADMAP burndown pass.
 		if name, ok := idToName[dep.Id]; ok {
 			label = ":" + name
@@ -4948,6 +4968,7 @@ func lowerTargetDeps(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc targe
 			cmakeName := stripIDHash(dep.Id)
 			if export := imports.LookupCMakeTarget(cmakeName); export != nil {
 				label = export.BazelLabel
+				exportDeps = export.Deps
 				// find_package attribution: when the cmake
 				// target name is in the `<Package>::<Component>`
 				// shape, tag the consuming target with the
@@ -5000,10 +5021,21 @@ func lowerTargetDeps(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc targe
 		if reuseOwners[stripIDHash(dep.Id)] {
 			continue
 		}
-		if allowsImplementationDeps && depScopeIsPrivate(traceLinkScope, dep, idToName) {
-			irt.ImplementationDeps = append(irt.ImplementationDeps, label)
-		} else {
-			irt.Deps = append(irt.Deps, label)
+		private := allowsImplementationDeps && depScopeIsPrivate(traceLinkScope, dep, idToName)
+		// The export's manifest-declared Deps ride with its label, same
+		// scope, deduped through the same seenDep set (see
+		// manifest.Export.Deps for why Bazel transitivity can't recover
+		// them for prebuilt-backed labels).
+		for _, l := range append([]string{label}, exportDeps...) {
+			if l != label && seenDep[l] {
+				continue
+			}
+			seenDep[l] = true
+			if private {
+				irt.ImplementationDeps = append(irt.ImplementationDeps, l)
+			} else {
+				irt.Deps = append(irt.Deps, l)
+			}
 		}
 	}
 

@@ -49,6 +49,13 @@ type Element struct {
 	// elements without a find_package whole-tree include (the common case).
 	UmbrellaLabel        string   `json:"umbrella_label,omitempty"`
 	UmbrellaIncludeRoots []string `json:"umbrella_include_roots,omitempty"`
+
+	// UmbrellaDeps is the dependency closure of the umbrella target —
+	// the labels a synthesized umbrella cc_library re-exports (the
+	// structured home of what used to live in a side-channel deps.txt;
+	// the build-lens .conf umbrella synthesis reads it from here).
+	// Informational for lower; consumed by workspace-synthesis tooling.
+	UmbrellaDeps []string `json:"umbrella_deps,omitempty"`
 }
 
 // Export wires one CMake imported target name to a Bazel label.
@@ -73,6 +80,18 @@ type Export struct {
 	// fragments or pkg-config-like names) the import expands into. Most
 	// imports won't set this; included for completeness.
 	LinkLibraries []string `json:"link_libraries,omitempty"`
+
+	// Deps are absolute Bazel labels the consumer must wire ALONGSIDE
+	// BazelLabel when it imports this export — the import's own
+	// requirements that Bazel transitivity cannot recover on its own:
+	// a prebuilt/cc_import-backed BazelLabel models no deps, cmake's
+	// flattened link line is deliberately dropped for transitive-only
+	// archives (the trace-gated drop), and a STATIC consumer has no
+	// link line at all. Producer-emitted manifests fill these with the
+	// labels of the export target's deps that are themselves exports;
+	// hand-written host-install manifests list the closure explicitly.
+	// Wired with the same PUBLIC/PRIVATE scope as the export itself.
+	Deps []string `json:"deps,omitempty"`
 
 	// LinkPaths is the set of absolute paths the cmake codemodel records
 	// for this import in `target.link.commandFragments[role="libraries"]`.

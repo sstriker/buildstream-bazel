@@ -287,3 +287,83 @@ func mustMkdir(t *testing.T, path string) string {
 	}
 	return path
 }
+
+// TestE2E_CMakeConsumer_ExportDepsClosure: the Export.Deps round trip.
+// The producer's exported `core` PUBLIC-links its exported `base`; the
+// consumer links ONLY Greeter::core. cmake dedups nothing here — the
+// consumer simply never names base — so without the declared closure
+// the consumer's BUILD would carry core's label alone, and a
+// prebuilt-backed core (cc_import) would link short (the
+// missing-symbols mechanisms). The gates: exports.json's core row
+// carries base's label in deps, and the consumer's converted BUILD
+// wires BOTH labels from naming just one.
+func TestE2E_CMakeConsumer_ExportDepsClosure(t *testing.T) {
+	conv := lookupConverter(t)
+	if _, err := exec.LookPath("cmake"); err != nil {
+		t.Skipf("cmake not on PATH: %v", err)
+	}
+
+	prodSrc := t.TempDir()
+	mustWrite(t, filepath.Join(prodSrc, "CMakeLists.txt"), `cmake_minimum_required(VERSION 3.20)
+project(greetpkg LANGUAGES C VERSION 1.0.0)
+add_library(base STATIC base.c)
+add_library(core STATIC core.c)
+target_link_libraries(core PUBLIC base)
+target_include_directories(core PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+install(TARGETS core base EXPORT greetTargets ARCHIVE DESTINATION lib)
+install(DIRECTORY include/ DESTINATION include)
+install(EXPORT greetTargets FILE greetTargets.cmake NAMESPACE Greeter:: DESTINATION lib/cmake/greetpkg)
+`)
+	mustWrite(t, filepath.Join(prodSrc, "base.c"), "int base_v(void){return 1;}\n")
+	mustWrite(t, filepath.Join(prodSrc, "core.c"), "int base_v(void);\nint core_v(void){return base_v();}\n")
+	mustWrite(t, filepath.Join(prodSrc, "include", "core.h"), "int core_v(void);\n")
+
+	out := t.TempDir()
+	bundle := filepath.Join(out, "bundle")
+	exportsJSON := filepath.Join(out, "exports.json")
+	mustRun(t, exec.CommandContext(context.Background(), conv,
+		"--source-root", prodSrc,
+		"--bazel-package-path", "elements/greetlib",
+		"--out-build", filepath.Join(out, "prod.BUILD"),
+		"--out-bundle-dir", bundle,
+		"--out-exports", exportsJSON,
+	))
+	body, _ := os.ReadFile(exportsJSON)
+	if !strings.Contains(string(body), `"deps"`) ||
+		!strings.Contains(string(body), `"//elements/greetlib:base"`) {
+		t.Fatalf("exports.json core row missing the deps closure (//elements/greetlib:base):\n%s", body)
+	}
+
+	prefix := filepath.Join(out, "prefix")
+	mustRun(t, exec.CommandContext(context.Background(), "cp", "-r", bundle+"/.", mustMkdir(t, prefix)))
+
+	consSrc := t.TempDir()
+	mustWrite(t, filepath.Join(consSrc, "CMakeLists.txt"), `cmake_minimum_required(VERSION 3.20)
+project(cons LANGUAGES C VERSION 1.0.0)
+find_package(Greeter CONFIG REQUIRED)
+add_library(cons STATIC cons.c)
+target_link_libraries(cons PUBLIC Greeter::core)
+install(TARGETS cons ARCHIVE DESTINATION lib)
+`)
+	mustWrite(t, filepath.Join(consSrc, "cons.c"), "int c(void){return 0;}\n")
+
+	consBuild := filepath.Join(out, "cons.BUILD")
+	mustRun(t, exec.CommandContext(context.Background(), conv,
+		"--source-root", consSrc,
+		"--bazel-package-path", "elements/cons",
+		"--prefix-dir", prefix,
+		"--exports-in", exportsJSON,
+		"--out-build", consBuild,
+	))
+	got, err := os.ReadFile(consBuild)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"//elements/greetlib:core"`, `"//elements/greetlib:base"`} {
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("consumer BUILD missing %s (Export.Deps closure not wired; the consumer only names Greeter::core):\n%s", want, got)
+		}
+	}
+}
