@@ -5,7 +5,9 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/emit/cmakecfg"
+	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 // TestBuildExportsDoc checks the producer-side exports manifest: each
@@ -16,7 +18,7 @@ func TestBuildExportsDoc(t *testing.T) {
 		Name: "greetpkg",
 		Targets: []ir.Target{
 			{Name: "greeter", Kind: ir.KindCCLibrary, ArtifactName: "libgreeter.a"},
-			{Name: "tool", Kind: ir.KindCCBinary}, // excluded — not importable
+			{Name: "tool", Kind: ir.KindCCBinary}, // excluded — not installed
 			{Name: "aux", Kind: ir.KindCCLibrary},
 		},
 	}
@@ -183,5 +185,47 @@ func TestExportNamespaceForPackage(t *testing.T) {
 				t.Errorf("exportNamespaceForPackage(%q) = %q, want %q", tt.pkgName, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestBuildExportsDoc_InstalledExecutable: an installed executable's
+// export row carries the namespaced CMakeTarget, its label, and the
+// anchored bin/ path in link_paths — the key the consumer-side genrule
+// tool lift (rewriteToolFromTarget) matches when a custom command
+// drives the tool by its prefix-resolved path. No link_libraries (-l
+// semantics don't apply to executables). Non-installed executables are
+// excluded entirely (no prefix-reachable path exists).
+func TestBuildExportsDoc_InstalledExecutable(t *testing.T) {
+	pkg := &ir.Package{
+		Name: "toolpkg",
+		Targets: []ir.Target{
+			{Name: "gen", Kind: ir.KindCCBinary, ArtifactName: "gen", InstallDest: "bin"},
+			{Name: "scratch", Kind: ir.KindCCBinary, ArtifactName: "scratch"},
+		},
+	}
+	doc := buildExportsDoc(pkg, "toolpkg", "Tool::", "elements/toolpkg", nil, false)
+	if len(doc.Elements) != 1 {
+		t.Fatalf("elements = %d", len(doc.Elements))
+	}
+	var gen *manifest.Export
+	for _, ex := range doc.Elements[0].Exports {
+		if ex.CMakeTarget == "Tool::gen" {
+			gen = ex
+		}
+		if ex.CMakeTarget == "Tool::scratch" {
+			t.Errorf("non-installed executable must not export: %+v", ex)
+		}
+	}
+	if gen == nil {
+		t.Fatalf("installed executable missing from exports: %+v", doc.Elements[0].Exports)
+	}
+	if gen.BazelLabel != "//elements/toolpkg:gen" {
+		t.Errorf("BazelLabel = %q", gen.BazelLabel)
+	}
+	if len(gen.LinkPaths) != 1 || gen.LinkPaths[0] != lower.ManifestPrefixAnchor+"bin/gen" {
+		t.Errorf("LinkPaths = %v, want the anchored bin/ path", gen.LinkPaths)
+	}
+	if len(gen.LinkLibraries) != 0 {
+		t.Errorf("executables carry no -l semantics; LinkLibraries = %v", gen.LinkLibraries)
 	}
 }
