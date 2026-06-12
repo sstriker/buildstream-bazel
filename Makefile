@@ -7,7 +7,7 @@
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
         fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-catch2 fetch-libpng fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
-        fetch-re2 fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm fetch-cryptoauthlib fetch-survey-regression \
+        fetch-re2 fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-buildbox fetch-glog fetch-glm fetch-cryptoauthlib fetch-survey-regression \
         survey-gazelle survey-multiplatform update-golden record-fixtures lint vet fmt staticcheck check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
@@ -85,6 +85,8 @@ CURL_VERSION      ?= curl-8_11_1
 CURL_DIR          ?= /tmp/curl
 GRPC_VERSION      ?= v1.68.0
 GRPC_DIR          ?= /tmp/grpc
+BUILDBOX_VERSION  ?= 1.4.8
+BUILDBOX_DIR      ?= /tmp/buildbox
 GLOG_VERSION      ?= v0.7.1
 GLOG_DIR          ?= /tmp/glog
 GLM_VERSION       ?= 1.0.1
@@ -1492,6 +1494,16 @@ fetch-grpc:
 		git clone --depth 1 --branch $(GRPC_VERSION) --recurse-submodules --shallow-submodules https://github.com/grpc/grpc.git "$(GRPC_DIR)"; \
 	else \
 		echo "grpc already at $(GRPC_DIR); rm -rf to refetch"; \
+	fi
+
+# BuildGrid/buildbox — a BuildStream-ecosystem REAPI tooling monorepo
+# (gitlab, not github). Surveys the custom protoc_compile() codegen wrapper
+# and the monorepo conditional-tool layout. See docs/survey-corpus.md.
+fetch-buildbox:
+	@if [ ! -d "$(BUILDBOX_DIR)" ]; then \
+		git clone --depth 1 --branch $(BUILDBOX_VERSION) https://gitlab.com/BuildGrid/buildbox/buildbox.git "$(BUILDBOX_DIR)"; \
+	else \
+		echo "buildbox already at $(BUILDBOX_DIR); rm -rf to refetch"; \
 	fi
 
 # Convenience aggregate: fetch the default survey corpus (the cheap four;
