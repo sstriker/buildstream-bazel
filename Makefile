@@ -7,7 +7,7 @@
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
         fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-catch2 fetch-libpng fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
-        fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm fetch-cryptoauthlib fetch-survey-regression \
+        fetch-re2 fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm fetch-cryptoauthlib fetch-survey-regression \
         survey-gazelle survey-multiplatform update-golden record-fixtures lint vet fmt staticcheck check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
@@ -39,6 +39,8 @@ ABSEIL_VERSION    ?= 20260107.1
 ABSEIL_DIR        ?= /tmp/abseil-cpp
 PROTOBUF_VERSION  ?= v6.31.1
 PROTOBUF_DIR      ?= /tmp/protobuf
+RE2_VERSION       ?= 2024-07-02
+RE2_DIR           ?= /tmp/re2
 GTEST_VERSION     ?= v1.17.0
 GTEST_DIR         ?= /tmp/googletest
 EIGEN_VERSION     ?= 3.4.1
@@ -1244,6 +1246,13 @@ fetch-abseil:
 
 # protobuf: protoc custom-command codegen + install(EXPORT) config-mode
 # producer. Fills the cross-target-codegen / export-bundle shape.
+fetch-re2:
+	@if [ ! -d "$(RE2_DIR)" ]; then \
+		git clone --depth 1 --branch $(RE2_VERSION) https://github.com/google/re2.git "$(RE2_DIR)"; \
+	else \
+		echo "re2 already at $(RE2_DIR); rm -rf to refetch"; \
+	fi
+
 fetch-protobuf:
 	@if [ ! -d "$(PROTOBUF_DIR)" ]; then \
 		git clone --depth 1 --branch $(PROTOBUF_VERSION) https://github.com/protocolbuffers/protobuf.git "$(PROTOBUF_DIR)"; \

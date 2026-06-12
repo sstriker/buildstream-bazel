@@ -15,32 +15,6 @@ transition cleanly.
 
 ## Next
 
-- **Imports-manifest harvester (`cmd/imports-harvest`) — manifests from
-  installed trees.** Given an install-shaped prefix (a bst artifact
-  checkout, a host-install dir), parse its `lib/cmake/<Pkg>/*Targets*.cmake`
-  bundles (cmake's own serialized export graph: IMPORTED targets incl.
-  executables, IMPORTED_LOCATION → anchored link_paths,
-  INTERFACE_INCLUDE_DIRECTORIES, INTERFACE_LINK_LIBRARIES → DIRECT deps)
-  plus `.pc` files (Requires/Libs for bundle-less libs) and stray `bin/`
-  executables, and emit a complete imports manifest. Deps stay DIRECT —
-  the pipeline pairs with `imports-wrapper-gen`, whose wrappers give Bazel
-  transitivity the closure (no flattening; the generator's output manifest
-  is deps-free per the Export.Deps invariant). Labels synthesize against
-  the wrapper package up front, so the generator is label-idempotent.
-  V1 residue: genex handling in INTERFACE_LINK_LIBRARIES is conservative
-  ($<LINK_ONLY:x> unwraps, config arms pick the primary, others warn+skip),
-  cmake builtin pseudo-targets via a small table (Threads::Threads →
-  pthread). Eventually subsumes the host-install bullet below: harvested
-  artifacts replace hand-written manifests and /tmp prep steps.
-
-- **Reproducible `find_package` host-installs.** The grpc/protobuf build-lens
-  `.conf` files hardcode `/tmp/absl-install` (host-installed abseil). Fold the
-  abseil (and protobuf, for grpc) host-installs into the `SessionStart` hook so
-  the lens is reproducible without a manual prep step. (Carried from protobuf;
-  grpc itself is green. The umbrella deps snapshot moved into structured form —
-  `umbrella_deps` in the imports manifests, synthesized by the `.conf`s from
-  there — so only the host-install staging remains.)
-
 - **Green the remaining heavyweight corpus members: vtk (tail), cuda-samples.**
   25/26 are green (protobuf + sdl + vtk + grpc landed). Remaining:
   - **vtk** — configures + converts with 0 rejections, and the 2026-06-10
