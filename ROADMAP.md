@@ -16,19 +16,22 @@ transition cleanly.
 ## Next
 
 - **Faithful SHARED-library conversion (`cc_shared_library`) — remaining:
-  corpus-wide re-green + edge cases.** The WHOLE POINT of shared is FIDELITY —
+  LLVM/VTK re-green + edge cases.** The WHOLE POINT of shared is FIDELITY —
   to build what cmake would actually build (the survey forces
   `BUILD_SHARED_LIBS=OFF` for simplicity, but static is NOT the project's
   default; that forced-static is the deviation this work removes). The lift
-  (`--emit-shared-libraries`, survey `SURVEY_SHARED=1`) is validated green on 9
-  probed members (zlib, fmt, libxml2, brotli multi-lib, curl multi-package +
-  the SIGSEGV root-cause, glog, spdlog, mbedtls multi-lib, protobuf). Default
-  emit is byte-identical (opt-in). **Remaining:** run the WHOLE build-lens
-  corpus under `SURVEY_SHARED=1` (incl. sdl, OpenBLAS, the heavy LLVM/VTK) and
-  fix fallout; carry the `.so` in runfiles for `bazel run`/test; `MODULE_LIBRARY`
-  dlopen semantics; and consider flipping `SURVEY_SHARED` to the DEFAULT once the
-  corpus is green under it (so green + the fidelity lens run against the config
-  cmake produces).
+  (`--emit-shared-libraries`, survey `SURVEY_SHARED=1`) is validated green on
+  24 members: the original 9 probes (zlib, fmt, libxml2, brotli multi-lib,
+  curl multi-package + the SIGSEGV root-cause, glog, spdlog, mbedtls
+  multi-lib, protobuf) plus the 2026-06-12 corpus sweep (libpng, catch2,
+  googletest, glm, nlohmann-json, boost-core, eigen, abseil, cryptoauthlib,
+  zstd, libevent — after the dynamic_deps-on-cc_library fix it surfaced —
+  sdl, OpenBLAS, openblas-clapack). Default emit is byte-identical (opt-in).
+  **Remaining:** grpc (its dep-provisioned shared run is in flight), the
+  heavy LLVM/VTK; carry the `.so` in runfiles for `bazel run`/test;
+  `MODULE_LIBRARY` dlopen semantics; and consider flipping `SURVEY_SHARED`
+  to the DEFAULT once the corpus is green under it (so green + the fidelity
+  lens run against the config cmake produces).
 
 - **Derive build-lens link mode from the project's static config (drop the
   per-member `--dynamic_mode=off` knobs).** The build lens forces
