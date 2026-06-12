@@ -283,13 +283,13 @@ transition cleanly.
   compile-db lenses already widen their fixed-fixture CI gates to the
   corpus).
 
-- **ELF dynamic-section fidelity lens (shared-lib ABI) — TOOL SHIPPED
-  (v1); survey wiring remaining.** The shared-library sibling of the
-  symbol-fidelity lens: where that lens compares EXPORTED-SYMBOL SETS of
-  STATIC archives (`nm`) and deliberately abstracts away binary structure
-  (the right call for `.a` — section/relocation byte-diffs are toolchain
-  noise), this lens reads the `.so` dynamic/ABI surface a symbol-NAME set
-  can't express — **SONAME**, the **DT_NEEDED** runtime-dependency list,
+- **ELF dynamic-section fidelity lens (shared libs + executables) — TOOL
+  SHIPPED (v1); survey wiring remaining.** The dynamic-section sibling of
+  the symbol-fidelity lens: where that lens compares EXPORTED-SYMBOL SETS
+  of STATIC archives (`nm`) and deliberately abstracts away binary
+  structure (the right call for `.a` — section/relocation byte-diffs are
+  toolchain noise), this lens reads the dynamic/ABI surface a symbol-NAME
+  set can't express, on BOTH a `.so` and an executable (PIE / `ET_EXEC`) — **SONAME**, the **DT_NEEDED** runtime-dependency list,
   **symbol versioning** (`.gnu.version_d` nodes — the SAME symbol names
   under different version tags is an ABI break the nm-set compare passes
   clean), and **DT_RPATH/DT_RUNPATH** (host-leak hermeticity). SHIPPED:

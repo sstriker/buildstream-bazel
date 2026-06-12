@@ -52,6 +52,63 @@ func hasDelta(deltas []Delta, kind string) bool {
 	return false
 }
 
+// buildExe compiles a trivial dynamically-linked executable with the given
+// linker flags and returns its path.
+func buildExe(t *testing.T, dir, name string, ldflags ...string) string {
+	t.Helper()
+	cc := "cc"
+	if _, err := exec.LookPath(cc); err != nil {
+		t.Skip("cc not on PATH; skipping ELF fixture test")
+	}
+	if _, err := exec.LookPath("readelf"); err != nil {
+		t.Skip("readelf not on PATH; skipping ELF fixture test")
+	}
+	src := filepath.Join(dir, name+".c")
+	if err := os.WriteFile(src, []byte("int main(void){return 0;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, name)
+	args := append([]string{"-o", out, src}, ldflags...)
+	cmd := exec.Command(cc, args...)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("cc %v failed: %v\n%s", args, err, b)
+	}
+	return out
+}
+
+// TestCompare_Executables: the lens handles executables too. A PIE executable
+// with a clean ABI surface compares clean; one with a host-leak RUNPATH trips
+// the same hermeticity finding as a .so. SONAME / version-def checks are
+// graceful no-ops (an exe carries neither).
+func TestCompare_Executables(t *testing.T) {
+	dir := t.TempDir()
+	cmakeExe := buildExe(t, dir, "app_cmake", "-fPIE", "-pie")
+	dir2 := t.TempDir()
+	bazelGood := buildExe(t, dir2, "app", "-fPIE", "-pie")
+
+	rep, err := Compare(cmakeExe, bazelGood, Allowlist{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.HasImpactful() {
+		t.Fatalf("matching executables should have no impactful deltas: %+v", rep.ImpactfulDeltas)
+	}
+	if rep.SonameMatch != "" {
+		t.Errorf("executables carry no SONAME; SonameMatch should be empty, got %q", rep.SonameMatch)
+	}
+
+	dir3 := t.TempDir()
+	bazelLeak := buildExe(t, dir3, "app", "-fPIE", "-pie",
+		"-Wl,--enable-new-dtags", "-Wl,-rpath,/home/user/scratch")
+	repLeak, err := Compare(cmakeExe, bazelLeak, Allowlist{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasDelta(repLeak.ImpactfulDeltas, "rpath-host-leak-in-bazel") {
+		t.Errorf("executable host-leak RUNPATH should be impactful; got %+v", repLeak.ImpactfulDeltas)
+	}
+}
+
 // TestSonameBaseAndMajor locks the suffix-aware soname parsing: the qualifying
 // `.so` is the version suffix, not a `.so` embedded mid-name.
 func TestSonameBaseAndMajor(t *testing.T) {

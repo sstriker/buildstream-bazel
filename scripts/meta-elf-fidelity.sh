@@ -89,3 +89,31 @@ if ! "$tool" --cmake-artifact "$work_dir/cmake.so" --bazel-artifact "$work_dir/b
 fi
 
 echo "ok  meta-elf-fidelity: SONAME / DT_NEEDED / version-node / RPATH deltas classified; impactful cases exit 1, allowlist suppresses"
+
+# --- Assertion 3: the lens also handles EXECUTABLES (PIE), not just .so. The
+# SONAME / version-def checks no-op cleanly; DT_NEEDED + RPATH/RUNPATH still
+# apply. A matching exe pair compares clean; a host-leak RUNPATH trips exit 1. ---
+echo 'int main(void){return 0;}' > "$work_dir/m.c"
+cc -fPIE -pie -o "$work_dir/exe_cmake" "$work_dir/m.c"
+cc -fPIE -pie -o "$work_dir/exe_good" "$work_dir/m.c"
+cc -fPIE -pie -o "$work_dir/exe_bad" "$work_dir/m.c" \
+   -Wl,--enable-new-dtags -Wl,-rpath,/home/user/scratch
+if ! "$tool" --cmake-artifact "$work_dir/exe_cmake" --bazel-artifact "$work_dir/exe_good" \
+       >"$work_dir/exe_good.out" 2>&1; then
+    echo "FAIL: matching executables reported impactful deltas"
+    sed 's/^/   /' "$work_dir/exe_good.out"
+    exit 1
+fi
+if "$tool" --cmake-artifact "$work_dir/exe_cmake" --bazel-artifact "$work_dir/exe_bad" \
+       --report "$work_dir/exe_bad.json" >"$work_dir/exe_bad.out" 2>&1; then
+    echo "FAIL: executable with host-leak RUNPATH should exit 1"
+    sed 's/^/   /' "$work_dir/exe_bad.out"
+    exit 1
+fi
+grep -qF 'rpath-host-leak-in-bazel' "$work_dir/exe_bad.json" || {
+    echo "FAIL: expected rpath-host-leak-in-bazel on the executable"
+    sed 's/^/   /' "$work_dir/exe_bad.json"
+    exit 1
+}
+
+echo "ok  meta-elf-fidelity: executables supported too (SONAME/version-def no-op; DT_NEEDED + RPATH host-leak still caught)"

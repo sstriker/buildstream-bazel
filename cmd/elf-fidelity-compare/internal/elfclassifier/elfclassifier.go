@@ -1,15 +1,27 @@
-// Package elfclassifier compares the DYNAMIC-section / ABI surface of two
-// shared objects (a cmake-built libfoo.so vs the converted-then-Bazel-built
-// libfoo.so) and classifies each delta benign / impactful, mirroring the
-// symbol-set classifier (cmd/fidelity-compare) one tier deeper.
+// Package elfclassifier compares the DYNAMIC-section / ABI surface of two ELF
+// artifacts — a cmake-built one vs the converted-then-Bazel-built one — and
+// classifies each delta benign / impactful, mirroring the symbol-set classifier
+// (cmd/fidelity-compare) one tier deeper. It handles BOTH artifact kinds the
+// converter produces: shared libraries (.so) and executables (PIE, which readelf
+// reports as ET_DYN, and classic ET_EXEC) — the dynamic section is read the same
+// way for each.
 //
 // The symbol-fidelity lens compares EXPORTED-SYMBOL SETS (nm) — it deliberately
 // abstracts away binary structure, the right call for static archives. It
-// can't, however, see the shared-library ABI facts a symbol-NAME set doesn't
-// express: the SONAME, the DT_NEEDED runtime-dependency list, symbol VERSIONING
+// can't, however, see the dynamic/ABI facts a symbol-NAME set doesn't express:
+// the SONAME, the DT_NEEDED runtime-dependency list, symbol VERSIONING
 // (.gnu.version_d nodes — the same symbol names under different version tags is
 // an ABI break the nm-set compare passes clean), and DT_RPATH/DT_RUNPATH. This
 // classifier extracts those via `readelf` and buckets the diff.
+//
+// Artifact-kind handling: DT_NEEDED and DT_RPATH/DT_RUNPATH carry a converter
+// signal for BOTH libraries and executables (lost/extra runtime deps; host-leak
+// hermeticity). SONAME and .gnu.version_d are library-specific — an executable
+// carries neither, so those checks are graceful no-ops on an exe (empty soname
+// on both sides is skipped; zero version-def nodes compare clean). Deliberate
+// non-goals: an executable's .gnu.version_r (version REQUIREMENTS — which
+// versioned glibc symbols it imports) and PIE-vs-ET_EXEC type are toolchain-
+// determined, not converter signal, so they're not compared.
 //
 // Pure: it shells out to `readelf` only; the CLI wrapper
 // (cmd/elf-fidelity-compare/main.go) owns file I/O and exit codes.

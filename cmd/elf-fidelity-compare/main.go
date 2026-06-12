@@ -1,18 +1,21 @@
 // Package main implements elf-fidelity-compare, a CLI for comparing the
-// DYNAMIC-section / ABI surface of a shared object produced by `cmake --build`
+// DYNAMIC-section / ABI surface of an ELF artifact produced by `cmake --build`
 // against the one produced by `bazel build` from convert-element-cmake's output.
+// It handles both artifact kinds the converter produces — shared libraries
+// (.so) and executables (PIE / ET_EXEC).
 //
-// It is the shared-library sibling of cmd/fidelity-compare (which compares
+// It is the dynamic-section sibling of cmd/fidelity-compare (which compares
 // exported-SYMBOL sets via nm): this tool reads SONAME, DT_NEEDED, symbol
 // versioning (.gnu.version_d), and DT_RPATH/DT_RUNPATH via `readelf`, classifies
 // each delta benign / impactful per docs/fidelity-deltas.md, and exits 0 when no
-// impactful deltas remain after the per-member allowlist.
+// impactful deltas remain after the per-member allowlist. (SONAME and
+// .gnu.version_d are library-specific and no-op cleanly on an executable.)
 //
 // Invocation:
 //
 //	elf-fidelity-compare \
-//	    --cmake-artifact <path-to-libfoo.so> \
-//	    --bazel-artifact <path-to-libfoo.so> \
+//	    --cmake-artifact <path-to-libfoo.so or executable> \
+//	    --bazel-artifact <path-to-libfoo.so or executable> \
 //	    [--allowlist <file>] [--report <json-output>]
 //
 // Exit codes:

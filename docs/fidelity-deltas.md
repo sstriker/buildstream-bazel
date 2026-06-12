@@ -253,11 +253,17 @@ the prose below mirrors what it implements.
 
 The symbol-set classifier above abstracts away binary structure — the
 right call for static `.a` archives, where section/relocation byte-diffs
-are toolchain noise. The shared-library ABI surface a symbol-NAME set
-can't express is classified separately, by `cmd/elf-fidelity-compare`
-(`readelf -d` / `--version-info` on a cmake-built `.so` vs a Bazel-built
-`.so`). Do NOT byte-diff whole ELF files — only the dynamic/ABI facts
-below carry a fidelity signal.
+are toolchain noise. The dynamic/ABI surface a symbol-NAME set can't
+express is classified separately, by `cmd/elf-fidelity-compare`
+(`readelf -d` / `--version-info` on a cmake-built ELF vs a Bazel-built
+one). It handles BOTH ELF artifact kinds the converter produces: shared
+libraries (`.so`) and executables (PIE / `ET_EXEC`). DT_NEEDED and
+DT_RPATH/DT_RUNPATH carry a converter signal for both; SONAME and
+`.gnu.version_d` are library-specific and no-op cleanly on an executable
+(an exe carries neither). Deliberate non-goals: whole-ELF byte-diff
+(toolchain noise), an executable's `.gnu.version_r` version REQUIREMENTS,
+and PIE-vs-`ET_EXEC` type — all toolchain-determined, not converter
+signal.
 
 **Benign — informational; don't block:**
 - `DT_NEEDED` on a C/C++ runtime / libc-family soname only on one side
