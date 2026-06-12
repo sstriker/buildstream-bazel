@@ -25,6 +25,25 @@ func TestDropNinjaDepfilePlumbing(t *testing.T) {
 	if !strings.Contains(declared, "-MF out.d") {
 		t.Errorf("-MF naming a declared out must survive: %s", declared)
 	}
+	// Scan-and-splice: quoted-arg whitespace outside the -MF pair
+	// stays byte-identical, and no double space is left behind.
+	spliced := dropNinjaDepfilePlumbing(`tool -D'A  B' -MF x.d -o out`, nil)
+	if spliced != `tool -D'A  B' -o out` {
+		t.Errorf("splice damaged surrounding text: %q", spliced)
+	}
+}
+
+// TestRewriteGeneratedSrcRefs_AtFormBoundary: the @-response form
+// rewrite is token-boundary-guarded — a longer token that merely
+// STARTS with @<src> (x.args.stamp) must not corrupt.
+func TestRewriteGeneratedSrcRefs_AtFormBoundary(t *testing.T) {
+	cc := newCodegenContext()
+	cc.OutToGenrule["x.args"] = "gen"
+	got := rewriteGeneratedSrcRefs("tool @x.args.stamp @x.args", []string{"x.args"}, cc)
+	want := "tool @x.args.stamp @$(location x.args)"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
 }
 
 // TestRewriteGeneratedSrcRefs_Location: generated srcs referenced by

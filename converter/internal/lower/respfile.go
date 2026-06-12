@@ -71,19 +71,37 @@ func dropNinjaDepfilePlumbing(cmd string, outs []string) string {
 
 // dropMFDepfileFlag removes `-MF <path>.d` pairs from one command
 // segment, keeping any pair whose path is a declared output (then
-// the depfile is a real product, not plumbing).
+// the depfile is a real product, not plumbing). Scan-and-splice so
+// the surrounding text — including whitespace inside quoted args —
+// stays byte-identical.
 func dropMFDepfileFlag(seg string, outs map[string]bool) string {
-	tokens := strings.Fields(seg)
-	kept := tokens[:0]
-	for i := 0; i < len(tokens); i++ {
-		if tokens[i] == "-MF" && i+1 < len(tokens) &&
-			strings.HasSuffix(tokens[i+1], ".d") && !outs[tokens[i+1]] {
-			i++
-			continue
+	var b strings.Builder
+	for i := 0; i < len(seg); {
+		if strings.HasPrefix(seg[i:], "-MF ") && (i == 0 || seg[i-1] == ' ') {
+			pathStart := i + len("-MF ")
+			pathEnd := pathStart
+			for pathEnd < len(seg) && seg[pathEnd] != ' ' {
+				pathEnd++
+			}
+			path := seg[pathStart:pathEnd]
+			if strings.HasSuffix(path, ".d") && !outs[path] {
+				// Consume the pair plus ONE adjoining space so the
+				// neighbors don't fuse and no double space is left.
+				if pathEnd < len(seg) && seg[pathEnd] == ' ' {
+					pathEnd++
+				} else if i > 0 && b.Len() > 0 {
+					s := b.String()
+					b.Reset()
+					b.WriteString(strings.TrimSuffix(s, " "))
+				}
+				i = pathEnd
+				continue
+			}
 		}
-		kept = append(kept, tokens[i])
+		b.WriteByte(seg[i])
+		i++
 	}
-	return strings.Join(kept, " ")
+	return b.String()
 }
 
 // rewriteGeneratedSrcRefs rewrites cmd references to GENERATED srcs
@@ -129,7 +147,7 @@ func rewriteGeneratedSrcRefs(cmd string, srcs []string, cc *codegenContext) stri
 		} else {
 			ref = "$(location " + s + ")"
 		}
-		cmd = strings.ReplaceAll(cmd, "@"+s, "@"+ref)
+		cmd = replaceBareToken(cmd, "@"+s, "@"+ref)
 		cmd = replaceBareToken(cmd, s, ref)
 	}
 	if len(sedLines) == 0 {
