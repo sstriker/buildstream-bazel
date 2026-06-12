@@ -5,6 +5,11 @@
 // rewrites the manifest to point at the wrappers with Deps CLEARED,
 // preserving the schema invariant (Deps non-empty ⇔ the label does
 // not model its own deps; see internal/manifest.Export.Deps).
+// Executable exports (kind="executable" — protoc-shaped installed
+// programs) become filegroups over their bin paths instead, the
+// file-shaped labels genrule tool lifts consume. Manifests whose Deps
+// close a cycle among the exports are refused up front (Bazel rejects
+// cyclic deps at load time).
 //
 // This is the "complete the loop" tool for host-install prefixes: the
 // hand-written manifest stays the single source of truth, and the

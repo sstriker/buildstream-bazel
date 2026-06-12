@@ -66,6 +66,10 @@ type Element struct {
 // (converter/internal/lower.ManifestPrefixAnchor aliases it).
 const PrefixAnchor = "/opt/prefix/"
 
+// KindExecutable marks an Export as an installed program rather than a
+// linkable library — see Export.Kind.
+const KindExecutable = "executable"
+
 // Export wires one CMake imported target name to a Bazel label.
 type Export struct {
 	// CMakeTarget is the namespaced name a downstream consumer's
@@ -78,6 +82,16 @@ type Export struct {
 	// "//elements/components/glibc:c". Resolves against the orchestrator-
 	// emitted bzlmod project rooted at <out>/.
 	BazelLabel string `json:"bazel_label"`
+
+	// Kind distinguishes non-library exports. Empty means a linkable
+	// library (the default). KindExecutable ("executable") marks an
+	// installed program — a cmake `add_executable(... IMPORTED)` bundle
+	// target or a bare bin/ tool: consumers resolve it through
+	// LinkPaths for genrule tool lifts, and wrapper generators must
+	// emit a file-shaped target (filegroup) for it, never a cc_library
+	// (an ELF program is not a static_library, and a cc_import over
+	// one breaks at the consumer's link).
+	Kind string `json:"kind,omitempty"`
 
 	// InterfaceIncludes are package-relative include directories the
 	// import contributes to consumers. Lower copies these into the

@@ -67,6 +67,7 @@ func Harvest(prefixDir, element, labelPkg string) (*manifest.Imports, []string, 
 	}
 	h.collectBareBinaries(element)
 	h.resolveDeps()
+	h.breakDepCycles()
 	return h.manifest(element), h.warnings, nil
 }
 
@@ -80,6 +81,7 @@ type row struct {
 	deps        []string // resolved labels
 	aliasOf     string   // alias rows point at their underlying target
 	origin      string   // provenance for diagnostics ("bundle", "pkgconfig <name>", "bin")
+	kind        string   // "" (library) or manifest.KindExecutable
 }
 
 // mergeInto folds a same-library row harvested from another channel
@@ -197,6 +199,65 @@ func (h *harvester) resolveDeps() {
 	}
 }
 
+// breakDepCycles drops dependency edges that would close a cycle.
+// Circular references survive harvesting otherwise (mutual .pc
+// Requires, an INTERFACE_LINK_LIBRARIES loop), and Bazel rejects
+// cyclic deps outright once wrappergen materializes Deps as real
+// cc_library edges — a load-time failure far from the cause. The DFS
+// walks rows in insertion order (file-walk order, deterministic) over
+// already-sorted dep lists, so WHICH edge breaks is stable across
+// runs; each break warns with the full cycle path so the operator can
+// fuse or restructure the wrappers instead of relying on the
+// arbitrary-but-stable choice.
+func (h *harvester) breakDepCycles() {
+	byLabel := map[string]*row{}
+	for _, r := range h.rows {
+		if r.aliasOf == "" {
+			byLabel[h.label(r.cmakeTarget)] = r
+		}
+	}
+	const (
+		white = 0
+		gray  = 1
+		black = 2
+	)
+	state := map[*row]int{}
+	var stack []string
+	var visit func(r *row)
+	visit = func(r *row) {
+		state[r] = gray
+		stack = append(stack, r.cmakeTarget)
+		kept := r.deps[:0]
+		for _, d := range r.deps {
+			target := byLabel[d]
+			if target != nil && state[target] == gray {
+				cyc := stack
+				for i, n := range stack {
+					if n == target.cmakeTarget {
+						cyc = stack[i:]
+						break
+					}
+				}
+				h.warnf("%s: dep %s closes a dependency cycle (%s); edge dropped — Bazel rejects cyclic deps, fuse or restructure these exports",
+					r.cmakeTarget, d, strings.Join(append(append([]string{}, cyc...), target.cmakeTarget), " -> "))
+				continue
+			}
+			if target != nil && state[target] == white {
+				visit(target)
+			}
+			kept = append(kept, d)
+		}
+		r.deps = kept
+		stack = stack[:len(stack)-1]
+		state[r] = black
+	}
+	for _, r := range h.rows {
+		if r.aliasOf == "" && state[r] == white {
+			visit(r)
+		}
+	}
+}
+
 func (h *harvester) manifest(element string) *manifest.Imports {
 	// Consumer-facing wrapper names must be unique for the generator;
 	// genuinely distinct targets that collide post-sanitization are
@@ -220,12 +281,19 @@ func (h *harvester) manifest(element string) *manifest.Imports {
 	exports := make([]*manifest.Export, 0, len(rows))
 	for _, r := range rows {
 		underlying := r.cmakeTarget
+		kind := r.kind
 		if r.aliasOf != "" {
 			underlying = r.aliasOf
+			// Alias rows mirror the underlying's kind so a consumer
+			// resolving the alias name still learns the export shape.
+			if u, ok := h.byName[r.aliasOf]; ok {
+				kind = u.kind
+			}
 		}
 		exports = append(exports, &manifest.Export{
 			CMakeTarget:       r.cmakeTarget,
 			BazelLabel:        h.label(underlying),
+			Kind:              kind,
 			InterfaceIncludes: r.includes,
 			LinkLibraries:     r.linkLibs,
 			LinkPaths:         r.linkPaths,
@@ -262,6 +330,7 @@ func (h *harvester) collectBareBinaries(element string) {
 			cmakeTarget: element + "::bin/" + e.Name(),
 			linkPaths:   []string{anchored},
 			origin:      "bin",
+			kind:        manifest.KindExecutable,
 		})
 	}
 }

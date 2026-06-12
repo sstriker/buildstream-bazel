@@ -118,6 +118,79 @@ func TestGenerate_NameCollision(t *testing.T) {
 	}
 }
 
+// TestGenerate_ExecutableFilegroup pins the protoc shape: an export
+// with Kind=executable gets a filegroup over its prefix-relative bin
+// path — never a cc_import (an ELF program is not a static_library)
+// or a cc_library wrapper.
+func TestGenerate_ExecutableFilegroup(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pb",
+			Exports: []*manifest.Export{
+				{
+					CMakeTarget: "protobuf::protoc",
+					BazelLabel:  "//old:protoc",
+					Kind:        manifest.KindExecutable,
+					LinkPaths:   []string{"/opt/prefix/bin/protoc"},
+				},
+				{
+					CMakeTarget: "protobuf::libprotobuf",
+					BazelLabel:  "//old:libprotobuf",
+					LinkPaths:   []string{"/opt/prefix/lib/libprotobuf.a"},
+				},
+			},
+		}},
+	}
+	build, rewritten, err := Generate(im, "prebuilts/pb", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	want := `filegroup(
+    name = "protoc",
+    srcs = [
+        "bin/protoc",
+    ],
+)`
+	if !strings.Contains(s, want) {
+		t.Errorf("executable export must become a filegroup:\n%s\n--- got ---\n%s", want, s)
+	}
+	if strings.Contains(s, `"protoc_archive"`) || strings.Contains(s, `cc_library(
+    name = "protoc"`) {
+		t.Errorf("executable export must not get cc_import/cc_library shapes:\n%s", s)
+	}
+	if !strings.Contains(s, `static_library = "lib/libprotobuf.a"`) {
+		t.Errorf("library sibling must keep the cc_import shape:\n%s", s)
+	}
+	for _, ex := range rewritten.Elements[0].Exports {
+		if ex.CMakeTarget == "protobuf::protoc" && ex.Kind != manifest.KindExecutable {
+			t.Errorf("rewritten manifest must preserve kind: %+v", ex)
+		}
+	}
+}
+
+// TestGenerate_DepCycleError: Deps that close a cycle among the
+// selected exports are refused up front — Bazel would reject the
+// generated package at load time, far from the manifest authoring
+// mistake.
+func TestGenerate_DepCycleError(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "x",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "X::a", BazelLabel: "//old:a", Deps: []string{"//old:b"}},
+				{CMakeTarget: "X::b", BazelLabel: "//old:b", Deps: []string{"//old:a"}},
+			},
+		}},
+	}
+	_, _, err := Generate(im, "p", "")
+	if err == nil || !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("cyclic Deps must error with the cycle named, got: %v", err)
+	}
+}
+
 // TestGenerate_HeaderGlobSurface: the hdrs glob covers the full
 // header-ish family, not just *.h — with allow_empty a too-narrow
 // pattern fails SILENTLY (abseil ships .inc; C++ prefixes .hpp etc.).
