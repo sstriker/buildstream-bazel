@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 // parseBundles walks lib/cmake/*/ *.cmake files and folds every
@@ -95,7 +97,7 @@ func (h *harvester) applyProperty(r *row, key, value string) {
 	case key == "INTERFACE_INCLUDE_DIRECTORIES":
 		for _, v := range strings.Split(value, ";") {
 			if anchored, ok := h.anchoredFromImportPrefix(v); ok {
-				rel := strings.TrimPrefix(anchored, "/opt/prefix/")
+				rel := strings.TrimPrefix(anchored, manifest.PrefixAnchor)
 				r.includes = appendUnique(r.includes, rel)
 			}
 		}

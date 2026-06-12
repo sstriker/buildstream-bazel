@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 // parsePkgConfig folds lib/pkgconfig/*.pc + share/pkgconfig/*.pc into
@@ -40,7 +42,16 @@ func (h *harvester) applyPC(name, body string) {
 		if i := strings.IndexAny(line, ":="); i > 0 {
 			key, val := strings.TrimSpace(line[:i]), expandPCVars(strings.TrimSpace(line[i+1:]), vars)
 			if line[i] == '=' {
-				vars[key] = val
+				// The harvest-computed prefix seed WINS over the file's
+				// build-time `prefix=` line (pkg-config's --define-prefix
+				// semantics): a RELOCATED tree — a bst artifact checkout,
+				// the headline use case — carries the original build
+				// prefix in its .pc files, and letting it clobber the
+				// seed would expand ${libdir}/${includedir} outside the
+				// harvested tree, silently dropping every derived path.
+				if key != "prefix" {
+					vars[key] = val
+				}
 			} else {
 				fields[key] = val
 			}
@@ -72,7 +83,7 @@ func (h *harvester) applyPC(name, body string) {
 	for _, tok := range strings.Fields(fields["Cflags"]) {
 		if d, ok := strings.CutPrefix(tok, "-I"); ok {
 			if anchored, ok := h.anchoredFromImportPrefix(d); ok {
-				r.includes = appendUnique(r.includes, strings.TrimPrefix(anchored, "/opt/prefix/"))
+				r.includes = appendUnique(r.includes, strings.TrimPrefix(anchored, manifest.PrefixAnchor))
 			}
 		}
 	}

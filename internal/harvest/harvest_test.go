@@ -165,6 +165,12 @@ func TestHarvest_ExecutablesAliasesAndPC(t *testing.T) {
 	if len(extra.LinkPaths) != 1 || extra.LinkPaths[0] != manifest.PrefixAnchor+"lib/libextra.a" {
 		t.Errorf("pc -l resolution = %v", extra.LinkPaths)
 	}
+	// The fixture's extra.pc says prefix=/usr — the BUILD-TIME prefix of
+	// a relocated tree. The harvest seed must win (--define-prefix
+	// semantics) or ${prefix}-derived includes silently vanish.
+	if len(extra.InterfaceIncludes) != 1 || extra.InterfaceIncludes[0] != "include" {
+		t.Errorf("relocated-tree pc includes lost (file prefix= must not clobber the seed): %v", extra.InterfaceIncludes)
+	}
 }
 
 func contains(s, sub string) bool {
