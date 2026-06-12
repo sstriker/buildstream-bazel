@@ -121,6 +121,17 @@ func Generate(im *manifest.Imports, pkgPath, element string) ([]byte, *manifest.
 // the genrule tool lift's label resolution can put in `tools`.
 // Wrapping it as cc_import/cc_library would hand consumers an ELF
 // program as a static_library.
+//
+// Known limits: an executable export's Deps have no filegroup slot
+// and are NOT represented — fine for statically linked tools (the
+// common host-install shape), but a dynamically linked tool whose
+// runtime .so's live in the prefix won't have them staged into a
+// genrule sandbox; that shape needs the runtime closure in srcs (or
+// `data` on the consuming genrule) when it shows up. Multiple link
+// paths render a multi-file filegroup, which a consumer's
+// $(execpath) rejects loudly — single-path rows are the assumed
+// invariant (the harvester's canonicalKey dedup folds symlink
+// spellings, so multi-path executable rows shouldn't arise).
 func renderExecutable(b *strings.Builder, name string, ex *manifest.Export) {
 	fmt.Fprintf(b, "filegroup(\n    name = %q,\n    srcs = [\n", name)
 	for _, lp := range ex.LinkPaths {
