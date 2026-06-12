@@ -38,8 +38,8 @@ import (
 	"fmt"
 	"os"
 
-	wrappergen "github.com/sstriker/buildstream-bazel/internal/wrappergen"
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
+	wrappergen "github.com/sstriker/buildstream-bazel/internal/wrappergen"
 )
 
 func main() {
