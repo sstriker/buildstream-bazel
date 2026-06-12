@@ -26,6 +26,12 @@ type codegenContext struct {
 	// to rewrite absolute IMPORTED_LOCATION tool paths to
 	// $(execpath <label>) + tools entries (rewriteToolFromTarget).
 	Imports *manifest.Resolver
+	// HostPrefixDir is the on-disk synth-prefix root (Options.
+	// HostPrefixDir). Orchestrator-emitted manifests key link_paths in
+	// the ANCHORED ManifestPrefixAnchor form; the tool lift remaps
+	// hostPrefix-rooted cmd tokens onto the anchor before LookupLinkPath,
+	// mirroring the link-fragment channel's pre-lookup rewrite.
+	HostPrefixDir string
 	// Genrules is the list of synthesized ir.Target{Kind: KindGenrule}
 	// entries to append to the package.
 	Genrules []ir.Target
@@ -560,7 +566,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	// here: the per-target recovery path isn't reached under the workspace-root
 	// umbrella promotion (that surfaces on the standalone path).
 	rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, "", cc.BazelPackagePath)
-	rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName, cc.ExecArtifacts, cc.Imports)
+	rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName, cc.ExecArtifacts, cc.Imports, cc.HostPrefixDir)
 	// Anchor declared outputs to $(RULEDIR)/<out> so a cmd that names its
 	// output as a literal arg (curl's `perl mk-lib1521.pl < curl.h lib1521.c`,
 	// where the script writes to argv) writes under bazel-out rather than a

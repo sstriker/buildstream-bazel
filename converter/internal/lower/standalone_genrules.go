@@ -355,11 +355,13 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath)
 		var execArtifacts map[string]bool
 		var ccImports *manifest.Resolver
+		var ccHostPrefix string
 		if cc != nil {
 			execArtifacts = cc.ExecArtifacts
 			ccImports = cc.Imports
+			ccHostPrefix = cc.HostPrefixDir
 		}
-		rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, artifactToName, execArtifacts, ccImports)
+		rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, artifactToName, execArtifacts, ccImports, ccHostPrefix)
 		// The tool-from-target lift hoisted the generator binary into
 		// `tools` and rewrote the cmd to $(location :tool); drop the
 		// now-redundant build artifact (e.g. the multi-config

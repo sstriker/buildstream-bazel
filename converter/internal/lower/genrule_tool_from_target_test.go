@@ -91,7 +91,7 @@ func TestRewriteToolFromTarget(t *testing.T) {
 				m = nil
 				e = nil
 			}
-			gotCmd, gotTools := rewriteToolFromTarget(tc.in, m, e, nil)
+			gotCmd, gotTools := rewriteToolFromTarget(tc.in, m, e, nil, "")
 			if gotCmd != tc.wantCmd {
 				t.Errorf("cmd:\n  in:   %q\n  got:  %q\n  want: %q", tc.in, gotCmd, tc.wantCmd)
 			}
@@ -127,7 +127,7 @@ func TestRewriteToolFromTarget_ImportsManifest(t *testing.T) {
 	}
 	cmd, tools := rewriteToolFromTarget(
 		"/opt/foo/bin/gen --out x.c && other -DGEN=/opt/foo/bin/gen -DOTHER=/usr/bin/m4 sub/gen",
-		nil, nil, res)
+		nil, nil, res, "")
 	want := "$(execpath //elements/foo:gen) --out x.c && other -DGEN=$(execpath //elements/foo:gen) -DOTHER=/usr/bin/m4 sub/gen"
 	if cmd != want {
 		t.Errorf("cmd = %q\nwant %q", cmd, want)
@@ -139,7 +139,7 @@ func TestRewriteToolFromTarget_ImportsManifest(t *testing.T) {
 	// In-tree lookup wins over (and coexists with) the manifest path.
 	cmd, tools = rewriteToolFromTarget(
 		"bin/intree /opt/foo/bin/gen",
-		map[string]string{"bin/intree": "intree"}, map[string]bool{"bin/intree": true}, res)
+		map[string]string{"bin/intree": "intree"}, map[string]bool{"bin/intree": true}, res, "")
 	if cmd != "$(location :intree) $(execpath //elements/foo:gen)" {
 		t.Errorf("mixed cmd = %q", cmd)
 	}
@@ -148,8 +148,48 @@ func TestRewriteToolFromTarget_ImportsManifest(t *testing.T) {
 	}
 
 	// Nil resolver: unchanged behavior (and no rewrite without in-tree map).
-	cmd, tools = rewriteToolFromTarget("/opt/foo/bin/gen --out x.c", nil, nil, nil)
+	cmd, tools = rewriteToolFromTarget("/opt/foo/bin/gen --out x.c", nil, nil, nil, "")
 	if cmd != "/opt/foo/bin/gen --out x.c" || tools != nil {
 		t.Errorf("nil-resolver = (%q, %v), want verbatim", cmd, tools)
+	}
+}
+
+// TestRewriteToolFromTarget_ImportsAnchoredPrefix is the ORCHESTRATED
+// flow (the #596 review finding): orchestrator-emitted manifests key
+// link_paths in the virtual ManifestPrefixAnchor form, while cmake
+// resolved the tool against the REAL synth-prefix dir — so the raw cmd
+// token only matches after the hostPrefix→anchor remap (the same
+// pre-lookup rewrite the link-fragment channel applies). Without the
+// remap the lift is inert in exactly its target scenario.
+func TestRewriteToolFromTarget_ImportsAnchoredPrefix(t *testing.T) {
+	res, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "foo",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "Foo::gen",
+				BazelLabel:  "//elements/foo:gen",
+				LinkPaths:   []string{ManifestPrefixAnchor + "bin/gen"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostPrefix := "/tmp/synth-prefix"
+	cmd, tools := rewriteToolFromTarget(
+		hostPrefix+"/bin/gen --out x.c -DGEN="+hostPrefix+"/bin/gen",
+		nil, nil, res, hostPrefix)
+	want := "$(execpath //elements/foo:gen) --out x.c -DGEN=$(execpath //elements/foo:gen)"
+	if cmd != want {
+		t.Errorf("cmd = %q\nwant %q", cmd, want)
+	}
+	if len(tools) != 1 || tools[0] != "//elements/foo:gen" {
+		t.Errorf("tools = %v", tools)
+	}
+	// Without the hostPrefix the anchored key can't match: verbatim.
+	cmd, _ = rewriteToolFromTarget(hostPrefix+"/bin/gen --out x.c", nil, nil, res, "")
+	if cmd != hostPrefix+"/bin/gen --out x.c" {
+		t.Errorf("no-prefix cmd = %q, want verbatim", cmd)
 	}
 }

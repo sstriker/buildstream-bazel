@@ -38,6 +38,15 @@ import (
 // leak. In-tree lookup wins when both match (it shouldn't — the key
 // spaces are build-dir-relative vs absolute).
 //
+// hostPrefix mirrors the link-fragment channel's pre-lookup rewrite
+// (lower.go's hostPrefix→manifestPrefixAnchor remap): orchestrator-
+// emitted manifests key link_paths in the ANCHORED /opt/prefix/ form
+// while cmake resolved the tool against the REAL synth-prefix dir, so
+// the raw token must remap onto the anchor before LookupLinkPath or
+// the lookup misses in exactly the orchestrated flow. The verbatim
+// token is tried first — hand-written manifests carry literal
+// absolute paths.
+//
 // Conservative tokenisation: splits on shell metacharacter
 // boundaries (whitespace, `&`, `|`, `;`, `(`, `)`, backticks,
 // dollar). A token matches only when it's an exact key in
@@ -45,7 +54,7 @@ import (
 // matches (e.g. `prefix/bin/X` containing `bin/X` as a suffix)
 // don't rewrite. Conservative because the alternative — substring
 // rewrite — would corrupt args like `--toolchain=bin/foo/include`.
-func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArtifacts map[string]bool, imports *manifest.Resolver) (string, []string) {
+func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArtifacts map[string]bool, imports *manifest.Resolver, hostPrefix string) (string, []string) {
 	if cmd == "" || (len(artifactToName) == 0 && imports.Empty()) {
 		return cmd, nil
 	}
@@ -85,13 +94,21 @@ func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArt
 			}
 		}
 		// resolveImported maps an absolute token onto a manifest
-		// export's label via its recorded IMPORTED_LOCATION.
+		// export's label via its recorded IMPORTED_LOCATION: the
+		// verbatim token first (hand-written manifests), then the
+		// hostPrefix→anchor remapped form (orchestrator-emitted
+		// manifests; see the hostPrefix doc above).
 		resolveImported := func(p string) (string, bool) {
 			if !filepath.IsAbs(p) {
 				return "", false
 			}
 			if ex := imports.LookupLinkPath(p); ex != nil {
 				return ex.BazelLabel, true
+			}
+			if hostPrefix != "" && strings.HasPrefix(p, hostPrefix+string(filepath.Separator)) {
+				if ex := imports.LookupLinkPath(manifestPrefixAnchor + p[len(hostPrefix)+1:]); ex != nil {
+					return ex.BazelLabel, true
+				}
 			}
 			return "", false
 		}
