@@ -65,3 +65,23 @@ func TestEmit_DynamicDeps(t *testing.T) {
 		t.Errorf("missing dynamic_deps:\n%s", got)
 	}
 }
+
+// TestEmit_DynamicDepsKindGate: `dynamic_deps` exists only on the linking
+// rules (cc_binary/cc_test) — a cc_library carrying DynamicDeps (lower's
+// wireDynamicDeps now kind-gates, but defensively) must NOT render the attr;
+// libevent's static-variant libraries were the canary ("no such attribute
+// 'dynamic_deps' in 'cc_library' rule" took the whole package down).
+func TestEmit_DynamicDepsKindGate(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "consumer_lib", Kind: ir.KindCCLibrary, Srcs: []string{"a.c"}, DynamicDeps: []string{":impl_shared"}},
+		{Name: "consumer_bin", Kind: ir.KindCCBinary, Srcs: []string{"m.c"}, DynamicDeps: []string{":impl_shared"}},
+	}}
+	out, err := bazel.Emit(pkg)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	got := string(out)
+	if n := strings.Count(got, "dynamic_deps"); n != 1 {
+		t.Errorf("dynamic_deps must render exactly once (the cc_binary); got %d in:\n%s", n, got)
+	}
+}

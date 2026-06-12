@@ -8589,8 +8589,15 @@ func wireDynamicDeps(pkg *ir.Package) {
 			// dynamic-dep on sibling shared libs so it doesn't statically
 			// re-link a cc_library another shared lib already owns.
 			t.SharedLibDynamicDeps = sharedDeps
-		} else {
-			// A plain consumer: link sibling shared libs dynamically.
+		} else if t.Kind == ir.KindCCBinary || t.Kind == ir.KindCCTest {
+			// A plain LINKING consumer: link sibling shared libs dynamically.
+			// Only cc_binary/cc_test accept `dynamic_deps` — a plain
+			// cc_library consumer (libevent's event_static, a static
+			// variant whose cmake link interface names a shared sibling)
+			// has no slot for it; it keeps the ordinary deps edge and the
+			// eventual linking rule decides the link mode. Emitting the
+			// attr on cc_library is an analysis-time "no such attribute"
+			// error that takes the whole package down.
 			t.DynamicDeps = sharedDeps
 		}
 	}
