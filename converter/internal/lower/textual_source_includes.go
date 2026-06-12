@@ -72,7 +72,13 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) (includes, readers
 		hit := false
 		for _, m := range quoteIncludeRe.FindAllSubmatch(data, -1) {
 			inc := string(m[1])
-			if !cclang.IsCompiledSource(inc) {
+			// Follow a quote-include of an implementation file: a compiled
+			// source the includer textually pastes (fmt/gtest/lz4 fused-source),
+			// OR a non-self-contained impl header (.inl/.tcc/.ipp/.txx/.def/.inc)
+			// the genclass idiom pulls in (glm's `#include "func_common.inl"`,
+			// VTK's `.txx`). A plain self-contained header (.h/.hpp) is NOT an
+			// implementation include and is left alone.
+			if !cclang.IsCompiledSource(inc) && !cclang.IsTextualImplHeader(inc) {
 				continue
 			}
 			// An absolute include ("/usr/...", "C:\\...") is non-portable and
@@ -177,7 +183,14 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 		default:
 			continue
 		}
-		incs, readers := findTextualSourceIncludes(hostSrc, t.Srcs)
+		// Scan BOTH the compiled sources AND the headers as includers: the
+		// fused-source idiom has a .cc include a sibling .cc, but the genclass
+		// idiom has a HEADER textually #include its implementation (glm's
+		// func_common.hpp -> func_common.inl, a template header -> its .tcc/.cc
+		// definition). A header-only library carries the includer entirely in
+		// hdrs, so scanning srcs alone never saw it.
+		includers := append(append([]string(nil), t.Srcs...), t.Hdrs...)
+		incs, readers := findTextualSourceIncludes(hostSrc, includers)
 		if len(incs) == 0 {
 			continue
 		}
@@ -185,6 +198,14 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 		// source-narrowing lens keeps them real (the declared exception to the
 		// no-source-read rule). See ir.Package.SourceByteReads.
 		pkg.SourceByteReads = append(pkg.SourceByteReads, readers...)
+		// A non-self-contained impl header (.inl/.tcc/.ipp/...) the initial
+		// extension classification routed to hdrs must MOVE to textual_hdrs: in
+		// hdrs a Bazel parse_headers / layering_check build compiles the fragment
+		// standalone and fails (it only makes sense pasted into its includer).
+		// attachTextualSourceIncludes adds it to textual_hdrs below; drop it from
+		// hdrs here so it isn't double-listed. Compiled-source incs (the lz4
+		// fused case) aren't in hdrs and stay in srcs — untouched.
+		removeFromHdrs(t, incs)
 		lib := attachTextualSourceIncludes(pkg, t, incs, "cmake-codegen-textual-source-include", &synth, uniqueName)
 		if lib == "" {
 			inlineRecs = append(inlineRecs, rec{target: t.Name, srcs: incs})
@@ -299,6 +320,27 @@ func targetNamer(pkg *ir.Package) func(string) string {
 		names[n] = true
 		return n
 	}
+}
+
+// removeFromHdrs drops every path in `incs` from t.Hdrs (set membership). Used
+// when a textually-#included impl header is moved into textual_hdrs, so the same
+// file isn't declared in both attributes. Compiled-source incs are never in
+// hdrs, so this only affects the impl-header (genclass) case.
+func removeFromHdrs(t *ir.Target, incs []string) {
+	if len(t.Hdrs) == 0 || len(incs) == 0 {
+		return
+	}
+	drop := make(map[string]bool, len(incs))
+	for _, p := range incs {
+		drop[p] = true
+	}
+	kept := t.Hdrs[:0:0]
+	for _, h := range t.Hdrs {
+		if !drop[h] {
+			kept = append(kept, h)
+		}
+	}
+	t.Hdrs = kept
 }
 
 // attachTextualSourceIncludes routes the textually-#included source files

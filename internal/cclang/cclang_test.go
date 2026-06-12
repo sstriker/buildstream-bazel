@@ -81,3 +81,34 @@ func TestIsHeader(t *testing.T) {
 		}
 	}
 }
+
+// TestIsTextualImplHeader locks the non-self-contained impl-header subset the
+// genclass textual-include routing sends to textual_hdrs (instead of hdrs): the
+// template-impl / inline-impl / x-macro fragment exts, case-insensitively. The
+// self-contained header exts (.h/.hh/.hpp/.hxx/.h++) and compiled sources are
+// NOT here.
+func TestIsTextualImplHeader(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"foo.inl", true},
+		{"foo.txx", true},
+		{"foo.tcc", true},
+		{"foo.ipp", true},
+		{"foo.def", true},
+		{"foo.inc", true},
+		{"FOO.INL", true}, // case-insensitive
+		{"foo.h", false},  // self-contained header
+		{"foo.hpp", false},
+		{"foo.hxx", false},
+		{"foo.cc", false}, // compiled source, not a header
+		{"noext", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := IsTextualImplHeader(c.path); got != c.want {
+			t.Errorf("IsTextualImplHeader(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
