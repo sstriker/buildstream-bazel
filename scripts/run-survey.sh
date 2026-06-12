@@ -892,6 +892,95 @@ for entry in $projects; do
         fi
     fi
 
+    # 8th lens — ELF DYNAMIC-SECTION FIDELITY (SURVEY_ELF_FIDELITY=1). Runs LAST,
+    # after the symbol lens — the pipeline-last ordering (structural -> build ->
+    # symbol -> elf). Compares the cmake-built vs Bazel-built SHARED artifact's
+    # dynamic section (SONAME / DT_NEEDED / .gnu.version_d / DT_RPATH-RUNPATH) with
+    # cmd/elf-fidelity-compare — the ABI facts an exported-symbol-SET compare
+    # can't express. Needs SHARED artifacts on both sides, so it pairs with
+    # SURVEY_SHARED=1 (the build lens then converted with --emit-shared-libraries
+    # and built the cc_shared_library .so) and builds the cmake side with
+    # BUILD_SHARED_LIBS=ON. Dynamic metadata is config-invariant, so it REUSES the
+    # build-ws .so the build lens already produced (no release rebuild, unlike the
+    # symbol lens). Driven by scripts/build-lens/<name>.elffidelity (ELFID_TARGET +
+    # ELFID_ARTIFACT or ELFID_{CMAKE,BAZEL}_ARTIFACT [+ ELFID_CMAKE_FLAGS]) and its
+    # testdata/fidelity/<name>.elf-allowlist.txt. Report-only
+    # (<out>/<name>/elf-fidelity.json); members without a config self-skip.
+    if [ "${SURVEY_ELF_FIDELITY:-0}" != "0" ] && [ "$build_status" = "ok" ]; then
+        _ef_conf="$repo_root/scripts/build-lens/$name.elffidelity"
+        if [ -f "$_ef_conf" ]; then
+            if [ "${SURVEY_SHARED:-0}" = "0" ]; then
+                # Without SURVEY_SHARED the converted workspace has no
+                # cc_shared_library, so there's no .so to compare — skip loudly
+                # rather than silently emit nothing.
+                echo "  $name: elf-fidelity -> skip(needs SURVEY_SHARED=1 for the .so)" >&2
+            else
+            (
+                ELFID_TARGET=""; ELFID_ARTIFACT=""; ELFID_CMAKE_ARTIFACT=""
+                ELFID_BAZEL_ARTIFACT=""; ELFID_CMAKE_FLAGS=""
+                # shellcheck disable=SC1090
+                . "$_ef_conf"
+                _ef_log="$proj_out/elf-fidelity.log"; : > "$_ef_log"
+                _ef_cmke="${ELFID_CMAKE_ARTIFACT:-$ELFID_ARTIFACT}"
+                _ef_bzl="${ELFID_BAZEL_ARTIFACT:-$ELFID_ARTIFACT}"
+                [ -z "$_ef_bzl" ] && _ef_bzl="lib${ELFID_TARGET}.so"
+                [ -z "$_ef_cmke" ] && _ef_cmke="lib${ELFID_TARGET}.so"
+
+                # (1) Bazel side: reuse the SHARED .so the build lens already built
+                # in the converted split workspace (dynamic metadata is config-
+                # invariant, so no rebuild needed). A `.so.N` versioned name is
+                # matched by globbing the base.
+                _ef_bzlart="$(find -L "$proj_out/build-ws/bazel-bin" -name "$_ef_bzl" -type f 2>/dev/null | head -1)"
+                [ -z "$_ef_bzlart" ] && _ef_bzlart="$(find -L "$proj_out/build-ws/bazel-bin" -name "$_ef_bzl.*" -type f 2>/dev/null | head -1)"
+
+                # (2) Cmake side: configure+build the target natively with SHARED
+                # libraries. Defines mirror the build-lens convert (the .conf's
+                # --cmake-define pairs, sourced here) but with BUILD_SHARED_LIBS=ON.
+                _ef_defs="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5 $ELFID_CMAKE_FLAGS"
+                _ef_cflags="$(
+                    CONVERT_FLAGS=""
+                    [ -f "$repo_root/scripts/build-lens/$name.conf" ] && . "$repo_root/scripts/build-lens/$name.conf" >/dev/null 2>&1 || true
+                    printf '%s' "$CONVERT_FLAGS"
+                )"
+                # shellcheck disable=SC2086
+                set -- $_ef_cflags
+                while [ $# -gt 0 ]; do
+                    if [ "$1" = "--cmake-define" ] && [ $# -ge 2 ]; then _ef_defs="$_ef_defs -D$2"; shift 2; else shift; fi
+                done
+                _ef_cm="$proj_out/elffid-cmake"; rm -rf "$_ef_cm"
+                _ef_cmart=""
+                # shellcheck disable=SC2086
+                if cmake -S "$src" -B "$_ef_cm" -G Ninja $_ef_defs >>"$_ef_log" 2>&1 \
+                        && cmake --build "$_ef_cm" --target "$ELFID_TARGET" >>"$_ef_log" 2>&1; then
+                    _ef_cmart="$(find "$_ef_cm" -name "$_ef_cmke" -type f 2>/dev/null | head -1)"
+                    [ -z "$_ef_cmart" ] && _ef_cmart="$(find "$_ef_cm" -name "$_ef_cmke.*" -type f 2>/dev/null | head -1)"
+                fi
+
+                # (3) Compare dynamic sections.
+                _ef_cmp="$repo_root/build/bin/elf-fidelity-compare"
+                ( cd "$repo_root" && go build -o "$_ef_cmp" ./cmd/elf-fidelity-compare ) 2>>"$_ef_log" || _ef_cmp="go run $repo_root/cmd/elf-fidelity-compare"
+                _ef_al=""
+                [ -f "$repo_root/testdata/fidelity/$name.elf-allowlist.txt" ] && _ef_al="--allowlist $repo_root/testdata/fidelity/$name.elf-allowlist.txt"
+                if [ -n "$_ef_bzlart" ] && [ -n "$_ef_cmart" ]; then
+                    # shellcheck disable=SC2086
+                    if $_ef_cmp --cmake-artifact "$_ef_cmart" --bazel-artifact "$_ef_bzlart" \
+                            --report "$proj_out/elf-fidelity.json" $_ef_al >>"$_ef_log" 2>&1; then
+                        echo "  $name: elf-fidelity -> ok" >&2
+                    else
+                        echo "  $name: elf-fidelity -> FAIL (see $_ef_log)" >&2
+                    fi
+                else
+                    printf '{"member":"%s","ok":false,"error":"missing-artifact","cmake":"%s","bazel":"%s"}\n' \
+                        "$name" "${_ef_cmart:-NONE}" "${_ef_bzlart:-NONE}" > "$proj_out/elf-fidelity.json"
+                    echo "  $name: elf-fidelity -> skip(no-artifact: cmake=$_ef_cmke bazel=$_ef_bzl)" >&2
+                fi
+            )
+            fi
+        else
+            echo "  $name: elf-fidelity -> skip(no-config)" >&2
+        fi
+    fi
+
     # 6th lens: intent-capture net-new count (written by try_bazel_build via
     # intent-capture-lens.sh when SURVEY_INTENT ran). "-" when the lens didn't
     # run. NON-DETERMINISTIC (LLM judge) — a triage pointer, not a comparable
