@@ -49,6 +49,40 @@ install_abseil() {
 
 install_abseil || true
 
+# Catch2: spdlog's test suite does find_package(Catch2 3 QUIET) with a
+# FetchContent network fallback the lens overlay can't stage — so the
+# host install is what lets SPDLOG_BUILD_TESTS=ON convert hermetically
+# (spdlog.conf points CMAKE_PREFIX_PATH here; spdlog-imports.json maps
+# the imported targets onto @catch2 BCR labels). Default-on like
+# abseil: a small build, and the spdlog lens needs it every run.
+CATCH2_DIR=${CATCH2_DIR:-/tmp/Catch2}
+CATCH2_INSTALL=${CATCH2_INSTALL:-/tmp/catch2-install}
+
+install_catch2() {
+  if [ -f "$CATCH2_INSTALL/lib/libCatch2.a" ]; then
+    log "catch2 already installed at $CATCH2_INSTALL (skip)"
+    return 0
+  fi
+  if [ ! -d "$CATCH2_DIR" ]; then
+    log "fetching catch2 source"
+    ( cd "$repo_root" && make fetch-catch2 ) >&2 || { log "WARNING: fetch-catch2 failed"; return 1; }
+  fi
+  command -v cmake >/dev/null 2>&1 || { log "WARNING: no cmake; cannot install catch2"; return 1; }
+  log "installing catch2 → $CATCH2_INSTALL (PIC, C++17 — matches the lens convert)"
+  if cmake -S "$CATCH2_DIR" -B /tmp/catch2-build -G Ninja \
+        -DCMAKE_INSTALL_PREFIX="$CATCH2_INSTALL" -DBUILD_TESTING=OFF \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DCMAKE_CXX_STANDARD=17 \
+        -DCMAKE_BUILD_TYPE=Release >&2 \
+     && cmake --build /tmp/catch2-build --target install >&2; then
+    log "catch2 installed"
+  else
+    log "WARNING: catch2 install failed — spdlog's test lens run will not convert"
+    return 1
+  fi
+}
+
+install_catch2 || true
+
 # grpc's deeper find_package deps: protobuf + re2, both built AGAINST the
 # abseil install above (matching grpc.conf's CMAKE_PREFIX_PATH=/tmp/
 # absl-install;/tmp/protobuf-install;/tmp/re2-install). Protobuf is a
