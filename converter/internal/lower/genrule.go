@@ -177,6 +177,12 @@ type codegenContext struct {
 	CMakeVars         map[string]string
 	LiftConfigureFile bool
 
+	// LiftDownload mirrors --lift-download (Options.LiftDownload): when
+	// true, bakeBuildDirFile rewires a recovered file(DOWNLOAD) producer
+	// to a genrule sourcing @<repo>//file from an http_file repo instead
+	// of byte-baking the fetched bytes. See build_dir_source_bake.go.
+	LiftDownload bool
+
 	// RecognizeCodegen opts into the codegen-recognizer registry (Options.
 	// RecognizeCodegen): when true, lowerStandaloneCustomCommands routes a
 	// recovered codegen command a recognizer claims to its native rule(s)

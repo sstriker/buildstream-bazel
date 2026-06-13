@@ -226,6 +226,29 @@ type Args struct {
 	// package doc for the cache-key analysis.
 	LiftConfigureFile bool
 
+	// LiftDownload toggles the file(DOWNLOAD) recovery's lifted
+	// shape: instead of byte-baking the fetched bytes (the
+	// hermetic default — no network at build time), the producer
+	// becomes a genrule that copies @<repo>//file from an
+	// http_file repository rule, and each download is recorded in
+	// the download-repos.json lockfile (--out-download-repos) the
+	// staged module extension reads. Off by default; opt in only
+	// when the downstream envelope declares the repos (the
+	// two-phase lockfile + module_extension flow). See
+	// internal/lower/download_lift.go.
+	LiftDownload bool
+
+	// OutDownloadRepos, when set, writes the file(DOWNLOAD)
+	// lockfile (the http_file repo specs — name, url, SRI
+	// integrity, downloaded_file_path — derived from the traced
+	// URL + EXPECTED_HASH) to this path as JSON. The lockfile is
+	// the authoritative artifact the download_repos.bzl module
+	// extension reads at bzlmod-evaluation time and write-a's
+	// use_repo enumerates. Independent of --lift-download: the
+	// lockfile documents every recovered download regardless of
+	// producer shape.
+	OutDownloadRepos string
+
 	// RecognizeCodegen opts into the codegen-recognizer registry: a recovered
 	// codegen custom-command a recognizer claims (protoc --cpp_out → proto_library
 	// + cc_proto_library today) lowers to the idiomatic native rule instead of a
@@ -782,6 +805,8 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.StringVar(&a.OutToolchainSignalDir, "out-toolchain-signal-dir", "", "directory; on success, copy the cmake File API reply contents here so the unifier can fold per-element toolchain signal into the platform's ResolvedToolchain.Base")
 	fs.StringVar(&a.OutIRJSON, "out-ir-json", "", "write the post-lower ir.Package as JSON to this path. Drives the orchestrator's per-element multi-platform fold; ignored by single-platform flows.")
 	fs.BoolVar(&a.LiftConfigureFile, "lift-configure-file", false, "emit configure_file recovery in the lifted shape (.h.in as a real srcs + //tools:cmake-configure-file invocation at Bazel build time). Requires the caller to stage //tools:cmake-configure-file. Off by default to preserve compatibility with downstream Bazel envelopes that don't yet stage the tool.")
+	fs.BoolVar(&a.LiftDownload, "lift-download", false, "emit file(DOWNLOAD) recovery in the lifted shape: a genrule copying @<repo>//file from an http_file repository rule (declared via the download-repos.json lockfile + a staged module extension) instead of byte-baking the fetched bytes. Off by default; the hermetic byte-bake stays the default. Opt in only when the downstream envelope declares the repos.")
+	fs.StringVar(&a.OutDownloadRepos, "out-download-repos", "", "write the file(DOWNLOAD) lockfile (http_file repo specs: name, url, SRI integrity, downloaded_file_path) to this path as JSON. The authoritative artifact the download_repos.bzl module extension reads and write-a's use_repo enumerates. Independent of --lift-download.")
 	fs.BoolVar(&a.RecognizeCodegen, "recognize-codegen", false, "route recovered codegen custom-commands a registered recognizer claims (protoc --cpp_out → proto_library + cc_proto_library) to the idiomatic native rule instead of a generic genrule. Off by default; non-standard invocations fall back to the genrule.")
 	fs.StringVar(&a.ToolchainFeaturesFrom, "toolchain-features-from", "", "path to the operator's cc_toolchain_config.bzl (or a toolchains/ dir of *.bzl); its declared feature() names gate the raw-flag → cc_toolchain feature lift instead of the converter's generated default, so the lift matches the real toolchain. Unset keeps the generated default; when set, only features the toolchain literally declares lift (a wrapper/computed-name toolchain the parser can't read → only the built-in pic lifts, with a warning).")
 	fs.BoolVar(&a.DumpVars, "dump-vars", true, "stage the dump-vars.cmake hook to capture cmake's variable namespace into <build>/cmake-to-bazel.vars.dump. Read by configure_file lift (@VAR@ / ${VAR} substitution) and find_package variable-form attribution (<Pkg>_LIBRARIES correlation on cmakes below the 3.32 find_package-v1 floor). On by default; requires cmake 3.24+ (silently inactive on older cmakes — the hook's CMAKE_PROJECT_TOP_LEVEL_INCLUDES injection floor).")

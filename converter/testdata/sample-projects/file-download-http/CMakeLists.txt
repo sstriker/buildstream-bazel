@@ -4,8 +4,9 @@ project(dlhttp C)
 # Configure-time file(DOWNLOAD) of a header (file:// so it's offline +
 # reproducible) with an integrity check. The bytes bake hermetically by
 # default; the converter ALSO surfaces a `download` todo carrying the
-# ready-to-paste http_file MODULE stanza (url + sha256 from
-# EXPECTED_HASH) for an operator who wants the repo-rule form.
+# ready-to-paste http_file MODULE stanza (url + SRI integrity from
+# EXPECTED_HASH) for an operator who wants the repo-rule form, and
+# --lift-download emits the fetch genrule + download-repos.json lockfile.
 file(DOWNLOAD
      file://${CMAKE_CURRENT_SOURCE_DIR}/payload.h.in
      ${CMAKE_CURRENT_BINARY_DIR}/dl_config.h

@@ -533,6 +533,10 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	// re-lower wires a stamp-bearing file(WRITE) to live workspace-status
 	// (closure capture: earlier passes see this nil → frozen bake).
 	var fileWriterTemplates []shadow.FileWriterCall
+	// file(DOWNLOAD) lockfile sink: each pass's ToIR appends the recovered
+	// download repos; reset per pass (like the collectors above) so the
+	// written download-repos.json reflects only the final pass.
+	var downloadRepos []lower.DownloadRepoSpec
 	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment, parentScopeForwards []shadow.ParentScopeForward) (*ir.Package, error) {
 		// Reset the per-pass collectors each pass: ToIR can run more than
 		// once (two-pass genex / stamp / nested-cmake recovery) against the
@@ -544,6 +548,7 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 		todosCollector.Reset()
 		rejections.Reset()
 		coverageCollector.Reset()
+		downloadRepos = downloadRepos[:0]
 		return lower.ToIR(r, g, lower.Options{
 			HostSourceRoot:                    a.SourceRoot,
 			ElementSourceRoot:                 a.ElementSourceRoot,
@@ -557,6 +562,8 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 			CTest:                             testRegistry,
 			TraceRaw:                          traceRaw,
 			LiftConfigureFile:                 a.LiftConfigureFile,
+			LiftDownload:                      a.LiftDownload,
+			DownloadRepos:                     &downloadRepos,
 			RecognizeCodegen:                  a.RecognizeCodegen,
 			CMakeVars:                         cmakeVars,
 			GenexProbes:                       genexProbes,
@@ -699,6 +706,15 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	// (lower.ApplyPerConfigBakes). Failures degrade to the pass-1 single
 	// body, exactly as without the feature.
 	runPerConfigBakes(ctx, a, hostBuildDir, traceRaw, pkg)
+
+	// The file(DOWNLOAD) lockfile is a lowering byproduct (the recovered
+	// http_file repo specs) not carried on the IR, so write it here where
+	// downloadRepos is in scope, on the final pass's result.
+	if a.OutDownloadRepos != "" {
+		if err := writeDownloadReposLock(a.OutDownloadRepos, downloadRepos); err != nil {
+			return nil, err
+		}
+	}
 
 	return pkg, nil
 }
@@ -1081,6 +1097,31 @@ func emitProducerChannels(a cli.Args, r *fileapi.Reply, pkg *ir.Package, traceRa
 	}
 
 	return nil
+}
+
+// downloadReposLock is the file(DOWNLOAD) lockfile schema: the http_file
+// repo specs the staged download_repos.bzl module extension reads at
+// bzlmod-evaluation time and write-a's use_repo enumerates. Repos arrive
+// pre-sorted by output rel (downloadRepoSpecs) for byte-stable output.
+type downloadReposLock struct {
+	SchemaVersion int                      `json:"schema_version"`
+	Repos         []lower.DownloadRepoSpec `json:"repos"`
+}
+
+// writeDownloadReposLock serializes the lockfile, emitting "repos": [] (not
+// null) when no downloads were recovered so the artifact is byte-stable.
+func writeDownloadReposLock(dst string, repos []lower.DownloadRepoSpec) error {
+	if repos == nil {
+		repos = []lower.DownloadRepoSpec{}
+	}
+	body, err := json.MarshalIndent(downloadReposLock{SchemaVersion: 1, Repos: repos}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, append(body, '\n'), 0o644)
 }
 
 // writeRunTailReports writes the remaining per-run artifacts: the IR JSON
