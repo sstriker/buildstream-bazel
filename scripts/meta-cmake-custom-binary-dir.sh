@@ -63,6 +63,33 @@ grep -qF 'out = "custom/subbuild/gen.h"' "$build" \
 
 echo "ok  meta-cmake-custom-binary-dir: relative configure_file + file(GENERATE) outputs anchored at the add_subdirectory custom binary dir"
 
+# The custom binary dir (custom/subbuild) is WIRED as an include (the -I
+# that resolves the generated headers) and RECOVERED (its configure_file
+# / file(GENERATE) outputs baked above) — it must NOT also draw an
+# unsupported-source-path rejection just because the hostSrc header-walk
+# can't find a build-tree path. Re-convert in diagnostic mode and assert
+# the build-dir include is absent from the rejection report.
+rej_dir="$(mktemp -d)"
+"$bin_dir/convert-element-cmake" \
+    --source-root "$fixture" \
+    --out-build "$rej_dir/BUILD.bazel" \
+    --ignore-rejections-for-diagnostics \
+    --rejections-report "$rej_dir/rejections.json" \
+    >"$rej_dir/convert.stdout" 2>"$rej_dir/convert.stderr" || {
+    echo "FAIL: diagnostic-mode convert-element-cmake exited non-zero"
+    sed 's/^/   stderr: /' "$rej_dir/convert.stderr"
+    rm -rf "$rej_dir"; exit 1
+}
+if grep -q '"unsupported-source-path"' "$rej_dir/rejections.json" \
+        && grep -q 'custom/subbuild' "$rej_dir/rejections.json"; then
+    echo "FAIL: wired+recovered build-dir include custom/subbuild drew an unsupported-source-path rejection"
+    sed 's/^/   /' "$rej_dir/rejections.json"
+    rm -rf "$rej_dir"; exit 1
+fi
+rm -rf "$rej_dir"
+
+echo "ok  meta-cmake-custom-binary-dir: the wired+recovered build-dir include draws no unsupported-source-path rejection"
+
 # --- Bazel-build half ---
 if command -v bazel >/dev/null; then
     BZL=bazel
