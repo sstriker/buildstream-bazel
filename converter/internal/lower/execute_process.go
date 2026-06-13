@@ -177,6 +177,17 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 		return nil, nil
 	}
 	anc := execAnchors{hostSrcDir: hostSrcDir, recordedSrcDir: recordedSrcDir, hostBuildDir: hostBuildDir, recordedBuildDir: recordedBuildDir}
+	// ONE preprocessed view for EVERY consumer: dead captures cleared
+	// and cmake -E wrappers normalized up front, so the unspecified-
+	// outputs PLAN, the stamp prescan, and the dispatch loop all see
+	// the same calls (a plan computed over raw calls while the loop
+	// dispatches normalized ones mis-links claims). origCalls keeps
+	// the pre-clear forms for the capture-refusal sink.
+	origCalls := calls
+	calls = make([]shadow.ExecuteProcessCall, len(origCalls))
+	for i, c := range origCalls {
+		calls[i] = normalizeCMakeECall(clearDeadCaptures(c, cc.DeadCaptureVars))
+	}
 	prescanStampVars(calls, cc)
 	// seenProbeFlags maps a lifted build-setting name to the cmake
 	// variable that produced it. The same feature probe can recur in the
@@ -197,20 +208,7 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 	// operands and stem claims in view before any per-call emission.
 	unspec := planUnspecifiedOutputs(calls, anc, cc)
 	for ci, call := range calls {
-		// Dead-capture normalization BEFORE classification: a capture
-		// keyword whose variable the configure never reads (the
-		// silencing idiom) is treated as absent, so every classifier
-		// and lifter below sees the liftable shape. The ORIGINAL
-		// call's vars still record on any refusal — that's the sink
-		// the driver's dead-capture pass feeds on.
-		orig := call
-		call = clearDeadCaptures(call, cc.DeadCaptureVars)
-		// Unwrap cmake -E env/chdir wrappers into the call's
-		// ENVIRONMENT/WORKING_DIRECTORY fields and rewrite the -E
-		// POSIX-equivalents (cat/echo/<algo>sum) to raw argv, so the
-		// inner command classifies on its own merits. See
-		// execute_process_cmake_e_normalize.go.
-		call = normalizeCMakeECall(call)
+		orig := origCalls[ci]
 		v := Classify(call)
 		switch v.Bucket {
 		case BucketCMakeE:
@@ -391,12 +389,18 @@ func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, c
 	// forwarded rescue.
 	if v.Bucket == BucketProbe || v.Bucket == BucketStamp {
 		// Dead-capture skip: the call HAD capture channels, the
-		// analysis proved every one unread, and nothing else (no
-		// OUTPUT_FILE) is consumable — a silenced stamp writes a value
-		// nowhere, so there is nothing to bake AND nothing to refuse.
-		// Genuinely capture-less stamp calls (git fetch side effects)
-		// keep refusing: captureCleared distinguishes them.
-		if captureCleared && call.OutputVariable == "" && call.ResultVariable == "" && call.OutputFile == "" {
+		// analysis proved every one unread, and nothing else is
+		// consumable — a silenced stamp writes a value nowhere, so
+		// there is nothing to bake AND nothing to refuse. EVERY
+		// channel must be clear: an ErrorVariable/ResultsVariable
+		// that survived clearDeadCaptures is proven LIVE (the
+		// configure reads it), and an ERROR_FILE is a declared
+		// artifact — either keeps the loud refusal. Genuinely
+		// capture-less stamp calls (git fetch side effects) keep
+		// refusing too: captureCleared distinguishes them.
+		if captureCleared && call.OutputVariable == "" && call.ResultVariable == "" &&
+			call.ErrorVariable == "" && call.ResultsVariable == "" &&
+			call.OutputFile == "" && call.ErrorFile == "" {
 			return nil
 		}
 		if call.OutputVariable != "" {
@@ -435,11 +439,10 @@ func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, c
 // into -E configure_file lifts.
 func prescanStampVars(calls []shadow.ExecuteProcessCall, cc *codegenContext) {
 	for _, call := range calls {
-		// Dead-capture + wrapper-normalized view, mirroring the main
-		// loop: a silenced stamp's variable must not register, and a
-		// `cmake -E env GIT_DIR=… git describe` stamp must.
-		call = clearDeadCaptures(call, cc.DeadCaptureVars)
-		call = normalizeCMakeECall(call)
+		// calls arrive PREPROCESSED (dead captures cleared, -E
+		// wrappers normalized) from recoverExecuteProcess: a silenced
+		// stamp's variable must not register, and a `cmake -E env
+		// GIT_DIR=… git describe` stamp must.
 		v := Classify(call)
 		if v.Bucket == BucketStamp && call.OutputVariable != "" && len(call.Commands) > 0 && len(call.Commands[0]) > 0 {
 			driver := executeProcessDriverBasename(call.Commands[0][0])
@@ -540,6 +543,17 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, anc execAnchor
 	// lose a real compile input would be wrong. Checked before the
 	// switch so both the cmake -E and raw spellings share one arm.
 	if noopExecuteProcessOps[v.CMakeEOp] {
+		// The benign skip tolerates exit-status captures
+		// (RESULT_VARIABLE/RESULTS_VARIABLE — the compare_files
+		// copy-if-changed idiom; the configure's branch already took
+		// effect, the probe doctrine) but NOT byte channels: dead
+		// captures were cleared before classification, so a surviving
+		// OUTPUT_/ERROR_VARIABLE is configure-READ, and an OUTPUT_/
+		// ERROR_FILE is a declared build-dir artifact. Those keep the
+		// loud refusal rather than vanishing as console noise.
+		if call.OutputVariable != "" || call.ErrorVariable != "" || call.OutputFile != "" || call.ErrorFile != "" {
+			return nil, "cmake -E " + v.CMakeEOp + " carries a live byte channel (" + outputContext(call) + " ) the benign skip would drop", false
+		}
 		return nil, "", true
 	}
 	switch v.CMakeEOp {
@@ -1733,13 +1747,14 @@ func cmakeEConfigureFileTags(lifted bool) []string {
 //     substitution in the cmd; argv[0] is preserved as-is so
 //     PATH-resolved tools (python3, gen-script-on-PATH) keep
 //     working under Bazel's standard executor sandbox.
-//   - WORKING_DIRECTORY and ENVIRONMENT are not yet modeled —
-//     refuse the lift if either is set so a hoisted genrule
-//     never silently drops them (follow-on). TIMEOUT (a
-//     configure-time watchdog), INPUT_FILE (stdin from a
-//     source-tree file), and ERROR_FILE (stderr to a build-dir
-//     path, or merged via the same-file idiom) ARE modeled —
-//     see the gate block below.
+//   - Every execute_process keyword is modeled now: TIMEOUT (a
+//     configure-time watchdog) drops, INPUT_FILE (stdin from a
+//     source-tree file), ERROR_FILE (stderr to a build-dir path,
+//     or merged via the same-file idiom), ENVIRONMENT (env
+//     prefix per stage), and a build-dir WORKING_DIRECTORY (cwd
+//     prologue) all lift — see the gate block below and
+//     execute_process_wd_env.go. Only a source-tree/out-of-tree
+//     WORKING_DIRECTORY still refuses.
 //
 // Driver tag: cmake-codegen-driver=<basename(argv[0])> mirrors
 // the genrule.go custom-command recovery so existing audit
@@ -1789,12 +1804,23 @@ func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *code
 	errRel := ""
 	mergeStderr := false
 	if call.ErrorFile != "" {
-		if call.ErrorFile == call.OutputFile {
-			mergeStderr = true
-		} else if rel, ok := executeProcessAnchorOutput(execFileFieldAbs(call.ErrorFile, wdRel, anc), anc); ok {
-			errRel = rel
-		} else {
+		// Compare ANCHORED rels, not raw spellings: a relative
+		// ERROR_FILE and an absolute OUTPUT_FILE can name the same
+		// path (cmake's documented same-file form merges the
+		// streams). A distinct errRel colliding with an existing
+		// producer refuses — two rules declaring one out is a broken
+		// BUILD, and the old blanket refusal never allowed it.
+		rel, ok := executeProcessAnchorOutput(execFileFieldAbs(call.ErrorFile, wdRel, anc), anc)
+		switch {
+		case !ok:
 			return nil, fmt.Sprintf("ERROR_FILE %q is not under the build dir", call.ErrorFile), false
+		case rel == dstRel:
+			mergeStderr = true
+		default:
+			if _, exists := cc.OutToGenrule[rel]; exists {
+				return nil, fmt.Sprintf("ERROR_FILE %q collides with an already-produced output", call.ErrorFile), false
+			}
+			errRel = rel
 		}
 	}
 	if _, exists := cc.OutToGenrule[dstRel]; exists {
@@ -1842,13 +1868,15 @@ func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *code
 	switch {
 	case errRel != "":
 		// Two declared outs: $@ is single-out-only, so address both
-		// through $(location <out>) — Bazel resolves a rule's own outs.
+		// through $(RULEDIR)/<out> — the form the split emitter knows
+		// how to relocate when the rule moves into a sub-package
+		// ($(location <out>) tokens are NOT rewritten there).
 		outs = append(outs, errRel)
-		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$(location %[1]s)")" "$$(dirname "$(location %[2]s)")" && %[3]s%[4]s > "%[5]s$(location %[1]s)" 2> "%[5]s$(location %[2]s)"`, dstRel, errRel, execWdPrologue(wdRel), tool, locPrefix)
+		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$(RULEDIR)/%[1]s")" "$$(dirname "$(RULEDIR)/%[2]s")" && %[3]s%[4]s > "%[5]s$(RULEDIR)/%[1]s" 2> "%[5]s$(RULEDIR)/%[2]s"`, dstRel, errRel, execWdPrologue(wdRel), tool, locPrefix)
 	case mergeStderr:
-		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s%s > "%s" 2>&1`, execWdPrologue(wdRel), tool, execOutRef(wdRel, locPrefix))
+		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s%s > "%s" 2>&1`, execWdPrologue(wdRel), tool, execOutRef(wdRel))
 	default:
-		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s%s > "%s"`, execWdPrologue(wdRel), tool, execOutRef(wdRel, locPrefix))
+		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s%s > "%s"`, execWdPrologue(wdRel), tool, execOutRef(wdRel))
 	}
 	driver := executeProcessDriverBasename(argv[0])
 	if driver == "" {

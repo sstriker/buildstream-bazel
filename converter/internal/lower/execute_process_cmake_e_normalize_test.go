@@ -137,3 +137,59 @@ func TestRecoverExecuteProcess_CMakeEExpansion(t *testing.T) {
 		}
 	})
 }
+
+// TestReviewFixes_CMakeEGates pins the stack-review fixes: a live byte
+// channel blocks the -E benign skip and the console arm; an exit-status
+// capture still skips (probe doctrine); a wrapped stamp stage blocks
+// the pipeline lift.
+func TestReviewFixes_CMakeEGates(t *testing.T) {
+	run := func(call shadow.ExecuteProcessCall) (*codegenContext, []executeProcessRefusal) {
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, cc)
+		return cc, refusals
+	}
+
+	t.Run("noop-with-live-byte-channel-refuses", func(t *testing.T) {
+		_, refusals := run(shadow.ExecuteProcessCall{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands:      [][]string{{"cmake", "-E", "compare_files", "/build/a", "/build/b"}},
+			ErrorVariable: "_cmp_err", // live (never cleared)
+		})
+		if len(refusals) != 1 || !strings.Contains(refusals[0].Reason, "live byte channel") {
+			t.Fatalf("live ERROR_VARIABLE on a noop op must refuse: %+v", refusals)
+		}
+	})
+
+	t.Run("noop-with-result-variable-skips", func(t *testing.T) {
+		cc, refusals := run(shadow.ExecuteProcessCall{
+			File: "/src/CMakeLists.txt", Line: 5,
+			Commands:       [][]string{{"cmake", "-E", "compare_files", "/build/a", "/build/b"}},
+			ResultVariable: "files_differ", // exit-status probe doctrine
+		})
+		if len(refusals) != 0 || len(cc.Genrules) != 0 {
+			t.Fatalf("RESULT_VARIABLE-only compare_files must skip: %+v", refusals)
+		}
+	})
+
+	t.Run("console-with-live-error-variable-refuses", func(t *testing.T) {
+		_, refusals := run(shadow.ExecuteProcessCall{
+			File: "/src/CMakeLists.txt", Line: 7,
+			Commands:      [][]string{{"cat", "/build/list.txt"}},
+			ErrorVariable: "CAT_ERR",
+		})
+		if len(refusals) != 1 {
+			t.Fatalf("console driver with live ERROR_VARIABLE must not benign-skip: %+v", refusals)
+		}
+	})
+
+	t.Run("wrapped-stamp-pipeline-blocked", func(t *testing.T) {
+		call := shadow.ExecuteProcessCall{
+			File: "/src/CMakeLists.txt", Line: 9,
+			Commands:   [][]string{{"cmake", "-E", "env", "TZ=UTC", "git", "describe"}, {"head", "-1"}},
+			OutputFile: "/build/ver.txt",
+		}
+		if v := Classify(call); v.Bucket == BucketFileProducing {
+			t.Fatalf("env-wrapped git stamp stage must not lift as a pipeline: %v (%s)", v.Bucket, v.Reason)
+		}
+	})
+}
