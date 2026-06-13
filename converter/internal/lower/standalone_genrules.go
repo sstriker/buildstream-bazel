@@ -421,6 +421,30 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			rewrittenCmd = renameAnchoredGenruleOutputs(rewrittenCmd, inPlaceRenames)
 			tags = append(tags, "cmake-codegen-genrule-inplace-rewrite")
 		}
+		// Codegen-recognizer dispatch (opt-in, --recognize-codegen): a recovered
+		// codegen command a registered recognizer claims (protoc --cpp_out today)
+		// lowers to its idiomatic native rule (proto_library + cc_proto_library)
+		// instead of this generic genrule. We match on the REWRITTEN command —
+		// the normalized form with the `cd <build>` prefix and buildDir paths
+		// already stripped, so the bare driver basename + flags survive intact.
+		// The recognizer is the OUTPUT AUTHORITY: its derived outputs are
+		// cross-checked against cmake's recorded `outs`, and a mismatch
+		// (non-standard invocation) returns an error so we fall through to the
+		// genrule — never a regression.
+		//
+		// This emits only the PRODUCER targets. Wiring #include-driven consumers
+		// to the native rule's consumer label (res.ConsumerDeps, e.g.
+		// :foo_cc_proto) is a deps edge to the rule itself — NOT the file-oriented
+		// generated_includes textual_hdrs wrapper that OutToGenrule →
+		// CodegenHeaderConsumers synthesizes — so it's deliberately deferred to
+		// the consumer-dep generalization (PR2b-2); registering OutToGenrule here
+		// would route a consumer down the wrong (file-wrapper) path.
+		if cc != nil && cc.RecognizeCodegen {
+			if res, matched, rerr := recognizeCodegen(codegenCommandFrom(rewrittenCmd, srcs, outs, bazelPackagePath)); matched && rerr == nil {
+				out = append(out, res.Targets...)
+				continue
+			}
+		}
 		out = append(out, ir.Target{
 			Name:         name,
 			Kind:         ir.KindGenrule,
@@ -433,6 +457,28 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		})
 	}
 	return out
+}
+
+// codegenCommandFrom builds the recognizer's authoritative view of a recovered
+// custom-command: the DRIVER tool + argv tokenized from the RAW command (the
+// generator's path/flags are pristine here, before the genrule rewrites lift
+// tools to $(location) and re-anchor paths), plus the recovered srcs, cmake's
+// recorded outs (the recognizer's output cross-check), and the Bazel package.
+func codegenCommandFrom(cmd string, srcs, outs []string, pkg string) CodegenCommand {
+	fields := strings.Fields(cmd)
+	var driver string
+	var args []string
+	if len(fields) > 0 {
+		driver = filepath.Base(fields[0])
+		args = fields[1:]
+	}
+	return CodegenCommand{
+		Driver: driver,
+		Args:   args,
+		Srcs:   srcs,
+		Outs:   outs,
+		Pkg:    pkg,
+	}
 }
 
 // standaloneEdgeFiltered reports whether a custom-command edge should be

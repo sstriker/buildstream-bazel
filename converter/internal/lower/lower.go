@@ -232,6 +232,14 @@ type Options struct {
 	// rationale + cache-key analysis.
 	LiftConfigureFile bool
 
+	// RecognizeCodegen opts into the codegen-recognizer registry: a recovered
+	// codegen custom-command that a recognizer claims (protoc --cpp_out today)
+	// lowers to the idiomatic native rule (proto_library + cc_proto_library)
+	// instead of a genrule. Off by default — additive opt-in while the
+	// consumer-dep rewiring + corpus validation land; a non-standard invocation
+	// (output cross-check mismatch) falls back to the genrule, never regressing.
+	RecognizeCodegen bool
+
 	// CMakeVars is the full cmake variable namespace captured
 	// at end of configure (cmakerun.Reply.Vars). Used by the
 	// configure_file lift as the values map for the lifted
@@ -1542,6 +1550,7 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 	cc.FileWriterTemplates = buildFileWriterTemplates(tf.decodedFileWriters, opts.NonExpandedFileWriters, cmakeBuild)
 	cc.CMakeVars = opts.CMakeVars
 	cc.LiftConfigureFile = opts.LiftConfigureFile
+	cc.RecognizeCodegen = opts.RecognizeCodegen
 	traceDecoded, decodedTrace := tf.traceDecoded, tf.decodedTrace
 	decodedConfigureFiles, decodedFileGenerates, decodedExecuteProcesses := tf.decodedConfigureFiles, tf.decodedFileGenerates, tf.decodedExecuteProcesses
 	decodedOutOfTreeExecProcs := tf.decodedOutOfTreeExecProcs
