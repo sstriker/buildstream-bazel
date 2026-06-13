@@ -167,6 +167,12 @@ type codegenContext struct {
 	CMakeVars         map[string]string
 	LiftConfigureFile bool
 
+	// RecognizeCodegen opts into the codegen-recognizer registry (Options.
+	// RecognizeCodegen): when true, lowerStandaloneCustomCommands routes a
+	// recovered codegen command a recognizer claims to its native rule(s)
+	// instead of a genrule.
+	RecognizeCodegen bool
+
 	// FileWriterTemplates maps a build-dir-relative path to the
 	// NON-EXPANDED composed content of its file(WRITE/APPEND) chain —
 	// the warm-pass harvest where a `${GIT_SHA}` reference survives

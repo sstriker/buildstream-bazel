@@ -212,13 +212,32 @@ transition cleanly.
         (real target boundaries / copts / defines / deps); gazelle_cc MAINTAINS
         them via the `# gazelle:cc_search` directives. Recognizers are for
         CODEGEN (a tool ran), not for ordinary compiled targets.
-      - **Implementation pieces:** native-proto `ir` rule kinds + their emit
-        (`proto_library`/`cc_proto_library`/`cc_grpc_library`); the
-        `CodegenRecognizer` interface + registry + dispatch at the
-        codegen-lowering site; the protoc recognizer (reusing `protoImportClosure`
-        + `CodegenHeaderConsumers`); the MODULE/load deps. Fixture-driven; the
-        existing grpc genrule path stays untouched until a protoc recognizer is
-        proven, then grpc can migrate.
+      - **Implementation pieces (state):** the generic native-rule `ir`
+        substrate (`KindNativeRule` + `NativeRuleSpec`/`NativeAttr` + emit +
+        auto-load) is SHIPPED, as is the `CodegenRecognizer` interface +
+        registry + the protoc `--cpp_out` recognizer (output-authority
+        cross-check included). The standalone-custom-command **dispatch** is
+        SHIPPED behind the opt-in `--recognize-codegen` flag (off by default):
+        a recognized protoc edge lowers to `proto_library` + `cc_proto_library`
+        and the genrule disappears; everything else is byte-identical
+        (`scripts/meta-cmake-protoc-recognize.sh` gates both halves +
+        bazel-builds the `cc_proto_library`). What's LEFT, in order:
+        - **Consumer-dep generalization (next).** A consumer of a native rule's
+          outputs (`#include "foo.pb.h"`) must get a `deps` edge to the rule's
+          CONSUMER LABEL (`:foo_cc_proto`) — NOT the file-oriented
+          `generated_includes` `textual_hdrs` wrapper that
+          `OutToGenrule`→`CodegenHeaderConsumers` synthesizes today. Generalize
+          this in the native-rule substrate (carry a consumer-dep label on the
+          target so the split/consumer-wiring emits a direct rule `deps` edge),
+          so it works for ANY recognized native rule, not just protoc. The
+          opt-in dispatch deliberately does NOT register `OutToGenrule` yet
+          (that would route a consumer down the wrong file-wrapper path).
+        - **Cross-package proto import deps** via `protoImportClosure` → labels
+          on the `proto_library`'s `deps` (the recognizer already threads
+          `ProtoDeps`; the dispatch needs to compute + pass them).
+        - **Default-on + `--fidelity` gating**, then a corpus byte-sweep.
+        Fixture-driven; the existing grpc genrule path stays untouched until a
+        grpc recognizer (`cc_grpc_library`) lands, then grpc can migrate.
     - **Generalized host-codegen-tool hermeticization — STILL NEEDED, for the
       no-native-rule tools.** protoc/grpc move OFF the genrule path (above), so
       this is for the codegen tools with no native Bazel rule (a project's own

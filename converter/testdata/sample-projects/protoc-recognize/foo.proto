@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package protocrecognize;
+
+message Foo {
+  string name = 1;
+  int32 id = 2;
+}
