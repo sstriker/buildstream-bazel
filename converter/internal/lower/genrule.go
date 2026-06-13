@@ -14,6 +14,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
@@ -148,6 +149,12 @@ type codegenContext struct {
 	// re-lower clears before classification.
 	CaptureRefusalSink map[string]bool
 	DeadCaptureVars    map[string]bool
+
+	// FileWriterIndex maps build-dir-relative paths to their traced
+	// file() writer calls (trace order preserved); the build-dir
+	// recovery consults it before the on-disk byte-bake. See
+	// build_dir_writer_lift.go.
+	FileWriterIndex map[string][]shadow.FileWriterCall
 
 	// No-silent-drops accounting + the build-dir on-disk bake (see
 	// build_dir_source_bake.go). ElidedSources records every
