@@ -7,7 +7,7 @@
         e2e-meta-conditional e2e-meta-script e2e-meta-buildbarn-re e2e-meta-regression e2e-audit-narrowing fdsdk-reality-check \
         buildbarn-up buildbarn-down bb-clientd-up bb-clientd-down e2e-hello-bbclientd install-bazelisk install-cmake \
         fetch-fmt fetch-zlib fetch-spdlog fetch-nlohmann-json fetch-catch2 fetch-libpng fetch-abseil fetch-protobuf fetch-googletest fetch-eigen fetch-llvm fetch-vtk fetch-survey \
-        fetch-re2 fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-buildbox fetch-glog fetch-glm fetch-cryptoauthlib fetch-survey-regression \
+        fetch-re2 fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-buildbox fetch-glog fetch-glm fetch-cryptoauthlib fetch-bde fetch-survey-regression \
         survey-gazelle survey-multiplatform update-golden record-fixtures lint vet fmt staticcheck check-cmake-toolchain clean
 
 # Pinned external tool versions. Hard-failed at runtime by the converter,
@@ -94,6 +94,14 @@ GLM_DIR           ?= /tmp/glm
 # cryptoauthlib: real-world recursive cmake via configure-time execute_process.
 CRYPTOAUTHLIB_VERSION ?= v3.8.0
 CRYPTOAUTHLIB_DIR     ?= /tmp/cryptoauthlib
+# bde: Bloomberg's BDE libraries — metadata-driven (.mem/.dep) target
+# construction via the BdeBuildSystem (BBS). bde-tools provides
+# find_package(BdeBuildSystem); both are pinned to the SAME tag (BBS tracks
+# bde release-for-release). See docs/survey-corpus.md + scripts/build-lens/bde.conf.
+BDE_VERSION       ?= 4.38.0.0
+BDE_DIR           ?= /tmp/bde
+BDE_TOOLS_VERSION ?= 4.38.0.0
+BDE_TOOLS_DIR     ?= /tmp/bde-tools
 
 GO        ?= go
 GOFLAGS   ?=
@@ -1382,6 +1390,24 @@ fetch-glm:
 		echo "glm already at $(GLM_DIR); rm -rf to refetch"; \
 	fi
 
+# bde: Bloomberg's BDE libraries — metadata-driven (.mem/.dep) target
+# construction via a custom build system. The top-level CMakeLists does
+# find_package(BdeBuildSystem REQUIRED), provided by the bde-tools checkout
+# (cloned at the SAME tag), so we fetch BOTH; the build lens points cmake's
+# CMAKE_PREFIX_PATH at $(BDE_TOOLS_DIR). Scoped to one package group
+# (groups/bsl) — see scripts/build-lens/bde.conf + docs/survey-corpus.md.
+fetch-bde:
+	@if [ ! -d "$(BDE_DIR)" ]; then \
+		git clone --depth 1 --branch $(BDE_VERSION) https://github.com/bloomberg/bde.git "$(BDE_DIR)"; \
+	else \
+		echo "bde already at $(BDE_DIR); rm -rf to refetch"; \
+	fi
+	@if [ ! -d "$(BDE_TOOLS_DIR)" ]; then \
+		git clone --depth 1 --branch $(BDE_TOOLS_VERSION) https://github.com/bloomberg/bde-tools.git "$(BDE_TOOLS_DIR)"; \
+	else \
+		echo "bde-tools already at $(BDE_TOOLS_DIR); rm -rf to refetch"; \
+	fi
+
 # cryptoauthlib: real-world recursive cmake via configure-time execute_process
 # — the superbuild-at-configure idiom nested_cmake.go lifts. Its
 # cmake/mbedtls.cmake does configure_file(third_party/CMakeLists-mbedtls.txt.in)
@@ -1519,7 +1545,7 @@ fetch-survey: fetch-abseil fetch-protobuf fetch-googletest fetch-eigen
 # Convenience aggregate: fetch the regression corpus (the projects that
 # surfaced past bugs + the clean controls). cutlass / cuda-samples need a
 # CUDA toolkit to actually survey; they're fetched so the corpus is whole.
-fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm fetch-cryptoauthlib
+fetch-survey-regression: fetch-boost-core fetch-zstd fetch-libevent fetch-libxml2 fetch-brotli fetch-mbedtls fetch-cutlass fetch-cuda-samples fetch-openblas fetch-sdl fetch-curl fetch-grpc fetch-glog fetch-glm fetch-cryptoauthlib fetch-bde
 
 # survey-gazelle: the strongest lens-2 (structural idiom) check — run the
 # gazelle_cc round-trip on wild corpus projects (see
