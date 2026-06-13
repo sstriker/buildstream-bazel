@@ -10,8 +10,19 @@ maintenance pass already understands.
 
 A **codegen recognizer** maps one such generator invocation to its native
 rule(s). Recognizers live in a registry; adding one for a new tool is a
-self-contained change — implement an interface, register it, add a fixture +
-gate. No new `ir.Kind`, no bespoke emit path. This doc is the how-to.
+self-contained change — no new `ir.Kind`, no bespoke emit path. There are two
+ways to add one, both feeding the same registry:
+
+- **In Go (first-party):** implement the `CodegenRecognizer` interface and
+  register it in-tree. Covered first, below — it's also the substrate the
+  Starlark path rides.
+- **In Starlark (operator, no recompile):** drop a `*.star` file next to your
+  project and point `--recognizers` at it. Covered in
+  [Operator recognizers in Starlark](#operator-recognizers-in-starlark-no-recompile).
+  This is the path for adding a generator your converter binary doesn't ship
+  support for, without rebuilding it.
+
+This doc is the how-to for both.
 
 Behaviour today is gated behind the opt-in `--recognize-codegen` flag (off by
 default; see [`ROADMAP.md`](../ROADMAP.md) for the rollout to default-on +
@@ -188,8 +199,80 @@ var codegenRegistry = []CodegenRecognizer{
    vet / gofmt / `make staticcheck` / `make lint-complexity` / `go test`,
    then your gate.
 
+## Operator recognizers in Starlark (no recompile)
+
+Everything above adds a recognizer *in the converter's source*. Operators who
+can't (or don't want to) rebuild the binary can add one as a **Starlark file**
+loaded at runtime — same registry, same contract, zero recompile:
+
+```
+convert-element-cmake --recognize-codegen --recognizers 'recognizers/*.star' …
+```
+
+`--recognizers` is a glob of `*.star` files; each is compiled at startup and
+appended to the registry **after** the built-ins (so first-party recognizers
+win; operator scripts extend). It requires `--recognize-codegen` to take effect
+(the master switch is unchanged). A glob that matches nothing, or a file that
+won't compile / is missing `match` or `lower`, is a hard startup error — a
+broken `--recognizers` fails loudly, it doesn't silently no-op.
+
+A recognizer script defines two top-level functions and uses two builtins
+(`native_rule(...)`, `result(...)`) — that's the whole API:
+
+```python
+def match(cmd):            # cmd.driver, cmd.args, cmd.srcs, cmd.outs, cmd.pkg, cmd.proto_deps
+    return cmd.driver.startswith("protoc") and \
+           any([a.startswith("--cpp_out") for a in cmd.args])
+
+def lower(cmd):
+    base = cmd.srcs[0].rsplit("/", 1)[-1][:-len(".proto")]
+    return result(
+        targets = [
+            native_rule("proto_library", base + "_proto",
+                        load_from = "@protobuf//bazel:proto_library.bzl",
+                        attrs = {"srcs": [base + ".proto"], "visibility": ["//visibility:public"]}),
+            native_rule("cc_proto_library", base + "_cc_proto",
+                        load_from = "@protobuf//bazel:cc_proto_library.bzl",
+                        attrs = {"deps": [":" + base + "_proto"], "visibility": ["//visibility:public"]}),
+        ],
+        consumer_deps = [":" + base + "_cc_proto"],
+        derived_outputs = [base + ".pb.cc", base + ".pb.h"],
+    )
+```
+
+The complete, runnable version is [`recognizers/protoc.star`](../recognizers/protoc.star)
+— copy it and change `match()` + the rule shape to teach the converter a new
+generator.
+
+The same rules apply as for Go recognizers, and a couple of properties make the
+Starlark path safe by construction:
+
+- **`native_rule(kind, name, load_from=, load_symbol=, attrs={})`** maps 1:1 to
+  the `NativeRuleSpec` substrate; the `load()` is auto-emitted. `attrs` is a
+  dict of attr-name → string *or* list-of-strings, emitted in insertion order.
+- **Output authority stays first-party.** The script declares `derived_outputs`;
+  the Go host cross-checks them against cmake's recorded outputs and falls back
+  to the genrule (best-effort) / refuses (strict) on a mismatch — the soundness
+  gate is *not* in the script.
+- **Sandboxed + deterministic.** Starlark has no filesystem, clock, or network,
+  so a recognizer can't break hermeticity; a buggy script can only decline (its
+  command falls through to the next recognizer / the genrule), never corrupt the
+  build.
+- **Consumer wiring is automatic**, exactly as for Go recognizers: return
+  `consumer_deps` and a `#include`r of a generated header gets a direct deps edge
+  to the rule.
+
+Gate: `scripts/meta-cmake-recognizer-starlark.sh` loads an operator `.star` for
+a generator the built-ins don't know (`gen_pb`), asserts it fires + that the
+template compiles, and bazel-builds the result.
+
 ## Where it sits
 
+- Starlark host (loader, `match`/`lower` shim, builtins, the host-side output
+  cross-check): `converter/internal/lower/starlark_recognizer.go`; the
+  `--recognizers` flag (`converter/internal/cli/flags.go`) →
+  `loadOperatorRecognizers` (`converter/cmd/convert-element-cmake/main.go`) →
+  `Options.ExtraCodegenRecognizers`.
 - Interface, registry, recognizers, dispatch helper:
   `converter/internal/lower/codegen_recognizer.go`,
   `converter/internal/lower/standalone_genrules.go`
