@@ -409,6 +409,8 @@ type writeACLI struct {
 	cmakeConfigureFileBin string
 	ccEmbedBin            string
 	ccHashBin             string
+	liftDownload          bool
+	downloadReposLock     string
 	gazelleCC             bool
 	splitPackages         bool
 	buildTypes            string
@@ -450,6 +452,8 @@ func parseWriteAFlags() *writeACLI {
 	flag.StringVar(&a.cmakeConfigureFileBin, "cmake-configure-file-bin", "", "optional: path to cmd/cmake-configure-file. When set, kind:cmake elements opt into the configure_file lift: convert-element-cmake emits genrules with .h.in as a real srcs input + //tools:cmake-configure-file invocation at Bazel build time, removing .h.in content from convert-element-cmake's cache key. The binary is staged into project A and project B tools/ so the genrule's tool label resolves. Off (the default) preserves the legacy base64-of-rendered-bytes shape; the audit's undercoverage report will continue to flag .h.in paths until the lift is opted into.")
 	flag.StringVar(&a.ccEmbedBin, "cc-embed-bin", "", "optional: path to cmd/cc-embed. When set, kind:cmake elements opt into the cc_embed lift: convert-element-cmake recognizes a known file-embedding cmake -P encoder (VTK's vtkEncodeString) and lowers it to the native cc_embed rule (//tools:cc-embed) — so the converted project needs no cmake at build time for the embed-file-as-C-array idiom. The binary is staged into project A and project B tools/ so the rule's tool label resolves. Off (the default) leaves the encoder edge on the runner/bake/refuse path. See docs/research/codegen-idiom-coverage.md.")
 	flag.StringVar(&a.ccHashBin, "cc-hash-bin", "", "optional: path to cmd/cc-hash. When set, kind:cmake elements opt into the cc_hash lift: convert-element-cmake recognizes a known file-hashing cmake -P script (VTK's vtkHashSource) and lowers it to the native cc_hash rule (//tools:cc-hash) — so the converted project needs no cmake at build time for the hash-a-file-into-a-header idiom, and the digest recomputes on input change. The binary is staged into project A and project B tools/ so the rule's tool label resolves. Off (the default) leaves the hashing edge on the runner/bake/refuse path. See docs/research/codegen-idiom-coverage.md.")
+	flag.BoolVar(&a.liftDownload, "lift-download", false, "optional: thread --lift-download into each kind:cmake converter genrule so file(DOWNLOAD) recovery emits a genrule sourcing @<repo>//file from an http_file repo (instead of byte-baking the fetched bytes) and produces the download-repos.json lockfile as a build artifact. The http_file repos are declared in project B's MODULE.bazel from the committed lockfile passed via --download-repos-lock. Off (the default) keeps the hermetic byte-bake. The two-phase bootstrap: build the download-repos.json target once, commit it, then pass --download-repos-lock. See ROADMAP.md.")
+	flag.StringVar(&a.downloadReposLock, "download-repos-lock", "", "optional: path to a committed file(DOWNLOAD) lockfile (download-repos.json, produced by a prior build of a --lift-download converter genrule). When set, project B's MODULE.bazel declares one stock http_file repo (via use_repo_rule) per entry so the @<repo>//file labels the fetch genrules reference resolve. Empty (default) declares no repos — the bootstrap's first pass, before the lockfile is produced + committed.")
 	flag.BoolVar(&a.gazelleCC, "gazelle-cc", false, "optional: wire gazelle_cc into project B so `bazel run //:gazelle` maintains the converted BUILDs (the Phase-8b continuous-conversion flow: the converter bootstraps the per-directory split via --split-packages, then gazelle_cc canonicalizes / owns the layout — relocating cc_library targets to their source dirs, preferring implementation_deps; converter targets gazelle_cc can't regenerate carry rule-level # keep to survive). Adds bazel_dep(gazelle/gazelle_cc/rules_go) to project B's MODULE.bazel and a gazelle_binary(languages=[\"@gazelle_cc//language/cc\"]) + gazelle(name=\"gazelle\") pair to project B's root BUILD.bazel. No go_sdk extension is emitted — gazelle_cc's transitive go_sdk.download handles the toolchain in network-having environments; the sandbox e2e gate appends go_sdk.host() to overlay.MODULE.bazel. Off (the default) leaves project B's MODULE.bazel + root BUILD.bazel byte-identical to today. See docs/design/cmake-split-packages.md.")
 	flag.BoolVar(&a.splitPackages, "split-packages", false, "optional: render kind:cmake elements as one BUILD.bazel per CMake source directory (the gazelle per-directory model) instead of a single monolithic BUILD per element. The converter genrule threads --split-packages and emits a single build-packages.tar of the per-sub-package tree (a genrule can't declare the discovered-at-action-time sub-package set as static outs); stage-b unpacks it into project B's elements/<name>/. Off (the default) keeps the single-BUILD shape. See docs/design/cmake-split-packages.md.")
 	flag.StringVar(&a.buildTypes, "build-types", "", "optional: \"auto\" or a comma-separated list of cmake configuration names (e.g. \"Debug,Release,RelWithDebInfo\"). \"auto\" detects each kind:cmake element's own CMAKE_CONFIGURATION_TYPES via a throwaway Ninja Multi-Config configure at render time (falling back to cmake's standard set when cmake is absent or an element's configure fails) and uses their union. Either form threads --build-types into every kind:cmake converter genrule so cmake runs under the Ninja Multi-Config generator and BUILD.bazel.out carries the per-config //config:<name> select() arms (Phase 5 multi-config fold). write-a renders the matching //config package (string_flag build_type + one config_setting per config) into project B so the labels resolve; select a config at build time with --//config:build_type=<name>. Empty (default) keeps the single-config render byte-stable.")
@@ -668,6 +672,14 @@ func resolveWriteATools(a *writeACLI) {
 			log.Fatalf("resolve cc-embed path: %v", err)
 		}
 		cmakeConfig.ccEmbedBin = abs
+	}
+	cmakeConfig.liftDownload = a.liftDownload
+	if a.downloadReposLock != "" {
+		repos, err := readDownloadReposLock(a.downloadReposLock)
+		if err != nil {
+			log.Fatalf("read --download-repos-lock: %v", err)
+		}
+		cmakeConfig.downloadRepos = repos
 	}
 	if a.ccHashBin != "" {
 		abs, err := filepath.Abs(a.ccHashBin)
@@ -2393,6 +2405,11 @@ bazel_dep(name = "rules_go", version = "0.59.0")
 		b.WriteString(`bazel_dep(name = "rules_python", version = "0.40.0")
 `)
 	}
+	// file(DOWNLOAD) http_file repos from the committed lockfile
+	// (--download-repos-lock). Emitted only when a lockfile was provided AND
+	// it carried downloads; absent it (the bootstrap's first pass, or no
+	// downloads) MODULE.bazel stays byte-identical to today.
+	b.WriteString(renderHttpFileRepos(cmakeConfig.downloadRepos))
 	b.WriteString(renderSourcesUseExtension(collectSources(g)))
 	// As in moduleBazelA: the legacy `traces` module extension is
 	// retired; per-element BUILDs carry inline trace_load targets.
