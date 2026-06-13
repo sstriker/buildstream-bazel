@@ -123,6 +123,12 @@ var supportedCMakeEOps = map[string]string{
 	"make_directory":              "create a directory (benign no-op — no Bazel output to anchor)",
 	"remove":                      "delete files (benign no-op — fresh sandbox per action)",
 	"remove_directory":            "delete a directory (benign no-op — fresh sandbox per action)",
+	"compare_files":               "byte-compare two files (exit-status probe; its consequence is already materialized in the recovered configure outputs)",
+	"true":                        "exit 0 (benign no-op)",
+	"false":                       "exit 1 (benign no-op — the configure already took the branch)",
+	"sleep":                       "configure-time delay (benign no-op)",
+	"capabilities":                "print cmake capabilities JSON (console probe)",
+	"environment":                 "print the environment (console probe)",
 }
 
 // noopExecuteProcessOps names the CMakeEOp values that recover to a
@@ -137,6 +143,17 @@ var supportedCMakeEOps = map[string]string{
 // whole element into the round-2 fallback over a side-effect that
 // can't lose a real compile input.
 var noopExecuteProcessOps = map[string]bool{
+	// Exit-status / console probes: the answer steered the configure,
+	// whose consequence is already materialized in the codemodel and
+	// recovered outputs this same conversion consumes — the probe
+	// doctrine (see recoverProbeOrStampCall's header).
+	"compare_files":    true,
+	"true":             true,
+	"false":            true,
+	"sleep":            true,
+	"capabilities":     true,
+	"environment":      true,
+	"console_noop":     true,
 	"make_directory":   true,
 	"remove":           true,
 	"remove_directory": true,
@@ -537,6 +554,13 @@ func classifyCMakeEBuiltin(argv []string) (ClassifyResult, bool) {
 // Returns (result, true) when driver matches; (zero, false) otherwise.
 func classifyRawPosixDriver(driver string, call shadow.ExecuteProcessCall) (ClassifyResult, bool) {
 	switch {
+	case consoleOnlyDrivers[driver] && call.OutputFile == "" && call.OutputVariable == "" && call.ResultVariable == "":
+		// echo/cat/<algo>sum with no consumable channel: configure-time
+		// console noise (progress prints, checksum logs). Benign skip.
+		// An OUTPUT_FILE-bearing form falls through to FileProducing
+		// (the hoist redirects stdout); a captured form rides the
+		// dump-vars rescue / refusal paths unchanged.
+		return ClassifyResult{Bucket: BucketCMakeE, Reason: driver + " (console output only — no consumable channel)", CMakeEOp: "console_noop"}, true
 	case copyDrivers[driver]:
 		return ClassifyResult{Bucket: BucketCMakeE, Reason: "cp (POSIX copy)", CMakeEOp: "cp"}, true
 	case driver == "install":

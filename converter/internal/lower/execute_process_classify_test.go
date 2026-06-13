@@ -224,7 +224,7 @@ func TestClassify_Buckets(t *testing.T) {
 		{
 			name: "cmake -E with unrecognized op falls back to Unknown",
 			call: shadow.ExecuteProcessCall{
-				Commands: [][]string{{"cmake", "-E", "compare_files", "a", "b"}},
+				Commands: [][]string{{"cmake", "-E", "tar", "a", "b"}},
 			},
 			bucket: BucketUnknown,
 		},

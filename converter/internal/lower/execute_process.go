@@ -205,6 +205,12 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 		// the driver's dead-capture pass feeds on.
 		orig := call
 		call = clearDeadCaptures(call, cc.DeadCaptureVars)
+		// Unwrap cmake -E env/chdir wrappers into the call's
+		// ENVIRONMENT/WORKING_DIRECTORY fields and rewrite the -E
+		// POSIX-equivalents (cat/echo/<algo>sum) to raw argv, so the
+		// inner command classifies on its own merits. See
+		// execute_process_cmake_e_normalize.go.
+		call = normalizeCMakeECall(call)
 		v := Classify(call)
 		switch v.Bucket {
 		case BucketCMakeE:
@@ -429,9 +435,11 @@ func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, c
 // into -E configure_file lifts.
 func prescanStampVars(calls []shadow.ExecuteProcessCall, cc *codegenContext) {
 	for _, call := range calls {
-		// Dead-capture view, mirroring the main loop: a silenced
-		// stamp's variable must not register (nothing consumes it).
+		// Dead-capture + wrapper-normalized view, mirroring the main
+		// loop: a silenced stamp's variable must not register, and a
+		// `cmake -E env GIT_DIR=… git describe` stamp must.
 		call = clearDeadCaptures(call, cc.DeadCaptureVars)
+		call = normalizeCMakeECall(call)
 		v := Classify(call)
 		if v.Bucket == BucketStamp && call.OutputVariable != "" && len(call.Commands) > 0 && len(call.Commands[0]) > 0 {
 			driver := executeProcessDriverBasename(call.Commands[0][0])
