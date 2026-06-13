@@ -313,6 +313,19 @@ type Package struct {
 	// generated header.
 	CodegenHeaderConsumers map[string][]string `json:"-"`
 
+	// NativeRuleConsumerLabels maps a generated output path (element-root-
+	// relative) to the NAME of the native rule whose CONSUMER a target that
+	// `#include`s that output should depend on (e.g. `foo.pb.h` ->
+	// `foo_cc_proto`). The --split-packages transform wires the consumer a
+	// DIRECT cross-package deps edge to that rule — NOT the file-oriented
+	// `generated_includes` textual_hdrs wrapper CodegenHeaderConsumers
+	// synthesizes — and EXCLUDES these outputs from that wrapper, because the
+	// native rule (a cc_proto_library) produces them internally rather than as a
+	// standalone file. Populated by the codegen-recognizer dispatch
+	// (--recognize-codegen); like the maps above it's out-of-band (`json:"-"`).
+	// Empty when no recognized native rule's output is consumed.
+	NativeRuleConsumerLabels map[string]string `json:"-"`
+
 	// SourceByteReads is the element-root-relative set of SOURCE/HEADER files
 	// whose BYTES the lowering passes read in a way that AFFECTED the emitted
 	// BUILD — the fused-source textual-include scan (a `.c` that `#include`s

@@ -221,17 +221,19 @@ transition cleanly.
         a recognized protoc edge lowers to `proto_library` + `cc_proto_library`
         and the genrule disappears; everything else is byte-identical
         (`scripts/meta-cmake-protoc-recognize.sh` gates both halves +
-        bazel-builds the `cc_proto_library`). What's LEFT, in order:
-        - **Consumer-dep generalization (next).** A consumer of a native rule's
-          outputs (`#include "foo.pb.h"`) must get a `deps` edge to the rule's
-          CONSUMER LABEL (`:foo_cc_proto`) — NOT the file-oriented
-          `generated_includes` `textual_hdrs` wrapper that
-          `OutToGenrule`→`CodegenHeaderConsumers` synthesizes today. Generalize
-          this in the native-rule substrate (carry a consumer-dep label on the
-          target so the split/consumer-wiring emits a direct rule `deps` edge),
-          so it works for ANY recognized native rule, not just protoc. The
-          opt-in dispatch deliberately does NOT register `OutToGenrule` yet
-          (that would route a consumer down the wrong file-wrapper path).
+        bazel-builds the `cc_proto_library`). The **consumer-dep
+        generalization** is also SHIPPED: a `#include "foo.pb.h"` consumer gets
+        a DIRECT `deps` edge to the native rule (`//:foo_cc_proto`), wired via
+        the native-rule substrate (`Package.NativeRuleConsumerLabels` +
+        `cc.OutToNativeConsumerDep`) so it generalizes to ANY recognized native
+        rule. The `generated_includes` file-wrapper is excluded for native-rule
+        outputs; the detection seeds native-declared outputs into the codegen
+        consumer walk's producer set, so it spans recovered-genrule AND
+        native-declared headers (gated by extension, not cmake's generated
+        bit). No `# keep` on the native dep — gazelle resolves the idiomatic
+        rule itself. Gated by `scripts/meta-cmake-protoc-consumer.sh`
+        (`--split-packages`, both halves + a `//:use_foo` build). What's LEFT,
+        in order:
         - **Cross-package proto import deps** via `protoImportClosure` → labels
           on the `proto_library`'s `deps` (the recognizer already threads
           `ProtoDeps`; the dispatch needs to compute + pass them).

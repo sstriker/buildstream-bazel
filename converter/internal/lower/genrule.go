@@ -66,6 +66,16 @@ type codegenContext struct {
 	// has-cmake-codegen and to reference outputs by label.
 	OutToGenrule map[string]string
 
+	// OutToNativeConsumerDep maps a package-relative generated output to the
+	// NAME of the native rule's CONSUMER target a #include of it should depend
+	// on (e.g. foo.pb.h -> "foo_cc_proto"). Distinct from OutToGenrule: the
+	// output is produced INSIDE the native rule (a cc_proto_library compiles
+	// foo.pb.{cc,h} itself), not as a standalone genrule out — so a consumer
+	// wires a DIRECT rule deps edge to this label, NOT the file-oriented
+	// generated_includes textual_hdrs wrapper. Populated by the
+	// codegen-recognizer dispatch (--recognize-codegen).
+	OutToNativeConsumerDep map[string]string
+
 	// GendirMarkedOuts records baked file(GENERATE) outputs whose
 	// content embeds the @BSB_GENDIR@ marker (build-dir paths
 	// re-anchored by reanchorResponseContent). A consuming genrule
@@ -442,6 +452,7 @@ func newCodegenContextFor(opts Options) *codegenContext {
 func newCodegenContext() *codegenContext {
 	return &codegenContext{
 		OutToGenrule:               map[string]string{},
+		OutToNativeConsumerDep:     map[string]string{},
 		GendirMarkedOuts:           map[string]bool{},
 		RespfileHdrGroups:          map[string]string{},
 		CcEmbedSourceToHeader:      map[string]string{},
