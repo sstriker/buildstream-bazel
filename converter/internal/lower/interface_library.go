@@ -132,7 +132,8 @@ func lowerInterfaceLibraries(
 			if rootWalkByTarget[call.Name] {
 				walkDirs = append([]string{""}, includes...)
 			}
-			h, err := discoverHeaders(hostSrc, walkDirs, cache, missing)
+			covered := func(inc string) bool { return isGeneratedOutputRoot(inc, cc.OutToGenrule) }
+			h, err := discoverHeaders(hostSrc, walkDirs, cache, missing, covered)
 			if err == nil {
 				hdrs = h
 			}

@@ -4782,7 +4782,7 @@ func attributeExecuteProcessConsumers(irt *ir.Target, lc targetLowerCtx, targetB
 // The (nil, nil) return drops a UTILITY-shaped rule; errors are typed
 // refusals. Bodies and rationale comments are verbatim from the original
 // inline region.
-func stageTargetHeaders(irt *ir.Target, t *fileapi.Target, lc targetLowerCtx, walkPkgRootForHdrs bool, privateIncDirs []string, srcElided bool) (*ir.Target, error) {
+func stageTargetHeaders(irt *ir.Target, t *fileapi.Target, lc targetLowerCtx, targetBuildIncs map[string]bool, walkPkgRootForHdrs bool, privateIncDirs []string, srcElided bool) (*ir.Target, error) {
 	cmakeSrc, cmakeBuild, hostSrc, hostSrcOnDisk := lc.cmakeSrc, lc.cmakeBuild, lc.hostSrc, lc.hostSrcOnDisk
 	cc, rejections := lc.cc, lc.rejections
 	_, reanchor := lc.umbrellaReanchor()
@@ -4845,7 +4845,16 @@ func stageTargetHeaders(irt *ir.Target, t *fileapi.Target, lc targetLowerCtx, wa
 			includesForWalk = append(includesForWalk, dir)
 		}
 	}
-	hdrs, err := discoverHeaders(hostSrc, includesForWalk, cc.HeaderWalkCache, cc.MissingIncludeDirs)
+	// A wired include whose headers are RECOVERED (a build-dir include,
+	// or any dir that is a generated-output root now that the build-dir
+	// bake at lowerTarget has fully populated cc.OutToGenrule) must not
+	// be flagged "missing on disk" when the hostSrc walk can't find it —
+	// its content lives in the build tree, staged by the bake +
+	// consumer attribution, not here. See discoverHeaders' recordMissing.
+	covered := func(inc string) bool {
+		return targetBuildIncs[inc] || isGeneratedOutputRoot(inc, cc.OutToGenrule)
+	}
+	hdrs, err := discoverHeaders(hostSrc, includesForWalk, cc.HeaderWalkCache, cc.MissingIncludeDirs, covered)
 	if err != nil {
 		return nil, err
 	}
@@ -5218,7 +5227,7 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 
 	attributeGeneratedConsumers(irt, t, lc, targetBuildIncs)
 
-	if staged, err := stageTargetHeaders(irt, t, lc, walkPkgRootForHdrs, privateIncDirs, srcElided); err != nil || staged == nil {
+	if staged, err := stageTargetHeaders(irt, t, lc, targetBuildIncs, walkPkgRootForHdrs, privateIncDirs, srcElided); err != nil || staged == nil {
 		return staged, err
 	}
 
@@ -9086,8 +9095,31 @@ func looksLikeCxxHeader(path string) bool {
 	return false
 }
 
-func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][]string, missing map[string]bool) ([]string, error) {
+func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][]string, missing map[string]bool, covered func(inc string) bool) ([]string, error) {
 	seen := map[string]struct{}{}
+	// recordMissing flags an absent include dir for the end-of-lower
+	// "missing on disk" warning + unsupported-source-path rejection —
+	// UNLESS a recovered producer covers it. A build-dir include
+	// (target_include_directories'd ${CMAKE_BINARY_DIR}/...) or a
+	// generated-output root is emitted on irt.Includes for the -I that
+	// resolves its GENERATED headers at Bazel time, and those headers
+	// are staged by the build-dir bake + consumer attribution — not by
+	// this hostSrc walk. Such a dir is absent UNDER hostSrc by
+	// construction (its content lives in the build tree), so recording
+	// it would reject an include that is in fact wired AND recovered.
+	// `covered` is the only place the build-dir-vs-source distinction
+	// still exists; once `inc` joins hostSrc below it's erased. A
+	// genuine forward-declared empty SOURCE include (LLVM's llvm-mca
+	// shape) has no producer, so it still surfaces — the intended
+	// survey signal.
+	recordMissing := func(absDir, inc string) {
+		if cache != nil {
+			cache[absDir] = nil
+		}
+		if missing != nil && (covered == nil || !covered(inc)) {
+			missing[absDir] = true
+		}
+	}
 	for _, inc := range includeDirs {
 		absDir := filepath.Join(sourceRoot, inc)
 		if cache != nil {
@@ -9108,25 +9140,16 @@ func discoverHeaders(sourceRoot string, includeDirs []string, cache map[string][
 		// denied mid-walk, etc.) still propagate. Record the dir
 		// in `missing` so ToIR can stderr-warn once at the end
 		// (silent skip is wrong — operator should see the cmake
-		// oddity even though it isn't fatal).
+		// oddity even though it isn't fatal) — but not when a
+		// recovered producer covers it (see recordMissing).
 		if st, statErr := os.Stat(absDir); statErr != nil {
 			if errors.Is(statErr, fs.ErrNotExist) {
-				if cache != nil {
-					cache[absDir] = nil
-				}
-				if missing != nil {
-					missing[absDir] = true
-				}
+				recordMissing(absDir, inc)
 				continue
 			}
 			return nil, fmt.Errorf("stat include dir %q: %w", absDir, statErr)
 		} else if !st.IsDir() {
-			if cache != nil {
-				cache[absDir] = nil
-			}
-			if missing != nil {
-				missing[absDir] = true
-			}
+			recordMissing(absDir, inc)
 			continue
 		}
 		perDir, err := collectDirHeaders(sourceRoot, absDir)

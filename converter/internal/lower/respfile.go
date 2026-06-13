@@ -274,7 +274,8 @@ func responseFileSourceHdrGroups(srcs []string, cc *codegenContext, bazelPackage
 			}
 			name, exists := cc.RespfileHdrGroups[rel]
 			if !exists {
-				hdrs, err := discoverHeaders(cmakeSrc, []string{rel}, cc.HeaderWalkCache, cc.MissingIncludeDirs)
+				covered := func(inc string) bool { return isGeneratedOutputRoot(inc, cc.OutToGenrule) }
+				hdrs, err := discoverHeaders(cmakeSrc, []string{rel}, cc.HeaderWalkCache, cc.MissingIncludeDirs, covered)
 				if err != nil || len(hdrs) == 0 {
 					cc.RespfileHdrGroups[rel] = "" // negative-cache
 					continue
