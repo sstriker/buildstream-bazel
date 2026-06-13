@@ -9,6 +9,10 @@ Every Bazel rule produced by recovering an `add_custom_command` from a
 sub-tags) so the entire converted project can be audited with `bazel
 query` without scanning rule bodies.
 
+These tags describe the **genrule** fallback path. A generator with a native
+Bazel rule (protoc, …) can instead be lowered to that rule by a recognizer —
+see [`codegen-recognizers.md`](codegen-recognizers.md) for how to write one.
+
 ## Producer-side tags
 
 Applied to the `genrule` that the converter emits.
