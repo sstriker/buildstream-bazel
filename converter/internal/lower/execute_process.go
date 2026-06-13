@@ -197,6 +197,14 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 	// operands and stem claims in view before any per-call emission.
 	unspec := planUnspecifiedOutputs(calls, anc, cc)
 	for ci, call := range calls {
+		// Dead-capture normalization BEFORE classification: a capture
+		// keyword whose variable the configure never reads (the
+		// silencing idiom) is treated as absent, so every classifier
+		// and lifter below sees the liftable shape. The ORIGINAL
+		// call's vars still record on any refusal — that's the sink
+		// the driver's dead-capture pass feeds on.
+		orig := call
+		call = clearDeadCaptures(call, cc.DeadCaptureVars)
 		v := Classify(call)
 		switch v.Bucket {
 		case BucketCMakeE:
@@ -209,6 +217,7 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 					Reason: reason,
 					Argv:   formatExecuteProcessArgv(call),
 				})
+				recordCaptureRefusal(orig, cc)
 				continue
 			}
 			collect(rels)
@@ -222,6 +231,7 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 					Reason: reason,
 					Argv:   formatExecuteProcessArgv(call),
 				})
+				recordCaptureRefusal(orig, cc)
 				continue
 			}
 			collect(rels)
@@ -232,6 +242,7 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			// See nested_cmake.go.
 			if ref := recoverNestedCMakeCall(call, anc, cc); ref != nil {
 				unsupported = append(unsupported, *ref)
+				recordCaptureRefusal(orig, cc)
 			}
 		default:
 			// Argv-declared codegen rescue before the probe/stamp/refusal
@@ -254,8 +265,9 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 					continue
 				}
 			}
-			if ref := recoverProbeOrStampCall(call, v, cc, cmakeVars, forwardedStampVars, seenProbeFlags); ref != nil {
+			if ref := recoverProbeOrStampCall(call, v, callCaptureCleared(orig, call), cc, cmakeVars, forwardedStampVars, seenProbeFlags); ref != nil {
 				unsupported = append(unsupported, *ref)
+				recordCaptureRefusal(orig, cc)
 			}
 		}
 	}
@@ -270,7 +282,7 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 // then applies the stamp/probe capture gate. Returns a refusal to append when
 // the call can't be rescued, or nil when it was lifted, recorded, or
 // benign-skipped (every `continue` in the original inline switch default).
-func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, cc *codegenContext, cmakeVars map[string]string, forwardedStampVars map[string]bool, seenProbeFlags map[string]string) *executeProcessRefusal {
+func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, captureCleared bool, cc *codegenContext, cmakeVars map[string]string, forwardedStampVars map[string]bool, seenProbeFlags map[string]string) *executeProcessRefusal {
 	// Configure-time probes produce no file artifact a consumer
 	// #includes, so none lifts to a genrule — and a recognized
 	// host/toolchain probe (BucketProbe) is never a build INPUT.
@@ -372,6 +384,15 @@ func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, c
 	// OUTPUT_FILE; it follows the capture gate but not the stamp-only
 	// forwarded rescue.
 	if v.Bucket == BucketProbe || v.Bucket == BucketStamp {
+		// Dead-capture skip: the call HAD capture channels, the
+		// analysis proved every one unread, and nothing else (no
+		// OUTPUT_FILE) is consumable — a silenced stamp writes a value
+		// nowhere, so there is nothing to bake AND nothing to refuse.
+		// Genuinely capture-less stamp calls (git fetch side effects)
+		// keep refusing: captureCleared distinguishes them.
+		if captureCleared && call.OutputVariable == "" && call.ResultVariable == "" && call.OutputFile == "" {
+			return nil
+		}
 		if call.OutputVariable != "" {
 			if _, ok := cmakeVars[call.OutputVariable]; ok {
 				return nil
@@ -408,6 +429,9 @@ func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, c
 // into -E configure_file lifts.
 func prescanStampVars(calls []shadow.ExecuteProcessCall, cc *codegenContext) {
 	for _, call := range calls {
+		// Dead-capture view, mirroring the main loop: a silenced
+		// stamp's variable must not register (nothing consumes it).
+		call = clearDeadCaptures(call, cc.DeadCaptureVars)
 		v := Classify(call)
 		if v.Bucket == BucketStamp && call.OutputVariable != "" && len(call.Commands) > 0 && len(call.Commands[0]) > 0 {
 			driver := executeProcessDriverBasename(call.Commands[0][0])
@@ -1701,10 +1725,13 @@ func cmakeEConfigureFileTags(lifted bool) []string {
 //     substitution in the cmd; argv[0] is preserved as-is so
 //     PATH-resolved tools (python3, gen-script-on-PATH) keep
 //     working under Bazel's standard executor sandbox.
-//   - WORKING_DIRECTORY, ENVIRONMENT, TIMEOUT are not yet
-//     modeled — refuse the lift if any are set so a hoisted
-//     genrule never silently drops them. Adding support is a
-//     follow-on once a real fixture exercises the shape.
+//   - WORKING_DIRECTORY and ENVIRONMENT are not yet modeled —
+//     refuse the lift if either is set so a hoisted genrule
+//     never silently drops them (follow-on). TIMEOUT (a
+//     configure-time watchdog), INPUT_FILE (stdin from a
+//     source-tree file), and ERROR_FILE (stderr to a build-dir
+//     path, or merged via the same-file idiom) ARE modeled —
+//     see the gate block below.
 //
 // Driver tag: cmake-codegen-driver=<basename(argv[0])> mirrors
 // the genrule.go custom-command recovery so existing audit
@@ -1716,16 +1743,43 @@ func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *code
 	if len(call.Environment) > 0 {
 		return nil, "ENVIRONMENT is not yet modeled by the file-producing lifter", false
 	}
-	if call.Timeout != "" {
-		return nil, "TIMEOUT is not yet modeled by the file-producing lifter", false
-	}
-	if call.InputFile != "" || call.ErrorFile != "" {
-		return nil, "INPUT_FILE / ERROR_FILE are not yet modeled by the file-producing lifter", false
+	// TIMEOUT is a configure-time watchdog (kill the child if slow); it
+	// never shapes the OUTPUT bytes, and Bazel actions carry their own
+	// execution timeouts. Dropping it changes a failure MODE, not a
+	// produced artifact — so it no longer refuses the lift.
+	//
+	// INPUT_FILE is a plain stdin redirect: a source-tree input lifts
+	// as a declared src with `< $(location …)`. A build-dir INPUT_FILE
+	// (stdin from another recovery's output) stays refused for now —
+	// the producer-ordering wiring is its own follow-on.
+	stdinRel := ""
+	if call.InputFile != "" {
+		rel, ok := executeProcessAnchorSource(call.InputFile, anc)
+		if !ok {
+			return nil, fmt.Sprintf("INPUT_FILE %q is not under the source tree (build-dir stdin producer wiring not modeled)", call.InputFile), false
+		}
+		stdinRel = rel
 	}
 
 	dstRel, ok := executeProcessAnchorOutput(call.OutputFile, anc)
 	if !ok {
 		return nil, fmt.Sprintf("OUTPUT_FILE %q is not under the build dir", call.OutputFile), false
+	}
+
+	// ERROR_FILE is a stderr redirect: the same file as OUTPUT_FILE is
+	// cmake's documented stream-merge (`2>&1`); a distinct build-dir
+	// path becomes a second declared out. Outside the build dir there
+	// is nothing to anchor it to — refuse as before.
+	errRel := ""
+	mergeStderr := false
+	if call.ErrorFile != "" {
+		if call.ErrorFile == call.OutputFile {
+			mergeStderr = true
+		} else if rel, ok := executeProcessAnchorOutput(call.ErrorFile, anc); ok {
+			errRel = rel
+		} else {
+			return nil, fmt.Sprintf("ERROR_FILE %q is not under the build dir", call.ErrorFile), false
+		}
 	}
 	if _, exists := cc.OutToGenrule[dstRel]; exists {
 		return []string{dstRel}, "", true
@@ -1801,7 +1855,27 @@ func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *code
 		rewritten = append(rewritten, shellQuoteArg(a))
 	}
 
-	cmd := fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s > "$@"`, strings.Join(rewritten, " "))
+	tool := strings.Join(rewritten, " ")
+	if stdinRel != "" {
+		if !srcSet[stdinRel] {
+			srcSet[stdinRel] = true
+			srcs = append(srcs, stdinRel)
+		}
+		tool += fmt.Sprintf(` < "$(location %s)"`, stdinRel)
+	}
+	outs := []string{dstRel}
+	var cmd string
+	switch {
+	case errRel != "":
+		// Two declared outs: $@ is single-out-only, so address both
+		// through $(location <out>) — Bazel resolves a rule's own outs.
+		outs = append(outs, errRel)
+		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$(location %[1]s)")" "$$(dirname "$(location %[2]s)")" && %[3]s > "$(location %[1]s)" 2> "$(location %[2]s)"`, dstRel, errRel, tool)
+	case mergeStderr:
+		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s > "$@" 2>&1`, tool)
+	default:
+		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s > "$@"`, tool)
+	}
 	driver := executeProcessDriverBasename(argv[0])
 	if driver == "" {
 		driver = "unknown"
@@ -1813,11 +1887,17 @@ func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *code
 		Kind:        ir.KindGenrule,
 		Srcs:        srcs,
 		GenruleCmd:  cmd,
-		GenruleOuts: []string{dstRel},
+		GenruleOuts: outs,
 		Tags:        fileProducingTags(driver),
 		Visibility:  []string{"//visibility:private"},
 	})
 	cc.OutToGenrule[dstRel] = name
+	if errRel != "" {
+		// The stderr out is registered (no other channel may claim it)
+		// but NOT returned for consumer attribution — a diagnostics
+		// dump shouldn't attach to compile inputs by include coverage.
+		cc.OutToGenrule[errRel] = name
+	}
 	// Per-site conversion-todos override: a hoisted VCS/identity/date stamp
 	// bakes a non-hermetic value (wrong on rebuild) — more than an
 	// "improvement", an author should re-express it (workspace-status / stamp).
