@@ -142,6 +142,18 @@ func pipelineHasStampOrProbeStage(call shadow.ExecuteProcessCall) bool {
 		if len(argv) == 0 {
 			continue
 		}
+		// A `cmake -E env/chdir`-WRAPPED stage hides its real driver
+		// behind argv[0]=cmake; strip the wrappers before the check
+		// so `cmake -E env TZ=UTC git describe | head -1` is seen as
+		// the git stamp it is. Any cmake stage that doesn't fully
+		// strip (a real -E op, a -P script, a configure) also blocks
+		// the lift — a cmake stage inside a pipe isn't a shape the
+		// hoist models.
+		stripped, fullyStripped := stripCMakeEWrappers(argv)
+		if !fullyStripped && isCMakeDriver(argv[0]) {
+			return true
+		}
+		argv = stripped
 		driver := executeProcessDriverBasename(argv[0])
 		if stampDrivers[driver] || strongProbeDrivers[driver] || executeProcessRunsHostDetectionScript(argv) {
 			return true

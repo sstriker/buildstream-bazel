@@ -65,15 +65,17 @@ func normalizeCMakeECall(call shadow.ExecuteProcessCall) shadow.ExecuteProcessCa
 			call.WorkingDirectory = dir
 			argv = argv[4:]
 			changed = true
-		case "cat", "echo", "md5sum", "sha1sum", "sha224sum", "sha256sum", "sha384sum", "sha512sum":
-			// cmake -E's portable spellings of the POSIX tools; the
-			// raw argv routes through the standard classification
-			// (cmake's <algo>sum output format matches coreutils').
-			argv = append([]string{op}, argv[3:]...)
-			changed = true
-			call.Commands = [][]string{argv}
-			return call
 		default:
+			if consoleOnlyDrivers[op] {
+				// cmake -E's portable spellings of the POSIX tools
+				// (the SAME table the console-only classification
+				// consults — one list, no drift); the raw argv routes
+				// through the standard classification (cmake's
+				// <algo>sum output format matches coreutils').
+				argv = append([]string{op}, argv[3:]...)
+				call.Commands = [][]string{argv}
+				return call
+			}
 			// A real -E operation (copy, tar, …): classification owns it.
 			if changed {
 				call.Commands = [][]string{argv}
@@ -100,4 +102,37 @@ var consoleOnlyDrivers = map[string]bool{
 	"sha256sum": true,
 	"sha384sum": true,
 	"sha512sum": true,
+}
+
+// stripCMakeEWrappers peels `cmake -E env K=V…` / `cmake -E chdir <dir>`
+// prefixes off ONE argv (the per-stage view pipelineHasStampOrProbeStage
+// needs — wrappers hide the real driver behind argv[0]=cmake). Returns
+// the inner argv and whether the result no longer starts with a cmake
+// driver (fullyStripped=false means a cmake stage remains: a real -E
+// op, -P script, or configure).
+func stripCMakeEWrappers(argv []string) ([]string, bool) {
+	for len(argv) >= 3 && isCMakeDriver(argv[0]) && argv[1] == "-E" {
+		switch strings.ToLower(argv[2]) {
+		case "env":
+			rest := argv[3:]
+			i := 0
+			for ; i < len(rest); i++ {
+				if strings.HasPrefix(rest[i], "--") || !strings.Contains(rest[i], "=") {
+					break
+				}
+			}
+			if i >= len(rest) || strings.HasPrefix(rest[i], "--") {
+				return argv, false
+			}
+			argv = rest[i:]
+		case "chdir":
+			if len(argv) < 5 {
+				return argv, false
+			}
+			argv = argv[4:]
+		default:
+			return argv, false
+		}
+	}
+	return argv, len(argv) > 0 && !isCMakeDriver(argv[0])
 }

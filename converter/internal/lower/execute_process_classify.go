@@ -554,11 +554,13 @@ func classifyCMakeEBuiltin(argv []string) (ClassifyResult, bool) {
 // Returns (result, true) when driver matches; (zero, false) otherwise.
 func classifyRawPosixDriver(driver string, call shadow.ExecuteProcessCall) (ClassifyResult, bool) {
 	switch {
-	case consoleOnlyDrivers[driver] && call.OutputFile == "" && call.OutputVariable == "" && call.ResultVariable == "":
-		// echo/cat/<algo>sum with no consumable channel: configure-time
-		// console noise (progress prints, checksum logs). Benign skip.
-		// An OUTPUT_FILE-bearing form falls through to FileProducing
-		// (the hoist redirects stdout); a captured form rides the
+	case consoleOnlyDrivers[driver] && !executeProcessCapturesOutput(call):
+		// echo/cat/<algo>sum with NO channel at all — no OUTPUT_/
+		// ERROR_FILE, nothing captured (dead captures were cleared
+		// before classification; anything still set is live):
+		// configure-time console noise. Benign skip. An
+		// OUTPUT_FILE-bearing form falls through to FileProducing
+		// (the hoist redirects stdout); any live capture rides the
 		// dump-vars rescue / refusal paths unchanged.
 		return ClassifyResult{Bucket: BucketCMakeE, Reason: driver + " (console output only — no consumable channel)", CMakeEOp: "console_noop"}, true
 	case copyDrivers[driver]:
