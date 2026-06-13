@@ -258,6 +258,12 @@ type Options struct {
 	// (output cross-check mismatch) falls back to the genrule, never regressing.
 	RecognizeCodegen bool
 
+	// ExtraCodegenRecognizers are operator-supplied recognizers (loaded from
+	// --recognizers Starlark files by the CLI via LoadStarlarkRecognizers),
+	// appended to the built-in registry after the first-party ones. Only
+	// consulted when RecognizeCodegen is set.
+	ExtraCodegenRecognizers []CodegenRecognizer
+
 	// CMakeVars is the full cmake variable namespace captured
 	// at end of configure (cmakerun.Reply.Vars). Used by the
 	// configure_file lift as the values map for the lifted
@@ -1570,6 +1576,7 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 	cc.LiftConfigureFile = opts.LiftConfigureFile
 	cc.LiftDownload = opts.LiftDownload
 	cc.RecognizeCodegen = opts.RecognizeCodegen
+	cc.ExtraRecognizers = opts.ExtraCodegenRecognizers
 	traceDecoded, decodedTrace := tf.traceDecoded, tf.decodedTrace
 	decodedConfigureFiles, decodedFileGenerates, decodedExecuteProcesses := tf.decodedConfigureFiles, tf.decodedFileGenerates, tf.decodedExecuteProcesses
 	decodedOutOfTreeExecProcs := tf.decodedOutOfTreeExecProcs

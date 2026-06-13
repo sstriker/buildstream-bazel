@@ -459,7 +459,7 @@ func dispatchCodegenRecognizer(cc *codegenContext, rewrittenCmd string, srcs, ou
 	if cc == nil || !cc.RecognizeCodegen {
 		return nil, false
 	}
-	res, matched, err := recognizeCodegen(codegenCommandFrom(rewrittenCmd, srcs, outs, bazelPackagePath))
+	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, codegenCommandFrom(rewrittenCmd, srcs, outs, bazelPackagePath))
 	if !matched || err != nil {
 		return nil, false
 	}

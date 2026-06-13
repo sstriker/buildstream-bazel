@@ -69,7 +69,21 @@ var codegenRegistry = []CodegenRecognizer{
 // fallback); matched=true with err!=nil → claimed but non-standard (the caller
 // applies the fidelity policy).
 func recognizeCodegen(cmd CodegenCommand) (CodegenResult, bool, error) {
+	return recognizeCodegenWith(nil, cmd)
+}
+
+// recognizeCodegenWith is recognizeCodegen with operator-supplied recognizers
+// (loaded from --recognizers Starlark files) appended after the built-ins:
+// first-party recognizers win, operator ones extend. Same (result, matched,
+// err) contract.
+func recognizeCodegenWith(extra []CodegenRecognizer, cmd CodegenCommand) (CodegenResult, bool, error) {
 	for _, r := range codegenRegistry {
+		if r.Match(cmd) {
+			res, err := r.Lower(cmd)
+			return res, true, err
+		}
+	}
+	for _, r := range extra {
 		if r.Match(cmd) {
 			res, err := r.Lower(cmd)
 			return res, true, err
