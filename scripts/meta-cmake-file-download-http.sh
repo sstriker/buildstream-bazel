@@ -5,13 +5,19 @@
 # file(DOWNLOAD) bakes the fetched bytes HERMETICALLY by default (no
 # network at build time — the downstream-envelope contract). On top of
 # that, the converter surfaces a structured `download` todo carrying the
-# ready-to-paste http_file MODULE stanza (urls + sha256 translated from
-# the traced EXPECTED_HASH + the @repo//file label) for an operator who
-# wants the repo-rule form.
+# ready-to-paste http_file MODULE stanza (urls + SRI integrity translated
+# from the traced EXPECTED_HASH + the @repo//file label) for an operator
+# who wants the repo-rule form.
 #
-# Asserts: the hermetic bake renders with the download facet; the
-# download todo carries the http_file stanza with the SAME sha256 cmake
-# verified; then bazel-builds the consumer against the baked header.
+# --lift-download (opt-in) goes further: the producer becomes a genrule
+# copying @<repo>//file from an http_file repo, and --out-download-repos
+# writes the download-repos.json lockfile the staged module extension
+# reads (the two-phase lockfile flow).
+#
+# Asserts: the hermetic bake renders with the download facet; the download
+# todo carries the http_file stanza with the SRI integrity derived from
+# the sha256 cmake verified; --lift-download renders the fetch genrule +
+# the lockfile; then bazel-builds the consumer against the baked header.
 set -eu
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -44,18 +50,51 @@ fail() { echo "FAIL: $1"; sed 's/^/   /' "$build" 2>/dev/null || true; exit 1; }
 
 grep -qF 'cmake-codegen-download-bake' "$build" || fail "file(DOWNLOAD) did not bake with the download facet"
 python3 - "$work_dir/todos.json" "$expected_sha" <<'PY'
-import json, sys
+import base64, binascii, json, sys
 todos = json.load(open(sys.argv[1]))["todos"]
-sha = sys.argv[2]
+sri = "sha256-" + base64.b64encode(binascii.unhexlify(sys.argv[2])).decode()
 dl = [t for t in todos if t["kind"] == "download"]
 assert len(dl) == 1, f"expected 1 download todo, got {len(dl)}"
 st = dl[0]["suggested_shape"]
-for want in ("http_file(", f'sha256 = "{sha}"', "@dl_dl_config_h//file"):
+for want in ("http_file(", f'integrity = "{sri}"', "@dl_dl_config_h//file"):
     assert want in st, f"download stanza missing {want!r}:\n{st}"
 assert dl[0]["disposition"] == "improvement", dl[0]["disposition"]
-print("download todo + http_file stanza OK")
+print("download todo + http_file stanza OK (SRI integrity from EXPECTED_HASH)")
 PY
-echo "ok  meta-cmake-file-download-http: file(DOWNLOAD) bakes hermetically + emits the http_file stanza (sha256 from EXPECTED_HASH)"
+echo "ok  meta-cmake-file-download-http: file(DOWNLOAD) bakes hermetically + emits the http_file stanza (SRI integrity from EXPECTED_HASH)"
+
+# --- Lift half: --lift-download rewires the producer to a fetch genrule
+# sourcing @<repo>//file, and --out-download-repos writes the lockfile. ---
+build_lift="$work_dir/BUILD.lift.bazel"
+lock="$work_dir/download-repos.json"
+"$bin_dir/convert-element-cmake" \
+    --source-root "$fixture" \
+    --lift-download \
+    --out-build "$build_lift" \
+    --out-download-repos "$lock" \
+    >"$work_dir/convert.lift.stdout" 2>"$work_dir/convert.lift.stderr" || {
+    echo "FAIL: convert-element-cmake --lift-download exited non-zero"
+    sed 's/^/   stderr: /' "$work_dir/convert.lift.stderr"
+    exit 1
+}
+grep -qF 'cmake-codegen-download-fetch' "$build_lift" || { echo "FAIL: --lift-download did not emit the fetch facet"; sed 's/^/   /' "$build_lift"; exit 1; }
+grep -qF '@dl_dl_config_h//file' "$build_lift" || { echo "FAIL: fetch genrule does not source the http_file repo"; sed 's/^/   /' "$build_lift"; exit 1; }
+grep -qF 'cmake-codegen-download-bake' "$build_lift" && { echo "FAIL: --lift-download still byte-baked the download"; sed 's/^/   /' "$build_lift"; exit 1; }
+python3 - "$lock" "$expected_sha" <<'PY'
+import base64, binascii, json, sys
+lock = json.load(open(sys.argv[1]))
+sri = "sha256-" + base64.b64encode(binascii.unhexlify(sys.argv[2])).decode()
+assert lock["schema_version"] == 1, lock
+repos = lock["repos"]
+assert len(repos) == 1, f"expected 1 repo, got {len(repos)}: {repos}"
+r = repos[0]
+assert r["repo"] == "dl_dl_config_h", r
+assert r["url"].startswith("file://") and r["url"].endswith("/payload.h.in"), r
+assert r["integrity"] == sri, (r["integrity"], sri)
+assert r["downloaded_file_path"] == "dl_config.h", r
+print("download-repos.json lockfile OK (repo + url + SRI integrity + downloaded_file_path)")
+PY
+echo "ok  meta-cmake-file-download-http: --lift-download renders the fetch genrule + the download-repos.json lockfile"
 
 # --- Bazel-build half: the consumer compiles against the baked header ---
 if command -v bazel >/dev/null 2>&1; then BZL=bazel

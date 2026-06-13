@@ -232,6 +232,24 @@ type Options struct {
 	// rationale + cache-key analysis.
 	LiftConfigureFile bool
 
+	// LiftDownload toggles the file(DOWNLOAD) recovery's lifted
+	// shape. When true, a recovered build-dir download becomes a
+	// genrule copying @<repo>//file from an http_file repository
+	// rule (the producer is rewired; consumers are unaffected,
+	// since the fetch genrule produces the same path the byte-bake
+	// would have). When false (the default), the hermetic byte-bake
+	// stands. Independent of the lockfile emission below: downloads
+	// are recorded for DownloadRepos regardless. See
+	// download_lift.go.
+	LiftDownload bool
+
+	// DownloadRepos, when non-nil, collects one DownloadRepoSpec per
+	// recovered file(DOWNLOAD) — the lockfile the CLI serializes to
+	// --out-download-repos. Populated at end of lower from the same
+	// records the `download` todo draws on; mirrors the Todos /
+	// Rejections / Coverage collector pattern.
+	DownloadRepos *[]DownloadRepoSpec
+
 	// RecognizeCodegen opts into the codegen-recognizer registry: a recovered
 	// codegen custom-command that a recognizer claims (protoc --cpp_out today)
 	// lowers to the idiomatic native rule (proto_library + cc_proto_library)
@@ -1550,6 +1568,7 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 	cc.FileWriterTemplates = buildFileWriterTemplates(tf.decodedFileWriters, opts.NonExpandedFileWriters, cmakeBuild)
 	cc.CMakeVars = opts.CMakeVars
 	cc.LiftConfigureFile = opts.LiftConfigureFile
+	cc.LiftDownload = opts.LiftDownload
 	cc.RecognizeCodegen = opts.RecognizeCodegen
 	traceDecoded, decodedTrace := tf.traceDecoded, tf.decodedTrace
 	decodedConfigureFiles, decodedFileGenerates, decodedExecuteProcesses := tf.decodedConfigureFiles, tf.decodedFileGenerates, tf.decodedExecuteProcesses
@@ -2339,6 +2358,9 @@ func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts
 	// build_dir_source_bake.go.
 	warnElidedSources(opts, cc)
 	emitDownloadLiftTodos(opts.Todos, cc.DownloadLifts)
+	if opts.DownloadRepos != nil {
+		*opts.DownloadRepos = append(*opts.DownloadRepos, downloadRepoSpecs(cc.DownloadLifts)...)
+	}
 	// Same unconverted add_test registrations, as structured
 	// conversion-todos (one per COMMAND runner). No-op on a nil
 	// collector; independent of the stderr breadcrumb above.

@@ -62,6 +62,23 @@ func bakeBuildDirFile(rel string, lc targetLowerCtx) (string, bool) {
 	if name, ok := liftBuildDirFileFromWriter(rel, lc); ok {
 		return name, true
 	}
+	// --lift-download (opt-in): a file(DOWNLOAD) output is sourced from an
+	// http_file repo at build time (declared via the download-repos.json
+	// lockfile + the staged module extension) rather than byte-baked. The
+	// fetch genrule produces the SAME <rel> output, so every consumer wires
+	// through OutToGenrule unchanged — only the producer differs (cp from
+	// @<repo>//file vs. embedded bytes). Trace-derived, so it runs BEFORE
+	// the on-disk gate below: the hermetic fetch happens at repo-rule time,
+	// no convert-time bytes required.
+	if lc.cc.LiftDownload {
+		if dl, isDL := downloadWriterFor(rel, lc); isDL {
+			name := bakedBuildDirName(rel)
+			lc.cc.Genrules = append(lc.cc.Genrules, downloadFetchTarget(name, rel, downloadRepoName(rel)))
+			lc.cc.OutToGenrule[rel] = name
+			recordDownloadLift(lc.cc, rel, dl.url, dl.hash)
+			return name, true
+		}
+	}
 	if lc.hostBuild == "" {
 		return "", false
 	}
