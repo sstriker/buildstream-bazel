@@ -135,14 +135,23 @@ transition cleanly.
     **Build-lens follow-on (the gate for compile-db / build / symbol / ELF —
     all 4 blocked on the same thing):**
     - **Protos: DEFER to a mandated gazelle run — do NOT hand-roll protoc
-      genrules (decided; spike-validated).** A spike settled the open
-      question: a 1-`.proto` + 1-cc-consumer workspace, `bazel run //:gazelle`
-      with `gazelle_binary(languages = ["@gazelle//language/proto",
-      "@gazelle_cc//language/cc"])`, generated the ENTIRE C++ proto chain FROM
-      SOURCES — `proto_library`, `cc_proto_library` (gazelle's proto language
-      emits it, loading `@protobuf//bazel:cc_proto_library.bzl`), AND the
-      consumer `cc_library` with `implementation_deps = [":<x>_cc_proto"]`
-      wired by `gazelle_cc` off the `#include "…pb.h"`. So for protos the
+      genrules (decided; spike-validated incl. the cross-package case).** Two
+      spikes settled it, both `bazel run //:gazelle` with
+      `gazelle_binary(languages = ["@gazelle//language/proto",
+      "@gazelle_cc//language/cc"])`:
+      (i) a 1-`.proto` + 1-cc-consumer workspace generated the ENTIRE C++ proto
+      chain FROM SOURCES — `proto_library`, `cc_proto_library` (gazelle's proto
+      language emits it, loading `@protobuf//bazel:cc_proto_library.bzl`), AND
+      the consumer `cc_library` with `implementation_deps = [":<x>_cc_proto"]`
+      wired by `gazelle_cc` off the `#include "…pb.h"`;
+      (ii) a 2-`.proto` CROSS-PACKAGE-import workspace (`pkg/b/b.proto` does
+      `import "pkg/a/a.proto"`, separate Bazel packages) generated
+      `proto_library(//pkg/b:…, deps = ["//pkg/a:…_proto"])` — the cross-package
+      dep edge — with NO `import_prefix`/`strip_import_prefix` needed (the
+      workspace-relative import path resolves directly), and `bazel build //...`
+      compiled the whole chain GREEN. That (ii) is the exact rooted-import case
+      that made the genrule path hard (the #625 layout fork), now proven to
+      resolve natively. So for protos the
       converter should emit NOTHING for codegen: stage the `.proto` + cc
       sources + the gazelle config (the `gazelle_binary`/`gazelle` pair with
       the proto + cc languages, the `rules_proto`/`# gazelle:proto_library_load`
@@ -171,6 +180,29 @@ transition cleanly.
         `# gazelle:cc_search` directives). So defer the families where gazelle
         is BETTER (protos), not every kind gazelle CAN emit. The
         `--exclude-gazelle-native-rules` knob is scoped to protos, not blanket.
+      - **The defer CRITERION (and how the converter knows what to exclude):**
+        defer a codegen to gazelle only when the **input → generator mapping is
+        reconstructible from the SOURCE alone** — an unambiguous extension
+        (`.proto` → protoc), or decisive self-describing content. When the
+        mapping lives in the cmake INVOCATION — e.g. a common extension like
+        `.xml` fed to *different* tools (uic vs gdbus-codegen vs
+        glib-compile-resources) in different targets — gazelle (which dispatches
+        per source file, at best content-sniffing) can't reliably pick the
+        generator, but the converter CAN: it sees the actual custom-command
+        argv. So ambiguous-extension / invocation-decided codegen stays
+        converter-emitted; gazelle gets only the source-reconstructible cases.
+        "What gazelle supports natively" isn't introspectable at convert time —
+        the converter encodes a small curated `driver → gazelle-language` map
+        (protoc → proto today) and excludes a rule only when (driver in map) ∧
+        (that language is wired into the emitted `gazelle_binary`) ∧ (gazelle's
+        inputs are staged). BACKSTOP: the mandated gazelle run is a pipeline
+        step, so verify post-run that each deferred output actually got
+        generated (the expected `cc_proto_library` exists / the consumer dep
+        resolved) and fail loudly otherwise — so a wrong exclusion can never
+        silently drop codegen. The map can GROW as gazelle extensions for more
+        generators are written/adopted (gazelle IS extensible — the Language
+        interface; `gazelle_cc` is itself one) and clear the convention==truth
+        bar; the hermetic-genrule path below is the fallback for the long tail.
     - **Generalized host-codegen-tool hermeticization — STILL NEEDED, for the
       no-native-rule tools.** protoc/grpc move OFF the genrule path (above), so
       this is for the codegen tools with no native Bazel rule (a project's own
