@@ -175,6 +175,32 @@ transition cleanly.
         emits exactly that shape, and (ii) confirms the rooted-import case (the
         #625 layout fork) resolves with plain `proto_library` deps — computable
         from the `.proto` imports.
+      - **The recognizer is also the OUTPUT AUTHORITY (a second payoff —
+        recovery, not just emission).** A recognized tool has a PREDICTABLE
+        output convention, so the recognizer derives the exact output set from
+        the input(s) + flags — `foo.proto` + `--cpp_out` → `foo.pb.{h,cc}`;
+        `--grpc_out` (+ `generate_mock_code=true`) → `foo.grpc.pb.{h,cc}` +
+        `foo_mock.grpc.pb.h` — independent of how completely cmake recorded
+        them. That fills the gap where the producer→output mapping is fuzzy in
+        the codemodel/trace, making consumer wiring DETERMINISTIC for recognized
+        tools (it replaces the inference the generic genrule recovery /
+        `stageSiblingGeneratedHeaders` / `CodegenHeaderConsumers` do today). It
+        also cross-checks: the derived set must be CONSISTENT with what cmake
+        recorded — a mismatch means a non-standard invocation (see fidelity-mode
+        below). And it's an applicability PRECONDITION: a tool whose output
+        NAMES depend on file CONTENT (not derivable from input+flags) gets no
+        recognizer — it stays in the genrule fallback.
+      - **Fidelity-mode behavior (additive-only; safe to roll out
+        incrementally).** Gated by the `--fidelity` dial:
+        - **strict:** the recognizer FIRES → native rule. On no-confident-match
+          or a derived-vs-recorded output MISMATCH, strict REFUSES (typed,
+          loud) rather than emit a non-faithful genrule — "faithful native
+          rule, or refuse."
+        - **best-effort:** fires when confident (a strict improvement),
+          otherwise FALLS BACK to today's genrule/recovery — so adding the
+          registry can only no-op or IMPROVE, never regress; the current corpus
+          behavior is the floor. (Mirrors the existing dial: best-effort already
+          enables the fallback escape hatches; strict refuses.)
       - **MODULE deps + gRPC services:** protoc recognizer needs `@protobuf`
         (+ `rules_proto` for the `proto_library` load, or load from `@protobuf`).
         The `.grpc.pb.*` service side emits `cc_grpc_library` (its own
