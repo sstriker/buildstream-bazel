@@ -768,15 +768,6 @@ trees, optional-feature deps, codegen instances). Each member's
 
 ## Later (research / open questions)
 
-- **file(WRITE) stamp-variable wiring.** The writer index materializes
-  file(WRITE/APPEND) content from the EXPANDED trace — a VCS stamp
-  written that way (`file(WRITE v.h "${GIT_SHA}")`) bakes the frozen
-  revision. The non-expanded trace shows the verbatim `${GIT_SHA}`
-  reference, so the configure_file stamp_values machinery
-  (workspace-status re-read at build time) can wire these too. Demand
-  signal: a file-writer-bake todo whose content matches a recorded
-  stamp value.
-
 - **file(DOWNLOAD) → http_file.** Policy today: bake the on-disk bytes
   (no network at build time), facet `cmake-codegen-download-bake`, URL
   cited in the rule provenance. The faithful repository-rule lift

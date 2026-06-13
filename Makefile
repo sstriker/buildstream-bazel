@@ -354,6 +354,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-fileset-compiled-lib.sh \
 	scripts/meta-cmake-stamp-volatile.sh \
 	scripts/meta-cmake-vcs-stamp.sh \
+	scripts/meta-cmake-file-write-stamp.sh \
 	scripts/meta-cmake-vcs-stamp-indirect.sh \
 	scripts/meta-cmake-vcs-stamp-function.sh \
 	scripts/meta-cmake-genrule-inplace-rewrite.sh \

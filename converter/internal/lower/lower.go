@@ -180,6 +180,14 @@ type Options struct {
 	// absent, unlocking the lifts the keyword's presence refused.
 	DeadCaptureVars map[string]bool
 
+	// NonExpandedFileWriters are file(WRITE/APPEND) calls harvested from
+	// the warm pass's NON-EXPANDED trace (where `${GIT_SHA}` survives
+	// verbatim). The lower builds cc.FileWriterTemplates from them so
+	// the writer index can route a stamp-bearing file(WRITE) through the
+	// configure_file stamp_values machinery instead of baking the frozen
+	// revision. Empty when no warm non-expanded pass ran.
+	NonExpandedFileWriters []shadow.FileWriterCall
+
 	// UnsupportedExecuteProcessFallback toggles
 	// recoverExecuteProcess's refusal handling. When false
 	// (the default — preserves Phase A behaviour),
@@ -1531,6 +1539,9 @@ type recoveredArtifacts struct {
 // which case ToIR returns it directly (the original inline early-exit).
 func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Options, cfg fileapi.Configuration, tf traceFacts, cmakeSrc, cmakeBuild, hostSrc string, cc *codegenContext) (*recoveredArtifacts, *ir.Package, error) {
 	cc.FileWriterIndex = buildFileWriterIndex(tf.decodedFileWriters, cmakeBuild)
+	cc.FileWriterTemplates = buildFileWriterTemplates(tf.decodedFileWriters, opts.NonExpandedFileWriters, cmakeBuild)
+	cc.CMakeVars = opts.CMakeVars
+	cc.LiftConfigureFile = opts.LiftConfigureFile
 	traceDecoded, decodedTrace := tf.traceDecoded, tf.decodedTrace
 	decodedConfigureFiles, decodedFileGenerates, decodedExecuteProcesses := tf.decodedConfigureFiles, tf.decodedFileGenerates, tf.decodedExecuteProcesses
 	decodedOutOfTreeExecProcs := tf.decodedOutOfTreeExecProcs

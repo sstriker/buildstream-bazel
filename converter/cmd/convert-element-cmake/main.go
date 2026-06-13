@@ -529,6 +529,10 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	// keywords (closure capture: earlier passes see deadCaptureVars nil).
 	captureSink := map[string]bool{}
 	var deadCaptureVars map[string]bool
+	// Non-expanded file(WRITE) templates harvested by the warm pass; the
+	// re-lower wires a stamp-bearing file(WRITE) to live workspace-status
+	// (closure capture: earlier passes see this nil → frozen bake).
+	var fileWriterTemplates []shadow.FileWriterCall
 	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment, parentScopeForwards []shadow.ParentScopeForward) (*ir.Package, error) {
 		// Reset the per-pass collectors each pass: ToIR can run more than
 		// once (two-pass genex / stamp / nested-cmake recovery) against the
@@ -579,6 +583,7 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 			NestedBuilds:                      nestedBuilds,
 			CaptureRefusalSink:                captureSink,
 			DeadCaptureVars:                   deadCaptureVars,
+			NonExpandedFileWriters:            fileWriterTemplates,
 		})
 	}
 
@@ -647,7 +652,8 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	}
 	wr := runCoalescedWarmPass(ctx, a, hostBuildDir, literalSink, stampSink, nestedSink, recoveredStampSets, recoveredStampForwards, warmCaptureSink)
 	if wr.recovered {
-		nestedBuilds = wr.nestedBuilds // read by runToIR via closure capture
+		nestedBuilds = wr.nestedBuilds               // read by runToIR via closure capture
+		fileWriterTemplates = wr.fileWriterTemplates // likewise — stamp-bearing file(WRITE) wiring
 		// Never clobber a proven dead set with nil: the warm pass can
 		// recover for a DIFFERENT demand while its own dead-capture
 		// read failed (trace read error) — overwriting would re-abort
