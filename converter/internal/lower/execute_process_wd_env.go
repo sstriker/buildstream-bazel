@@ -81,7 +81,11 @@ func execEnvPrefix(environment []string) string {
 	parts := make([]string, 0, len(environment)+1)
 	parts = append(parts, "env")
 	for _, kv := range environment {
-		parts = append(parts, shellQuoteArg(kv))
+		// `$` must double for Bazel's make-variable expansion of the
+		// genrule cmd ($ORIGIN-style values are a real idiom) BEFORE
+		// shell quoting — otherwise analysis rejects the BUILD with
+		// an unknown-make-variable error.
+		parts = append(parts, shellQuoteArg(strings.ReplaceAll(kv, "$", "$$")))
 	}
 	return strings.Join(parts, " ") + " "
 }
@@ -160,10 +164,11 @@ func execWdPrologue(wdRel string) string {
 
 // execOutRef renders the single-out redirect target: the plain `$@` for
 // the historical shape, exec-root-prefixed when a WORKING_DIRECTORY
-// moved the cwd.
-func execOutRef(wdRel, locPrefix string) string {
+// moved the cwd. One parameter — the prefix is derived, not passed, so
+// the wd/prefix pair can't drift apart at call sites.
+func execOutRef(wdRel string) string {
 	if wdRel == "" {
 		return "$@"
 	}
-	return locPrefix + "$@"
+	return "$$_r/$@"
 }
