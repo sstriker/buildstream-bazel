@@ -179,11 +179,22 @@ func HoistCommonFlagsToConstants(pkg *ir.Package, loadLabel string) (copts, loca
 	return copts, localDefines, linkopts
 }
 
-// HoistCommonCoptsToConstant is the copts-only entry point retained for
-// callers that only hoist compile flags; it delegates to the generalized
-// HoistCommonFlagsToConstants and returns just the copts prefix.
+// HoistCommonCoptsToConstant is a GENUINELY single-axis (copts-only) entry
+// point: it hoists ONLY the shared copt prefix, setting PrependCommonCopts and
+// the load label, leaving local_defines/linkopts untouched. It must NOT
+// delegate to HoistCommonFlagsToConstants — that would strip the other axes and
+// set their Prepend* flags, so a BUILD would reference COMMON_LOCAL_DEFINES /
+// COMMON_LINKOPTS that this function's copts-only EmitConstant pairing never
+// defines (a broken load). Pair with EmitConstant; pair the multi-axis
+// HoistCommonFlagsToConstants with EmitConstants.
 func HoistCommonCoptsToConstant(pkg *ir.Package, loadLabel string) []string {
-	copts, _, _ := HoistCommonFlagsToConstants(pkg, loadLabel)
+	if pkg == nil {
+		return nil
+	}
+	copts := hoistAxis(pkg, axisCopts, func(t *ir.Target) { t.PrependCommonCopts = true })
+	if len(copts) > 0 {
+		pkg.CommonCoptsLabel = loadLabel
+	}
 	return copts
 }
 
