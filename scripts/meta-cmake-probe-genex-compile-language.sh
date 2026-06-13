@@ -79,6 +79,24 @@ grep -qF '"-fno-exceptions",' "$build" || fail "language-gated interface copt lo
 # define (the skipped probe must not blank it).
 grep -qF 'defines = ["PLAIN=1"]' "$build" || fail "interface library's unconditional define missing"
 
+# TRANSITIVE reach: a consumer linking a gated dep (its own interface
+# clean) must also convert — the probe's link-closure walk skips the
+# transitively-gated property instead of aborting the generate step.
+trans_fixture="$repo_root/converter/testdata/sample-projects/probe-genex-transitive-language"
+trans_build="$work_dir/trans.BUILD"
+"$bin_dir/convert-element-cmake" \
+    --source-root "$trans_fixture" \
+    --out-build "$trans_build" \
+    >"$work_dir/trans.stdout" 2>"$work_dir/trans.stderr" || {
+    echo "FAIL: convert of the transitive-language fixture exited non-zero (the closure walk should skip the gate)"
+    sed 's/^/   stderr: /' "$work_dir/trans.stderr"
+    exit 1
+}
+grep -qF 'Evaluation file to be written multiple times' "$work_dir/trans.stderr" \
+    && { echo "FAIL: a TRANSITIVE language gate still diverged the probe"; exit 1; }
+grep -qF 'name = "consumer"' "$trans_build" || { echo "FAIL: transitive consumer lib not emitted"; exit 1; }
+echo "ok  meta-cmake-probe-genex-compile-language: a transitively-gated consumer converts (link-closure skip)"
+
 echo "ok  meta-cmake-probe-genex-compile-language: language-conditional interface props skip the probe — multi-language project converts"
 
 # --- Bazel-build half ---

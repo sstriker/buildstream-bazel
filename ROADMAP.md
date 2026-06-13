@@ -816,20 +816,7 @@ trees, optional-feature deps, codegen instances). Each member's
   real lifts with zero new machinery.
 
 - **KindNativeRule outputs in --split-packages relocation.** The codegen-recognizer registry's native-rule substrate now participates in the OutToGenrule-keyed consumer wiring AND the nested-cmake merge re-home (producerOuts/applyNestedProducerReHome read the `out`/`outs` attrs generically). The split-packages emitter (emit/bazel/split.go) still keys producer-output placement/relocation on KindGenrule/KindWriteFile/KindCMakeConfigureFile, so a pkg_tar (or future http_file/proto) native rule re-homed into a sub-package wouldn't relocate its out. Generalize split's placement to the same kind-agnostic outputs accessor. Demand signal: a native-rule producer under --split-packages.
-- **Genex-probe language-conditional skip — transitive reach.** The
-  structural probe now skips a property whose RAW direct value carries
-  `$<COMPILE_LANGUAGE/…>` / `$<LINK_LANGUAGE/…>` (multi-language
-  projects otherwise abort the generate step: "Evaluation file to be
-  written multiple times with different content"). The scan is
-  direct-value only — the same reach as the probe's dangling-`::`
-  skip — so a language gate arriving TRANSITIVELY (a probed target
-  links a dependency whose interface carries the gate) still diverges
-  and aborts. Closing it needs a link-closure walk over raw interface
-  values in the hook (cycles, genex-bearing dep entries), or a
-  hook-side error trap cmake script doesn't offer. Demand signal: a
-  corpus member aborting with that message while its DIRECT properties
-  are clean.
-
+- **Genex-probe language gate — genex-wrapped link deps.** The probe's language-conditional skip now walks the INTERFACE_LINK_LIBRARIES closure (_cmtb_iface_lang_gate), so a $<COMPILE_LANGUAGE>/$<LINK_LANGUAGE> gate on a transitively-linked dependency's interface is caught — not just the target's own raw value. The walk follows BARE target deps only; a dep wrapped in a genex link entry ($<LINK_ONLY:dep>, $<BUILD_INTERFACE:dep>) or a bare system lib isn't queried, so a gate reachable solely through such an entry could still diverge. Closing it needs genex-entry target extraction in the hook. Demand signal: an abort whose gated dep is reachable only via a genex link entry.
 - **Stage textual-include-of-SOURCE siblings (`#include "x.cu"` /
   `#include "x.c"`).** The sibling-header staging walk covers header
   extensions (incl. `.cuh`), but cuda-samples' eigenvalues quote-includes a
