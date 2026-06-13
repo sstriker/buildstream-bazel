@@ -11,7 +11,7 @@ import (
 
 func TestEmitDownloadLiftTodos(t *testing.T) {
 	c := todos.New()
-	emitDownloadLiftTodos(c, []downloadLiftRecord{
+	emitDownloadLiftTodos(c, "", []downloadLiftRecord{
 		{Rel: "dl_config.h", URL: "https://example.com/config.h", Hash: "SHA256=abc123"},
 		{Rel: "vendor/lib.tar", URL: "https://example.com/lib.tar", Hash: ""},
 	})
@@ -35,6 +35,30 @@ func TestEmitDownloadLiftTodos(t *testing.T) {
 		if !strings.Contains(st, want) {
 			t.Errorf("stanza missing %q:\n%s", want, st)
 		}
+	}
+}
+
+func TestDownloadRepoName(t *testing.T) {
+	// Standalone (root/empty package path) keeps the bare dl_<rel> form
+	// (gate-stable). A non-root package path namespaces the name so a
+	// multi-element envelope where two elements both write config.h doesn't
+	// collide in project B's project-wide repo namespace.
+	cases := []struct{ pkg, rel, want string }{
+		{"", "config.h", "dl_config_h"},
+		{".", "config.h", "dl_config_h"},
+		{"elements/foo", "config.h", "dl_elements_foo_config_h"},
+		{"elements/bar", "config.h", "dl_elements_bar_config_h"},
+		{"elements/foo", "sub/dir/gen.h", "dl_elements_foo_sub_dir_gen_h"},
+	}
+	for _, c := range cases {
+		if got := downloadRepoName(c.pkg, c.rel); got != c.want {
+			t.Errorf("downloadRepoName(%q, %q) = %q; want %q", c.pkg, c.rel, got, c.want)
+		}
+	}
+	// Same rel, distinct elements → distinct names (the collision the
+	// namespacing exists to prevent).
+	if downloadRepoName("elements/foo", "config.h") == downloadRepoName("elements/bar", "config.h") {
+		t.Error("distinct elements with the same output rel must get distinct repo names")
 	}
 }
 
@@ -65,7 +89,7 @@ func TestDownloadIntegritySRI(t *testing.T) {
 }
 
 func TestDownloadRepoSpecs(t *testing.T) {
-	specs := downloadRepoSpecs([]downloadLiftRecord{
+	specs := downloadRepoSpecs("", []downloadLiftRecord{
 		{Rel: "vendor/lib.tar", URL: "https://example.com/lib.tar", Hash: ""},
 		{Rel: "config.h", URL: "https://example.com/config.h", Hash: "SHA256=abc123"},
 	})
@@ -122,7 +146,7 @@ func TestBakeBuildDirFile_LiftDownload(t *testing.T) {
 		if !stringSliceContains(g.Tags, "cmake-codegen-download-fetch") {
 			t.Errorf("tags = %v; want the download-fetch facet", g.Tags)
 		}
-		specs := downloadRepoSpecs(lc.cc.DownloadLifts)
+		specs := downloadRepoSpecs("", lc.cc.DownloadLifts)
 		if len(specs) != 1 || specs[0].Repo != "dl_dl_h" || specs[0].URL != "https://example.com/dl.h" {
 			t.Errorf("lockfile record = %+v", specs)
 		}

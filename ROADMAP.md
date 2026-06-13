@@ -836,20 +836,6 @@ trees, optional-feature deps, codegen instances). Each member's
   carry it — that converts the largest remaining bake population into
   real lifts with zero new machinery.
 
-- **file(DOWNLOAD) → http_file — per-element lockfile aggregation.** The
-  two-phase lift ships end-to-end: `--lift-download` makes the converter source
-  `@<repo>//file` from a stock http_file repo + write the per-element
-  `download-repos.json`, and write-a's `--download-repos-lock` emits the
-  idiomatic `use_repo_rule` + `http_file(...)` blocks into MODULE.bazel from the
-  committed lockfile. The residual is MULTI-ELEMENT: each kind:cmake element's
-  converter genrule writes its OWN `download-repos.json`, but write-a takes a
-  SINGLE `--download-repos-lock`, so a project with downloads in several
-  elements needs the operator to merge the per-element lockfiles into one
-  committed aggregate. Closing it means either write-a discovering+unioning the
-  per-element committed lockfiles, or a small `download-repos-merge` step.
-  Demand signal: a multi-element project with file(DOWNLOAD) in more than one
-  element.
-
 - **KindNativeRule outputs in --split-packages relocation.** The codegen-recognizer registry's native-rule substrate now participates in the OutToGenrule-keyed consumer wiring AND the nested-cmake merge re-home (producerOuts/applyNestedProducerReHome read the `out`/`outs` attrs generically). The split-packages emitter (emit/bazel/split.go) still keys producer-output placement/relocation on KindGenrule/KindWriteFile/KindCMakeConfigureFile, so a pkg_tar (or future http_file/proto) native rule re-homed into a sub-package wouldn't relocate its out. Generalize split's placement to the same kind-agnostic outputs accessor. Demand signal: a native-rule producer under --split-packages.
 - **Genex-probe language gate — genex-wrapped link deps.** The probe's language-conditional skip now walks the INTERFACE_LINK_LIBRARIES closure (_cmtb_iface_lang_gate), so a $<COMPILE_LANGUAGE>/$<LINK_LANGUAGE> gate on a transitively-linked dependency's interface is caught — not just the target's own raw value. The walk follows BARE target deps only; a dep wrapped in a genex link entry ($<LINK_ONLY:dep>, $<BUILD_INTERFACE:dep>) or a bare system lib isn't queried, so a gate reachable solely through such an entry could still diverge. Closing it needs genex-entry target extraction in the hook. Demand signal: an abort whose gated dep is reachable only via a genex link entry.
 - **Stage textual-include-of-SOURCE siblings (`#include "x.cu"` /
