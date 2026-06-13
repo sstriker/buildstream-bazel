@@ -190,19 +190,8 @@ func readStampSets(plainTrace, sourceRoot string, wr *warmRecovery) bool {
 // capture is provably dead, or the re-lower still errors — the caller
 // surfaces the original error.
 func recoverPass1CaptureAbort(ctx context.Context, a cli.Args, hostBuildDir string, captureSink map[string]bool, deadOut *map[string]bool, relower func() (*ir.Package, error)) (*ir.Package, map[string]bool, bool) {
-	tracePath := filepath.Join(hostBuildDir, "trace-plain.jsonl")
-	if _, cfgErr := cmakerun.Configure(ctx, cmakerun.Options{
-		SourceRoot:         a.SourceRoot,
-		BuildDir:           hostBuildDir,
-		PrefixDir:          a.PrefixDir,
-		ToolchainCMakeFile: a.ToolchainCMakeFile,
-		BuildType:          a.BuildType,
-		BuildTypes:         a.BuildTypes,
-		TracePath:          tracePath,
-		TraceNonExpanded:   true,
-		Stdout:             os.Stderr,
-		Stderr:             os.Stderr,
-	}); cfgErr != nil {
+	tracePath, err := warmPlainTraceConfigure(ctx, a, hostBuildDir)
+	if err != nil {
 		return nil, nil, false
 	}
 	dead := readDeadCaptures(tracePath, captureSink)
@@ -215,4 +204,26 @@ func recoverPass1CaptureAbort(ctx context.Context, a cli.Args, hostBuildDir stri
 		return nil, nil, false
 	}
 	return pkg, dead, true
+}
+
+// warmPlainTraceConfigure runs the warm NON-expanded-trace reconfigure
+// every plain-trace consumer shares (the stamp set-copy rescue, the
+// capture-abort rescue, the coalesced warm pass's stamp/capture
+// demands) and returns the trace path. One home for the option
+// literal: a new required warm-configure knob lands here once.
+func warmPlainTraceConfigure(ctx context.Context, a cli.Args, hostBuildDir string) (string, error) {
+	tracePath := filepath.Join(hostBuildDir, "trace-plain.jsonl")
+	_, err := cmakerun.Configure(ctx, cmakerun.Options{
+		SourceRoot:         a.SourceRoot,
+		BuildDir:           hostBuildDir,
+		PrefixDir:          a.PrefixDir,
+		ToolchainCMakeFile: a.ToolchainCMakeFile,
+		BuildType:          a.BuildType,
+		BuildTypes:         a.BuildTypes,
+		TracePath:          tracePath,
+		TraceNonExpanded:   true,
+		Stdout:             os.Stderr,
+		Stderr:             os.Stderr,
+	})
+	return tracePath, err
 }

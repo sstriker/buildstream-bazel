@@ -119,19 +119,8 @@ func runVerifyPass(a cli.Args, hostBuildDir string, pkg *ir.Package) error {
 // or the re-lower still errors — leaving the caller to surface the original
 // error.
 func recoverPass1StampAbort(ctx context.Context, a cli.Args, hostBuildDir string, runToIR func(*lower.LiteralProbeSink, map[string]cmakerun.LiteralResolution, []shadow.SetAssignment, []shadow.ParentScopeForward) (*ir.Package, error)) (pkg *ir.Package, sets []shadow.SetAssignment, forwards []shadow.ParentScopeForward, sink *lower.LiteralProbeSink, ok bool) {
-	plainTrace := filepath.Join(hostBuildDir, "trace-plain.jsonl")
-	if _, cfgErr := cmakerun.Configure(ctx, cmakerun.Options{
-		SourceRoot:         a.SourceRoot,
-		BuildDir:           hostBuildDir,
-		PrefixDir:          a.PrefixDir,
-		ToolchainCMakeFile: a.ToolchainCMakeFile,
-		BuildType:          a.BuildType,
-		BuildTypes:         a.BuildTypes,
-		TracePath:          plainTrace,
-		TraceNonExpanded:   true,
-		Stdout:             os.Stderr,
-		Stderr:             os.Stderr,
-	}); cfgErr != nil {
+	plainTrace, cfgErr := warmPlainTraceConfigure(ctx, a, hostBuildDir)
+	if cfgErr != nil {
 		return nil, nil, nil, nil, false
 	}
 	raw, rerr := os.ReadFile(plainTrace)
@@ -648,10 +637,24 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	// demands (unresolved genex literals, VCS-stamp set()-indirection,
 	// configure-time nested cmake) share ONE warm reconfigure + ONE re-lower
 	// instead of one each. See warm_pass.go.
-	wr := runCoalescedWarmPass(ctx, a, hostBuildDir, literalSink, stampSink, nestedSink, recoveredStampSets, recoveredStampForwards, captureSink)
+	// A capture sink already adjudicated by the pass-1 abort rescue is
+	// not re-demanded: the proven dead set stands, and any vars the
+	// rescued re-lower re-recorded are live by construction (the
+	// analysis just ran against this very configure's reads).
+	warmCaptureSink := captureSink
+	if deadCaptureVars != nil {
+		warmCaptureSink = nil
+	}
+	wr := runCoalescedWarmPass(ctx, a, hostBuildDir, literalSink, stampSink, nestedSink, recoveredStampSets, recoveredStampForwards, warmCaptureSink)
 	if wr.recovered {
-		nestedBuilds = wr.nestedBuilds       // read by runToIR via closure capture
-		deadCaptureVars = wr.deadCaptureVars // likewise
+		nestedBuilds = wr.nestedBuilds // read by runToIR via closure capture
+		// Never clobber a proven dead set with nil: the warm pass can
+		// recover for a DIFFERENT demand while its own dead-capture
+		// read failed (trace read error) — overwriting would re-abort
+		// the very refusal the pass-1 rescue already cleared.
+		if wr.deadCaptureVars != nil {
+			deadCaptureVars = wr.deadCaptureVars
+		}
 		pkg2, err2 := runToIR(nil, wr.genexResolutions, wr.sets, wr.forwards)
 		if err2 != nil {
 			return nil, err2

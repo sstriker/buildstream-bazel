@@ -125,3 +125,61 @@ func TestRecoverExecuteProcess_Pipeline(t *testing.T) {
 		}
 	})
 }
+
+// TestRecoverExecuteProcess_ErrorFileEdgeCases pins the review fixes:
+// merge detection compares ANCHORED rels (different spellings of the
+// same file merge instead of emitting duplicate outs), a colliding
+// ERROR_FILE refuses, and an env value's `$` doubles for Bazel's
+// make-variable parsing.
+func TestRecoverExecuteProcess_ErrorFileEdgeCases(t *testing.T) {
+	t.Run("spelling-variant-merges", func(t *testing.T) {
+		call := shadow.ExecuteProcessCall{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands:         [][]string{{"gen"}},
+			WorkingDirectory: "/build",
+			OutputFile:       "/build/run.log",
+			ErrorFile:        "run.log", // relative spelling of the SAME file
+		}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("expected lift: %+v", refusals)
+		}
+		g := cc.Genrules[0]
+		if len(g.GenruleOuts) != 1 || !strings.Contains(g.GenruleCmd, "2>&1") {
+			t.Errorf("same-file spelling variants must merge: outs=%v cmd=%q", g.GenruleOuts, g.GenruleCmd)
+		}
+	})
+
+	t.Run("colliding-error-file-refuses", func(t *testing.T) {
+		cc := newCodegenContext()
+		cc.OutToGenrule["gen/x.log"] = "existing"
+		call := shadow.ExecuteProcessCall{
+			File: "/src/CMakeLists.txt", Line: 5,
+			Commands:   [][]string{{"gen"}},
+			OutputFile: "/build/gen/out.h",
+			ErrorFile:  "/build/gen/x.log",
+		}
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, cc)
+		if len(refusals) != 1 || !strings.Contains(refusals[0].Reason, "collides") {
+			t.Fatalf("colliding ERROR_FILE must refuse: %+v", refusals)
+		}
+	})
+
+	t.Run("env-dollar-doubles", func(t *testing.T) {
+		call := shadow.ExecuteProcessCall{
+			File: "/src/CMakeLists.txt", Line: 7,
+			Commands:    [][]string{{"gen"}},
+			OutputFile:  "/build/o.h",
+			Environment: []string{"LDFLAGS=-Wl,-rpath,$ORIGIN"},
+		}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("expected lift: %+v", refusals)
+		}
+		if !strings.Contains(cc.Genrules[0].GenruleCmd, "$$ORIGIN") {
+			t.Errorf("env value $ must double: %q", cc.Genrules[0].GenruleCmd)
+		}
+	})
+}

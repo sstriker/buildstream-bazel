@@ -391,12 +391,18 @@ func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, c
 	// forwarded rescue.
 	if v.Bucket == BucketProbe || v.Bucket == BucketStamp {
 		// Dead-capture skip: the call HAD capture channels, the
-		// analysis proved every one unread, and nothing else (no
-		// OUTPUT_FILE) is consumable — a silenced stamp writes a value
-		// nowhere, so there is nothing to bake AND nothing to refuse.
-		// Genuinely capture-less stamp calls (git fetch side effects)
-		// keep refusing: captureCleared distinguishes them.
-		if captureCleared && call.OutputVariable == "" && call.ResultVariable == "" && call.OutputFile == "" {
+		// analysis proved every one unread, and nothing else is
+		// consumable — a silenced stamp writes a value nowhere, so
+		// there is nothing to bake AND nothing to refuse. EVERY
+		// channel must be clear: an ErrorVariable/ResultsVariable
+		// that survived clearDeadCaptures is proven LIVE (the
+		// configure reads it), and an ERROR_FILE is a declared
+		// artifact — either keeps the loud refusal. Genuinely
+		// capture-less stamp calls (git fetch side effects) keep
+		// refusing too: captureCleared distinguishes them.
+		if captureCleared && call.OutputVariable == "" && call.ResultVariable == "" &&
+			call.ErrorVariable == "" && call.ResultsVariable == "" &&
+			call.OutputFile == "" && call.ErrorFile == "" {
 			return nil
 		}
 		if call.OutputVariable != "" {
@@ -1733,13 +1739,14 @@ func cmakeEConfigureFileTags(lifted bool) []string {
 //     substitution in the cmd; argv[0] is preserved as-is so
 //     PATH-resolved tools (python3, gen-script-on-PATH) keep
 //     working under Bazel's standard executor sandbox.
-//   - WORKING_DIRECTORY and ENVIRONMENT are not yet modeled —
-//     refuse the lift if either is set so a hoisted genrule
-//     never silently drops them (follow-on). TIMEOUT (a
-//     configure-time watchdog), INPUT_FILE (stdin from a
-//     source-tree file), and ERROR_FILE (stderr to a build-dir
-//     path, or merged via the same-file idiom) ARE modeled —
-//     see the gate block below.
+//   - Every execute_process keyword is modeled now: TIMEOUT (a
+//     configure-time watchdog) drops, INPUT_FILE (stdin from a
+//     source-tree file), ERROR_FILE (stderr to a build-dir path,
+//     or merged via the same-file idiom), ENVIRONMENT (env
+//     prefix per stage), and a build-dir WORKING_DIRECTORY (cwd
+//     prologue) all lift — see the gate block below and
+//     execute_process_wd_env.go. Only a source-tree/out-of-tree
+//     WORKING_DIRECTORY still refuses.
 //
 // Driver tag: cmake-codegen-driver=<basename(argv[0])> mirrors
 // the genrule.go custom-command recovery so existing audit
@@ -1789,12 +1796,23 @@ func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *code
 	errRel := ""
 	mergeStderr := false
 	if call.ErrorFile != "" {
-		if call.ErrorFile == call.OutputFile {
-			mergeStderr = true
-		} else if rel, ok := executeProcessAnchorOutput(execFileFieldAbs(call.ErrorFile, wdRel, anc), anc); ok {
-			errRel = rel
-		} else {
+		// Compare ANCHORED rels, not raw spellings: a relative
+		// ERROR_FILE and an absolute OUTPUT_FILE can name the same
+		// path (cmake's documented same-file form merges the
+		// streams). A distinct errRel colliding with an existing
+		// producer refuses — two rules declaring one out is a broken
+		// BUILD, and the old blanket refusal never allowed it.
+		rel, ok := executeProcessAnchorOutput(execFileFieldAbs(call.ErrorFile, wdRel, anc), anc)
+		switch {
+		case !ok:
 			return nil, fmt.Sprintf("ERROR_FILE %q is not under the build dir", call.ErrorFile), false
+		case rel == dstRel:
+			mergeStderr = true
+		default:
+			if _, exists := cc.OutToGenrule[rel]; exists {
+				return nil, fmt.Sprintf("ERROR_FILE %q collides with an already-produced output", call.ErrorFile), false
+			}
+			errRel = rel
 		}
 	}
 	if _, exists := cc.OutToGenrule[dstRel]; exists {
@@ -1842,13 +1860,15 @@ func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *code
 	switch {
 	case errRel != "":
 		// Two declared outs: $@ is single-out-only, so address both
-		// through $(location <out>) — Bazel resolves a rule's own outs.
+		// through $(RULEDIR)/<out> — the form the split emitter knows
+		// how to relocate when the rule moves into a sub-package
+		// ($(location <out>) tokens are NOT rewritten there).
 		outs = append(outs, errRel)
-		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$(location %[1]s)")" "$$(dirname "$(location %[2]s)")" && %[3]s%[4]s > "%[5]s$(location %[1]s)" 2> "%[5]s$(location %[2]s)"`, dstRel, errRel, execWdPrologue(wdRel), tool, locPrefix)
+		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$(RULEDIR)/%[1]s")" "$$(dirname "$(RULEDIR)/%[2]s")" && %[3]s%[4]s > "%[5]s$(RULEDIR)/%[1]s" 2> "%[5]s$(RULEDIR)/%[2]s"`, dstRel, errRel, execWdPrologue(wdRel), tool, locPrefix)
 	case mergeStderr:
-		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s%s > "%s" 2>&1`, execWdPrologue(wdRel), tool, execOutRef(wdRel, locPrefix))
+		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s%s > "%s" 2>&1`, execWdPrologue(wdRel), tool, execOutRef(wdRel))
 	default:
-		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s%s > "%s"`, execWdPrologue(wdRel), tool, execOutRef(wdRel, locPrefix))
+		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s%s > "%s"`, execWdPrologue(wdRel), tool, execOutRef(wdRel))
 	}
 	driver := executeProcessDriverBasename(argv[0])
 	if driver == "" {
