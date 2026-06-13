@@ -51,7 +51,7 @@ var convertTimeBakedShapes = map[string]string{
 	"cmake-codegen-nested-cmake-bake":                 "nested cmake build's configure-generated header baked at convert time",
 	"cmake-codegen-build-dir-bake":                    "configure-written build-dir file (no traced producer) baked at convert time from the on-disk bytes",
 	"cmake-codegen-file-writer-bake":                  "file(WRITE/APPEND/TOUCH) content materialized at convert time from the configure trace (producer cited in the rule provenance)",
-	"cmake-codegen-download-bake":                     "file(DOWNLOAD) bytes baked at convert time (no network at build time by policy; URL cited in the rule provenance — consider http_file)",
+	"cmake-codegen-download-bake":                     "file(DOWNLOAD) bytes baked at convert time (no network at build time by policy; URL + integrity surfaced as a `download` todo with a ready-to-paste http_file stanza)",
 	"cmake-codegen-execute-process-derived-bake":      "execute_process output discovered on disk and baked at convert time (no argv/ninja claim to re-run)",
 }
 

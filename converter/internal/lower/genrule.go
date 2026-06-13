@@ -180,6 +180,13 @@ type codegenContext struct {
 	// frozen bake stands.
 	FileWriterTemplates map[string]string
 
+	// DownloadLifts records each file(DOWNLOAD) output baked at convert
+	// time (the hermetic default) so emitToIRDiagnostics can surface a
+	// structured `download` todo carrying the ready-to-paste http_file
+	// MODULE stanza (url + integrity from the traced EXPECTED_HASH) for
+	// an operator who wants the repo-rule form. See download_lift.go.
+	DownloadLifts []downloadLiftRecord
+
 	// No-silent-drops accounting + the build-dir on-disk bake (see
 	// build_dir_source_bake.go). ElidedSources records every
 	// codemodel-referenced source the lowering dropped WITHOUT recovery
