@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -103,6 +104,63 @@ func TestLiftBuildDirFileFromWriter(t *testing.T) {
 		lc := mkLC(nil)
 		if _, ok := liftBuildDirFileFromWriter("nope.c", lc); ok {
 			t.Fatal("no chain must decline")
+		}
+	})
+}
+
+// TestWriterChainTrustworthy pins the review's verify doctrine: an
+// APPEND/TOUCH-created base is NOT grounded (the index can't see
+// out-of-tree writers; cmake's APPEND/TOUCH never truncate), so offline
+// it declines; with a live build dir the composed state must BYTE-MATCH
+// the disk or the on-disk bake wins.
+func TestWriterChainTrustworthy(t *testing.T) {
+	t.Run("append-base-offline-declines", func(t *testing.T) {
+		cc := newCodegenContext()
+		cc.FileWriterIndex = buildFileWriterIndex([]shadow.FileWriterCall{
+			{Op: "append", Content: "// trailer\n", Outputs: []string{"/b/gen/data.h"}, File: "/s/CMakeLists.txt", Line: 9},
+		}, "/b")
+		lc := targetLowerCtx{cc: cc, cmakeSrc: "/s", cmakeBuild: "/b"} // no hostBuild: offline
+		if _, ok := liftBuildDirFileFromWriter("gen/data.h", lc); ok {
+			t.Fatal("APPEND-created base must not lift offline (possible unindexed pre-writer)")
+		}
+	})
+
+	t.Run("write-base-disk-mismatch-declines", func(t *testing.T) {
+		host := t.TempDir()
+		mustWriteFile(t, filepath.Join(host, "gen.c"), "int a;\n// appended by an out-of-tree module\n")
+		cc := newCodegenContext()
+		cc.FileWriterIndex = buildFileWriterIndex([]shadow.FileWriterCall{
+			{Op: "write", Content: "int a;\n", Outputs: []string{"/b/gen.c"}, File: "/s/CMakeLists.txt", Line: 3},
+		}, "/b")
+		lc := targetLowerCtx{cc: cc, cmakeSrc: "/s", cmakeBuild: "/b", hostBuild: host}
+		if _, ok := liftBuildDirFileFromWriter("gen.c", lc); ok {
+			t.Fatal("composed content differing from disk must decline to the on-disk bake")
+		}
+	})
+
+	t.Run("write-base-disk-match-lifts", func(t *testing.T) {
+		host := t.TempDir()
+		mustWriteFile(t, filepath.Join(host, "gen.c"), "int a;\n")
+		cc := newCodegenContext()
+		cc.FileWriterIndex = buildFileWriterIndex([]shadow.FileWriterCall{
+			{Op: "write", Content: "int a;\n", Outputs: []string{"/b/gen.c"}, File: "/s/CMakeLists.txt", Line: 3},
+		}, "/b")
+		lc := targetLowerCtx{cc: cc, cmakeSrc: "/s", cmakeBuild: "/b", hostBuild: host}
+		if _, ok := liftBuildDirFileFromWriter("gen.c", lc); !ok {
+			t.Fatal("disk-verified WRITE chain must lift")
+		}
+	})
+
+	t.Run("touch-base-with-matching-empty-disk-lifts", func(t *testing.T) {
+		host := t.TempDir()
+		mustWriteFile(t, filepath.Join(host, "x.stamp"), "")
+		cc := newCodegenContext()
+		cc.FileWriterIndex = buildFileWriterIndex([]shadow.FileWriterCall{
+			{Op: "touch", Outputs: []string{"/b/x.stamp"}, File: "/s/CMakeLists.txt", Line: 5},
+		}, "/b")
+		lc := targetLowerCtx{cc: cc, cmakeSrc: "/s", cmakeBuild: "/b", hostBuild: host}
+		if _, ok := liftBuildDirFileFromWriter("x.stamp", lc); !ok {
+			t.Fatal("TOUCH base verified empty on disk must lift")
 		}
 	})
 }

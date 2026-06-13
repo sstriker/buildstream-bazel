@@ -680,6 +680,17 @@ func applyNestedProducerReHome(t *ir.Target, rehome map[string]string, namePrefi
 				renamed = true
 			}
 		}
+		// A producer can CONSUME another producer's re-homed out (the
+		// writer-index cp lift declares a produced build-dir source in
+		// Srcs and bakes the same rel into its $(location …) token) —
+		// re-point both, or the merged rule references a label the
+		// outer package doesn't have.
+		for i, src := range t.Srcs {
+			if newRel, ok := rehome[src]; ok {
+				t.Srcs[i] = newRel
+				t.GenruleCmd = strings.ReplaceAll(t.GenruleCmd, "$(location "+src+")", "$(location "+newRel+")")
+			}
+		}
 		if renamed {
 			t.Name = nestedProducerName(t, namePrefix)
 		}

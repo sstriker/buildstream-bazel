@@ -1,7 +1,9 @@
 package lower
 
 import (
+	"bytes"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
@@ -56,6 +58,14 @@ type writerChain struct {
 	url     string // download URL
 	file    string // provenance of the LAST writer
 	line    int
+	// grounded: the chain's BASE is a full-content writer (WRITE /
+	// COPY / DOWNLOAD), so the composed state is the whole file. An
+	// APPEND- or TOUCH-created base is NOT grounded — the file may
+	// pre-exist from a writer the index can't see (an out-of-tree
+	// module's file(WRITE), a refused tool's output), and cmake's
+	// APPEND/TOUCH never truncate; composing from empty would bake
+	// truncated bytes over a correct file.
+	grounded bool
 }
 
 // composeWriterChain folds a path's writer calls (trace order) into the
@@ -66,14 +76,15 @@ func composeWriterChain(calls []shadow.FileWriterCall) writerChain {
 		ch.file, ch.line = c.File, c.Line
 		switch c.Op {
 		case "write":
-			ch = writerChain{mode: "content", content: c.Content, file: c.File, line: c.Line}
+			ch = writerChain{mode: "content", content: c.Content, file: c.File, line: c.Line, grounded: true}
 		case "append":
 			switch ch.mode {
 			case "content":
 				ch.content += c.Content
 			case "":
-				// APPEND to a not-yet-written path creates it.
-				ch.mode, ch.content = "content", c.Content
+				// APPEND to a path with no indexed base creates it —
+				// but only from the index's view; not grounded.
+				ch.mode, ch.content, ch.grounded = "content", c.Content, false
 			default:
 				// APPEND onto a copy/download: composing would need
 				// the source bytes; decline the whole chain.
@@ -81,21 +92,19 @@ func composeWriterChain(calls []shadow.FileWriterCall) writerChain {
 			}
 		case "touch":
 			if ch.mode == "" {
-				ch.mode, ch.content = "content", ""
-			} // an existing file is left untouched (no truncation)
+				// Created-from-empty only in the index's view; an
+				// existing file is left untouched (no truncation).
+				ch.mode, ch.content, ch.grounded = "content", "", false
+			}
 		case "copy", "copy_file":
-			ch = writerChain{mode: "copy", file: c.File, line: c.Line}
-			for i, out := range c.Outputs {
-				_ = out
-				if i < len(c.Sources) {
-					ch.src = c.Sources[i]
-				}
+			// writerChainFor narrowed fan-out copies to this output's
+			// single source before composing.
+			if len(c.Sources) != 1 {
+				return writerChain{}
 			}
-			if len(c.Sources) == 1 {
-				ch.src = c.Sources[0]
-			}
+			ch = writerChain{mode: "copy", src: c.Sources[0], file: c.File, line: c.Line, grounded: true}
 		case "download":
-			ch = writerChain{mode: "download", url: c.URL, file: c.File, line: c.Line}
+			ch = writerChain{mode: "download", url: c.URL, file: c.File, line: c.Line, grounded: true}
 		}
 	}
 	return ch
@@ -139,6 +148,9 @@ func liftBuildDirFileFromWriter(rel string, lc targetLowerCtx) (string, bool) {
 		return "", false
 	}
 	cc := lc.cc
+	if !writerChainTrustworthy(rel, ch, lc) {
+		return "", false
+	}
 	switch ch.mode {
 	case "content":
 		name := bakedBuildDirName(rel)
@@ -228,4 +240,42 @@ func fileWriterCopyTags() []string {
 // downloadBakeTags marks the cited-URL bake of a file(DOWNLOAD) output.
 func downloadBakeTags() []string {
 	return []string{"cmake-codegen", "cmake-codegen-download-bake"}
+}
+
+// writerChainTrustworthy is the verify pass the lift owes its caller
+// (the same doctrine as the configure_file byte-equal verify): the
+// index only sees the project's OWN file() calls, so an out-of-tree
+// module's writer or a refused tool can have contributed bytes the
+// composed chain doesn't model. When the live build dir is readable,
+// the composed end-state must MATCH the on-disk bytes (content: the
+// composed content; copy: the traced source's bytes) — a mismatch
+// declines to the on-disk byte-bake, which is always right. Offline
+// (no readable bytes), only a GROUNDED chain (full-content base) is
+// trusted; an APPEND/TOUCH-created base declines.
+func writerChainTrustworthy(rel string, ch writerChain, lc targetLowerCtx) bool {
+	if ch.mode == "download" {
+		return true // declines to the cited bake regardless
+	}
+	var want []byte
+	switch ch.mode {
+	case "content":
+		want = []byte(ch.content)
+	case "copy":
+		srcBytes, err := os.ReadFile(filepath.FromSlash(ch.src))
+		if err != nil {
+			// Source unreadable: trust the grounded chain (offline
+			// staging) — the declared src fails loudly at build time
+			// if it's genuinely absent.
+			return ch.grounded
+		}
+		want = srcBytes
+	}
+	if lc.hostBuild == "" {
+		return ch.grounded
+	}
+	disk, err := os.ReadFile(filepath.Join(lc.hostBuild, filepath.FromSlash(rel)))
+	if err != nil {
+		return ch.grounded
+	}
+	return bytes.Equal(disk, want)
 }

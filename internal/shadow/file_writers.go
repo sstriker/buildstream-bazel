@@ -32,6 +32,11 @@ type FileWriterCall struct {
 //   - file(COPY … FILES_MATCHING/PATTERN/REGEX …) filters contents;
 //   - file(TOUCH_NOCREATE) creates nothing;
 //   - file(DOWNLOAD <url>) with no destination file.
+//
+// NOTE: this is a standalone ParseTrace sweep (the JSON decode is
+// memoized; the per-event walk is linear and re-runs per lower pass).
+// Folding it into DecodeTrace's single dispatched walk is the known
+// next step if trace-walk count ever shows up in profiles.
 func ExtractFileWriterCalls(traceRaw []byte, sourceRoot string) []FileWriterCall {
 	if sourceRoot != "" {
 		sourceRoot = filepath.Clean(sourceRoot)

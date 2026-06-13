@@ -70,14 +70,19 @@ func bakeBuildDirFile(rel string, lc targetLowerCtx) (string, bool) {
 		return "", false
 	}
 	name := bakedBuildDirName(rel)
-	tags := buildDirBakeTags()
-	t := bakeFileTarget(name, rel, body, tags)
 	// A file(DOWNLOAD) output stays a byte-bake by policy (no network
 	// at build time) but cites its producer: the download facet rides
 	// the bake-warning/todo channels and the provenance carries the
-	// URL for a hand-lift to http_file (ROADMAP).
-	if dl, isDL := downloadWriterFor(rel, lc); isDL {
-		t = bakeFileTarget(name, rel, body, downloadBakeTags())
+	// URL for a hand-lift to http_file (ROADMAP). Resolve the chain
+	// and pick the tags BEFORE constructing the target once — the
+	// body encode isn't free for large downloads.
+	tags := buildDirBakeTags()
+	dl, isDL := downloadWriterFor(rel, lc)
+	if isDL {
+		tags = downloadBakeTags()
+	}
+	t := bakeFileTarget(name, rel, body, tags)
+	if isDL {
 		t.Provenance = writerProvenance(dl, lc)
 		t.Provenance.Command = "file(DOWNLOAD " + dl.url + ")"
 	}
