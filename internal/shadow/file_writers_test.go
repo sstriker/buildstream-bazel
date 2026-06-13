@@ -74,3 +74,18 @@ func TestExtractFileWriterCalls_CopyPermissionsNotSources(t *testing.T) {
 		t.Errorf("outputs = %v; want [/b/out/a.c] (bogus <dest>/OWNER_READ etc.)", c.Outputs)
 	}
 }
+
+// TestExtractFileWriterCalls_DownloadHash pins EXPECTED_HASH / EXPECTED_MD5
+// capture on file(DOWNLOAD).
+func TestExtractFileWriterCalls_DownloadHash(t *testing.T) {
+	trace := `{"cmd":"file","args":["DOWNLOAD","https://x/y.h","/b/y.h","EXPECTED_HASH","SHA256=abc","STATUS","_s"],"file":"/src/CMakeLists.txt","line":3}`
+	calls := ExtractFileWriterCalls([]byte(trace), "/src")
+	if len(calls) != 1 || calls[0].Op != "download" || calls[0].Hash != "SHA256=abc" {
+		t.Fatalf("download hash: %+v", calls)
+	}
+	md5 := `{"cmd":"file","args":["DOWNLOAD","https://x/z","/b/z","EXPECTED_MD5","ff"],"file":"/src/CMakeLists.txt","line":4}`
+	calls = ExtractFileWriterCalls([]byte(md5), "/src")
+	if len(calls) != 1 || calls[0].Hash != "MD5=ff" {
+		t.Fatalf("md5 hash: %+v", calls)
+	}
+}

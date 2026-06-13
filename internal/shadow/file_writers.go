@@ -20,6 +20,7 @@ type FileWriterCall struct {
 	Sources []string // copy/copy_file source paths (absolute)
 	Content string   // write/append payload (expanded; args concatenated, cmake semantics)
 	URL     string   // download source URL
+	Hash    string   // download EXPECTED_HASH as "<algo>=<value>" (e.g. "SHA256=abc…"); "" when absent
 	File    string
 	Line    int
 }
@@ -133,7 +134,28 @@ func classifyFileWriter(ev TraceEvent) (FileWriterCall, bool) {
 		call.Op = "download"
 		call.URL = ev.Args[1]
 		call.Outputs = []string{ev.Args[2]}
+		call.Hash = downloadExpectedHash(ev.Args[3:])
 		return call, true
 	}
 	return FileWriterCall{}, false
+}
+
+// downloadExpectedHash scans file(DOWNLOAD) options for the integrity
+// keyword and returns it as "<algo>=<value>" (the http_file lift maps
+// SHA* to integrity/sha256). EXPECTED_HASH takes "<algo>=<value>";
+// EXPECTED_MD5 takes a bare value. "" when neither is present.
+func downloadExpectedHash(opts []string) string {
+	for i := 0; i < len(opts); i++ {
+		switch strings.ToUpper(opts[i]) {
+		case "EXPECTED_HASH":
+			if i+1 < len(opts) && strings.Contains(opts[i+1], "=") {
+				return opts[i+1]
+			}
+		case "EXPECTED_MD5":
+			if i+1 < len(opts) {
+				return "MD5=" + opts[i+1]
+			}
+		}
+	}
+	return ""
 }

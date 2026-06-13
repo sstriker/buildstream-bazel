@@ -58,6 +58,7 @@ type writerChain struct {
 	content string
 	src     string // copy source (absolute, as traced)
 	url     string // download URL
+	hash    string // download EXPECTED_HASH ("algo=value")
 	file    string // provenance of the LAST writer
 	line    int
 	// grounded: the chain's BASE is a full-content writer (WRITE /
@@ -106,7 +107,7 @@ func composeWriterChain(calls []shadow.FileWriterCall) writerChain {
 			}
 			ch = writerChain{mode: "copy", src: c.Sources[0], file: c.File, line: c.Line, grounded: true}
 		case "download":
-			ch = writerChain{mode: "download", url: c.URL, file: c.File, line: c.Line, grounded: true}
+			ch = writerChain{mode: "download", url: c.URL, hash: c.Hash, file: c.File, line: c.Line, grounded: true}
 		}
 	}
 	return ch

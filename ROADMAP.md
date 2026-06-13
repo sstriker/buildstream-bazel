@@ -807,12 +807,6 @@ trees, optional-feature deps, codegen instances). Each member's
 
 ## Later (research / open questions)
 
-- **file(DOWNLOAD) → http_file.** Policy today: bake the on-disk bytes
-  (no network at build time), facet `cmake-codegen-download-bake`, URL
-  cited in the rule provenance. The faithful repository-rule lift
-  (http_file + integrity from the traced EXPECTED_HASH) is mechanical
-  when an operator wants it.
-
 - **`--lift-configure-file` default flip.** The lift tier is complete
   (template src + values dict + stamp values + verify pass +
   per-config arms); the default stays opt-in solely because downstream

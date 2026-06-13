@@ -85,6 +85,9 @@ func bakeBuildDirFile(rel string, lc targetLowerCtx) (string, bool) {
 	if isDL {
 		t.Provenance = writerProvenance(dl, lc)
 		t.Provenance.Command = "file(DOWNLOAD " + dl.url + ")"
+		// Surface the http_file hand-off (operator opt-in; the bake is
+		// the hermetic default). See download_lift.go.
+		recordDownloadLift(lc.cc, rel, dl.url, dl.hash)
 	}
 	lc.cc.Genrules = append(lc.cc.Genrules, t)
 	lc.cc.OutToGenrule[rel] = name
@@ -185,18 +188,15 @@ func walkBuildDirHeaders(inc string, lc targetLowerCtx) {
 		if _, produced := cc.OutToGenrule[rel]; produced {
 			return nil
 		}
-		if name, ok := liftBuildDirFileFromWriter(rel, lc); ok {
+		// Delegate to bakeBuildDirFile: it runs the writer-index lift
+		// first (cp / stamp / write_file from the trace) and the
+		// download branch (hermetic bake + the http_file hand-off todo)
+		// before the on-disk byte-bake — so a downloaded or
+		// writer-traced header gets the same recovery as a build-dir
+		// source, not a bare on-disk bake.
+		if name, ok := bakeBuildDirFile(rel, lc); ok {
 			cc.BuildDirBakedHdrs[rel] = name
-			return nil
 		}
-		body, rerr2 := os.ReadFile(p)
-		if rerr2 != nil {
-			return nil
-		}
-		name := bakedBuildDirName(rel)
-		cc.Genrules = append(cc.Genrules, bakeFileTarget(name, rel, body, buildDirBakeTags()))
-		cc.OutToGenrule[rel] = name
-		cc.BuildDirBakedHdrs[rel] = name
 		return nil
 	})
 }
