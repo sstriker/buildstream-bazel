@@ -121,3 +121,39 @@ if ! ( cd "$ws" && "$BZL" --output_user_root="$bzlcache" ${META_BAZEL_STARTUP_AR
     sed 's/^/   /' "$work_dir/bazel.log"; exit 1
 fi
 echo "ok  meta-cmake-file-download-http: consumer compiles against the baked downloaded header"
+
+# --- Two-phase lift build half: the @<repo>//file http_file (declared in
+# MODULE.bazel from the committed lockfile) fetches the file:// payload, the
+# fetch genrule cp's it to dl_config.h, and the consumer compiles. Exercises
+# the whole envelope path end-to-end. use_repo_rule needs bazel >= 7.1. ---
+if [ "$bzlmajor" -lt 7 ]; then exit 0; fi
+ws_lift="$work_dir/ws_lift"
+mkdir -p "$ws_lift/src"
+cp "$fixture"/src/lib.c "$ws_lift/src/"
+cp "$build_lift" "$ws_lift/BUILD.bazel"
+# MODULE.bazel: rules_cc + the http_file repos rendered from the lockfile
+# (the same use_repo_rule block write-a's moduleBazelB emits).
+{
+    echo 'module(name = "dlhttplift", version = "0.0.0")'
+    echo 'bazel_dep(name = "rules_cc", version = "0.0.17")'
+    python3 - "$lock" <<'PY'
+import json, sys
+lock = json.load(open(sys.argv[1]))
+print('http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")')
+for r in lock["repos"]:
+    print("http_file(")
+    print(f'    name = "{r["repo"]}",')
+    print(f'    urls = ["{r["url"]}"],')
+    if r.get("integrity"):
+        print(f'    integrity = "{r["integrity"]}",')
+    print(f'    downloaded_file_path = "{r["downloaded_file_path"]}",')
+    print(")")
+PY
+} > "$ws_lift/MODULE.bazel"
+# shellcheck disable=SC2086
+if ! ( cd "$ws_lift" && "$BZL" --output_user_root="$bzlcache" ${META_BAZEL_STARTUP_ARGS:-} \
+        build ${META_BAZEL_BUILD_ARGS:-} //:dlhttp ) >"$work_dir/bazel_lift.log" 2>&1; then
+    echo "FAIL: --lift-download consumer failed to build against the http_file-fetched header"
+    sed 's/^/   /' "$work_dir/bazel_lift.log"; exit 1
+fi
+echo "ok  meta-cmake-file-download-http: --lift-download consumer compiles against the http_file-fetched header (two-phase end-to-end)"

@@ -52,6 +52,23 @@ var cmakeConfig struct {
 	// runner/bake/refuse path. See docs/research/codegen-idiom-coverage.md.
 	ccHashBin string
 
+	// liftDownload, when true, threads --lift-download + --out-download-repos
+	// into each kind:cmake converter genrule, so file(DOWNLOAD) recovery emits
+	// a genrule sourcing @<repo>//file from an http_file repo (instead of
+	// byte-baking) AND the genrule produces download-repos.json (the build-time
+	// lockfile artifact). The http_file repos themselves are declared in
+	// MODULE.bazel from the COMMITTED lockfile (downloadRepos below). Off
+	// (default) keeps the hermetic byte-bake.
+	liftDownload bool
+
+	// downloadRepos is the committed file(DOWNLOAD) lockfile, parsed at flag
+	// time from --download-repos-lock. When non-empty, moduleBazelB emits one
+	// http_file (via use_repo_rule) per entry so the @<repo>//file labels the
+	// --lift-download fetch genrules reference resolve. Empty (default) emits
+	// no repos — the bootstrap's first pass, before the lockfile is produced +
+	// committed.
+	downloadRepos []downloadRepoSpec
+
 	// round2FallbackEnabled toggles the kind:cmake round-2
 	// fallback shape (Phase B; see
 	// docs/design/rendezvous.md).
@@ -538,7 +555,7 @@ genrule(
         "read_paths.json",
         "cmake-config-bundle.tar",
         "exports.json",
-        "conversion-todos.json",%[11]s
+        "conversion-todos.json",%[11]s%[20]s
     ],
     cmd = """
         # Build a unified source-root by merging real srcs (workspace
@@ -594,7 +611,7 @@ filegroup(
     name = "cmake_config_bundle",
     srcs = ["cmake-config-bundle.tar"],
 )
-`, elem.Name, srcsList, flags.depExtract, flags.prefix, flags.imports, flags.lift, flags.fallback, flags.fidelity, flags.bakeIn, flags.diagnostics, flags.diagnosticOuts, exportsInFlag, primaryOut, outBuildSetup, outBuildFlag, splitFlag, buildPackagingStep, buildBazelSrcs, flags.buildTypes)
+`, elem.Name, srcsList, flags.depExtract, flags.prefix, flags.imports, flags.lift, flags.fallback, flags.fidelity, flags.bakeIn, flags.diagnostics, flags.diagnosticOuts, exportsInFlag, primaryOut, outBuildSetup, outBuildFlag, splitFlag, buildPackagingStep, buildBazelSrcs, flags.buildTypes, flags.downloadReposOut)
 	return b.String()
 }
 
@@ -640,10 +657,14 @@ type cmakeConverterFlags struct {
 	diagnostics    string
 	diagnosticOuts string
 	lift           string
-	fallback       string
-	prefix         string
-	imports        string
-	depExtract     string
+	// downloadReposOut adds the download-repos.json output to the genrule's
+	// outs (mirrors diagnosticOuts) when --lift-download is set; the matching
+	// --out-download-repos flag rides f.lift.
+	downloadReposOut string
+	fallback         string
+	prefix           string
+	imports          string
+	depExtract       string
 }
 
 // buildCmakeConverterFlags computes the converter command fragments for one
@@ -691,6 +712,21 @@ func buildCmakeConverterFlags(cmakeDepLabels []cmakeDepBundleLabel) cmakeConvert
 	if cmakeConfig.configureFileBin != "" {
 		f.lift = ` \
             --lift-configure-file=true`
+	}
+	// --lift-download: the producer becomes a fetch genrule sourcing
+	// @<repo>//file (vs byte-baking), and the converter writes the
+	// download-repos.json lockfile. The @<repo>//file labels resolve against
+	// the http_file repos moduleBazelB declares from the committed lockfile
+	// (--download-repos-lock). download-repos.json is declared as a genrule
+	// output (mirrors the diagnostics rejections.json pattern) so $(location)
+	// resolves; the converter always writes it (empty repos[] when the element
+	// has no download), keeping the output present for Bazel.
+	if cmakeConfig.liftDownload {
+		f.lift += ` \
+            --lift-download=true \
+            --out-download-repos="$(location download-repos.json)"`
+		f.downloadReposOut = `
+        "download-repos.json",`
 	}
 	// cc_embed lift rides the same liftFlag string so it threads into
 	// both the split (cmakeSplitConvertBlock) and single-BUILD genrule
