@@ -460,10 +460,13 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 }
 
 // codegenCommandFrom builds the recognizer's authoritative view of a recovered
-// custom-command: the DRIVER tool + argv tokenized from the RAW command (the
-// generator's path/flags are pristine here, before the genrule rewrites lift
-// tools to $(location) and re-anchor paths), plus the recovered srcs, cmake's
-// recorded outs (the recognizer's output cross-check), and the Bazel package.
+// custom-command: the DRIVER tool + argv tokenized from the REWRITTEN command
+// (the cd-prefix and buildDir paths already stripped). The driver basename + the
+// flag prefixes a recognizer keys on survive that rewrite — the standalone path
+// does NOT $(location)-swap the driver, so fields[0] is still the bare tool
+// (e.g. `protoc`). Were the dispatch ever moved after a tool-swap, this would
+// need the pre-swap form. Plus the recovered srcs, cmake's recorded outs (the
+// recognizer's output cross-check), and the Bazel package.
 func codegenCommandFrom(cmd string, srcs, outs []string, pkg string) CodegenCommand {
 	fields := strings.Fields(cmd)
 	var driver string
