@@ -592,8 +592,17 @@ transition cleanly.
   **lens-validated** on the corpus (`SURVEY_HOIST_COMMON_COPTS=1`): brotli, fmt,
   and libxml2 `bazel build //...` green with the hoist on — libxml2 dedups a
   12-flag `-Wall -Wextra -Wshadow …` prefix that repeated per target, fmt the
-  `-fvisibility*` pair. **Remaining:** (1) extend the hoist to the common
-  `defines` prefix (today copts only); (2) a render gate in the
+  `-fvisibility*` pair. **BDE (`groups/bsl`) is the corpus's strongest
+  demonstrator AND motivates the gaps:** its one ~39k-line group `BUILD.bazel`
+  carries a project-wide BBS flag set repeated VERBATIM on **745 of 763
+  targets** — `copts=["-O3","-pthread"]` (the copts hoist collapses this),
+  but ALSO byte-identical `local_defines=["BDE_BUILD_TARGET_OPT","NDEBUG",
+  "_POSIX_PTHREAD_SEMANTICS","_REENTRANT"]` (745×) and `linkopts`
+  (`-O3`/`-lrt`, 721×) the copts-only hoist leaves on the table — ~13k of the
+  39k lines are this repeated boilerplate. **Remaining:** (1) extend the hoist
+  to the common `defines` prefix (today copts only) — BDE's 745× identical
+  `local_defines` is the motivating case; the analogous **`linkopts` prefix
+  hoist** (BDE's 721× `-O3`/`-lrt`) is the natural sibling; (2) a render gate in the
   `meta-cmake-sanitizer-features` mold (assert strip + tag/load + `.bzl` shape on
   a fixture) to put it under the gates-in-CI net; (3) the FEATURE mode's lens
   validation needs the survey to wire the emitted feature into a registered
