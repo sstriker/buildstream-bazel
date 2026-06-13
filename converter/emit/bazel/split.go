@@ -710,6 +710,12 @@ func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][
 	hdrsByDir := map[string]map[string]bool{}
 	for _, outs := range pkg.CodegenHeaderConsumers {
 		for _, o := range outs {
+			// A native-rule output (cc_proto_library's foo.pb.h) is served by a
+			// direct deps edge to that rule (below) — never wrapped, since the
+			// rule produces it internally rather than as a standalone file.
+			if _, native := pkg.NativeRuleConsumerLabels[o]; native {
+				continue
+			}
 			dir := p.deepestPkg(o)
 			rel, ok := relUnder(dir, o)
 			if !ok {
@@ -758,6 +764,21 @@ func (p *splitPlan) generatedHeaderWrappers(pkg *ir.Package) (byDir map[string][
 		seen := map[string]bool{}
 		var labels []string
 		for _, o := range outs {
+			// A native-rule output resolves to a DIRECT deps edge on the native
+			// rule's own label (the cc_proto_library that produces it), not the
+			// per-dir generated_includes wrapper. Unlike that wrapper — a
+			// converter invention around a file gazelle can't see, so it needs a
+			// `# keep` (markGeneratedHeaderDeps) — this is the IDIOMATIC rule
+			// gazelle itself generates and resolves `#include "foo.pb.h"` to, so
+			// a maintenance pass preserves the edge on its own (no keep marker).
+			if name, native := pkg.NativeRuleConsumerLabels[o]; native {
+				label := targetLabel(p, name)
+				if !seen[label] {
+					seen[label] = true
+					labels = append(labels, label)
+				}
+				continue
+			}
 			dir := p.deepestPkg(o)
 			if _, ok := relUnder(dir, o); !ok {
 				continue

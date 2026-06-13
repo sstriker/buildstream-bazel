@@ -8888,6 +8888,18 @@ func resolveCodegenHeaderConsumers(pkg *ir.Package, g *ninja.Graph, stand []ir.T
 			genOut[o] = gt.Name
 		}
 	}
+	// A recognized native rule (cc_proto_library) produces its headers INSIDE
+	// the rule, so they're neither an OutToGenrule entry nor a standalone
+	// genrule out — seed them here so the consumer walk still detects a
+	// `#include "foo.pb.h"`. The match wires a DIRECT deps edge to the native
+	// rule (via NativeRuleConsumerLabels below + split), not the file wrapper.
+	for o, name := range cc.OutToNativeConsumerDep {
+		genOut[o] = name
+		if pkg.NativeRuleConsumerLabels == nil {
+			pkg.NativeRuleConsumerLabels = map[string]string{}
+		}
+		pkg.NativeRuleConsumerLabels[o] = name
+	}
 	// Index ninja outputs by final path component so the codegen walk can seed
 	// from a sub-directory custom target's prefixed phony (cmake names it
 	// `<dir>/<target>`).
