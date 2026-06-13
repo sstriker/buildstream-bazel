@@ -119,19 +119,8 @@ func runVerifyPass(a cli.Args, hostBuildDir string, pkg *ir.Package) error {
 // or the re-lower still errors — leaving the caller to surface the original
 // error.
 func recoverPass1StampAbort(ctx context.Context, a cli.Args, hostBuildDir string, runToIR func(*lower.LiteralProbeSink, map[string]cmakerun.LiteralResolution, []shadow.SetAssignment, []shadow.ParentScopeForward) (*ir.Package, error)) (pkg *ir.Package, sets []shadow.SetAssignment, forwards []shadow.ParentScopeForward, sink *lower.LiteralProbeSink, ok bool) {
-	plainTrace := filepath.Join(hostBuildDir, "trace-plain.jsonl")
-	if _, cfgErr := cmakerun.Configure(ctx, cmakerun.Options{
-		SourceRoot:         a.SourceRoot,
-		BuildDir:           hostBuildDir,
-		PrefixDir:          a.PrefixDir,
-		ToolchainCMakeFile: a.ToolchainCMakeFile,
-		BuildType:          a.BuildType,
-		BuildTypes:         a.BuildTypes,
-		TracePath:          plainTrace,
-		TraceNonExpanded:   true,
-		Stdout:             os.Stderr,
-		Stderr:             os.Stderr,
-	}); cfgErr != nil {
+	plainTrace, cfgErr := warmPlainTraceConfigure(ctx, a, hostBuildDir)
+	if cfgErr != nil {
 		return nil, nil, nil, nil, false
 	}
 	raw, rerr := os.ReadFile(plainTrace)
@@ -534,6 +523,12 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	// earlier passes see it nil/empty).
 	nestedSink := map[string]string{}
 	var nestedBuilds []lower.NestedBuildInput
+	// Dead-capture state: pass 1 fills captureSink with capture-bearing
+	// execute_process refusals' variable names; the coalesced warm pass
+	// proves which are never read and the re-lower clears their capture
+	// keywords (closure capture: earlier passes see deadCaptureVars nil).
+	captureSink := map[string]bool{}
+	var deadCaptureVars map[string]bool
 	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment, parentScopeForwards []shadow.ParentScopeForward) (*ir.Package, error) {
 		// Reset the per-pass collectors each pass: ToIR can run more than
 		// once (two-pass genex / stamp / nested-cmake recovery) against the
@@ -582,6 +577,8 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 			StampVarSink:                      stampSink,
 			NestedConfigureSink:               nestedSink,
 			NestedBuilds:                      nestedBuilds,
+			CaptureRefusalSink:                captureSink,
+			DeadCaptureVars:                   deadCaptureVars,
 		})
 	}
 
@@ -615,6 +612,20 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 				fmt.Fprintf(os.Stderr, "convert-element-cmake: recovered pass-1 stamp abort via %d non-expanded-trace set()-copy/-ies + %d function-forward(s).\n", len(sets), len(forwards))
 			}
 		}
+		// A pass-1 abort on a capture-bearing refusal is likewise
+		// recoverable when the capture is a SILENCING one: the sink is
+		// filled before the refusal returns, so prove the dead set via
+		// a warm non-expanded-trace configure and re-lower with the
+		// capture keywords cleared. If captures are genuinely live the
+		// re-lower re-refuses and the original error stands.
+		if err != nil && a.TwoPassGenex && hostBuildDir != "" && len(captureSink) > 0 {
+			if pkg2, dead, ok := recoverPass1CaptureAbort(ctx, a, hostBuildDir, captureSink, &deadCaptureVars, func() (*ir.Package, error) {
+				return runToIR(literalSink, nil, nil, nil)
+			}); ok {
+				pkg, err = pkg2, nil
+				fmt.Fprintf(os.Stderr, "convert-element-cmake: recovered pass-1 capture abort via the dead-capture analysis (%d silencing capture(s) cleared).\n", len(dead))
+			}
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -626,13 +637,46 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	// demands (unresolved genex literals, VCS-stamp set()-indirection,
 	// configure-time nested cmake) share ONE warm reconfigure + ONE re-lower
 	// instead of one each. See warm_pass.go.
-	if wr := runCoalescedWarmPass(ctx, a, hostBuildDir, literalSink, stampSink, nestedSink, recoveredStampSets, recoveredStampForwards); wr.recovered {
+	// A capture sink already adjudicated by the pass-1 abort rescue is
+	// not re-demanded: the proven dead set stands, and any vars the
+	// rescued re-lower re-recorded are live by construction (the
+	// analysis just ran against this very configure's reads).
+	warmCaptureSink := captureSink
+	if deadCaptureVars != nil {
+		warmCaptureSink = nil
+	}
+	wr := runCoalescedWarmPass(ctx, a, hostBuildDir, literalSink, stampSink, nestedSink, recoveredStampSets, recoveredStampForwards, warmCaptureSink)
+	if wr.recovered {
 		nestedBuilds = wr.nestedBuilds // read by runToIR via closure capture
+		// Never clobber a proven dead set with nil: the warm pass can
+		// recover for a DIFFERENT demand while its own dead-capture
+		// read failed (trace read error) — overwriting would re-abort
+		// the very refusal the pass-1 rescue already cleared.
+		if wr.deadCaptureVars != nil {
+			deadCaptureVars = wr.deadCaptureVars
+		}
 		pkg2, err2 := runToIR(nil, wr.genexResolutions, wr.sets, wr.forwards)
 		if err2 != nil {
 			return nil, err2
 		}
 		pkg = pkg2
+	}
+	// A dead-capture re-lower can surface demands the capture keyword's
+	// presence hid — canonically a SILENCED nested cmake configure
+	// (`OUTPUT_VARIABLE _out ERROR_VARIABLE _err` purely to quiet the
+	// child), whose nested-cmake detection only fires once the capture
+	// clears. Run ONE more warm round for the late nested demand and
+	// re-lower. Bounded by construction: the second round passes empty
+	// genex/stamp/capture sinks, so it can only harvest nested builds.
+	if len(wr.deadCaptureVars) > 0 && len(nestedSink) > 0 && len(nestedBuilds) == 0 {
+		if wr2 := runCoalescedWarmPass(ctx, a, hostBuildDir, &lower.LiteralProbeSink{}, map[string]string{}, nestedSink, wr.sets, wr.forwards, nil); wr2.recovered {
+			nestedBuilds = wr2.nestedBuilds
+			pkg3, err3 := runToIR(nil, wr.genexResolutions, wr2.sets, wr2.forwards)
+			if err3 != nil {
+				return nil, err3
+			}
+			pkg = pkg3
+		}
 	}
 
 	// Per-config bake passes (conditional, cold): a multi-config configure

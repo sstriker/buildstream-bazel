@@ -488,11 +488,9 @@ func TestRecoverExecuteProcess_LiftFileProducing_RefusesUnmodeledOpts(t *testing
 			mut:  func(c *shadow.ExecuteProcessCall) { c.Environment = []string{"FOO=bar"} },
 			want: "ENVIRONMENT",
 		},
-		{
-			name: "TIMEOUT",
-			mut:  func(c *shadow.ExecuteProcessCall) { c.Timeout = "30" },
-			want: "TIMEOUT",
-		},
+		// TIMEOUT no longer refuses (a configure-time watchdog never
+		// shapes the output bytes); the lift side is pinned in
+		// TestRecoverExecuteProcess_FileProducingKeywords.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -166,6 +166,20 @@ type Options struct {
 	// and merged into the outer package by lowerNestedBuilds.
 	NestedBuilds []NestedBuildInput
 
+	// CaptureRefusalSink, when non-nil, receives the variable names of
+	// every capture-bearing execute_process refusal (OUTPUT_VARIABLE /
+	// ERROR_VARIABLE / RESULT_VARIABLE / RESULTS_VARIABLE). The driver
+	// reads it after pass 1 to run the dead-capture analysis (a warm
+	// non-expanded trace pass) and re-lower with DeadCaptureVars; see
+	// execute_process_dead_capture.go.
+	CaptureRefusalSink map[string]bool
+
+	// DeadCaptureVars are capture variables the dead-capture analysis
+	// proved the configure never reads (captured only to silence
+	// output). clearDeadCaptures treats their capture keywords as
+	// absent, unlocking the lifts the keyword's presence refused.
+	DeadCaptureVars map[string]bool
+
 	// UnsupportedExecuteProcessFallback toggles
 	// recoverExecuteProcess's refusal handling. When false
 	// (the default — preserves Phase A behaviour),
@@ -2511,6 +2525,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	if opts.NestedConfigureSink != nil {
 		cc.NestedConfigureSink = opts.NestedConfigureSink
 	}
+	cc.CaptureRefusalSink, cc.DeadCaptureVars = opts.CaptureRefusalSink, opts.DeadCaptureVars
 	nestedOuts, err := lowerNestedBuilds(pkg, opts, cc, hostSrc)
 	if err != nil {
 		return nil, err

@@ -142,6 +142,13 @@ type codegenContext struct {
 	NestedArtifactDeps  map[string]string
 	NestedLifted        map[string]bool
 
+	// Dead-capture analysis state (see execute_process_dead_capture.go):
+	// CaptureRefusalSink collects capture-bearing refusals' variable
+	// names for the driver; DeadCaptureVars are the proven-dead ones the
+	// re-lower clears before classification.
+	CaptureRefusalSink map[string]bool
+	DeadCaptureVars    map[string]bool
+
 	// No-silent-drops accounting + the build-dir on-disk bake (see
 	// build_dir_source_bake.go). ElidedSources records every
 	// codemodel-referenced source the lowering dropped WITHOUT recovery
