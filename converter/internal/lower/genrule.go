@@ -183,6 +183,11 @@ type codegenContext struct {
 	// instead of a genrule.
 	RecognizeCodegen bool
 
+	// ExtraRecognizers are operator-supplied codegen recognizers loaded from
+	// --recognizers Starlark files (Options.ExtraCodegenRecognizers). Consulted
+	// after the built-ins (first-party wins), and only when RecognizeCodegen.
+	ExtraRecognizers []CodegenRecognizer
+
 	// FileWriterTemplates maps a build-dir-relative path to the
 	// NON-EXPANDED composed content of its file(WRITE/APPEND) chain —
 	// the warm-pass harvest where a `${GIT_SHA}` reference survives

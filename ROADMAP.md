@@ -232,8 +232,16 @@ transition cleanly.
         native-declared headers (gated by extension, not cmake's generated
         bit). No `# keep` on the native dep — gazelle resolves the idiomatic
         rule itself. Gated by `scripts/meta-cmake-protoc-consumer.sh`
-        (`--split-packages`, both halves + a `//:use_foo` build). What's LEFT,
-        in order:
+        (`--split-packages`, both halves + a `//:use_foo` build).
+        **Operator-extensible without recompiling** is SHIPPED too: a recognizer
+        can be a Starlark `*.star` (`match(cmd)`/`lower(cmd)` + `native_rule`/
+        `result` builtins) loaded via `--recognizers <glob>` and appended to the
+        registry after the built-ins. Sandboxed + deterministic; the
+        output-authority cross-check stays host-side (the script declares
+        `derived_outputs`, Go validates). `recognizers/protoc.star` is the
+        template; gated by `scripts/meta-cmake-recognizer-starlark.sh` (a
+        non-built-in tool `gen_pb` whose operator script fires + builds). What's
+        LEFT, in order:
         - **Cross-package proto import deps** via `protoImportClosure` → labels
           on the `proto_library`'s `deps` (the recognizer already threads
           `ProtoDeps`; the dispatch needs to compute + pass them).

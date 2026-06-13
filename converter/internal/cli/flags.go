@@ -233,6 +233,12 @@ type Args struct {
 	// invocation falls back to the genrule, so existing converts are unchanged.
 	RecognizeCodegen bool
 
+	// Recognizers is a glob of operator-supplied Starlark recognizer files
+	// (*.star) added to the registry without recompiling — each defines
+	// match(cmd)/lower(cmd). Loaded after the built-ins (first-party wins) and
+	// only active alongside --recognize-codegen. Empty = built-ins only.
+	Recognizers string
+
 	// ToolchainFeaturesFrom points the raw-flag → feature lift at the
 	// operator's REAL Bazel toolchain: a path to a cc_toolchain_config.bzl
 	// (or a toolchains/ dir of *.bzl) whose declared feature() names are
@@ -783,6 +789,7 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.StringVar(&a.OutIRJSON, "out-ir-json", "", "write the post-lower ir.Package as JSON to this path. Drives the orchestrator's per-element multi-platform fold; ignored by single-platform flows.")
 	fs.BoolVar(&a.LiftConfigureFile, "lift-configure-file", false, "emit configure_file recovery in the lifted shape (.h.in as a real srcs + //tools:cmake-configure-file invocation at Bazel build time). Requires the caller to stage //tools:cmake-configure-file. Off by default to preserve compatibility with downstream Bazel envelopes that don't yet stage the tool.")
 	fs.BoolVar(&a.RecognizeCodegen, "recognize-codegen", false, "route recovered codegen custom-commands a registered recognizer claims (protoc --cpp_out → proto_library + cc_proto_library) to the idiomatic native rule instead of a generic genrule. Off by default; non-standard invocations fall back to the genrule.")
+	fs.StringVar(&a.Recognizers, "recognizers", "", "glob of operator-supplied Starlark recognizer files (e.g. 'recognizers/*.star'), each defining match(cmd)/lower(cmd), added to the registry without recompiling. Loaded after the built-in recognizers; requires --recognize-codegen to take effect.")
 	fs.StringVar(&a.ToolchainFeaturesFrom, "toolchain-features-from", "", "path to the operator's cc_toolchain_config.bzl (or a toolchains/ dir of *.bzl); its declared feature() names gate the raw-flag → cc_toolchain feature lift instead of the converter's generated default, so the lift matches the real toolchain. Unset keeps the generated default; when set, only features the toolchain literally declares lift (a wrapper/computed-name toolchain the parser can't read → only the built-in pic lifts, with a warning).")
 	fs.BoolVar(&a.DumpVars, "dump-vars", true, "stage the dump-vars.cmake hook to capture cmake's variable namespace into <build>/cmake-to-bazel.vars.dump. Read by configure_file lift (@VAR@ / ${VAR} substitution) and find_package variable-form attribution (<Pkg>_LIBRARIES correlation on cmakes below the 3.32 find_package-v1 floor). On by default; requires cmake 3.24+ (silently inactive on older cmakes — the hook's CMAKE_PROJECT_TOP_LEVEL_INCLUDES injection floor).")
 	fs.BoolVar(&a.UnsupportedExecuteProcessFallback, "unsupported-execute-process-fallback", false, "on classifier refusal of execute_process calls, emit empty cc_library/cc_binary stubs so downstream consumers' label resolution still works (round-2 mode). Off by default; see docs/design/rendezvous.md. Low-level per-kind escape hatch; --fidelity=best-effort enables it implicitly, and an explicit value here overrides the dial-derived default.")

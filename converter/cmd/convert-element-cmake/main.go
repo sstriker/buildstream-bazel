@@ -533,6 +533,12 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	// re-lower wires a stamp-bearing file(WRITE) to live workspace-status
 	// (closure capture: earlier passes see this nil → frozen bake).
 	var fileWriterTemplates []shadow.FileWriterCall
+	// Operator-supplied Starlark recognizers (--recognizers), loaded once and
+	// captured by the closure below. Active only alongside --recognize-codegen.
+	extraRecognizers, err := loadOperatorRecognizers(a.Recognizers)
+	if err != nil {
+		return nil, err
+	}
 	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment, parentScopeForwards []shadow.ParentScopeForward) (*ir.Package, error) {
 		// Reset the per-pass collectors each pass: ToIR can run more than
 		// once (two-pass genex / stamp / nested-cmake recovery) against the
@@ -558,6 +564,7 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 			TraceRaw:                          traceRaw,
 			LiftConfigureFile:                 a.LiftConfigureFile,
 			RecognizeCodegen:                  a.RecognizeCodegen,
+			ExtraCodegenRecognizers:           extraRecognizers,
 			CMakeVars:                         cmakeVars,
 			GenexProbes:                       genexProbes,
 			ConfigureLog:                      configureLogEvents,
@@ -701,6 +708,25 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	runPerConfigBakes(ctx, a, hostBuildDir, traceRaw, pkg)
 
 	return pkg, nil
+}
+
+// loadOperatorRecognizers resolves the --recognizers glob to Starlark files and
+// compiles each into a codegen recognizer. Empty glob → no extras. A glob that
+// matches nothing, or a file that won't compile, is a hard error (an operator's
+// broken --recognizers should fail loudly, not silently no-op).
+func loadOperatorRecognizers(glob string) ([]lower.CodegenRecognizer, error) {
+	if glob == "" {
+		return nil, nil
+	}
+	files, err := filepath.Glob(glob)
+	if err != nil {
+		return nil, fmt.Errorf("--recognizers %q: %w", glob, err)
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("--recognizers %q matched no files", glob)
+	}
+	sort.Strings(files)
+	return lower.LoadStarlarkRecognizers(files)
 }
 
 // writeRejectionsAndVerify materializes the rejections report and runs the
