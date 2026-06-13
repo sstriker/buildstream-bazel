@@ -50,3 +50,27 @@ func TestExtractFileWriterCalls(t *testing.T) {
 		t.Errorf("DOWNLOAD: %+v", calls[5])
 	}
 }
+
+// TestExtractFileWriterCalls_CopyPermissionsNotSources pins the
+// hardening fix: a file(COPY) carrying FILE_PERMISSIONS /
+// DIRECTORY_PERMISSIONS still lifts as a straight copy (permissions
+// don't change content), and the mode tokens (OWNER_READ, …) — which
+// follow DESTINATION — must NOT be mistaken for source files (they'd
+// produce bogus <dest>/OWNER_READ outputs).
+func TestExtractFileWriterCalls_CopyPermissionsNotSources(t *testing.T) {
+	trace := `{"cmd":"file","args":["COPY","/src/a.c","DESTINATION","/b/out","FILE_PERMISSIONS","OWNER_READ","OWNER_WRITE","GROUP_READ","DIRECTORY_PERMISSIONS","OWNER_READ","OWNER_EXECUTE","USE_SOURCE_PERMISSIONS"],"file":"/src/CMakeLists.txt","line":3}`
+	calls := ExtractFileWriterCalls([]byte(trace), "/src")
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 copy call, got %d: %+v", len(calls), calls)
+	}
+	c := calls[0]
+	if c.Op != "copy" {
+		t.Fatalf("op = %q; want copy", c.Op)
+	}
+	if len(c.Sources) != 1 || c.Sources[0] != "/src/a.c" {
+		t.Errorf("sources = %v; want [/src/a.c] (permission mode tokens leaked in)", c.Sources)
+	}
+	if len(c.Outputs) != 1 || c.Outputs[0] != "/b/out/a.c" {
+		t.Errorf("outputs = %v; want [/b/out/a.c] (bogus <dest>/OWNER_READ etc.)", c.Outputs)
+	}
+}
