@@ -159,3 +159,24 @@ func TestRecoverExecuteProcess_FileProducingKeywords(t *testing.T) {
 		}
 	})
 }
+
+// TestRecoverExecuteProcess_DeadCaptureLiveErrorChannelStillRefuses:
+// the dead-capture skip requires EVERY channel clear — a live
+// ERROR_VARIABLE (it survived clearing because the configure reads it)
+// keeps the loud refusal even when the OUTPUT_VARIABLE was proven dead.
+func TestRecoverExecuteProcess_DeadCaptureLiveErrorChannelStillRefuses(t *testing.T) {
+	hostSrc := t.TempDir()
+	cc := newCodegenContext()
+	cc.DeadCaptureVars = map[string]bool{"_quiet": true}
+	calls := []shadow.ExecuteProcessCall{{
+		File:           filepath.Join(hostSrc, "CMakeLists.txt"),
+		Line:           4,
+		Commands:       [][]string{{"git", "rev-parse", "HEAD"}},
+		OutputVariable: "_quiet",
+		ErrorVariable:  "GIT_ERR", // live: not in the dead set
+	}}
+	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc)
+	if len(refusals) != 1 {
+		t.Fatalf("a live ERROR_VARIABLE must keep the refusal: %+v", refusals)
+	}
+}

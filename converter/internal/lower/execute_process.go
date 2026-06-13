@@ -385,12 +385,18 @@ func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, c
 	// forwarded rescue.
 	if v.Bucket == BucketProbe || v.Bucket == BucketStamp {
 		// Dead-capture skip: the call HAD capture channels, the
-		// analysis proved every one unread, and nothing else (no
-		// OUTPUT_FILE) is consumable — a silenced stamp writes a value
-		// nowhere, so there is nothing to bake AND nothing to refuse.
-		// Genuinely capture-less stamp calls (git fetch side effects)
-		// keep refusing: captureCleared distinguishes them.
-		if captureCleared && call.OutputVariable == "" && call.ResultVariable == "" && call.OutputFile == "" {
+		// analysis proved every one unread, and nothing else is
+		// consumable — a silenced stamp writes a value nowhere, so
+		// there is nothing to bake AND nothing to refuse. EVERY
+		// channel must be clear: an ErrorVariable/ResultsVariable
+		// that survived clearDeadCaptures is proven LIVE (the
+		// configure reads it), and an ERROR_FILE is a declared
+		// artifact — either keeps the loud refusal. Genuinely
+		// capture-less stamp calls (git fetch side effects) keep
+		// refusing too: captureCleared distinguishes them.
+		if captureCleared && call.OutputVariable == "" && call.ResultVariable == "" &&
+			call.ErrorVariable == "" && call.ResultsVariable == "" &&
+			call.OutputFile == "" && call.ErrorFile == "" {
 			return nil
 		}
 		if call.OutputVariable != "" {
