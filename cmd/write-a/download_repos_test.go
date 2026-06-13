@@ -66,6 +66,44 @@ func TestReadDownloadReposLock(t *testing.T) {
 	}
 }
 
+func TestUnionDownloadReposLocks(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	// Two elements, each its own lockfile; namespaced repo names don't clash.
+	a := write("a.json", `{"schema_version":1,"repos":[{"repo":"dl_elements_foo_config_h","url":"https://x/foo","downloaded_file_path":"config.h"}]}`)
+	b := write("b.json", `{"schema_version":1,"repos":[{"repo":"dl_elements_bar_config_h","url":"https://x/bar","integrity":"sha256-bb","downloaded_file_path":"config.h"}]}`)
+
+	repos, err := unionDownloadReposLocks([]string{a, b})
+	if err != nil {
+		t.Fatalf("union: %v", err)
+	}
+	// Sorted by repo name: bar before foo.
+	if len(repos) != 2 || repos[0].Repo != "dl_elements_bar_config_h" || repos[1].Repo != "dl_elements_foo_config_h" {
+		t.Fatalf("union not sorted/complete: %+v", repos)
+	}
+
+	// The same lockfile passed twice merges (identical entries), not errors.
+	dup, err := unionDownloadReposLocks([]string{a, a})
+	if err != nil {
+		t.Fatalf("identical-entry union must not error: %v", err)
+	}
+	if len(dup) != 1 {
+		t.Errorf("identical entries must dedup to 1, got %d", len(dup))
+	}
+
+	// A genuine name clash (same repo, different url) is a hard error.
+	clash := write("clash.json", `{"schema_version":1,"repos":[{"repo":"dl_elements_foo_config_h","url":"https://x/OTHER","downloaded_file_path":"config.h"}]}`)
+	if _, err := unionDownloadReposLocks([]string{a, clash}); err == nil {
+		t.Error("conflicting repo name with differing url must error")
+	}
+}
+
 // renderLiftDownloadProjectB renders project B for a trivial kind:cmake
 // element with the given cmakeConfig download state, returning project B's
 // MODULE.bazel and project A's converter genrule BUILD.

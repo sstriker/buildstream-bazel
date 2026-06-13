@@ -73,7 +73,7 @@ func bakeBuildDirFile(rel string, lc targetLowerCtx) (string, bool) {
 	if lc.cc.LiftDownload {
 		if dl, isDL := downloadWriterFor(rel, lc); isDL {
 			name := bakedBuildDirName(rel)
-			lc.cc.Genrules = append(lc.cc.Genrules, downloadFetchTarget(name, rel, downloadRepoName(rel)))
+			lc.cc.Genrules = append(lc.cc.Genrules, downloadFetchTarget(name, rel, downloadRepoName(lc.bazelPackagePath, rel)))
 			lc.cc.OutToGenrule[rel] = name
 			recordDownloadLift(lc.cc, rel, dl.url, dl.hash)
 			return name, true

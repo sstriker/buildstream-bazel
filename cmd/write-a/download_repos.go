@@ -45,6 +45,34 @@ func readDownloadReposLock(path string) ([]downloadRepoSpec, error) {
 	return repos, nil
 }
 
+// unionDownloadReposLocks reads every committed lockfile (one per element
+// with downloads) and unions their entries into a single name-sorted list.
+// Repo names are namespaced by element in the converter, so distinct
+// elements don't collide; a repeated identical entry (e.g. the same lock
+// passed twice) merges, but a genuine name clash with differing url /
+// integrity is a hard error rather than a silently-dropped repo.
+func unionDownloadReposLocks(paths []string) ([]downloadRepoSpec, error) {
+	byName := map[string]downloadRepoSpec{}
+	for _, p := range paths {
+		repos, err := readDownloadReposLock(p)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range repos {
+			if prev, seen := byName[r.Repo]; seen && prev != r {
+				return nil, fmt.Errorf("conflicting http_file repo %q across lockfiles (%+v vs %+v); repo names must be unique", r.Repo, prev, r)
+			}
+			byName[r.Repo] = r
+		}
+	}
+	out := make([]downloadRepoSpec, 0, len(byName))
+	for _, r := range byName {
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Repo < out[j].Repo })
+	return out, nil
+}
+
 // renderHttpFileRepos emits the MODULE.bazel block declaring one stock
 // http_file repo per committed download via use_repo_rule (the idiomatic
 // Bazel 7.1+ inline form — no module extension, no `bazel mod tidy`). The

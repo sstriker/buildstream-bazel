@@ -56,7 +56,7 @@ func recordDownloadLift(cc *codegenContext, rel, url, hash string) {
 
 // downloadRepoSpecs turns the recorded downloads into the sorted lockfile
 // entries (stable by output rel — the byte-identical-report contract).
-func downloadRepoSpecs(recs []downloadLiftRecord) []DownloadRepoSpec {
+func downloadRepoSpecs(pkgPath string, recs []downloadLiftRecord) []DownloadRepoSpec {
 	if len(recs) == 0 {
 		return nil
 	}
@@ -65,7 +65,7 @@ func downloadRepoSpecs(recs []downloadLiftRecord) []DownloadRepoSpec {
 	out := make([]DownloadRepoSpec, 0, len(sorted))
 	for _, r := range sorted {
 		spec := DownloadRepoSpec{
-			Repo:               downloadRepoName(r.Rel),
+			Repo:               downloadRepoName(pkgPath, r.Rel),
 			URL:                r.URL,
 			DownloadedFilePath: filepath.Base(r.Rel),
 			Rel:                r.Rel,
@@ -108,14 +108,14 @@ func downloadFetchTags() []string {
 // MODULE stanza in SuggestedShape. (Independent of --lift-download — under
 // the lift the producer is already the repo-rule form, but the todo still
 // documents the upstream URL + integrity.)
-func emitDownloadLiftTodos(c *todos.Collector, recs []downloadLiftRecord) {
+func emitDownloadLiftTodos(c *todos.Collector, pkgPath string, recs []downloadLiftRecord) {
 	if c == nil || len(recs) == 0 {
 		return
 	}
 	sorted := append([]downloadLiftRecord(nil), recs...)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Rel < sorted[j].Rel })
 	for _, r := range sorted {
-		repo := downloadRepoName(r.Rel)
+		repo := downloadRepoName(pkgPath, r.Rel)
 		c.Add(todos.Todo{
 			Kind:        "download",
 			Disposition: todos.Improvement,
@@ -187,10 +187,18 @@ func downloadIntegritySRI(hash string) (sri string, ok bool) {
 	return prefix + "-" + base64.StdEncoding.EncodeToString(raw), true
 }
 
-// downloadRepoName derives a stable http_file repo name from the output
-// path (sanitized, "dl_" prefixed).
-func downloadRepoName(rel string) string {
-	return "dl_" + sanitizeOutputName(rel)
+// downloadRepoName derives a globally-unique http_file repo name from the
+// element's bazel package path + the output path. The package-path prefix
+// is what makes a multi-element envelope safe: build-dir-relative outputs
+// commonly collide (two elements each writing config.h → the same rel), so
+// keying on rel alone would clash in project B's project-wide repo
+// namespace. A root/empty package path (standalone convert, e.g. the
+// render gate) stays the bare "dl_<rel>" form.
+func downloadRepoName(pkgPath, rel string) string {
+	if pkgPathIsRoot(pkgPath) {
+		return "dl_" + sanitizeOutputName(rel)
+	}
+	return "dl_" + sanitizeOutputName(pkgPath) + "_" + sanitizeOutputName(rel)
 }
 
 // starlarkStr quotes a string as a Starlark string literal.

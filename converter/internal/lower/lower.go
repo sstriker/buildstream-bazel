@@ -2364,9 +2364,9 @@ func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts
 	// aggregate stderr warning + structured source-elided todos. See
 	// build_dir_source_bake.go.
 	warnElidedSources(opts, cc)
-	emitDownloadLiftTodos(opts.Todos, cc.DownloadLifts)
+	emitDownloadLiftTodos(opts.Todos, opts.BazelPackagePath, cc.DownloadLifts)
 	if opts.DownloadRepos != nil {
-		*opts.DownloadRepos = append(*opts.DownloadRepos, downloadRepoSpecs(cc.DownloadLifts)...)
+		*opts.DownloadRepos = append(*opts.DownloadRepos, downloadRepoSpecs(opts.BazelPackagePath, cc.DownloadLifts)...)
 	}
 	// Same unconverted add_test registrations, as structured
 	// conversion-todos (one per COMMAND runner). No-op on a nil
