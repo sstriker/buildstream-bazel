@@ -83,6 +83,50 @@ function(_cmtb_collect_targets _CMTB_DIR)
     endforeach()
 endfunction()
 
+# _cmtb_iface_lang_gate(<out> <root> <prop>): set <out> TRUE when the
+# TRANSITIVE interface value of INTERFACE_<prop> carries a
+# $<COMPILE_LANGUAGE>/$<LINK_LANGUAGE> (or _LANG_AND_ID) gate — directly
+# on <root> OR on any target reachable through its
+# INTERFACE_LINK_LIBRARIES closure. cmake's
+# $<TARGET_PROPERTY:tgt,INTERFACE_<prop>> aggregates that closure at
+# generation time, so a gate ANYWHERE in it makes the probe's
+# file(GENERATE) diverge per enabled language and abort the generate
+# step. A direct-only raw-value scan (the dangling-:: skip's reach)
+# misses the transitive case; this BFS over the link closure closes it.
+# Iterative with a visited guard (interface link cycles are legal);
+# only bare TARGET deps are followed — a dep wrapped in a genex link
+# entry ($<LINK_ONLY:dep>) or a bare system lib can't be queried, a
+# narrow residual tracked in ROADMAP.
+function(_cmtb_iface_lang_gate _CMTB_OUT _CMTB_ROOT _CMTB_GPROP)
+    set(_CMTB_GATED FALSE)
+    set(_CMTB_VISITED "")
+    set(_CMTB_QUEUE "${_CMTB_ROOT}")
+    while(_CMTB_QUEUE)
+        list(POP_FRONT _CMTB_QUEUE _CMTB_CUR)
+        if("${_CMTB_CUR}" IN_LIST _CMTB_VISITED)
+            continue()
+        endif()
+        list(APPEND _CMTB_VISITED "${_CMTB_CUR}")
+        if(NOT TARGET ${_CMTB_CUR})
+            continue()
+        endif()
+        get_target_property(_CMTB_IRAW ${_CMTB_CUR} INTERFACE_${_CMTB_GPROP})
+        if(_CMTB_IRAW AND "${_CMTB_IRAW}" MATCHES "\\$<(COMPILE|LINK)_LANG")
+            set(_CMTB_GATED TRUE)
+            break()
+        endif()
+        get_target_property(_CMTB_IDEPS ${_CMTB_CUR} INTERFACE_LINK_LIBRARIES)
+        if(_CMTB_IDEPS)
+            foreach(_CMTB_DEP IN LISTS _CMTB_IDEPS)
+                if(TARGET ${_CMTB_DEP})
+                    list(APPEND _CMTB_QUEUE "${_CMTB_DEP}")
+                endif()
+            endforeach()
+        endif()
+    endwhile()
+    set(${_CMTB_OUT} ${_CMTB_GATED} PARENT_SCOPE)
+endfunction()
+
 function(_cmtb_probe_genex)
     set_property(GLOBAL PROPERTY _CMTB_ALL_TARGETS "")
     _cmtb_collect_targets("${CMAKE_SOURCE_DIR}")
@@ -206,18 +250,19 @@ function(_cmtb_probe_genex)
         # --probe-genex being default-on). The idiom is common exactly
         # on INTERFACE libraries (`target_compile_options(hdr
         # INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-fno-exceptions>)`).
-        # Skip the probe for THAT property only — raw direct-value
-        # scan, the same direct-only reach as the dangling-:: skip
-        # above (a language gate arriving transitively from a
-        # dependency's interface isn't seen here and still aborts;
-        # ROADMAP carries the gap). The rest of the target's surface
-        # still probes, the reader tolerates the missing file, and
-        # the trace-derived aggregate stands for the skipped
-        # property. Consumers are unaffected either way — their
-        # codemodel compile groups carry the per-TU resolved flags.
+        # Skip the probe for THAT property — but the TRANSITIVE reach:
+        # $<TARGET_PROPERTY:tgt,INTERFACE_<P>> aggregates the
+        # INTERFACE_LINK_LIBRARIES closure, so a gate on a LINKED
+        # dependency's interface (not the target's own raw value)
+        # diverges the file(GENERATE) just the same. _cmtb_iface_lang_gate
+        # walks that closure. The rest of the target's surface still
+        # probes, the reader tolerates the missing file, and the
+        # trace-derived aggregate stands for the skipped property.
+        # Consumers are unaffected either way — their codemodel compile
+        # groups carry the per-TU resolved flags.
         foreach(_CMTB_PROP INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS)
-            get_target_property(_CMTB_RAW ${_CMTB_TGT} INTERFACE_${_CMTB_PROP})
-            if(_CMTB_RAW MATCHES "\\$<(COMPILE|LINK)_LANG")
+            _cmtb_iface_lang_gate(_CMTB_GATED ${_CMTB_TGT} ${_CMTB_PROP})
+            if(_CMTB_GATED)
                 continue()
             endif()
             file(GENERATE
