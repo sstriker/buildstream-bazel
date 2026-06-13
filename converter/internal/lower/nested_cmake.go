@@ -642,8 +642,37 @@ func producerOuts(t *ir.Target) []string {
 		if t.CMakeConfigureFile != nil {
 			return []string{t.CMakeConfigureFile.Out}
 		}
+	case ir.KindNativeRule:
+		// The codegen-recognizer registry substrate (pkg_tar, future
+		// http_file / proto rules): its produced outputs live in the
+		// `out`/`outs` attrs. Reading them generically keeps every
+		// native-rule lift participating in the nested-merge re-home
+		// (and any future producer-outputs consumer) without a
+		// per-rule special case — the whole point of the substrate.
+		return nativeRuleOuts(t.NativeRule)
 	}
 	return nil
+}
+
+// nativeRuleOuts returns the build-relative output paths a NativeRuleSpec
+// declares via its `out` (scalar) and `outs` (list) attributes — the
+// kind-agnostic producer-output accessor for the registry substrate.
+func nativeRuleOuts(spec *ir.NativeRuleSpec) []string {
+	if spec == nil {
+		return nil
+	}
+	var outs []string
+	for _, a := range spec.Attrs {
+		switch a.Name {
+		case "out":
+			if a.Str != "" {
+				outs = append(outs, a.Str)
+			}
+		case "outs":
+			outs = append(outs, a.List...)
+		}
+	}
+	return outs
 }
 
 // applyNestedProducerReHome re-anchors one merged target against the
@@ -654,6 +683,10 @@ func producerOuts(t *ir.Target) []string {
 // sanitized buildRel.
 func applyNestedProducerReHome(t *ir.Target, rehome map[string]string, namePrefix string) {
 	if len(rehome) == 0 {
+		return
+	}
+	if t.Kind == ir.KindNativeRule && t.NativeRule != nil {
+		applyNestedNativeRuleReHome(t, rehome, namePrefix)
 		return
 	}
 	if t.Kind == ir.KindWriteFile || t.Kind == ir.KindGenrule ||
@@ -705,6 +738,42 @@ func applyNestedProducerReHome(t *ir.Target, rehome map[string]string, namePrefi
 		if newRel, ok := rehome[h]; ok {
 			t.Hdrs[i] = newRel
 		}
+	}
+}
+
+// applyNestedNativeRuleReHome re-anchors a KindNativeRule producer's
+// outputs (and any srcs label-refs into other re-homed producers)
+// against the nested merge re-homes — the registry substrate's share of
+// the producer re-home, copy-on-write so the nested package's original
+// spec isn't mutated.
+func applyNestedNativeRuleReHome(t *ir.Target, rehome map[string]string, namePrefix string) {
+	spec := *t.NativeRule
+	attrs := append([]ir.NativeAttr(nil), spec.Attrs...)
+	renamed := false
+	for i := range attrs {
+		switch attrs[i].Name {
+		case "out":
+			if newRel, ok := rehome[attrs[i].Str]; ok {
+				attrs[i].Str = newRel
+				renamed = true
+			}
+		case "outs", "srcs":
+			list := append([]string(nil), attrs[i].List...)
+			for j, v := range list {
+				if newRel, ok := rehome[v]; ok {
+					list[j] = newRel
+					if attrs[i].Name == "outs" {
+						renamed = true
+					}
+				}
+			}
+			attrs[i].List = list
+		}
+	}
+	spec.Attrs = attrs
+	t.NativeRule = &spec
+	if renamed {
+		t.Name = namePrefix + "_" + t.Name
 	}
 }
 

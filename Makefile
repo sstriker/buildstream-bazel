@@ -370,6 +370,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-execute-process-dead-capture.sh \
 	scripts/meta-cmake-execute-process-pipeline-wd.sh \
 	scripts/meta-cmake-execute-process-cmake-e-wrappers.sh \
+	scripts/meta-cmake-e-tar-create.sh \
 	scripts/meta-cmake-nested-cmake.sh \
 	scripts/meta-cmake-nested-cmake-workdir.sh \
 	scripts/meta-cmake-build-dir-source-bake.sh \

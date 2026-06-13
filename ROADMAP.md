@@ -821,15 +821,7 @@ trees, optional-feature deps, codegen instances). Each member's
   carry it — that converts the largest remaining bake population into
   real lifts with zero new machinery.
 
-- **`cmake -E tar` lift.** Still loudly refused ("not in the v1
-  supported-op set" + the execute-process-refusal todo as the demand
-  signal). The create form (`tar cf <out> <files…>`) is a plain
-  genrule; the extract form (`tar xf` at configure) produces an
-  archive's worth of unspecified outputs — the unspecified-outs
-  rescue's File-API-demand + ninja-exclusion machinery is the right
-  recovery shape for it. Implement when a corpus member trips the
-  refusal.
-
+- **KindNativeRule outputs in --split-packages relocation.** The codegen-recognizer registry's native-rule substrate now participates in the OutToGenrule-keyed consumer wiring AND the nested-cmake merge re-home (producerOuts/applyNestedProducerReHome read the `out`/`outs` attrs generically). The split-packages emitter (emit/bazel/split.go) still keys producer-output placement/relocation on KindGenrule/KindWriteFile/KindCMakeConfigureFile, so a pkg_tar (or future http_file/proto) native rule re-homed into a sub-package wouldn't relocate its out. Generalize split's placement to the same kind-agnostic outputs accessor. Demand signal: a native-rule producer under --split-packages.
 - **Genex-probe language-conditional skip — transitive reach.** The
   structural probe now skips a property whose RAW direct value carries
   `$<COMPILE_LANGUAGE/…>` / `$<LINK_LANGUAGE/…>` (multi-language

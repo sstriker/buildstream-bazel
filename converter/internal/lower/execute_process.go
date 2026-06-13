@@ -557,6 +557,8 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, anc execAnchor
 		return nil, "", true
 	}
 	switch v.CMakeEOp {
+	case "tar":
+		return liftCMakeETarCreate(args, anc, cc)
 	case "touch":
 		return liftCMakeETouch(args, anc, cc)
 	case "copy", "copy_if_different":

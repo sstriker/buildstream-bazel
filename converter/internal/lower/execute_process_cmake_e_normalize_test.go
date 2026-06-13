@@ -71,7 +71,7 @@ func TestNormalizeCMakeECall(t *testing.T) {
 // recovery — an env-wrapped OUTPUT_FILE generator hoists with the env
 // prefix; `cmake -E cat` with OUTPUT_FILE hoists as a concat genrule;
 // console-only and exit-status forms skip benignly (no refusal, no
-// rule); `cmake -E tar` still refuses (ROADMAP demand signal).
+// rule); `cmake -E tar` EXTRACT still refuses (→ unspecified-outputs rescue).
 func TestRecoverExecuteProcess_CMakeEExpansion(t *testing.T) {
 	run := func(call shadow.ExecuteProcessCall) (*codegenContext, []executeProcessRefusal) {
 		cc := newCodegenContext()
