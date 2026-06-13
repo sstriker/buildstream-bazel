@@ -134,64 +134,55 @@ transition cleanly.
     coverage / todos / narrowing-compat are all 0 (14 benign idiom findings).
     **Build-lens follow-on (the gate for compile-db / build / symbol / ELF —
     all 4 blocked on the same thing):**
-    - **Generalized host-codegen-tool hermeticization (converter change;
-      protoc as the first driver).** The reusable mechanism is "a codegen
-      tool invoked from a host path / `find_program` → swap it for its
-      hermetic Bazel exec label (`$(execpath @repo//:tool)`) + anchor outputs
-      to `$(RULEDIR)` + stage the input closure + add it to `tools`" — the
-      same shape covers protoc/`grpc_cpp_plugin`, `flatc`, `thrift`, Qt
-      `moc`/`uic`, `bison`/`flex`, a project's own python generator, etc.
-      Today that swap is HARDCODED (`@protobuf//:protoc`) and buried in
-      `reanchorBuildDirCopyGenrule` (`converter/internal/lower/genrule.go`),
-      gated to grpc's `cd <builddir> && …` shape (the
-      `!strings.HasPrefix(rawCmd, "cd ")` return + the absolute-path-protoc
-      check) and only reached from the ninja-recovered genrule path —
-      BuildBox's DIRECT `protoc …` (no `cd`) comes via the standalone
-      custom-command path (`standalone_genrules.go`), which never calls it,
-      so its genrule keeps host `protoc`/`/usr/bin/grpc_cpp_plugin`, host
-      `--proto_path=/usr/include`, cmake-relative `--cpp_out=protos`, and a
-      `$(RULEDIR)//code.proto` double-slash. Plan, split general vs
-      per-driver:
-      - **General core:** EXTRACT the host-tool→hermetic-label swap +
-        RULEDIR output-anchoring + input staging into a shared helper reached
-        from BOTH the ninja and standalone paths (grpc's `cd` path untouched —
-        no regression). Drive the tool→label swap from a tool-label MAP (the
-        natural extension of the imports-manifest, which already maps
-        find_package imported targets → `@BCR`; a `find_program`'d tool is the
-        same idea, a `tools` section), so `protoc → @protobuf//:protoc`,
-        `grpc_cpp_plugin → @grpc//…`, `flatc → @flatbuffers//:flatc` are DATA,
-        not converter code. The `$(RULEDIR)//` double-slash fix
-        (`anchorGenruleOutputsToRuledir`/`genruleSrcs` path-join) is general.
-      - **Per-driver (thin), keyed on `cmake-codegen-driver=<tool>`:** the
-        protoc-SPECIFIC enrichment — `.proto` import-closure walk,
-        well-known-types (`/usr/include`), the `--cpp_out`/`--proto_path` flag
-        grammar. A new tool adds a small enrichment (often none — the base
-        swap+anchor suffices), not a new lift path. Fixture-driven (a minimal
-        direct-`add_custom_command` codegen project).
-    - **Proto package/import LAYOUT (the harder sub-problem, found while
-      starting the implementation).** The host-tool swap alone is NOT enough
-      for BuildBox: `protoc_compile` runs
-      `protoc --proto_path=<protos-root> … --cpp_out=<dest> <protos-root>/x.proto`
-      where the proto IMPORT structure is rooted at one `protos/` dir
-      (`build/bazel/remote/…`, `google/rpc/…` import each other), but the
-      converter SPLIT each proto dir into its own Bazel package — so
-      `--proto_path`/import resolution has no consistent root post-split. This
-      is the same class grpc solved (grpc.conf: emit/split re-relativizes the
-      genrule's `$(RULEDIR)/gens` output-root on the move into the `gens/`
-      sub-package). DESIGN FORK to settle before building this: keep BuildBox's
-      protos under a SINGLE root package (imports resolve naturally; simpler),
-      vs replicate grpc's per-package split + `gens`-root re-relativization
-      (consistent with `--split-packages`). The general tool-swap core (above)
-      is validatable NOW on a SIMPLE single-package protoc fixture (one
-      `.proto`, no cross-package imports), independent of this fork.
-    - **`buildbox-imports.json` + MODULE deps.** Map the find_package imported
-      targets (`absl::*`, `protobuf::*`, `gRPC::grpc++`, `OpenSSL::SSL/Crypto`)
-      to `@BCR` labels and add the `EXTRA_BAZEL_DEPS` (abseil/protobuf/grpc/
-      boringssl), mirroring `grpc.conf` + `grpc-imports.json`.
-    Staging: (1) general tool-swap core + simple single-package fixture +
-    double-slash fix (grpc untouched); (2) the proto layout fork above;
-    (3) imports-manifest + WKT → `bazel build //...` green. With all three,
-    the symbol/ELF lenses get a static/shared artifact pair (ELF lens shipped).
+    - **Protos: DEFER to a mandated gazelle run — do NOT hand-roll protoc
+      genrules (decided; spike-validated).** A spike settled the open
+      question: a 1-`.proto` + 1-cc-consumer workspace, `bazel run //:gazelle`
+      with `gazelle_binary(languages = ["@gazelle//language/proto",
+      "@gazelle_cc//language/cc"])`, generated the ENTIRE C++ proto chain FROM
+      SOURCES — `proto_library`, `cc_proto_library` (gazelle's proto language
+      emits it, loading `@protobuf//bazel:cc_proto_library.bzl`), AND the
+      consumer `cc_library` with `implementation_deps = [":<x>_cc_proto"]`
+      wired by `gazelle_cc` off the `#include "…pb.h"`. So for protos the
+      converter should emit NOTHING for codegen: stage the `.proto` + cc
+      sources + the gazelle config (the `gazelle_binary`/`gazelle` pair with
+      the proto + cc languages, the `rules_proto`/`# gazelle:proto_library_load`
+      so the generated `proto_library` load resolves), and MANDATE one
+      `bazel run //:gazelle` post-convert (a pipeline step the build lens runs;
+      the operator's `--exclude-gazelle-native-rules`/`--defer-protos-to-gazelle`
+      knob opts in, and its output is buildable only after the gazelle run —
+      an explicit contract change from today's self-contained BUILD). This
+      SUPERSEDES the genrule-first / proto-layout approach for protos:
+      gazelle's proto language resolves the import graph natively, so the
+      hermetic-protoc genrule, the proto package/import LAYOUT fork (single
+      root vs `gens`-root), the WKT (`/usr/include`) handling, AND the
+      consumer-dep wiring all disappear at once.
+      - **Remaining converter-emitted proto piece:** gRPC SERVICES. The spike
+        covered the `cpp_out` chain; the `.grpc.pb.*` (grpc_cpp_plugin) side
+        needs `cc_grpc_library`, which gazelle's stock proto language does NOT
+        generate — so the converter still emits that (or a grpc gazelle
+        extension). Confirm scope with a service-proto spike. BuildBox's
+        non-proto find_package deps (`absl::*`, `OpenSSL::*`, `gRPC::grpc++`
+        runtime) still need a `buildbox-imports.json` → `@BCR` mapping +
+        `EXTRA_BAZEL_DEPS`, mirroring `grpc.conf`.
+      - **cc-fidelity boundary (do NOT over-defer):** gazelle_cc also "owns"
+        `cc_library`, but there the converter is the MORE faithful source (it
+        seeds `cc_library` from cmake's actual targets — real boundaries,
+        copts, defines, deps — and gazelle_cc MAINTAINS via the
+        `# gazelle:cc_search` directives). So defer the families where gazelle
+        is BETTER (protos), not every kind gazelle CAN emit. The
+        `--exclude-gazelle-native-rules` knob is scoped to protos, not blanket.
+    - **Generalized host-codegen-tool hermeticization — STILL NEEDED, for the
+      no-native-rule tools.** protoc/grpc move OFF the genrule path (above), so
+      this is for the codegen tools with no native Bazel rule (a project's own
+      python/perl generator, `flatc`/`thrift` without rules, Qt `moc`, …):
+      "host tool → `$(execpath @repo//:tool)` + anchor outputs to `$(RULEDIR)`
+      + stage input closure + `tools`", driven by a tool→label MAP extending
+      the imports-manifest (a `tools` section), reached from BOTH the ninja
+      (`reanchorBuildDirCopyGenrule`) and standalone (`standalone_genrules.go`)
+      paths — the latter never calls the hermetic swap today. The
+      `$(RULEDIR)//<file>` double-slash fix
+      (`anchorGenruleOutputsToRuledir`/`genruleSrcs`) is general and lands
+      here. grpc's existing `cd`-shape path stays untouched (no regression).
   - **BDE** (`github.com/bloomberg/bde`) — scoped/stretch add; start at ONE
     package group (`groups/bsl`), not the full tree. Metadata-driven target
     construction via a custom build system: the top-level
