@@ -134,64 +134,103 @@ transition cleanly.
     coverage / todos / narrowing-compat are all 0 (14 benign idiom findings).
     **Build-lens follow-on (the gate for compile-db / build / symbol / ELF —
     all 4 blocked on the same thing):**
-    - **Generalized host-codegen-tool hermeticization (converter change;
-      protoc as the first driver).** The reusable mechanism is "a codegen
-      tool invoked from a host path / `find_program` → swap it for its
-      hermetic Bazel exec label (`$(execpath @repo//:tool)`) + anchor outputs
-      to `$(RULEDIR)` + stage the input closure + add it to `tools`" — the
-      same shape covers protoc/`grpc_cpp_plugin`, `flatc`, `thrift`, Qt
-      `moc`/`uic`, `bison`/`flex`, a project's own python generator, etc.
-      Today that swap is HARDCODED (`@protobuf//:protoc`) and buried in
-      `reanchorBuildDirCopyGenrule` (`converter/internal/lower/genrule.go`),
-      gated to grpc's `cd <builddir> && …` shape (the
-      `!strings.HasPrefix(rawCmd, "cd ")` return + the absolute-path-protoc
-      check) and only reached from the ninja-recovered genrule path —
-      BuildBox's DIRECT `protoc …` (no `cd`) comes via the standalone
-      custom-command path (`standalone_genrules.go`), which never calls it,
-      so its genrule keeps host `protoc`/`/usr/bin/grpc_cpp_plugin`, host
-      `--proto_path=/usr/include`, cmake-relative `--cpp_out=protos`, and a
-      `$(RULEDIR)//code.proto` double-slash. Plan, split general vs
-      per-driver:
-      - **General core:** EXTRACT the host-tool→hermetic-label swap +
-        RULEDIR output-anchoring + input staging into a shared helper reached
-        from BOTH the ninja and standalone paths (grpc's `cd` path untouched —
-        no regression). Drive the tool→label swap from a tool-label MAP (the
-        natural extension of the imports-manifest, which already maps
-        find_package imported targets → `@BCR`; a `find_program`'d tool is the
-        same idea, a `tools` section), so `protoc → @protobuf//:protoc`,
-        `grpc_cpp_plugin → @grpc//…`, `flatc → @flatbuffers//:flatc` are DATA,
-        not converter code. The `$(RULEDIR)//` double-slash fix
-        (`anchorGenruleOutputsToRuledir`/`genruleSrcs` path-join) is general.
-      - **Per-driver (thin), keyed on `cmake-codegen-driver=<tool>`:** the
-        protoc-SPECIFIC enrichment — `.proto` import-closure walk,
-        well-known-types (`/usr/include`), the `--cpp_out`/`--proto_path` flag
-        grammar. A new tool adds a small enrichment (often none — the base
-        swap+anchor suffices), not a new lift path. Fixture-driven (a minimal
-        direct-`add_custom_command` codegen project).
-    - **Proto package/import LAYOUT (the harder sub-problem, found while
-      starting the implementation).** The host-tool swap alone is NOT enough
-      for BuildBox: `protoc_compile` runs
-      `protoc --proto_path=<protos-root> … --cpp_out=<dest> <protos-root>/x.proto`
-      where the proto IMPORT structure is rooted at one `protos/` dir
-      (`build/bazel/remote/…`, `google/rpc/…` import each other), but the
-      converter SPLIT each proto dir into its own Bazel package — so
-      `--proto_path`/import resolution has no consistent root post-split. This
-      is the same class grpc solved (grpc.conf: emit/split re-relativizes the
-      genrule's `$(RULEDIR)/gens` output-root on the move into the `gens/`
-      sub-package). DESIGN FORK to settle before building this: keep BuildBox's
-      protos under a SINGLE root package (imports resolve naturally; simpler),
-      vs replicate grpc's per-package split + `gens`-root re-relativization
-      (consistent with `--split-packages`). The general tool-swap core (above)
-      is validatable NOW on a SIMPLE single-package protoc fixture (one
-      `.proto`, no cross-package imports), independent of this fork.
-    - **`buildbox-imports.json` + MODULE deps.** Map the find_package imported
-      targets (`absl::*`, `protobuf::*`, `gRPC::grpc++`, `OpenSSL::SSL/Crypto`)
-      to `@BCR` labels and add the `EXTRA_BAZEL_DEPS` (abseil/protobuf/grpc/
-      boringssl), mirroring `grpc.conf` + `grpc-imports.json`.
-    Staging: (1) general tool-swap core + simple single-package fixture +
-    double-slash fix (grpc untouched); (2) the proto layout fork above;
-    (3) imports-manifest + WKT → `bazel build //...` green. With all three,
-    the symbol/ELF lenses get a static/shared artifact pair (ELF lens shipped).
+    - **Codegen → RECOGNIZED NATIVE RULE, via an extensible recognizer
+      registry in the converter (decided).** The converter RECOGNIZES a codegen
+      invocation and emits the IDIOMATIC native Bazel rule directly — protoc →
+      `proto_library` + `cc_proto_library` (+ `cc_grpc_library` for the service
+      variant). Self-contained output (NO mandated gazelle run); gazelle drops
+      to *maintainer*, not generator. This supersedes both the genrule-first
+      framing AND the earlier "defer protos to a mandated gazelle run" idea.
+      - **Mechanism (the extensibility seam):** a `CodegenRecognizer` registry.
+        Each recognizer `Match`es a recovered custom-command by its DRIVER tool
+        + argv shape (e.g. `protoc … --cpp_out`), and `Lower`s it to the native
+        `ir` rule(s) + the consumer-dep wiring + the MODULE/load deps. First
+        match wins; NO match → the generalized hermetic-genrule FALLBACK
+        (below). Adding `flatc`/`thrift`/Qt `moc`/… is REGISTERING a recognizer,
+        not core surgery — that's the extensibility.
+      - **Why converter-emit, not defer-to-gazelle:** the converter has the
+        DECISIVE signal — the actual custom-command argv from the codemodel /
+        trace — so it recognizes by TOOL, not by file extension. That handles
+        the ambiguous-input case gazelle can't: a common extension like `.xml`
+        fed to *different* tools (uic vs gdbus-codegen vs glib-compile-resources)
+        in different targets is disambiguated by the argv the converter sees,
+        whereas gazelle (dispatching per source file, at best content-sniffing)
+        can't reliably pick the generator. And it keeps the output
+        SELF-CONTAINED (no mandated-gazelle-run contract change).
+      - **Reuses existing machinery:** the cross-package `proto_library(deps=…)`
+        edges come from each `.proto`'s `import` statements via the existing
+        `protoImportClosure` walker (`genrule.go`); the consumer-dep wiring
+        (`#include "x.pb.h"` → the `cc_proto_library`) rides the existing
+        `CodegenHeaderConsumers`.
+      - **Spike evidence (recast: it proves the TARGET SHAPE the recognizer
+        emits, + that the dep-graph is computable).** Two `bazel run //:gazelle`
+        spikes with `gazelle_binary(languages=["@gazelle//language/proto",
+        "@gazelle_cc//language/cc"])`: (i) a 1-`.proto` + consumer generated the
+        full chain — `proto_library`, `cc_proto_library`, consumer
+        `implementation_deps`; (ii) a 2-`.proto` CROSS-PACKAGE import
+        (`pkg/b/b.proto` imports `pkg/a/a.proto`, separate packages) →
+        `proto_library(//pkg/b:…, deps=["//pkg/a:…_proto"])`, NO
+        `import_prefix`/`strip_import_prefix` needed (workspace-relative import
+        resolves directly), and `bazel build //...` GREEN. So the recognizer
+        emits exactly that shape, and (ii) confirms the rooted-import case (the
+        #625 layout fork) resolves with plain `proto_library` deps — computable
+        from the `.proto` imports.
+      - **The recognizer is also the OUTPUT AUTHORITY (a second payoff —
+        recovery, not just emission).** A recognized tool has a PREDICTABLE
+        output convention, so the recognizer derives the exact output set from
+        the input(s) + flags — `foo.proto` + `--cpp_out` → `foo.pb.{h,cc}`;
+        `--grpc_out` (+ `generate_mock_code=true`) → `foo.grpc.pb.{h,cc}` +
+        `foo_mock.grpc.pb.h` — independent of how completely cmake recorded
+        them. That fills the gap where the producer→output mapping is fuzzy in
+        the codemodel/trace, making consumer wiring DETERMINISTIC for recognized
+        tools (it replaces the inference the generic genrule recovery /
+        `stageSiblingGeneratedHeaders` / `CodegenHeaderConsumers` do today). It
+        also cross-checks: the derived set must be CONSISTENT with what cmake
+        recorded — a mismatch means a non-standard invocation (see fidelity-mode
+        below). And it's an applicability PRECONDITION: a tool whose output
+        NAMES depend on file CONTENT (not derivable from input+flags) gets no
+        recognizer — it stays in the genrule fallback.
+      - **Fidelity-mode behavior (additive-only; safe to roll out
+        incrementally).** Gated by the `--fidelity` dial:
+        - **strict:** the recognizer FIRES → native rule. On no-confident-match
+          or a derived-vs-recorded output MISMATCH, strict REFUSES (typed,
+          loud) rather than emit a non-faithful genrule — "faithful native
+          rule, or refuse."
+        - **best-effort:** fires when confident (a strict improvement),
+          otherwise FALLS BACK to today's genrule/recovery — so adding the
+          registry can only no-op or IMPROVE, never regress; the current corpus
+          behavior is the floor. (Mirrors the existing dial: best-effort already
+          enables the fallback escape hatches; strict refuses.)
+      - **MODULE deps + gRPC services:** protoc recognizer needs `@protobuf`
+        (+ `rules_proto` for the `proto_library` load, or load from `@protobuf`).
+        The `.grpc.pb.*` service side emits `cc_grpc_library` (its own
+        recognizer). BuildBox's non-proto find_package deps (`absl::*`,
+        `OpenSSL::*`, `gRPC::grpc++` runtime) still need a `buildbox-imports.json`
+        → `@BCR` mapping + `EXTRA_BAZEL_DEPS`, mirroring `grpc.conf`.
+      - **cc-fidelity boundary (unchanged):** there is NO recognizer for plain
+        `cc_library` — the converter seeds those faithfully from the codemodel
+        (real target boundaries / copts / defines / deps); gazelle_cc MAINTAINS
+        them via the `# gazelle:cc_search` directives. Recognizers are for
+        CODEGEN (a tool ran), not for ordinary compiled targets.
+      - **Implementation pieces:** native-proto `ir` rule kinds + their emit
+        (`proto_library`/`cc_proto_library`/`cc_grpc_library`); the
+        `CodegenRecognizer` interface + registry + dispatch at the
+        codegen-lowering site; the protoc recognizer (reusing `protoImportClosure`
+        + `CodegenHeaderConsumers`); the MODULE/load deps. Fixture-driven; the
+        existing grpc genrule path stays untouched until a protoc recognizer is
+        proven, then grpc can migrate.
+    - **Generalized host-codegen-tool hermeticization — STILL NEEDED, for the
+      no-native-rule tools.** protoc/grpc move OFF the genrule path (above), so
+      this is for the codegen tools with no native Bazel rule (a project's own
+      python/perl generator, `flatc`/`thrift` without rules, Qt `moc`, …):
+      "host tool → `$(execpath @repo//:tool)` + anchor outputs to `$(RULEDIR)`
+      + stage input closure + `tools`", driven by a tool→label MAP extending
+      the imports-manifest (a `tools` section), reached from BOTH the ninja
+      (`reanchorBuildDirCopyGenrule`) and standalone (`standalone_genrules.go`)
+      paths — the latter never calls the hermetic swap today. The
+      `$(RULEDIR)//<file>` double-slash fix
+      (`anchorGenruleOutputsToRuledir`/`genruleSrcs`) is general and lands
+      here. grpc's existing `cd`-shape path stays untouched (no regression).
   - **BDE** (`github.com/bloomberg/bde`) — scoped/stretch add; start at ONE
     package group (`groups/bsl`), not the full tree. Metadata-driven target
     construction via a custom build system: the top-level
