@@ -250,27 +250,46 @@ transition cleanly.
       `$(RULEDIR)//<file>` double-slash fix
       (`anchorGenruleOutputsToRuledir`/`genruleSrcs`) is general and lands
       here. grpc's existing `cd`-shape path stays untouched (no regression).
-  - **BDE** (`github.com/bloomberg/bde`) — scoped/stretch add; start at ONE
-    package group (`groups/bsl`), not the full tree. Metadata-driven target
-    construction via a custom build system: the top-level
-    `find_package(BdeBuildSystem REQUIRED)` (bde-tools / BBS — a plain
-    `cmake -B build` FAILS without it on `CMAKE_PREFIX_PATH`, so the fetch /
-    SessionStart step must provision bde-tools), and each package-group
-    builds via a single `bbs_setup_target_uor(${target})` that reads `*.mem`
-    (component membership) + `*.dep` (dependency) metadata to enumerate
-    sources/deps instead of explicit `add_library(...)`. Hierarchy groups →
-    packages → components, each a `.h`+`.cpp`+`.t.cpp` *test-driver* triple
-    → thousands of tiny libs + per-component test executables;
-    `bbs_emit_pkg_config` emits `.pc` files (exercises the pkg-config
-    harvester). HONEST CAVEAT: the converter consumes the File API
-    codemodel, which already resolves the `.mem`/`.dep` metadata and the
-    `bbs_*` functions, so the metadata-driven novelty is largely invisible
-    to the converter — the genuinely new stress is SCALE (llvm/vtk tier),
-    per-component `.t.cpp` test targets at scale, and generated-`.pc`
-    consumption. Scoping to one group bounds the cost.
-  Both need the standard corpus wiring: a `make fetch-<member>` rule + a
-  `scripts/build-lens/<member>.conf` (see `docs/survey-corpus.md`'s member
-  table + the existing confs as the template).
+  - **BDE** (`github.com/bloomberg/bde`) — ONBOARDED (scoped to `groups/bsl`),
+    structural lenses run; build-lens follow-on below. Metadata-driven target
+    construction via the BdeBuildSystem (BBS): each group builds via one
+    `bbs_setup_target_uor(${target})` that reads `*.mem`/`*.dep` metadata
+    instead of explicit `add_library(...)`. Landed (`make fetch-bde` clones
+    BOTH bde + bde-tools at the same tag — the top-level
+    `find_package(BdeBuildSystem REQUIRED)` resolves via `CMAKE_PREFIX_PATH`
+    pointed at the bde-tools checkout; `scripts/build-lens/bde.conf` surveys at
+    the BDE root with the other groups + `standalones/` + bsl-irrelevant
+    thirdparty (inteldfp/pcre2) pruned via `CONFIGURE_PRUNE_SUBDIRS`, bbryu
+    kept). As the HONEST CAVEAT predicted, the metadata is invisible to the
+    converter (the File-API codemodel resolves `.mem`/`.dep` + the `bbs_*`
+    functions); the real stress is SCALE — `groups/bsl` alone emits 53
+    `cc_library` + **729 per-component `.t.cpp` test-driver `cc_binary`s** from
+    a tiny CMakeLists. Structural lenses: rejections 1, idiom 0, coverage 7,
+    todos 2. The three follow-ups it surfaced:
+    - **`python3` test-runner `add_test` → `cc_test`.** BBS registers each
+      driver as `add_test(NAME … COMMAND python3 <bbs runner> <driver-exe>)`,
+      not the bare executable, so all 729 drivers stay `cc_binary` and none
+      lower to `cc_test` (folds into "Test-target coverage" / "Lower dropped
+      test trees" — here the cause is the python-runner COMMAND shape, so the
+      lowering needs to see through the BBS wrapper to the driver exe).
+    - **`bde_xt_cpp_splitter.py` / `sim_cpp11_features.pl` codegen recovery.**
+      The 1 rejection is `unsupported-execute-process` (9 calls): BBS runs
+      these as a configure-time `execute_process` to split large `.xt.cpp`
+      drivers + generate `_cpp03` variants — a side-effect file generator with
+      no captured output channel, so it's not liftable as a configure value.
+      Recover as a genrule (the host-codegen-tool hermeticization path) so the
+      build lens stops self-skipping (`skip(rej)`).
+    - **`bsl+bslhdrs` umbrella interface deps (coverage 7).** The aggregate
+      header package's interface lib drops its 7 edges to the sibling package
+      interface libs (`bsla`/`bslfmt`/`bslma`/`bslmf`/`bsls`/`bslstl`/`bslstp`)
+      — the abseil-INTERFACE-deps class (#302); chase whether it's a real
+      dropped edge or a benign trace-synth case.
+    Build lens self-skips until the splitter codegen is recovered. `groups/bsl`
+    is the bounded scope; the rest of the tree (bdl/bal/bbl/standalones) is the
+    stretch once these land.
+  BuildBox still needs the build-lens follow-on above; both members are wired
+  with the standard corpus pieces (`make fetch-<member>` +
+  `scripts/build-lens/<member>.conf` — see `docs/survey-corpus.md`'s roster).
 
 - **Make the host-system-library fallback EXPLICIT (hermeticity boundary).**
   When a `find_package`/`target_link_libraries` link fragment resolves to a
