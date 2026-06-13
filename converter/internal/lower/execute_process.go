@@ -1731,24 +1731,33 @@ func cmakeEConfigureFileTags(lifted bool) []string {
 //     substitution in the cmd; argv[0] is preserved as-is so
 //     PATH-resolved tools (python3, gen-script-on-PATH) keep
 //     working under Bazel's standard executor sandbox.
-//   - WORKING_DIRECTORY and ENVIRONMENT are not yet modeled —
-//     refuse the lift if either is set so a hoisted genrule
-//     never silently drops them (follow-on). TIMEOUT (a
-//     configure-time watchdog), INPUT_FILE (stdin from a
-//     source-tree file), and ERROR_FILE (stderr to a build-dir
-//     path, or merged via the same-file idiom) ARE modeled —
-//     see the gate block below.
+//   - Every execute_process keyword is modeled now: TIMEOUT (a
+//     configure-time watchdog) drops, INPUT_FILE (stdin from a
+//     source-tree file), ERROR_FILE (stderr to a build-dir path,
+//     or merged via the same-file idiom), ENVIRONMENT (env
+//     prefix per stage), and a build-dir WORKING_DIRECTORY (cwd
+//     prologue) all lift — see the gate block below and
+//     execute_process_wd_env.go. Only a source-tree/out-of-tree
+//     WORKING_DIRECTORY still refuses.
 //
 // Driver tag: cmake-codegen-driver=<basename(argv[0])> mirrors
 // the genrule.go custom-command recovery so existing audit
 // queries that filter on driver= pick up hoisted rules.
 func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *codegenContext) ([]string, string, bool) {
-	if call.WorkingDirectory != "" {
-		return nil, "WORKING_DIRECTORY is not yet modeled by the file-producing lifter", false
+	// WORKING_DIRECTORY: a build-dir-anchored cwd lifts (the genrule
+	// cd's into the build-relative dir with every Bazel-resolved path
+	// `$$_r/`-prefixed); source-tree / out-of-tree cwds refuse. See
+	// execute_process_wd_env.go.
+	wdRel, wdReason, wdOK := resolveExecWorkingDir(call, anc)
+	if !wdOK {
+		return nil, wdReason, false
 	}
-	if len(call.Environment) > 0 {
-		return nil, "ENVIRONMENT is not yet modeled by the file-producing lifter", false
+	locPrefix := ""
+	if wdRel != "" {
+		locPrefix = "$$_r/"
 	}
+	// ENVIRONMENT lifts as an `env 'K=V' …` prefix on every stage.
+	envPrefix := execEnvPrefix(call.Environment)
 	// TIMEOUT is a configure-time watchdog (kill the child if slow); it
 	// never shapes the OUTPUT bytes, and Bazel actions carry their own
 	// execution timeouts. Dropping it changes a failure MODE, not a
@@ -1760,14 +1769,14 @@ func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *code
 	// the producer-ordering wiring is its own follow-on.
 	stdinRel := ""
 	if call.InputFile != "" {
-		rel, ok := executeProcessAnchorSource(call.InputFile, anc)
+		rel, ok := executeProcessAnchorSource(execFileFieldAbs(call.InputFile, wdRel, anc), anc)
 		if !ok {
 			return nil, fmt.Sprintf("INPUT_FILE %q is not under the source tree (build-dir stdin producer wiring not modeled)", call.InputFile), false
 		}
 		stdinRel = rel
 	}
 
-	dstRel, ok := executeProcessAnchorOutput(call.OutputFile, anc)
+	dstRel, ok := executeProcessAnchorOutput(execFileFieldAbs(call.OutputFile, wdRel, anc), anc)
 	if !ok {
 		return nil, fmt.Sprintf("OUTPUT_FILE %q is not under the build dir", call.OutputFile), false
 	}
@@ -1779,12 +1788,23 @@ func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *code
 	errRel := ""
 	mergeStderr := false
 	if call.ErrorFile != "" {
-		if call.ErrorFile == call.OutputFile {
-			mergeStderr = true
-		} else if rel, ok := executeProcessAnchorOutput(call.ErrorFile, anc); ok {
-			errRel = rel
-		} else {
+		// Compare ANCHORED rels, not raw spellings: a relative
+		// ERROR_FILE and an absolute OUTPUT_FILE can name the same
+		// path (cmake's documented same-file form merges the
+		// streams). A distinct errRel colliding with an existing
+		// producer refuses — two rules declaring one out is a broken
+		// BUILD, and the old blanket refusal never allowed it.
+		rel, ok := executeProcessAnchorOutput(execFileFieldAbs(call.ErrorFile, wdRel, anc), anc)
+		switch {
+		case !ok:
 			return nil, fmt.Sprintf("ERROR_FILE %q is not under the build dir", call.ErrorFile), false
+		case rel == dstRel:
+			mergeStderr = true
+		default:
+			if _, exists := cc.OutToGenrule[rel]; exists {
+				return nil, fmt.Sprintf("ERROR_FILE %q collides with an already-produced output", call.ErrorFile), false
+			}
+			errRel = rel
 		}
 	}
 	if _, exists := cc.OutToGenrule[dstRel]; exists {
@@ -1796,91 +1816,51 @@ func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *code
 		return nil, "empty argv", false
 	}
 
-	// Walk argv: rewrite elements that anchor under the source
-	// root as $(location <rel>) so Bazel's source graph tracks
-	// them. argv[0] is the tool name; absolute host paths
-	// (cmake's resolution of ${Python3_EXECUTABLE}, etc.) are
-	// stripped to basename so the recovered cmd is portable
-	// across executor environments — host-resolved /usr/local/bin/
-	// paths are recording-machine artefacts, not declared
-	// dependencies. If argv[0] resolves under the source root
-	// it's an in-tree tool; surface as $(location) so the
-	// dependency is explicit.
-	//
-	// Directories under the source root (cmake's
-	// ${CMAKE_CURRENT_SOURCE_DIR} expanding to a dir path) are
-	// preserved as literal strings rather than $(location)
-	// references — Bazel's $(location <label>) expects a single
-	// file, and a dir-shaped src would either fail or expand
-	// to surprising basenames. The hostSrcDir-relative path is
-	// still emitted (so the cmd is portable across recording
-	// machines), just without the $(location) wrap.
+	// Walk each COMMAND's argv: source-anchored operands become
+	// declared srcs referenced via $(location …), source-root dirs
+	// stay literal, an absolute argv[0] strips to its portable
+	// basename (rewriteExecArgvStage carries the original loop's
+	// rationale comments). Multiple COMMANDs are cmake's concurrent
+	// stdout-chained stages — exactly a shell pipe — joined `|` and
+	// parenthesized so the redirects cover every stage (cmake's
+	// ERROR_FILE sinks ALL stages' stderr). The ENVIRONMENT prefix
+	// applies per stage, mirroring cmake's all-children semantics.
 	srcs := make([]string, 0)
 	srcSet := map[string]bool{}
-	rewritten := make([]string, 0, len(argv))
-	for i, a := range argv {
-		if rel, ok := executeProcessAnchorSource(a, anc); ok {
-			// relativeIfInside maps the source root itself
-			// to "" (empty relative path). For an argv
-			// element that points AT the source root
-			// (e.g. cmake's ${CMAKE_CURRENT_SOURCE_DIR}
-			// resolving to the project root), the only
-			// valid rendering is the literal `.` —
-			// shellQuoteArg("") would emit `''` (changing
-			// the cmd's semantics from "source root" to
-			// "empty argument") and $(location <empty>) /
-			// $(location .) wouldn't resolve to a Bazel
-			// label. Treat empty rel as the source-root
-			// directory so the directory branch fires
-			// regardless of the isExistingDir filesystem
-			// probe (which can fail on offline tests where
-			// hostSrcDir is synthetic).
-			isDir := rel == "" || isExistingDir(filepath.Join(anc.hostSrcDir, rel))
-			if rel == "" {
-				rel = "."
-			}
-			if isDir {
-				// Directory: preserve as literal relative path.
-				rewritten = append(rewritten, shellQuoteArg(rel))
-				continue
-			}
-			if !srcSet[rel] {
-				srcSet[rel] = true
-				srcs = append(srcs, rel)
-			}
-			rewritten = append(rewritten, fmt.Sprintf("$(location %s)", rel))
-			continue
+	stages := make([]string, 0, len(call.Commands))
+	for _, stageArgv := range call.Commands {
+		if len(stageArgv) == 0 {
+			return nil, "empty argv", false
 		}
-		if i == 0 && filepath.IsAbs(a) {
-			// Host-resolved tool path: strip to basename so
-			// the cmd is portable. The driver tag below
-			// captures the same basename for audit queries.
-			rewritten = append(rewritten, shellQuoteArg(filepath.Base(a)))
-			continue
-		}
-		rewritten = append(rewritten, shellQuoteArg(a))
+		stages = append(stages, envPrefix+strings.Join(rewriteExecArgvStage(stageArgv, anc, locPrefix, &srcs, srcSet), " "))
 	}
-
-	tool := strings.Join(rewritten, " ")
+	tool := stages[0]
+	if len(stages) > 1 {
+		tool = "( " + strings.Join(stages, " | ") + " )"
+	}
 	if stdinRel != "" {
 		if !srcSet[stdinRel] {
 			srcSet[stdinRel] = true
 			srcs = append(srcs, stdinRel)
 		}
-		tool += fmt.Sprintf(` < "$(location %s)"`, stdinRel)
+		// stdin feeds stage 0 — attached to the whole (parenthesized)
+		// pipeline, which the shell delivers to the first command.
+		tool += fmt.Sprintf(` < "%s$(location %s)"`, locPrefix, stdinRel)
 	}
 	outs := []string{dstRel}
 	var cmd string
 	switch {
 	case errRel != "":
 		// Two declared outs: $@ is single-out-only, so address both
-		// through $(location <out>) — Bazel resolves a rule's own outs.
+		// through $(RULEDIR)/<out> — the form the split emitter knows
+		// how to relocate when the rule moves into a sub-package
+		// ($(location <out>) tokens are NOT rewritten there).
 		outs = append(outs, errRel)
-		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$(location %[1]s)")" "$$(dirname "$(location %[2]s)")" && %[3]s > "$(location %[1]s)" 2> "$(location %[2]s)"`, dstRel, errRel, tool)
+		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$(RULEDIR)/%[1]s")" "$$(dirname "$(RULEDIR)/%[2]s")" && %[3]s%[4]s > "%[5]s$(RULEDIR)/%[1]s" 2> "%[5]s$(RULEDIR)/%[2]s"`, dstRel, errRel, execWdPrologue(wdRel), tool, locPrefix)
 	case mergeStderr:
-		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s > "$@" 2>&1`, tool)
+		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s%s > "%s" 2>&1`, execWdPrologue(wdRel), tool, execOutRef(wdRel))
 	default:
-		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s > "$@"`, tool)
+		cmd = fmt.Sprintf(`mkdir -p "$$(dirname "$@")" && %s%s > "%s"`, execWdPrologue(wdRel), tool, execOutRef(wdRel))
 	}
 	driver := executeProcessDriverBasename(argv[0])
 	if driver == "" {

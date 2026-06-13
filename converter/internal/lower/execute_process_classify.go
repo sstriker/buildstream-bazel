@@ -475,6 +475,18 @@ func classifyMultiCommandPipeline(call shadow.ExecuteProcessCall, driver string,
 			Reason: driver + " (pipeline stage 0) writing a capture looks like a host/toolchain probe",
 		}
 	}
+	// An OUTPUT_FILE-bearing pipeline with no stamp/probe stage IS
+	// expressible as a Bazel rule: cmake chains stage stdout exactly
+	// like a shell pipe and runs stages concurrently, so `a | b > out`
+	// reproduces the call. RESULTS_VARIABLE (per-stage exit codes)
+	// still refuses below — a live per-stage status capture has no
+	// analog (a dead one was cleared before classification).
+	if call.OutputFile != "" && call.ResultsVariable == "" && !pipelineHasStampOrProbeStage(call) {
+		return ClassifyResult{
+			Bucket: BucketFileProducing,
+			Reason: "multi-COMMAND pipeline with OUTPUT_FILE (stdout chaining lifts as a shell pipe)",
+		}
+	}
 	return ClassifyResult{
 		Bucket: BucketRefuse,
 		Reason: "multi-COMMAND pipeline (concurrent stages with stdout chaining)",

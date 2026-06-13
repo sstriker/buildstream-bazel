@@ -467,11 +467,13 @@ func TestRecoverExecuteProcess_LiftFileProducing_SourceRootArgv(t *testing.T) {
 }
 
 // TestRecoverExecuteProcess_LiftFileProducing_RefusesUnmodeledOpts
-// asserts that v1 conservatively refuses calls that set
-// WORKING_DIRECTORY / ENVIRONMENT / TIMEOUT / INPUT_FILE /
-// ERROR_FILE — the lifter doesn't model these yet, and a
-// silent drop would change semantics. Refusal is the safe
-// default until a real fixture forces the support.
+// pins the REMAINING conservative refusals after the keyword-lift
+// campaign: a WORKING_DIRECTORY outside the build dir (source-tree
+// cwds are read-only under the sandbox; out-of-tree cwds have no
+// Bazel analog). Build-dir WORKING_DIRECTORY, ENVIRONMENT, TIMEOUT,
+// INPUT_FILE, and ERROR_FILE all LIFT now — pinned in
+// TestRecoverExecuteProcess_FileProducingKeywords and
+// execute_process_wd_env_test.go.
 func TestRecoverExecuteProcess_LiftFileProducing_RefusesUnmodeledOpts(t *testing.T) {
 	cases := []struct {
 		name string
@@ -479,18 +481,10 @@ func TestRecoverExecuteProcess_LiftFileProducing_RefusesUnmodeledOpts(t *testing
 		want string
 	}{
 		{
-			name: "WORKING_DIRECTORY",
-			mut:  func(c *shadow.ExecuteProcessCall) { c.WorkingDirectory = "/build/sub" },
+			name: "out-of-tree WORKING_DIRECTORY",
+			mut:  func(c *shadow.ExecuteProcessCall) { c.WorkingDirectory = "/elsewhere/sub" },
 			want: "WORKING_DIRECTORY",
 		},
-		{
-			name: "ENVIRONMENT",
-			mut:  func(c *shadow.ExecuteProcessCall) { c.Environment = []string{"FOO=bar"} },
-			want: "ENVIRONMENT",
-		},
-		// TIMEOUT no longer refuses (a configure-time watchdog never
-		// shapes the output bytes); the lift side is pinned in
-		// TestRecoverExecuteProcess_FileProducingKeywords.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -117,7 +117,7 @@ func TestRecoverExecuteProcess_FileProducingKeywords(t *testing.T) {
 		if len(g.GenruleOuts) != 2 || g.GenruleOuts[0] != "gen/out.h" || g.GenruleOuts[1] != "gen/out.err" {
 			t.Errorf("outs: %v want [gen/out.h gen/out.err]", g.GenruleOuts)
 		}
-		if !strings.Contains(g.GenruleCmd, `2> "$(location gen/out.err)"`) {
+		if !strings.Contains(g.GenruleCmd, `2> "$(RULEDIR)/gen/out.err"`) {
 			t.Errorf("cmd missing stderr redirect: %q", g.GenruleCmd)
 		}
 		if cc.OutToGenrule["gen/out.err"] != g.Name {
