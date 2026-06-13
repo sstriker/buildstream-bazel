@@ -133,6 +133,95 @@ func TestHoistCommonCoptsToConstant_StripAndMark(t *testing.T) {
 	}
 }
 
+// TestHoistCommonFlagsToConstants_AllAxes: the self-contained mode hoists
+// copts, local_defines (a sorted set), AND linkopts independently — each gets
+// its own shared-prefix strip + Prepend* mark, sharing the one load label. This
+// is the BDE shape: a project-wide flag set repeated on every target.
+func TestHoistCommonFlagsToConstants_AllAxes(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{
+			Name: "a", Kind: ir.KindCCLibrary,
+			Copts:        []string{"-O3", "-pthread"},
+			LocalDefines: []string{"NDEBUG", "BDE_BUILD_TARGET_OPT"}, // unsorted on input
+			LinkOpts:     []string{"-O3", "-lrt"},
+		},
+		{
+			Name: "b", Kind: ir.KindCCBinary,
+			Copts: []string{"-O3", "-pthread", "-Wextra"},
+			// ZEXTRA sorts AFTER the shared defines, so the common sorted prefix
+			// still captures both (a define that sorted BEFORE them would cap the
+			// prefix — the conservative set-vs-prefix limitation, covered below).
+			LocalDefines: []string{"BDE_BUILD_TARGET_OPT", "NDEBUG", "ZEXTRA"},
+			LinkOpts:     []string{"-O3", "-lrt", "-lm"},
+		},
+	}}
+	copts, ld, lo := HoistCommonFlagsToConstants(pkg, "//pkg:common_compile_flags.bzl")
+	if !eq(copts, []string{"-O3", "-pthread"}) {
+		t.Errorf("copts prefix = %v; want [-O3 -pthread]", copts)
+	}
+	// local_defines is a set: sorted, then the common LEADING sorted elements.
+	if !eq(ld, []string{"BDE_BUILD_TARGET_OPT", "NDEBUG"}) {
+		t.Errorf("local_defines prefix = %v; want [BDE_BUILD_TARGET_OPT NDEBUG]", ld)
+	}
+	if !eq(lo, []string{"-O3", "-lrt"}) {
+		t.Errorf("linkopts prefix = %v; want [-O3 -lrt]", lo)
+	}
+	if pkg.CommonCoptsLabel != "//pkg:common_compile_flags.bzl" {
+		t.Errorf("CommonCoptsLabel = %q; want the load label", pkg.CommonCoptsLabel)
+	}
+	// a: every axis fully consumed by the prefix → nil delta + all three marks.
+	a := pkg.Targets[0]
+	if a.Copts != nil || a.LocalDefines != nil || a.LinkOpts != nil {
+		t.Errorf("a deltas: copts=%v ld=%v lo=%v; want all nil", a.Copts, a.LocalDefines, a.LinkOpts)
+	}
+	if !a.PrependCommonCopts || !a.PrependCommonLocalDefines || !a.PrependCommonLinkopts {
+		t.Errorf("a marks: copts=%v ld=%v lo=%v; want all true", a.PrependCommonCopts, a.PrependCommonLocalDefines, a.PrependCommonLinkopts)
+	}
+	// b: keeps its per-target delta on each axis (local_defines stays sorted).
+	b := pkg.Targets[1]
+	if !eq(b.Copts, []string{"-Wextra"}) || !eq(b.LocalDefines, []string{"ZEXTRA"}) || !eq(b.LinkOpts, []string{"-lm"}) {
+		t.Errorf("b deltas: copts=%v ld=%v lo=%v; want [-Wextra] [ZEXTRA] [-lm]", b.Copts, b.LocalDefines, b.LinkOpts)
+	}
+}
+
+// TestHoistCommonFlagsToConstants_SetConservatism: local_defines is hoisted as
+// the common LEADING sorted prefix, not the maximal common subset. A define
+// that sorts BEFORE a shared one in just one target caps the prefix there — so
+// the shared define after it is NOT hoisted (conservative, never wrong).
+func TestHoistCommonFlagsToConstants_SetConservatism(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "a", Kind: ir.KindCCLibrary, LocalDefines: []string{"BB", "NDEBUG"}},
+		{Name: "b", Kind: ir.KindCCBinary, LocalDefines: []string{"AA", "BB", "NDEBUG"}},
+	}}
+	_, ld, _ := HoistCommonFlagsToConstants(pkg, "//pkg:common_compile_flags.bzl")
+	// Sorted: a=[BB,NDEBUG], b=[AA,BB,NDEBUG]. They diverge at index 0 (BB vs
+	// AA), so NOTHING hoists even though {BB,NDEBUG} is common.
+	if ld != nil {
+		t.Errorf("local_defines prefix = %v; want nil (set-vs-prefix conservatism)", ld)
+	}
+}
+
+// TestEmitConstants_MultiAxis: COMMON_COPTS always renders; COMMON_LOCAL_DEFINES
+// / COMMON_LINKOPTS render only when non-empty, so a copts-only project's .bzl
+// stays byte-identical to the copts-only era.
+func TestEmitConstants_MultiAxis(t *testing.T) {
+	all := string(EmitConstants([]string{"-O3"}, []string{"NDEBUG"}, []string{"-lrt"}))
+	for _, want := range []string{"COMMON_COPTS = [", "COMMON_LOCAL_DEFINES = [", "COMMON_LINKOPTS = [", `"NDEBUG"`, `"-lrt"`} {
+		if !strings.Contains(all, want) {
+			t.Errorf("EmitConstants missing %q; got:\n%s", want, all)
+		}
+	}
+	coptsOnly := string(EmitConstants([]string{"-O3"}, nil, nil))
+	// Assert on the assignment form — the header comment documents all three
+	// constant names, so a bare-name Contains would false-match.
+	if strings.Contains(coptsOnly, "COMMON_LOCAL_DEFINES = ") || strings.Contains(coptsOnly, "COMMON_LINKOPTS = ") {
+		t.Errorf("copts-only EmitConstants should omit the other constant assignments; got:\n%s", coptsOnly)
+	}
+	if coptsOnly != string(EmitConstant([]string{"-O3"})) {
+		t.Errorf("copts-only EmitConstants must match the EmitConstant shim byte-for-byte")
+	}
+}
+
 // TestEmitConstant_Shape: the constant .bzl defines COMMON_COPTS; empty input
 // still emits a valid empty list.
 func TestEmitConstant_Shape(t *testing.T) {

@@ -3,6 +3,7 @@ package commonflags
 import (
 	"bytes"
 	"fmt"
+	"sort"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
@@ -25,36 +26,63 @@ import (
 // exactly (feature flags emit before the target's remaining copts). A single
 // candidate whose flags diverge at position k caps the prefix at k; no
 // reordering risk.
+//
+// This is the cc_toolchain-FEATURE mode (--out-common-compile-flags-feature),
+// which only hoists copts: a feature is a compile-flag construct, with no
+// faithful home for link flags or the PRIVATE local_defines a feature would
+// over-apply. The self-contained `.bzl` mode (HoistCommonFlagsToConstants)
+// hoists all three axes.
 func HoistCommonCopts(pkg *ir.Package, featureName string) []string {
 	if pkg == nil {
 		return nil
 	}
-	cands := commonCoptCandidates(pkg)
-	if len(cands) < 2 {
-		return nil
-	}
-	prefix := longestCommonCoptPrefix(cands)
-	if len(prefix) == 0 {
-		return nil
-	}
-	for _, t := range cands {
-		t.Copts = append([]string(nil), t.Copts[len(prefix):]...)
-		if len(t.Copts) == 0 {
-			t.Copts = nil
-		}
+	prefix := hoistAxis(pkg, axisCopts, func(t *ir.Target) {
 		if !contains(t.Features, featureName) {
 			t.Features = append(t.Features, featureName)
 		}
-	}
+	})
 	return prefix
 }
 
-// commonCoptCandidates returns the cc targets eligible for a common-copt hoist:
-// cc_library / cc_binary / cc_test / cc_interface with a non-empty flat Copts.
-// Empty-copts targets are skipped (nothing to strip, and they'd needlessly
-// shrink the shared prefix); non-cc targets are ignored.
-func commonCoptCandidates(pkg *ir.Package) []*ir.Target {
+// axisSpec describes one hoistable flag axis: how to read/write the target's
+// flat slice for it, and whether the axis is a SET (order-insensitive, so it's
+// sorted before the common-prefix is taken — local_defines) or order-SENSITIVE
+// (copts/linkopts, where flag order is load-bearing and must be preserved).
+type axisSpec struct {
+	get      func(*ir.Target) []string
+	set      func(*ir.Target, []string)
+	sortList bool
+}
+
+var (
+	axisCopts = axisSpec{
+		get: func(t *ir.Target) []string { return t.Copts },
+		set: func(t *ir.Target, v []string) { t.Copts = v },
+		// copts order matters (cmake global-flags-first); never sort.
+	}
+	axisLocalDefines = axisSpec{
+		get:      func(t *ir.Target) []string { return t.LocalDefines },
+		set:      func(t *ir.Target, v []string) { t.LocalDefines = v },
+		sortList: true, // a -D set; the emitter sorts local_defines anyway.
+	}
+	axisLinkopts = axisSpec{
+		get: func(t *ir.Target) []string { return t.LinkOpts },
+		set: func(t *ir.Target, v []string) { t.LinkOpts = v },
+		// link order matters; never sort.
+	}
+)
+
+// hoistAxis computes the longest prefix every eligible cc target shares on one
+// axis, strips it from each candidate (storing the remainder back), runs mark
+// on each stripped target, and returns the prefix (or nil when nothing hoists).
+// For a SET axis (sortList) each candidate's slice is sorted before the prefix
+// is taken, so the prefix is the common LEADING sorted elements and the stored
+// remainder stays sorted — `<CONST> + [delta]` recombines to the same sorted
+// set the inline emission would render. Conservative for sets: it hoists only
+// the common leading elements, not the maximal common subset.
+func hoistAxis(pkg *ir.Package, ax axisSpec, mark func(*ir.Target)) []string {
 	var cands []*ir.Target
+	var lists [][]string
 	for i := range pkg.Targets {
 		t := &pkg.Targets[i]
 		switch t.Kind {
@@ -62,30 +90,52 @@ func commonCoptCandidates(pkg *ir.Package) []*ir.Target {
 		default:
 			continue
 		}
-		if len(t.Copts) == 0 {
+		vals := ax.get(t)
+		if len(vals) == 0 {
 			continue
 		}
+		list := append([]string(nil), vals...)
+		if ax.sortList {
+			sort.Strings(list)
+		}
 		cands = append(cands, t)
+		lists = append(lists, list)
 	}
-	return cands
+	if len(cands) < 2 {
+		return nil
+	}
+	prefix := longestCommonPrefix(lists)
+	if len(prefix) == 0 {
+		return nil
+	}
+	for i, t := range cands {
+		rest := lists[i][len(prefix):]
+		if len(rest) == 0 {
+			ax.set(t, nil)
+		} else {
+			ax.set(t, append([]string(nil), rest...))
+		}
+		mark(t)
+	}
+	return prefix
 }
 
-// longestCommonCoptPrefix returns the longest leading run of copts that every
-// candidate shares (by exact string equality, position by position).
-func longestCommonCoptPrefix(cands []*ir.Target) []string {
-	first := cands[0].Copts
+// longestCommonPrefix returns the longest leading run of strings every list
+// shares (by exact equality, position by position).
+func longestCommonPrefix(lists [][]string) []string {
+	first := lists[0]
 	n := len(first)
-	for _, t := range cands[1:] {
-		if len(t.Copts) < n {
-			n = len(t.Copts)
+	for _, l := range lists[1:] {
+		if len(l) < n {
+			n = len(l)
 		}
 	}
 	i := 0
 	for i < n {
-		flag := first[i]
+		v := first[i]
 		match := true
-		for _, t := range cands[1:] {
-			if t.Copts[i] != flag {
+		for _, l := range lists[1:] {
+			if l[i] != v {
 				match = false
 				break
 			}
@@ -107,65 +157,95 @@ func contains(xs []string, v string) bool {
 	return false
 }
 
-// HoistCommonCoptsToConstant is the self-contained `defs.bzl` mode: like
-// HoistCommonCopts it strips the longest shared copt prefix from every
-// eligible cc target, but instead of tagging them with a cc_toolchain feature
-// (which needs operator wiring) it sets PrependCommonCopts on each stripped
-// target and records loadLabel on the package, so the emitter renders
-// `copts = COMMON_COPTS + [delta]` and `load(loadLabel, "COMMON_COPTS")`. The
-// flags ride a generated `common_compile_flags.bzl` constant the emitted BUILDs
-// load directly — no toolchain wiring, works with the default toolchain.
-// Returns the hoisted prefix (for EmitConstant), or nil when nothing hoists.
-// Mutates pkg in place.
+// HoistCommonFlagsToConstants is the self-contained `defs.bzl` mode: it strips
+// the longest shared PREFIX on each of copts, local_defines, and linkopts from
+// every eligible cc target, sets the matching Prepend* flag on each stripped
+// target, and records loadLabel on the package — so the emitter renders
+// `<CONST> + [delta]` per axis and a single `load(loadLabel, …)` of the
+// constants actually referenced. The flags ride one generated
+// `common_compile_flags.bzl` (EmitConstants) the emitted BUILDs load directly
+// — no cc_toolchain wiring. Returns the three hoisted prefixes (for
+// EmitConstants). Mutates pkg in place.
+func HoistCommonFlagsToConstants(pkg *ir.Package, loadLabel string) (copts, localDefines, linkopts []string) {
+	if pkg == nil {
+		return nil, nil, nil
+	}
+	copts = hoistAxis(pkg, axisCopts, func(t *ir.Target) { t.PrependCommonCopts = true })
+	localDefines = hoistAxis(pkg, axisLocalDefines, func(t *ir.Target) { t.PrependCommonLocalDefines = true })
+	linkopts = hoistAxis(pkg, axisLinkopts, func(t *ir.Target) { t.PrependCommonLinkopts = true })
+	if len(copts) > 0 || len(localDefines) > 0 || len(linkopts) > 0 {
+		pkg.CommonCoptsLabel = loadLabel
+	}
+	return copts, localDefines, linkopts
+}
+
+// HoistCommonCoptsToConstant is a GENUINELY single-axis (copts-only) entry
+// point: it hoists ONLY the shared copt prefix, setting PrependCommonCopts and
+// the load label, leaving local_defines/linkopts untouched. It must NOT
+// delegate to HoistCommonFlagsToConstants — that would strip the other axes and
+// set their Prepend* flags, so a BUILD would reference COMMON_LOCAL_DEFINES /
+// COMMON_LINKOPTS that this function's copts-only EmitConstant pairing never
+// defines (a broken load). Pair with EmitConstant; pair the multi-axis
+// HoistCommonFlagsToConstants with EmitConstants.
 func HoistCommonCoptsToConstant(pkg *ir.Package, loadLabel string) []string {
 	if pkg == nil {
 		return nil
 	}
-	cands := commonCoptCandidates(pkg)
-	if len(cands) < 2 {
-		return nil
+	copts := hoistAxis(pkg, axisCopts, func(t *ir.Target) { t.PrependCommonCopts = true })
+	if len(copts) > 0 {
+		pkg.CommonCoptsLabel = loadLabel
 	}
-	prefix := longestCommonCoptPrefix(cands)
-	if len(prefix) == 0 {
-		return nil
-	}
-	for _, t := range cands {
-		t.Copts = append([]string(nil), t.Copts[len(prefix):]...)
-		if len(t.Copts) == 0 {
-			t.Copts = nil
-		}
-		t.PrependCommonCopts = true
-	}
-	pkg.CommonCoptsLabel = loadLabel
-	return prefix
+	return copts
 }
 
-// EmitConstant renders the self-contained `common_compile_flags.bzl` defining
-// COMMON_COPTS. Empty copts still emits an empty list so a BUILD's load()
-// doesn't break.
-func EmitConstant(copts []string) []byte {
+// EmitConstants renders the self-contained `common_compile_flags.bzl`. It
+// always defines COMMON_COPTS (an empty list when nothing hoisted, so a stray
+// load never breaks); COMMON_LOCAL_DEFINES and COMMON_LINKOPTS are emitted only
+// when non-empty, so a copts-only project's `.bzl` stays byte-identical to the
+// copts-only era.
+func EmitConstants(copts, localDefines, linkopts []string) []byte {
 	var buf bytes.Buffer
 	buf.WriteString(constHeader)
-	if len(copts) == 0 {
-		buf.WriteString("COMMON_COPTS = []\n")
-		return buf.Bytes()
+	writeConst(&buf, "COMMON_COPTS", copts, true)
+	writeConst(&buf, "COMMON_LOCAL_DEFINES", localDefines, false)
+	writeConst(&buf, "COMMON_LINKOPTS", linkopts, false)
+	return buf.Bytes()
+}
+
+// EmitConstant is the copts-only shim (COMMON_COPTS only), kept for callers /
+// tests predating the multi-axis hoist.
+func EmitConstant(copts []string) []byte {
+	return EmitConstants(copts, nil, nil)
+}
+
+// writeConst appends `NAME = [...]` for a flag list. When empty: emits
+// `NAME = []` if always is set (COMMON_COPTS's stable contract), else nothing.
+func writeConst(buf *bytes.Buffer, name string, flags []string, always bool) {
+	if len(flags) == 0 {
+		if always {
+			fmt.Fprintf(buf, "%s = []\n", name)
+		}
+		return
 	}
-	buf.WriteString("COMMON_COPTS = [\n")
-	for _, f := range copts {
-		fmt.Fprintf(&buf, "    %q,\n", f)
+	fmt.Fprintf(buf, "%s = [\n", name)
+	for _, f := range flags {
+		fmt.Fprintf(buf, "    %q,\n", f)
 	}
 	buf.WriteString("]\n")
-	return buf.Bytes()
 }
 
 const constHeader = `# Generated by convert-element-cmake. DO NOT EDIT.
 #
-# COMMON_COPTS — the compile flags shared by EVERY converted cc target (the
-# longest common copt prefix, typically cmake's project-wide CMAKE_<LANG>_FLAGS:
-# -O2, arch flags, ...). The converter STRIPPED these from each target's copts
-# and rewrote them as copts = COMMON_COPTS + [<per-target flags>], so the flags
-# live in one place instead of repeating per target. Self-contained: no
-# cc_toolchain wiring needed (cf. the --out-common-compile-flags-feature mode).
+# The flags shared by EVERY converted cc target — the longest common PREFIX of
+# each axis, typically cmake's project-wide CMAKE_<LANG>_FLAGS / link flags /
+# compile definitions:
+#   COMMON_COPTS          shared copts (-O2, arch flags, ...)
+#   COMMON_LOCAL_DEFINES  shared PRIVATE -D defines (only when present)
+#   COMMON_LINKOPTS       shared link flags (only when present)
+# The converter STRIPPED these from each target and rewrote that axis as
+# CONST + [per-target flags], so the flags live in one place instead of
+# repeating per target. Self-contained: no cc_toolchain wiring needed (cf. the
+# --out-common-compile-flags-feature mode, which hoists copts only).
 #
 # Byte-stable across runs; re-generated by
 # convert-element-cmake --emit-common-compile-flags-bzl.

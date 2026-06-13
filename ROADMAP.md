@@ -581,31 +581,49 @@ transition cleanly.
   `libc_top` / `all_files` so actions ship the sysroot. Larger; follows the
   `builtin_sysroot` item.
 
-- **Common compile flags hoist — SHIPPED (both modes, opt-in); remaining:
-  defines + a render gate / lens validation.** Dedups the per-target `copts`
-  repetition of cmake's project-wide `CMAKE_<LANG>_FLAGS`.
-  `commonflags.HoistCommonCopts*` (converter/internal/emit/commonflags) find the
-  longest copt PREFIX every cc target shares and strip it; prefix-only so the
-  reapplied flags stay before the per-target copts (cmake's order). Two opt-in
-  emit modes:
+- **Common compile flags hoist — SHIPPED (both modes, opt-in;
+  self-contained mode now hoists copts + defines + linkopts); remaining: a
+  render gate / feature-mode lens validation / write-a threading.** Dedups the
+  per-target repetition of cmake's project-wide `CMAKE_<LANG>_FLAGS` /
+  link flags / compile definitions.
+  `commonflags` (converter/internal/emit/commonflags) finds the longest PREFIX
+  every cc target shares on an axis and strips it; prefix-only so the reapplied
+  flags stay before the per-target ones (cmake's order). For the `local_defines`
+  SET axis the lists are sorted first, so the prefix is the common LEADING
+  sorted defines (conservative: hoists the common leading run, not the maximal
+  common subset — never wrong, just not maximal). Two opt-in emit modes:
   - `--out-common-compile-flags-feature` — writes a `cmake_common_compile_flags`
     cc_toolchain `feature()` `.bzl` + tags each stripped target
     `features = [...]`. Operator-wired into whatever toolchain the build uses
-    (same convention as sanitizerfeatures); a no-op until wired.
+    (same convention as sanitizerfeatures); a no-op until wired. **Copts only**
+    (a feature is a compile-flag construct — no faithful home for link flags or
+    the PRIVATE local_defines a toolchain feature would over-apply).
   - `--emit-common-compile-flags-bzl` — SELF-CONTAINED: writes
-    `common_compile_flags.bzl` defining `COMMON_COPTS`, `load()`ed by every BUILD
-    as `copts = COMMON_COPTS + [delta]`. No toolchain wiring; works with the
-    default toolchain (validated: `bazel build` green on the emitted output).
+    `common_compile_flags.bzl` defining `COMMON_COPTS` (always) plus
+    `COMMON_LOCAL_DEFINES` / `COMMON_LINKOPTS` (when those axes share a prefix),
+    `load()`ed by each BUILD that references them as
+    `copts = COMMON_COPTS + [delta]` (and the local_defines / linkopts analogs).
+    No toolchain wiring; works with the default toolchain (validated: `bazel
+    build` green on the emitted output). A copts-only project's `.bzl` is
+    byte-identical to the copts-only era (the new constants emit only when
+    non-empty).
   Off by default (byte-stable inline emission). The self-contained mode is
   **lens-validated** on the corpus (`SURVEY_HOIST_COMMON_COPTS=1`): brotli, fmt,
   and libxml2 `bazel build //...` green with the hoist on — libxml2 dedups a
   12-flag `-Wall -Wextra -Wshadow …` prefix that repeated per target, fmt the
-  `-fvisibility*` pair. **Remaining:** (1) extend the hoist to the common
-  `defines` prefix (today copts only); (2) a render gate in the
+  `-fvisibility*` pair. **BDE (`groups/bsl`) was the corpus's strongest
+  demonstrator AND drove the defines/linkopts extension:** its one ~39k-line
+  group `BUILD.bazel` repeated a project-wide BBS flag set VERBATIM on **745 of
+  763 targets** — `copts=["-O3","-pthread"]`, `local_defines=
+  ["BDE_BUILD_TARGET_OPT","NDEBUG","_POSIX_PTHREAD_SEMANTICS","_REENTRANT"]`
+  (745×), and `linkopts` (`-O3`/`-lrt`, 721×) — ~13k of the 39k lines were this
+  boilerplate; the self-contained hoist now collapses all three axes into the
+  one `.bzl`. **Remaining:** (1) a render gate in the
   `meta-cmake-sanitizer-features` mold (assert strip + tag/load + `.bzl` shape on
-  a fixture) to put it under the gates-in-CI net; (3) the FEATURE mode's lens
+  a fixture — now covering the defines/linkopts constants too) to put it under
+  the gates-in-CI net; (2) the FEATURE mode's lens
   validation needs the survey to wire the emitted feature into a registered
-  toolchain (the self-contained mode needs none); (4) `write-a` doesn't yet
+  toolchain (the self-contained mode needs none); (3) `write-a` doesn't yet
   THREAD `--emit-common-compile-flags-bzl` into the orchestrated project-A/B
   converter rule, so the self-contained mode is operator/survey-only for now —
   the staging of the generated `common_compile_flags.bzl` IS handled on both

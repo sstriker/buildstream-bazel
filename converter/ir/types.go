@@ -344,12 +344,14 @@ type Package struct {
 	SourceByteReads []string `json:"-"`
 
 	// CommonCoptsLabel, when non-empty, is the Bazel label of the generated
-	// `common_compile_flags.bzl` that defines COMMON_COPTS (the longest copt
-	// prefix shared by every cc target, hoisted by commonflags' self-contained
-	// `defs.bzl` mode). When set, the emitter adds
-	// `load(<label>, "COMMON_COPTS")` to each BUILD that has a target with
-	// PrependCommonCopts and renders that target's copts as
-	// `COMMON_COPTS + [<delta>]`. Empty keeps the inline per-target emission.
+	// `common_compile_flags.bzl` that defines the shared-flag constants —
+	// COMMON_COPTS (always) plus COMMON_LOCAL_DEFINES / COMMON_LINKOPTS when
+	// those axes also have a shared prefix — hoisted by commonflags'
+	// self-contained `defs.bzl` mode. When set, the emitter adds a
+	// `load(<label>, …)` of exactly the constants a BUILD references and renders
+	// each hoisted target's copts/local_defines/linkopts as `<CONST> + [<delta>]`
+	// (see PrependCommonCopts / PrependCommonLocalDefines / PrependCommonLinkopts).
+	// Empty keeps the inline per-target emission.
 	//
 	// Out-of-band (`json:"-"`): an emit-shape signal, never serialized.
 	CommonCoptsLabel string `json:"-"`
@@ -686,6 +688,15 @@ type Target struct {
 	// self-contained `defs.bzl` hoist mode after it strips the shared prefix.
 	// Out-of-band emit signal; not serialized.
 	PrependCommonCopts bool `json:"-"`
+
+	// PrependCommonLocalDefines / PrependCommonLinkopts are the local_defines
+	// and linkopts analogs of PrependCommonCopts: when true the emitter renders
+	// that axis as `COMMON_LOCAL_DEFINES + [<delta>]` / `COMMON_LINKOPTS +
+	// [<delta>]` and the BUILD `load()`s the matching constant from
+	// Package.CommonCoptsLabel (the one common_compile_flags.bzl carries all
+	// three). Same self-contained hoist mode; out-of-band, not serialized.
+	PrependCommonLocalDefines bool `json:"-"`
+	PrependCommonLinkopts     bool `json:"-"`
 
 	// Data routes to Bazel's `data = [...]` attribute — build-
 	// order dependencies that don't propagate compile/link

@@ -1653,21 +1653,40 @@ func emitCCHashLoad(buf *bytes.Buffer, pkg *ir.Package) {
 	}
 }
 
-// emitCommonCoptsLoad writes the
-// `load("<CommonCoptsLabel>", "COMMON_COPTS")` line when pkg has the
-// self-contained common-copts mode active (a CommonCoptsLabel set) AND at
-// least one target in THIS package references it (PrependCommonCopts). Scoped
-// per-package so a split sub-BUILD with no hoisted target stays load-free.
+// emitCommonCoptsLoad writes the `load("<CommonCoptsLabel>", …)` line when pkg
+// has the self-contained common-flags mode active (a CommonCoptsLabel set) AND
+// at least one target in THIS package references a hoisted constant. It loads
+// exactly the constants referenced — COMMON_COPTS / COMMON_LOCAL_DEFINES /
+// COMMON_LINKOPTS — so a split sub-BUILD that hoists only one axis (or none)
+// loads only what it uses. build.Format canonicalizes the symbol order.
 func emitCommonCoptsLoad(buf *bytes.Buffer, pkg *ir.Package) {
 	if pkg.CommonCoptsLabel == "" {
 		return
 	}
+	var copts, localDefines, linkopts bool
 	for _, t := range pkg.Targets {
-		if t.PrependCommonCopts {
-			fmt.Fprintf(buf, "load(%q, \"COMMON_COPTS\")\n\n", pkg.CommonCoptsLabel)
-			return
-		}
+		copts = copts || t.PrependCommonCopts
+		localDefines = localDefines || t.PrependCommonLocalDefines
+		linkopts = linkopts || t.PrependCommonLinkopts
 	}
+	var syms []string
+	if copts {
+		syms = append(syms, "COMMON_COPTS")
+	}
+	if localDefines {
+		syms = append(syms, "COMMON_LOCAL_DEFINES")
+	}
+	if linkopts {
+		syms = append(syms, "COMMON_LINKOPTS")
+	}
+	if len(syms) == 0 {
+		return
+	}
+	fmt.Fprintf(buf, "load(%q", pkg.CommonCoptsLabel)
+	for _, s := range syms {
+		fmt.Fprintf(buf, ", %q", s)
+	}
+	buf.WriteString(")\n\n")
 }
 
 // emitFortranLoad writes the
@@ -2071,19 +2090,32 @@ func ccTargetCall(t ir.Target, opts Options) (*build.CallExpr, error) {
 	if t.Kind == ir.KindFortranLibrary {
 		adaptFortranView(&v)
 	}
-	// Self-contained common-copts mode: prepend the loaded COMMON_COPTS
-	// constant to this target's copts (the shared prefix was stripped into it).
-	// `COMMON_COPTS + <rest>` keeps the toolchain-feature mode's order: the
-	// shared flags come first, then the per-target delta / select arms.
+	// Self-contained common-flags mode: prepend the loaded constant to each
+	// hoisted axis (the shared prefix was stripped into the per-target delta).
+	// `<CONST> + <rest>` keeps the shared flags first, then the per-target delta
+	// / select arms — matching cmake's global-flags-first order (and, for the
+	// local_defines set, keeping the recombination sorted).
 	if t.PrependCommonCopts {
-		common := &build.Ident{Name: "COMMON_COPTS"}
-		if v.CoptsExpr == nil {
-			v.CoptsExpr = common
-		} else {
-			v.CoptsExpr = &build.BinaryExpr{Op: "+", X: common, Y: v.CoptsExpr}
-		}
+		v.CoptsExpr = prependCommonConst("COMMON_COPTS", v.CoptsExpr)
+	}
+	if t.PrependCommonLocalDefines {
+		v.LocalDefinesExpr = prependCommonConst("COMMON_LOCAL_DEFINES", v.LocalDefinesExpr)
+	}
+	if t.PrependCommonLinkopts {
+		v.LinkoptsExpr = prependCommonConst("COMMON_LINKOPTS", v.LinkoptsExpr)
 	}
 	return ccViewToCall(v), nil
+}
+
+// prependCommonConst returns `<name> + expr` (or just the `<name>` Ident when
+// expr is nil) — the self-contained common-flags mode's recombination of a
+// hoisted constant with a target's remaining per-axis delta.
+func prependCommonConst(name string, expr build.Expr) build.Expr {
+	common := &build.Ident{Name: name}
+	if expr == nil {
+		return common
+	}
+	return &build.BinaryExpr{Op: "+", X: common, Y: expr}
 }
 
 // adaptFortranView rewrites a ccView assembled for a Fortran target so it only

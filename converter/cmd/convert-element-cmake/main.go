@@ -795,9 +795,9 @@ func writeCommonCompileFlagsFeature(a cli.Args, pkg *ir.Package) error {
 	if a.OutCommonCompileFlagsFeature != "" && a.EmitCommonCompileFlagsBzl {
 		return fmt.Errorf("--out-common-compile-flags-feature and --emit-common-compile-flags-bzl are mutually exclusive (both hoist the shared copt prefix)")
 	}
-	// Self-contained `defs.bzl` mode: strip + rewrite copts as
-	// COMMON_COPTS + [delta], emitting common_compile_flags.bzl next to the
-	// root BUILD with a load label derived from --bazel-package-path so it
+	// Self-contained `defs.bzl` mode: strip + rewrite copts / local_defines /
+	// linkopts as COMMON_* + [delta], emitting common_compile_flags.bzl next to
+	// the root BUILD with a load label derived from --bazel-package-path so it
 	// matches where the file lands.
 	if a.EmitCommonCompileFlagsBzl {
 		const bzlName = "common_compile_flags.bzl"
@@ -806,8 +806,8 @@ func writeCommonCompileFlagsFeature(a cli.Args, pkg *ir.Package) error {
 		if pkgPath != "" {
 			label = "//" + pkgPath + ":" + bzlName
 		}
-		copts := commonflags.HoistCommonCoptsToConstant(pkg, label)
-		body := commonflags.EmitConstant(copts)
+		copts, localDefines, linkopts := commonflags.HoistCommonFlagsToConstants(pkg, label)
+		body := commonflags.EmitConstants(copts, localDefines, linkopts)
 		dst := filepath.Join(filepath.Dir(a.OutBuild), bzlName)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
