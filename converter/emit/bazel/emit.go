@@ -485,6 +485,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	emitBoolFlagLoad(&buf, pkg)
 	emitCMakeConfigureFileLoad(&buf, pkg)
 	emitCCEmbedLoad(&buf, pkg)
+	emitNativeRuleLoads(&buf, pkg)
 	emitCCHashLoad(&buf, pkg)
 	emitFortranLoad(&buf, pkg)
 	emitCommonCoptsLoad(&buf, pkg)
@@ -1498,6 +1499,47 @@ func emitWriteFileLoad(buf *bytes.Buffer, pkg *ir.Package) {
 			buf.WriteString(`load("@bazel_skylib//rules:write_file.bzl", "write_file")` + "\n\n")
 			return
 		}
+	}
+}
+
+// emitNativeRuleLoads emits one load() line per distinct .bzl the package's
+// KindNativeRule targets load from, grouping their symbols (sorted, deduped).
+// Data-driven from each target's NativeRuleSpec (LoadFrom + LoadSymbol/Kind),
+// so a codegen recognizer that emits e.g. proto_library + cc_proto_library
+// yields the right loads with no per-rule wiring here. Built-in rules
+// (LoadFrom == "") need no load. build.Format re-sorts the load statements, so
+// this runs in any order relative to the other load emitters.
+func emitNativeRuleLoads(buf *bytes.Buffer, pkg *ir.Package) {
+	symbolsByFrom := map[string]map[string]bool{}
+	for _, t := range pkg.Targets {
+		if t.Kind != ir.KindNativeRule || t.NativeRule == nil || t.NativeRule.LoadFrom == "" {
+			continue
+		}
+		sym := t.NativeRule.LoadSymbol
+		if sym == "" {
+			sym = t.NativeRule.Kind
+		}
+		if symbolsByFrom[t.NativeRule.LoadFrom] == nil {
+			symbolsByFrom[t.NativeRule.LoadFrom] = map[string]bool{}
+		}
+		symbolsByFrom[t.NativeRule.LoadFrom][sym] = true
+	}
+	froms := make([]string, 0, len(symbolsByFrom))
+	for from := range symbolsByFrom {
+		froms = append(froms, from)
+	}
+	sort.Strings(froms)
+	for _, from := range froms {
+		syms := make([]string, 0, len(symbolsByFrom[from]))
+		for s := range symbolsByFrom[from] {
+			syms = append(syms, s)
+		}
+		sort.Strings(syms)
+		buf.WriteString(`load("` + from + `"`)
+		for _, s := range syms {
+			buf.WriteString(`, "` + s + `"`)
+		}
+		buf.WriteString(")\n\n")
 	}
 }
 

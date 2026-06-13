@@ -195,6 +195,14 @@ const (
 	// library. The Fortran analogue of KindCudaLibrary; see
 	// //rules:fortran.bzl and lower's retagFortranTargets.
 	KindFortranLibrary
+	// KindNativeRule is a GENERIC native Bazel rule emitted verbatim from a
+	// NativeRuleSpec (rule kind + optional load + attrs). It's the extensibility
+	// substrate for the codegen-recognizer registry (ROADMAP): a recognizer maps
+	// a recovered codegen custom-command to the idiomatic native rule —
+	// protoc → proto_library / cc_proto_library / cc_grpc_library — without a
+	// bespoke ir.Kind + emit path per tool. The emitter renders it generically
+	// (the spec's load() + the rule with its attrs).
+	KindNativeRule
 )
 
 func (k Kind) String() string {
@@ -209,6 +217,8 @@ func (k Kind) String() string {
 		return "cc_library" // header-only: cc_library with hdrs only
 	case KindGenrule:
 		return "genrule"
+	case KindNativeRule:
+		return "native_rule"
 	case KindCCTest:
 		return "cc_test"
 	case KindShBinary:
@@ -878,6 +888,10 @@ type Target struct {
 	// attributes. Non-nil only when Kind == KindCMakeConfigureFile.
 	CMakeConfigureFile *CMakeConfigureFileSpec
 
+	// NativeRule carries a generic native Bazel rule's kind + load + attrs.
+	// Non-nil only when Kind == KindNativeRule (see KindNativeRule).
+	NativeRule *NativeRuleSpec
+
 	// CCEmbed carries the cc_embed rule's attributes. Non-nil only when
 	// Kind == KindCCEmbed.
 	CCEmbed *CCEmbedSpec
@@ -990,6 +1004,36 @@ type GlobSrcGroup struct {
 	Dir     string
 	Pattern string
 	Files   []string
+}
+
+// NativeRuleSpec describes a generic native Bazel rule for a KindNativeRule
+// target: the rule kind, an optional load() to emit, and the rule's attributes
+// (beyond `name`, which comes from Target.Name). The emitter renders it
+// verbatim via the buildtools AST, so a codegen recognizer can emit any rule
+// (proto_library, cc_proto_library, cc_grpc_library, …) without a bespoke
+// ir.Kind + emit path.
+type NativeRuleSpec struct {
+	// Kind is the rule function name, e.g. "proto_library".
+	Kind string
+	// LoadFrom is the .bzl label the rule loads from, e.g.
+	// "@protobuf//bazel:proto_library.bzl". Empty means a built-in (no load).
+	LoadFrom string
+	// LoadSymbol is the symbol loaded from LoadFrom; defaults to Kind when "".
+	LoadSymbol string
+	// Attrs are the rule's attributes other than `name` (set from Target.Name),
+	// in the order the recognizer supplies; the emitter re-sorts to buildifier's
+	// canonical attribute order, so order here is not significant.
+	Attrs []NativeAttr
+}
+
+// NativeAttr is one attribute of a NativeRuleSpec. Exactly one of List / Str is
+// meaningful: when List is non-nil the attribute renders as a string list, else
+// as the scalar string Str. (Sufficient for the proto rule family — name/srcs/
+// deps/visibility; extend with typed variants if a recognizer needs bool/dict.)
+type NativeAttr struct {
+	Name string
+	Str  string
+	List []string
 }
 
 // CMakeConfigureFileSpec carries the attributes for a

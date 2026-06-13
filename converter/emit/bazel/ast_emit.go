@@ -53,6 +53,8 @@ func astTargetStmts(t ir.Target, opts Options) ([]build.Expr, bool, error) {
 		return one(ccImportExpr(t))
 	case ir.KindGenrule:
 		return one(genruleExpr(t))
+	case ir.KindNativeRule:
+		return oneErr(nativeRuleExpr(t))
 	case ir.KindCCEmbed:
 		return oneErr(ccEmbedExpr(t))
 	case ir.KindWriteFile:
@@ -88,6 +90,28 @@ func genruleExpr(t ir.Target) *build.CallExpr {
 	setListIfNonEmpty(r, "tags", sortedCopy(t.Tags))
 	setListIfNonEmpty(r, "visibility", nonDefaultVisibility(t.Visibility))
 	return call
+}
+
+// nativeRuleExpr renders a generic native rule from its NativeRuleSpec: the
+// rule kind, `name` from the target, then each spec attr (scalar string or
+// string list). build.Format re-sorts attrs to buildifier's canonical order, so
+// the spec's attr order doesn't matter. The load() for the rule is emitted
+// separately (see emitNativeRuleLoads).
+func nativeRuleExpr(t ir.Target) (*build.CallExpr, error) {
+	s := t.NativeRule
+	if s == nil || s.Kind == "" {
+		return nil, fmt.Errorf("emit native rule %q: nil/kindless NativeRule spec", t.Name)
+	}
+	call, r := newCall(s.Kind)
+	r.SetAttr("name", strExpr(t.Name))
+	for _, a := range s.Attrs {
+		if a.List != nil {
+			r.SetAttr(a.Name, strListExpr(a.List))
+		} else {
+			r.SetAttr(a.Name, strExpr(a.Str))
+		}
+	}
+	return call, nil
 }
 
 // ccEmbedExpr is the AST form of emitCCEmbed: scalar src/symbol/out_*, the
