@@ -154,6 +154,7 @@ var noopExecuteProcessOps = map[string]bool{
 	"capabilities":     true,
 	"environment":      true,
 	"console_noop":     true,
+	"tar_list":         true, // cmake -E tar tf: stdout listing, no artifact
 	"make_directory":   true,
 	"remove":           true,
 	"remove_directory": true,
@@ -525,6 +526,9 @@ func classifyCMakeEBuiltin(argv []string) (ClassifyResult, bool) {
 		}, true
 	}
 	op := strings.ToLower(argv[2])
+	if op == "tar" {
+		return classifyCMakeETar(argv)
+	}
 	if _, ok := supportedCMakeEOps[op]; ok {
 		return ClassifyResult{
 			Bucket:   BucketCMakeE,
@@ -536,6 +540,33 @@ func classifyCMakeEBuiltin(argv []string) (ClassifyResult, bool) {
 		Bucket: BucketRefuse,
 		Reason: "cmake -E " + op + " is not in the v1 supported-op set (supported: " + supportedCMakeEOpsList() + ")",
 	}, true
+}
+
+// classifyCMakeETar buckets `cmake -E tar <mode> <archive> [files…]` by its
+// mode flags (argv[3]). The CREATE form (`c`, e.g. cf / czf / cjf / cJf)
+// packages files into an archive — the faithful Bazel shape is pkg_tar, so
+// it classifies BucketCMakeE and lifts there. EXTRACT (`x`) produces an
+// archive's worth of build-dir files with no argv outputs; it stays
+// BucketRefuse so the unspecified-outputs rescue (File-API demand + ninja
+// exclusion) recovers them, exactly as before. LIST (`t`) writes only to
+// stdout — a console probe with no artifact — so it benign-skips. Anything
+// else refuses loudly.
+func classifyCMakeETar(argv []string) (ClassifyResult, bool) {
+	if len(argv) < 4 {
+		return ClassifyResult{Bucket: BucketRefuse, Reason: "cmake -E tar with no mode"}, true
+	}
+	mode := strings.ToLower(argv[3])
+	switch {
+	case strings.ContainsAny(mode, "c"):
+		return ClassifyResult{Bucket: BucketCMakeE, Reason: "cmake -E tar (create)", CMakeEOp: "tar"}, true
+	case strings.ContainsAny(mode, "t"):
+		// List-only (tar tf): stdout console listing, no build artifact.
+		return ClassifyResult{Bucket: BucketCMakeE, Reason: "cmake -E tar (list — console only)", CMakeEOp: "tar_list"}, true
+	default:
+		// Extract (tar xf) and unknown modes: refuse so the
+		// unspecified-outputs rescue can recover extracted files.
+		return ClassifyResult{Bucket: BucketRefuse, Reason: "cmake -E tar " + mode + " (extract/unknown) — outputs recovered via the unspecified-outputs rescue"}, true
+	}
 }
 
 // classifyRawPosixDriver recognizes raw POSIX filesystem drivers that lift to
