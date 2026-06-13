@@ -366,6 +366,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-defer-execute-process.sh \
 	scripts/meta-cmake-execute-process-argv-codegen.sh \
 	scripts/meta-cmake-execute-process-unspecified-outs.sh \
+	scripts/meta-cmake-execute-process-dead-capture.sh \
 	scripts/meta-cmake-nested-cmake.sh \
 	scripts/meta-cmake-nested-cmake-workdir.sh \
 	scripts/meta-cmake-build-dir-source-bake.sh \
