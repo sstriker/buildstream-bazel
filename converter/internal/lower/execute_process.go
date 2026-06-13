@@ -177,6 +177,17 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 		return nil, nil
 	}
 	anc := execAnchors{hostSrcDir: hostSrcDir, recordedSrcDir: recordedSrcDir, hostBuildDir: hostBuildDir, recordedBuildDir: recordedBuildDir}
+	// ONE preprocessed view for EVERY consumer: dead captures cleared
+	// and cmake -E wrappers normalized up front, so the unspecified-
+	// outputs PLAN, the stamp prescan, and the dispatch loop all see
+	// the same calls (a plan computed over raw calls while the loop
+	// dispatches normalized ones mis-links claims). origCalls keeps
+	// the pre-clear forms for the capture-refusal sink.
+	origCalls := calls
+	calls = make([]shadow.ExecuteProcessCall, len(origCalls))
+	for i, c := range origCalls {
+		calls[i] = normalizeCMakeECall(clearDeadCaptures(c, cc.DeadCaptureVars))
+	}
 	prescanStampVars(calls, cc)
 	// seenProbeFlags maps a lifted build-setting name to the cmake
 	// variable that produced it. The same feature probe can recur in the
@@ -197,14 +208,7 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 	// operands and stem claims in view before any per-call emission.
 	unspec := planUnspecifiedOutputs(calls, anc, cc)
 	for ci, call := range calls {
-		// Dead-capture normalization BEFORE classification: a capture
-		// keyword whose variable the configure never reads (the
-		// silencing idiom) is treated as absent, so every classifier
-		// and lifter below sees the liftable shape. The ORIGINAL
-		// call's vars still record on any refusal — that's the sink
-		// the driver's dead-capture pass feeds on.
-		orig := call
-		call = clearDeadCaptures(call, cc.DeadCaptureVars)
+		orig := origCalls[ci]
 		v := Classify(call)
 		switch v.Bucket {
 		case BucketCMakeE:
@@ -435,9 +439,10 @@ func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, c
 // into -E configure_file lifts.
 func prescanStampVars(calls []shadow.ExecuteProcessCall, cc *codegenContext) {
 	for _, call := range calls {
-		// Dead-capture view, mirroring the main loop: a silenced
-		// stamp's variable must not register (nothing consumes it).
-		call = clearDeadCaptures(call, cc.DeadCaptureVars)
+		// calls arrive PREPROCESSED (dead captures cleared, -E
+		// wrappers normalized) from recoverExecuteProcess: a silenced
+		// stamp's variable must not register, and a `cmake -E env
+		// GIT_DIR=… git describe` stamp must.
 		v := Classify(call)
 		if v.Bucket == BucketStamp && call.OutputVariable != "" && len(call.Commands) > 0 && len(call.Commands[0]) > 0 {
 			driver := executeProcessDriverBasename(call.Commands[0][0])
@@ -538,6 +543,17 @@ func liftCMakeE(call shadow.ExecuteProcessCall, v ClassifyResult, anc execAnchor
 	// lose a real compile input would be wrong. Checked before the
 	// switch so both the cmake -E and raw spellings share one arm.
 	if noopExecuteProcessOps[v.CMakeEOp] {
+		// The benign skip tolerates exit-status captures
+		// (RESULT_VARIABLE/RESULTS_VARIABLE — the compare_files
+		// copy-if-changed idiom; the configure's branch already took
+		// effect, the probe doctrine) but NOT byte channels: dead
+		// captures were cleared before classification, so a surviving
+		// OUTPUT_/ERROR_VARIABLE is configure-READ, and an OUTPUT_/
+		// ERROR_FILE is a declared build-dir artifact. Those keep the
+		// loud refusal rather than vanishing as console noise.
+		if call.OutputVariable != "" || call.ErrorVariable != "" || call.OutputFile != "" || call.ErrorFile != "" {
+			return nil, "cmake -E " + v.CMakeEOp + " carries a live byte channel (" + outputContext(call) + " ) the benign skip would drop", false
+		}
 		return nil, "", true
 	}
 	switch v.CMakeEOp {

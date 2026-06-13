@@ -768,6 +768,15 @@ trees, optional-feature deps, codegen instances). Each member's
 
 ## Later (research / open questions)
 
+- **`cmake -E tar` lift.** Still loudly refused ("not in the v1
+  supported-op set" + the execute-process-refusal todo as the demand
+  signal). The create form (`tar cf <out> <files…>`) is a plain
+  genrule; the extract form (`tar xf` at configure) produces an
+  archive's worth of unspecified outputs — the unspecified-outs
+  rescue's File-API-demand + ninja-exclusion machinery is the right
+  recovery shape for it. Implement when a corpus member trips the
+  refusal.
+
 - **Genex-probe language-conditional skip — transitive reach.** The
   structural probe now skips a property whose RAW direct value carries
   `$<COMPILE_LANGUAGE/…>` / `$<LINK_LANGUAGE/…>` (multi-language
