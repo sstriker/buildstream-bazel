@@ -1027,6 +1027,7 @@ type traceFacts struct {
 	decodedAddCustomCommands     []shadow.AddCustomCommandCall
 	decodedAddCustomTargets      []shadow.AddCustomTargetCall
 	decodedAddDependencies       []shadow.AddDependenciesCall
+	decodedFileWriters           []shadow.FileWriterCall
 	headerOnlySources            map[string]bool
 	objectDependsBySrc           map[string][]string
 	languageOverrideBySrc        map[string]string
@@ -1122,6 +1123,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 	var decodedAddCustomCommands []shadow.AddCustomCommandCall
 	var decodedAddCustomTargets []shadow.AddCustomTargetCall
 	var decodedAddDependencies []shadow.AddDependenciesCall
+	var decodedFileWriters []shadow.FileWriterCall
 	// headerOnlySources holds slash-form source paths declared with
 	// set_source_files_properties(... HEADER_FILE_ONLY TRUE). The
 	// per-target source walk reclassifies these from srcs to hdrs.
@@ -1213,6 +1215,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 		decodedAddCustomCommands = decoded.AddCustomCommands
 		decodedAddCustomTargets = decoded.AddCustomTargets
 		decodedAddDependencies = decoded.AddDependencies
+		decodedFileWriters = shadow.ExtractFileWriterCalls(opts.TraceRaw, cmakeSrcForTrace)
 		// Phase 1 task 3 extension — HEADER_FILE_ONLY routing.
 		// Build the per-source path lookup once so the per-target
 		// source walk can reclassify .h-only sources from srcs
@@ -1287,6 +1290,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 		decodedAddCustomCommands:     decodedAddCustomCommands,
 		decodedAddCustomTargets:      decodedAddCustomTargets,
 		decodedAddDependencies:       decodedAddDependencies,
+		decodedFileWriters:           decodedFileWriters,
 		headerOnlySources:            headerOnlySources,
 		objectDependsBySrc:           objectDependsBySrc,
 		languageOverrideBySrc:        languageOverrideBySrc,
@@ -1526,6 +1530,7 @@ type recoveredArtifacts struct {
 // when execute_process refusals routed to emitFallbackPlaceholder, in
 // which case ToIR returns it directly (the original inline early-exit).
 func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Options, cfg fileapi.Configuration, tf traceFacts, cmakeSrc, cmakeBuild, hostSrc string, cc *codegenContext) (*recoveredArtifacts, *ir.Package, error) {
+	cc.FileWriterIndex = buildFileWriterIndex(tf.decodedFileWriters, cmakeBuild)
 	traceDecoded, decodedTrace := tf.traceDecoded, tf.decodedTrace
 	decodedConfigureFiles, decodedFileGenerates, decodedExecuteProcesses := tf.decodedConfigureFiles, tf.decodedFileGenerates, tf.decodedExecuteProcesses
 	decodedOutOfTreeExecProcs := tf.decodedOutOfTreeExecProcs

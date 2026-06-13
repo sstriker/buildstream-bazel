@@ -60,12 +60,18 @@ fail() {
     exit 1
 }
 
-# All four configure-written files bake from the on-disk bytes.
-grep -qF 'out = "gen_a.c"' "$build" || fail "file(WRITE) build-dir source not baked"
-grep -qF 'out = "copied/b.c"' "$build" || fail "file(COPY) build-dir source not baked"
-grep -qF 'out = "gen_c.c"' "$build" || fail "file(TOUCH) empty build-dir source not baked"
-grep -qF 'out = "gen_d.h"' "$build" || fail "file(WRITE) build-dir header not baked (include-walk recovery)"
-grep -qF '"cmake-codegen-build-dir-bake"' "$build" || fail "build-dir bake audit facet missing"
+# The writer index ties each file to its traced producer:
+# WRITE/TOUCH content materializes from the TRACE (writer facet,
+# provenance-cited), and file(COPY) upgrades to a TRUE cp lift that
+# re-runs at Bazel build time with the committed source declared.
+grep -qF 'out = "gen_a.c"' "$build" || fail "file(WRITE) build-dir source not recovered"
+grep -qF 'cp \"$(location b.c)\"' "$build" || fail "file(COPY) not lifted to a cp genrule from the committed source"
+grep -qF '"cmake-codegen-file-writer-copy"' "$build" || fail "copy lift facet missing"
+grep -qF 'out = "gen_c.c"' "$build" || fail "file(TOUCH) empty build-dir source not recovered"
+grep -qF 'out = "gen_d.h"' "$build" || fail "file(WRITE) build-dir header not recovered (include-walk recovery)"
+grep -qF '"cmake-codegen-file-writer-bake"' "$build" || fail "file-writer bake facet missing"
+grep -q 'copy_copied_b_c' "$work_dir/convert.stderr" \
+    && fail "the cp lift must NOT ride the convert-time-bake inventory (it re-runs at build time)"
 
 # The consumer's srcs carry every baked file (sources + walked header).
 for s in '"gen_a.c"' '"copied/b.c"' '"gen_c.c"' '"gen_d.h"'; do
@@ -81,8 +87,8 @@ grep -q '"kind": "source-elided"' "$work_dir/todos.json" \
 # The bake trade is accounted: convert-time-bake warning + bake todos.
 grep -q 'convert-time-baked output' "$work_dir/convert.stderr" \
     || fail "convert-time-bake warning missing for the build-dir bakes"
-[ "$(grep -c '"kind": "bake"' "$work_dir/todos.json")" -ge 4 ] \
-    || fail "expected >=4 bake todos (one per baked file)"
+[ "$(grep -c '"kind": "bake"' "$work_dir/todos.json")" -ge 3 ] \
+    || fail "expected >=3 bake todos (the COPY upgraded to a true lift)"
 
 echo "ok  meta-cmake-build-dir-source-bake: configure-written build-dir files baked — nothing silently dropped"
 
@@ -107,7 +113,9 @@ fi
 
 ws="$work_dir/ws"
 mkdir -p "$ws"
-cp "$fixture"/main.c "$ws/"
+# b.c is now a DECLARED INPUT of the cp lift (the upgrade under test),
+# so the workspace must carry it — the bake never needed it.
+cp "$fixture"/main.c "$fixture"/b.c "$ws/"
 cp "$build" "$ws/BUILD.bazel"
 cat > "$ws/MODULE.bazel" <<'EOF'
 module(name = "builddirsourcebake", version = "0.0.0")

@@ -54,6 +54,14 @@ func buildDirBakeTags() []string {
 // and false when the bytes aren't available (offline replay without a
 // recorded mirror).
 func bakeBuildDirFile(rel string, lc targetLowerCtx) (string, bool) {
+	// Producer first (the bake-audit's tie-to-the-generation-command
+	// close-out): a traced file() writer chain recovers the file from
+	// its COMMAND — a true cp lift for COPY/COPY_FILE, trace-content
+	// write_file for WRITE/APPEND/TOUCH (works OFFLINE too) — before
+	// any on-disk byte falls back. See build_dir_writer_lift.go.
+	if name, ok := liftBuildDirFileFromWriter(rel, lc); ok {
+		return name, true
+	}
 	if lc.hostBuild == "" {
 		return "", false
 	}
@@ -62,7 +70,23 @@ func bakeBuildDirFile(rel string, lc targetLowerCtx) (string, bool) {
 		return "", false
 	}
 	name := bakedBuildDirName(rel)
-	lc.cc.Genrules = append(lc.cc.Genrules, bakeFileTarget(name, rel, body, buildDirBakeTags()))
+	// A file(DOWNLOAD) output stays a byte-bake by policy (no network
+	// at build time) but cites its producer: the download facet rides
+	// the bake-warning/todo channels and the provenance carries the
+	// URL for a hand-lift to http_file (ROADMAP). Resolve the chain
+	// and pick the tags BEFORE constructing the target once — the
+	// body encode isn't free for large downloads.
+	tags := buildDirBakeTags()
+	dl, isDL := downloadWriterFor(rel, lc)
+	if isDL {
+		tags = downloadBakeTags()
+	}
+	t := bakeFileTarget(name, rel, body, tags)
+	if isDL {
+		t.Provenance = writerProvenance(dl, lc)
+		t.Provenance.Command = "file(DOWNLOAD " + dl.url + ")"
+	}
+	lc.cc.Genrules = append(lc.cc.Genrules, t)
 	lc.cc.OutToGenrule[rel] = name
 	return name, true
 }
@@ -159,6 +183,10 @@ func walkBuildDirHeaders(inc string, lc targetLowerCtx) {
 			return nil
 		}
 		if _, produced := cc.OutToGenrule[rel]; produced {
+			return nil
+		}
+		if name, ok := liftBuildDirFileFromWriter(rel, lc); ok {
+			cc.BuildDirBakedHdrs[rel] = name
 			return nil
 		}
 		body, rerr2 := os.ReadFile(p)
