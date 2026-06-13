@@ -73,12 +73,20 @@ func classifyFileWriter(ev TraceEvent) (FileWriterCall, bool) {
 		return call, len(call.Outputs) > 0
 	case "COPY":
 		// file(COPY <srcs…> DESTINATION <dir> [permission/filter opts]).
-		// Filtering options change WHAT lands; decline those rather
-		// than model them. DESTINATION outputs are <dir>/<basename(src)>
-		// per source (directory sources copy recursively — the lower
-		// side discriminates on disk and declines dirs).
+		// cmake's grammar puts the source files strictly BEFORE
+		// DESTINATION and every option AFTER the dest dir, so collect
+		// sources only from the pre-DESTINATION segment. That excludes
+		// the FILE_PERMISSIONS / DIRECTORY_PERMISSIONS mode tokens
+		// (OWNER_READ, GROUP_READ, …) categorically — they're plain
+		// non-flag operands that would otherwise be mistaken for source
+		// files and produce bogus `<dest>/OWNER_READ` outputs. Filtering
+		// options (which change WHAT lands) still decline the lift.
+		// DESTINATION outputs are <dir>/<basename(src)> per source
+		// (directory sources copy recursively — the lower side
+		// discriminates on disk and declines dirs).
 		var srcs []string
 		dest := ""
+		sawDest := false
 		for i := 1; i < len(ev.Args); i++ {
 			a := ev.Args[i]
 			switch strings.ToUpper(a) {
@@ -87,15 +95,14 @@ func classifyFileWriter(ev TraceEvent) (FileWriterCall, bool) {
 					dest = ev.Args[i+1]
 					i++
 				}
+				sawDest = true
 			case "FILES_MATCHING", "PATTERN", "REGEX", "EXCLUDE", "PERMISSIONS":
 				return FileWriterCall{}, false
-			case "FILE_PERMISSIONS", "DIRECTORY_PERMISSIONS", "NO_SOURCE_PERMISSIONS", "USE_SOURCE_PERMISSIONS", "FOLLOW_SYMLINK_CHAIN":
-				// Permission-only options don't change content; the
-				// FILE_/DIRECTORY_PERMISSIONS forms consume their mode
-				// tokens, which are plain (non-path) operands the source
-				// scan below ignores anyway.
 			default:
-				if !strings.HasPrefix(a, "-") {
+				// Sources precede DESTINATION; everything after it is an
+				// option operand (permission mode tokens, flags) and is
+				// not a source.
+				if !sawDest && !strings.HasPrefix(a, "-") {
 					srcs = append(srcs, a)
 				}
 			}
