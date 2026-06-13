@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -161,6 +162,70 @@ func TestWriterChainTrustworthy(t *testing.T) {
 		lc := targetLowerCtx{cc: cc, cmakeSrc: "/s", cmakeBuild: "/b", hostBuild: host}
 		if _, ok := liftBuildDirFileFromWriter("x.stamp", lc); !ok {
 			t.Fatal("TOUCH base verified empty on disk must lift")
+		}
+	})
+}
+
+// TestStampLiftWriterContent pins the file(WRITE) stamp wiring: a
+// stamp-bearing file(WRITE) routes through the configure_file
+// stamp_values machinery (live workspace-status) under --lift; without
+// a stamp var, without the lift tier, or without a non-expanded
+// template, it declines (frozen bake stands).
+func TestStampLiftWriterContent(t *testing.T) {
+	mkLC := func(lift bool, stampVars map[string]string, templates map[string]string) targetLowerCtx {
+		cc := newCodegenContext()
+		cc.LiftConfigureFile = lift
+		cc.StampVars = stampVars
+		cc.FileWriterTemplates = templates
+		cc.CMakeVars = map[string]string{"GIT_SHA": "abc123"}
+		// the EXPANDED writer index (rendered content)
+		cc.FileWriterIndex = buildFileWriterIndex([]shadow.FileWriterCall{
+			{Op: "write", Content: "#define SHA \"abc123\"\n", Outputs: []string{"/b/ver.h"}, File: "/s/CMakeLists.txt", Line: 5},
+		}, "/b")
+		return targetLowerCtx{cc: cc, cmakeSrc: "/s", cmakeBuild: "/b"}
+	}
+	tmpl := map[string]string{"ver.h": "#define SHA \"${GIT_SHA}\"\n"}
+	stamps := map[string]string{"GIT_SHA": "STABLE_GIT_SHA"}
+
+	t.Run("wires-stamp-under-lift", func(t *testing.T) {
+		lc := mkLC(true, stamps, tmpl)
+		name, ok := stampLiftWriterContent("ver.h", writerChain{mode: "content", content: "#define SHA \"abc123\"\n"}, lc)
+		if !ok {
+			t.Fatal("expected stamp lift")
+		}
+		g := lc.cc.Genrules[0]
+		if g.Name != name || g.Kind != ir.KindCMakeConfigureFile || g.CMakeConfigureFile == nil {
+			t.Fatalf("expected cmake_configure_file, got %+v", g)
+		}
+		if g.CMakeConfigureFile.StampValues["GIT_SHA"] != "STABLE_GIT_SHA" {
+			t.Errorf("stamp_values = %v; want GIT_SHA->STABLE_GIT_SHA", g.CMakeConfigureFile.StampValues)
+		}
+		if g.CMakeConfigureFile.Values["GIT_SHA"] != "abc123" {
+			t.Errorf("frozen fallback Values = %v; want GIT_SHA->abc123", g.CMakeConfigureFile.Values)
+		}
+		if !stringSliceContains(g.Tags, "cmake-codegen-file-writer-stamp") {
+			t.Errorf("tags = %v; want the file-writer-stamp facet", g.Tags)
+		}
+	})
+
+	t.Run("declines-without-lift", func(t *testing.T) {
+		lc := mkLC(false, stamps, tmpl)
+		if _, ok := stampLiftWriterContent("ver.h", writerChain{mode: "content", content: "x"}, lc); ok {
+			t.Error("must decline when the lift tier is off (tool not staged)")
+		}
+	})
+
+	t.Run("declines-without-stamp-var", func(t *testing.T) {
+		lc := mkLC(true, map[string]string{}, map[string]string{"ver.h": "#define V 1\n"})
+		if _, ok := stampLiftWriterContent("ver.h", writerChain{mode: "content", content: "#define V 1\n"}, lc); ok {
+			t.Error("must decline when the template references no stamp var")
+		}
+	})
+
+	t.Run("declines-without-template", func(t *testing.T) {
+		lc := mkLC(true, stamps, nil)
+		if _, ok := stampLiftWriterContent("ver.h", writerChain{mode: "content", content: "x"}, lc); ok {
+			t.Error("must decline without a non-expanded template (no warm pass)")
 		}
 	})
 }

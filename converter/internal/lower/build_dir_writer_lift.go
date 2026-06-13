@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/configurefile"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -153,6 +155,16 @@ func liftBuildDirFileFromWriter(rel string, lc targetLowerCtx) (string, bool) {
 	}
 	switch ch.mode {
 	case "content":
+		// VCS-stamp wiring: a file(WRITE v.h "…${GIT_SHA}…") is a
+		// configure_file in disguise — the non-expanded content is the
+		// template (the stamp var survives), the expanded content is
+		// the rendered output. When the template references a stamp
+		// var, route it through the configure_file stamp_values
+		// machinery (live workspace-status re-read at build time)
+		// instead of baking the frozen revision.
+		if name, ok := stampLiftWriterContent(rel, ch, lc); ok {
+			return name, true
+		}
 		name := bakedBuildDirName(rel)
 		t := bakeFileTarget(name, rel, []byte(ch.content), fileWriterBakeTags())
 		t.Provenance = writerProvenance(ch, lc)
@@ -181,6 +193,137 @@ func liftBuildDirFileFromWriter(rel string, lc targetLowerCtx) (string, bool) {
 	// download (and anything unmodeled): the caller's on-disk bake
 	// stands; downloadWriterFor lets it cite the URL.
 	return "", false
+}
+
+// buildFileWriterTemplates pairs each EXPANDED file(WRITE/APPEND) output
+// to its NON-EXPANDED template content and composes per build-relative
+// output. The non-expanded trace keeps BOTH the content (`${GIT_SHA}`
+// survives — what the stamp lift needs) AND the output PATH
+// (`${CMAKE_CURRENT_BINARY_DIR}/...`) unexpanded, so it can't be keyed
+// by output rel directly. The expanded and non-expanded traces log the
+// same call at the same source site, so pair by (File, Line): the
+// expanded call gives the real build-relative output, the non-expanded
+// call at the same site gives the template content. WRITE resets,
+// APPEND concatenates — composed in expanded trace order.
+func buildFileWriterTemplates(expanded, nonExpanded []shadow.FileWriterCall, recordedBuildDir string) map[string]string {
+	if len(nonExpanded) == 0 || len(expanded) == 0 {
+		return nil
+	}
+	type site struct {
+		file string
+		line int
+	}
+	tmplBySite := map[site]string{}
+	for _, c := range nonExpanded {
+		if c.Op == "write" || c.Op == "append" {
+			tmplBySite[site{c.File, c.Line}] = c.Content
+		}
+	}
+	out := map[string]string{}
+	for _, c := range expanded {
+		if c.Op != "write" && c.Op != "append" {
+			continue
+		}
+		tmpl, ok := tmplBySite[site{c.File, c.Line}]
+		if !ok {
+			continue
+		}
+		// The non-expanded trace logs the RAW cmake source token, so its
+		// escapes (\n \t \" \\ …) are literal where the expanded trace
+		// already decoded them to real bytes. Decode here so the
+		// template aligns with the rendered output; a ${VAR} reference
+		// has no backslash and survives.
+		tmpl = unescapeCMakeString(tmpl)
+		for _, o := range c.Outputs {
+			rel, inside := relativeIfInside(recordedBuildDir, o)
+			if !inside || rel == "" {
+				continue
+			}
+			if c.Op == "write" {
+				out[rel] = tmpl // WRITE truncates+resets
+			} else {
+				out[rel] += tmpl // APPEND concatenates
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// unescapeCMakeString decodes the quoted-argument escape sequences the
+// NON-EXPANDED trace logs verbatim (\n \t \r → control chars; \\ \" \;
+// \$ \<other> → the literal char), producing the real bytes the
+// EXPANDED trace already decoded — so a non-expanded template aligns
+// with its expanded rendered output for pickValues. A ${VAR} reference
+// carries no backslash and is left intact.
+func unescapeCMakeString(s string) string {
+	if !strings.Contains(s, "\\") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			switch s[i+1] {
+			case 'n':
+				b.WriteByte('\n')
+			case 't':
+				b.WriteByte('\t')
+			case 'r':
+				b.WriteByte('\r')
+			default:
+				b.WriteByte(s[i+1]) // \\ \" \; \$ \<other> → the char
+			}
+			i++
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// stampLiftWriterContent routes a stamp-bearing file(WRITE) through the
+// configure_file stamp_values machinery: the non-expanded template
+// (cc.FileWriterTemplates[rel]) paired with the expanded rendered
+// content (ch.content) yields the frozen Values (pickValues) and the
+// live StampValues (stampValuesForTemplate over cc.StampVars). Emits a
+// CONTENT-form cmake_configure_file so a `@GIT_SHA@`-style write re-reads
+// the current revision from the Bazel workspace status at build time.
+// Returns ("", false) — leaving the frozen write_file bake — when the
+// lift tier is off (the tool isn't staged), no template was captured
+// (no warm non-expanded pass), or the template references no stamp var.
+func stampLiftWriterContent(rel string, ch writerChain, lc targetLowerCtx) (string, bool) {
+	cc := lc.cc
+	if !cc.LiftConfigureFile || len(cc.StampVars) == 0 || len(cc.FileWriterTemplates) == 0 {
+		return "", false
+	}
+	template := cc.FileWriterTemplates[rel]
+	if template == "" {
+		return "", false
+	}
+	// Raw file(WRITE): cmake had already substituted both @VAR@ and
+	// ${VAR} forms, so the re-substitution is both-forms (AtOnly=false).
+	opts := configurefile.Options{}
+	stampValues := stampValuesForTemplate([]byte(template), opts, cc.StampVars)
+	if len(stampValues) == 0 {
+		return "", false
+	}
+	values, ok := pickValues([]byte(template), []byte(ch.content), opts, cc.CMakeVars)
+	if !ok {
+		return "", false
+	}
+	name := configureFileGenruleName(rel)
+	spec := newConfigureFileSpec(rel, opts)
+	spec.Content = template
+	spec.Values = values
+	spec.StampValues = stampValues
+	t := cmakeConfigureFileTarget(name, spec, fileWriterStampTags())
+	t.Provenance = writerProvenance(ch, lc)
+	cc.Genrules = append(cc.Genrules, t)
+	cc.OutToGenrule[rel] = name
+	return name, true
 }
 
 // downloadWriterFor returns the composed DOWNLOAD chain for rel, when
@@ -240,6 +383,14 @@ func fileWriterCopyTags() []string {
 // downloadBakeTags marks the cited-URL bake of a file(DOWNLOAD) output.
 func downloadBakeTags() []string {
 	return []string{"cmake-codegen", "cmake-codegen-download-bake"}
+}
+
+// fileWriterStampTags marks a stamp-wired file(WRITE): a LIVE
+// cmake_configure_file lift (re-reads workspace-status at build time),
+// NOT a convert-time bake — so it shares the configure-file facet and
+// does NOT ride the bake-warning channel.
+func fileWriterStampTags() []string {
+	return []string{"cmake-codegen", "cmake-codegen-configure-file", "cmake-codegen-file-writer-stamp"}
 }
 
 // writerChainTrustworthy is the verify pass the lift owes its caller

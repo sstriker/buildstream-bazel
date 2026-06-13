@@ -156,6 +156,30 @@ type codegenContext struct {
 	// build_dir_writer_lift.go.
 	FileWriterIndex map[string][]shadow.FileWriterCall
 
+	// CMakeVars is the configure's variable-namespace dump (the
+	// dump-vars hook). The writer-index stamp lift uses it as the
+	// pickValues fallback when extracting frozen values from a
+	// stamp-bearing file(WRITE) template. LiftConfigureFile mirrors
+	// --lift-configure-file: the file(WRITE) stamp lift emits a
+	// cmake_configure_file rule (needs the staged tool), so it only
+	// fires when the operator opted into the lift tier — otherwise the
+	// frozen write_file bake stands, exactly like configure_file.
+	CMakeVars         map[string]string
+	LiftConfigureFile bool
+
+	// FileWriterTemplates maps a build-dir-relative path to the
+	// NON-EXPANDED composed content of its file(WRITE/APPEND) chain —
+	// the warm-pass harvest where a `${GIT_SHA}` reference survives
+	// verbatim (--trace-expand would substitute it away). A
+	// stamp-bearing file(WRITE) is a configure_file in disguise:
+	// non-expanded content is the template, expanded content the
+	// rendered output. The writer lift routes those through the
+	// configure_file stamp_values machinery (live workspace-status
+	// re-read) instead of baking the frozen revision. Empty when no
+	// non-expanded trace was captured (offline / no warm pass) → the
+	// frozen bake stands.
+	FileWriterTemplates map[string]string
+
 	// No-silent-drops accounting + the build-dir on-disk bake (see
 	// build_dir_source_bake.go). ElidedSources records every
 	// codemodel-referenced source the lowering dropped WITHOUT recovery

@@ -26,7 +26,12 @@ type warmRecovery struct {
 	// re-lower clears their execute_process capture keywords. See
 	// lower/execute_process_dead_capture.go.
 	deadCaptureVars map[string]bool
-	recovered       bool
+	// fileWriterTemplates are file(WRITE/APPEND) calls harvested from the
+	// non-expanded trace (where `${GIT_SHA}` survives verbatim); the
+	// re-lower routes a stamp-bearing file(WRITE) through the
+	// configure_file stamp_values machinery. See build_dir_writer_lift.go.
+	fileWriterTemplates []shadow.FileWriterCall
+	recovered           bool
 }
 
 // runCoalescedWarmPass runs ONE warm reconfigure carrying the union of the
@@ -173,7 +178,14 @@ func readStampSets(plainTrace, sourceRoot string, wr *warmRecovery) bool {
 	}
 	sets := shadow.ExtractSetAssignments(raw, sourceRoot)
 	forwards := shadow.ExtractParentScopeForwards(raw, sourceRoot)
-	if len(sets) == 0 && len(forwards) == 0 {
+	// File(WRITE/APPEND) writers from the SAME non-expanded trace: a
+	// stamp-bearing file(WRITE) keeps its `${GIT_SHA}` marker here, so
+	// the re-lower can wire it to live workspace-status. Harvested
+	// independently of the set-copies (a project may have one without
+	// the other).
+	writers := shadow.ExtractFileWriterCalls(raw, sourceRoot)
+	wr.fileWriterTemplates = writers
+	if len(sets) == 0 && len(forwards) == 0 && len(writers) == 0 {
 		return false
 	}
 	wr.sets = sets
