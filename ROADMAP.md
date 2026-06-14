@@ -552,35 +552,44 @@ transition cleanly.
   compile-db lenses already widen their fixed-fixture CI gates to the
   corpus).
 
-- **ELF dynamic-section fidelity lens (shared libs + executables) —
-  SHIPPED (v1, opt-in `SURVEY_ELF_FIDELITY`); seed more members.** The
-  dynamic-section sibling of the symbol-fidelity lens: where that lens
-  compares EXPORTED-SYMBOL SETS of STATIC archives (`nm`) and deliberately
-  abstracts away binary structure (the right call for `.a` —
-  section/relocation byte-diffs are toolchain noise), this lens reads the
-  dynamic/ABI surface a symbol-NAME set can't express, on BOTH a `.so` and
-  an executable (PIE / `ET_EXEC`) — **SONAME**, the **DT_NEEDED**
-  runtime-dependency list, **symbol versioning** (`.gnu.version_d` nodes —
-  the SAME symbol names under different version tags is an ABI break the
-  nm-set compare passes clean), and **DT_RPATH/DT_RUNPATH** (host-leak
-  hermeticity). SHIPPED: `cmd/elf-fidelity-compare` (`readelf`-based
-  extractor + benign/impactful classifier mirroring `cmd/fidelity-compare`'s
-  shape), the `docs/fidelity-deltas.md` "ELF dynamic-section classifier"
-  taxonomy, the self-contained `meta-elf-fidelity.sh` gate, and the
-  8th, pipeline-last `run-survey.sh` lens (`SURVEY_ELF_FIDELITY`, after the
-  symbol lens, build-lens-gated) — driven by
-  `scripts/build-lens/<name>.elffidelity` (`ELFID_TARGET` / `ELFID_ARTIFACT`)
-  + `testdata/fidelity/<name>.elf-allowlist.txt`, reporting
-  `<out>/<name>/elf-fidelity.json`. It pairs with **Faithful
-  SHARED-library conversion**: it requires `SURVEY_SHARED=1` (the build
-  lens then converts with `--emit-shared-libraries` and builds the
-  `cc_shared_library` `.so`, which the lens REUSES — dynamic metadata is
-  config-invariant) and builds the cmake side with `BUILD_SHARED_LIBS=ON`;
-  without `SURVEY_SHARED` it self-skips. REMAINING: seeded with `fmt`;
-  add `.elffidelity` configs across the shared-validated corpus (zlib,
-  libxml2, brotli, curl, glog, spdlog, mbedtls, protobuf) and curate each
-  `.elf-allowlist.txt` against the real benign classes (BuildID, distro
-  NEEDED, version-node BASE = soname) as members come online.
+- **ELF section + dynamic fidelity lens — SHIPPED (opt-in
+  `SURVEY_ELF_FIDELITY`); seed more members.** The structural sibling of the
+  symbol-fidelity lens (which compares EXPORTED-SYMBOL SETS of static archives
+  via `nm`). It compares, on whatever artifact cmake NATURALLY builds: (1) the
+  ALL-SECTIONS set (`readelf -S`, base-name normalized so
+  -ffunction/-fdata-sections per-symbol granularity isn't noise — one-sided
+  sections benign when toolchain-determined: debug/notes/build-id/.comment/
+  symtab/reloc/PLT-GOT/hash-style, impactful when link/runtime-semantic:
+  init/fini arrays, TLS, RELRO, .eh_frame), and (2) the dynamic/ABI surface a
+  symbol-NAME set can't express — **SONAME**, **DT_NEEDED**, **symbol
+  versioning** (`.gnu.version_d` nodes), **DT_RPATH/DT_RUNPATH** host-leak. The
+  section tier is the one that works on EVERY artifact (`.so`, executable, AND
+  `.a`); the dynamic tier no-ops cleanly on a `.a`. It does NOT dictate shared —
+  the cmake side builds the project's natural config (`fmt` → static `libfmt.a`,
+  `zlib` → `libz.so` from its explicit SHARED target), and pairs with
+  `SURVEY_SHARED=1` so the bazel build-ws is the same natural config (without it
+  the default forces `BUILD_SHARED_LIBS=OFF`, so it self-skips to avoid comparing
+  a forced-static bazel artifact against cmake's natural one). SHIPPED:
+  `cmd/elf-fidelity-compare`, `meta-elf-fidelity.sh`, the 8th `run-survey.sh`
+  lens driven by `scripts/build-lens/<name>.elffidelity` +
+  `testdata/fidelity/<name>.elf-allowlist.txt`, reporting
+  `<out>/<name>/elf-fidelity.json`. SEEDED + run: `fmt` (natural `.a` → 0
+  impactful, structurally equivalent) and `zlib` (natural `.so` → surfaces the
+  converter gap below). REMAINING: add `.elffidelity` configs across the rest of
+  the shared-validated corpus (libxml2, brotli, curl, glog, spdlog, mbedtls,
+  protobuf) + curate each `.elf-allowlist.txt` as members come online.
+
+- **`cc_shared_library` SONAME + symbol version-script fidelity (surfaced by
+  the ELF lens on zlib).** The converted `cc_shared_library` carries neither a
+  **SONAME** (cmake's `libz.so` has `libz.so.1` from `SOVERSION`; the bazel
+  `.so` has none → `soname-missing-in-bazel`) nor cmake's **symbol version
+  script** (`zlib.map` → `ZLIB_1.2.*` `.gnu.version_d` nodes; the bazel `.so`
+  exports unversioned → ~15 `version-node-only-in-cmake`). Both are real ABI
+  deltas: a consumer links against the soname + versioned symbols. The fix
+  threads cmake's `SOVERSION`/`OUTPUT_NAME` → a `cc_shared_library`
+  `shared_lib_name` + a soname linkopt, and the `VERSION`/version-script
+  (`LINK_DEPENDS` / `target_link_options(-Wl,--version-script=...)`) → a
+  linkopt + version-map src. Pure SHARED-path fidelity; off the static default.
 
 - **Source-narrowing-compatibility lens — SHIPPED (v1, opt-in
   `SURVEY_NARROWING_COMPAT=1`).** `scripts/narrowing-compat-lens.sh` (wired into

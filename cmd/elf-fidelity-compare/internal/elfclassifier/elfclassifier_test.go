@@ -255,3 +255,96 @@ func TestCompare_ExtraProjectNeeded(t *testing.T) {
 		t.Errorf("allowlisted NEEDED should be benign: %+v", rep2.ImpactfulDeltas)
 	}
 }
+
+func TestNormalizeSection(t *testing.T) {
+	cases := map[string]string{
+		".text._ZN3fmt6formatE":      ".text",             // -ffunction-sections
+		".text":                      ".text",             // bare
+		".rodata.str1.1":             ".rodata",           // string-merge
+		".data.foo":                  ".data",             // -fdata-sections
+		".data.rel.ro":               ".data.rel.ro",      // RELRO preserved
+		".data.rel.ro.local":         ".data.rel.ro",      // RELRO variant preserved
+		".gcc_except_table._ZN3fmtE": ".gcc_except_table", // per-function EH table
+		".rela.text._ZN3fmtE":        ".rela",             // per-function reloc
+		".rela.dyn":                  ".rela",             // dyn reloc
+		".rel.plt":                   ".rel",              // rel form
+		".init_array.001":            ".init_array",       // prioritized ctors
+		".eh_frame":                  ".eh_frame",         // untouched
+		".gnu.version_d":             ".gnu.version_d",    // untouched (benign handled elsewhere)
+	}
+	for in, want := range cases {
+		if got := normalizeSection(in); got != want {
+			t.Errorf("normalizeSection(%q) = %q want %q", in, got, want)
+		}
+	}
+}
+
+func TestIsBenignSection(t *testing.T) {
+	benign := []string{".comment", ".debug_info", ".note.gnu.build-id", ".symtab",
+		".strtab", ".gnu.hash", ".got", ".plt", ".rela", ".relro_padding",
+		".tm_clone_table", ".gnu.version_d", ".group", ".llvm_addrsig"}
+	for _, s := range benign {
+		if !isBenignSection(s) {
+			t.Errorf("%q should be benign (toolchain-determined)", s)
+		}
+	}
+	impactful := []string{".text", ".data", ".rodata", ".bss", ".init_array",
+		".fini_array", ".data.rel.ro", ".eh_frame", ".tdata", ".tbss", ".interp"}
+	for _, s := range impactful {
+		if isBenignSection(s) {
+			t.Errorf("%q should NOT be benign (real link/runtime section)", s)
+		}
+	}
+}
+
+func TestParseSections(t *testing.T) {
+	// Canned `readelf -W -S` output: a NULL section (blank name), real sections,
+	// and per-function sections that must normalize to base names.
+	out := []byte(`There are 5 section headers, starting at offset 0x100:
+
+Section Headers:
+  [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al
+  [ 0]                   NULL            0000000000000000 000000 000000 00      0   0  0
+  [ 1] .text._ZN3fmtE    PROGBITS        0000000000000000 000040 000010 00  AX  0   0 16
+  [ 2] .rela.text._ZN3fmtE RELA          0000000000000000 000060 000018 18   I  7   1  8
+  [ 3] .init_array       INIT_ARRAY      0000000000000000 000080 000008 08  WA  0   0  8
+  [ 4] .debug_info       PROGBITS        0000000000000000 000090 000100 00      0   0  1
+`)
+	info := &ElfInfo{Sections: map[string]bool{}}
+	parseSections(out, info)
+	for _, want := range []string{".text", ".rela", ".init_array", ".debug_info"} {
+		if !info.Sections[want] {
+			t.Errorf("parseSections missing %q: %v", want, info.Sections)
+		}
+	}
+	if len(info.Sections) != 4 { // NULL skipped; .text._ZN/.rela.text._ZN normalized
+		t.Errorf("section set = %v, want exactly 4 normalized names", info.Sections)
+	}
+}
+
+func TestClassifySections(t *testing.T) {
+	rep := &Report{}
+	cmake := map[string]bool{".text": true, ".data": true, ".init_array": true, ".comment": true}
+	bazel := map[string]bool{".text": true, ".data": true, ".debug_info": true} // missing .init_array; extra .debug_info; cmake-only .comment
+	classifySections(rep, cmake, bazel, Allowlist{})
+	// .init_array only-in-cmake is a REAL section → impactful.
+	foundInit := false
+	for _, d := range rep.ImpactfulDeltas {
+		if d.Kind == "section-only-in-cmake" && d.Detail == ".init_array" {
+			foundInit = true
+		}
+	}
+	if !foundInit {
+		t.Errorf("missing .init_array should be impactful: %+v", rep.ImpactfulDeltas)
+	}
+	// .comment (cmake-only) + .debug_info (bazel-only) are toolchain → benign.
+	if len(rep.ImpactfulDeltas) != 1 {
+		t.Errorf("only .init_array should be impactful; got %+v", rep.ImpactfulDeltas)
+	}
+	// Allowlist suppresses a real section delta.
+	rep2 := &Report{}
+	classifySections(rep2, cmake, bazel, Allowlist{Symbols: map[string]bool{".init_array": true}})
+	if len(rep2.ImpactfulDeltas) != 0 {
+		t.Errorf("allowlisted section should be benign: %+v", rep2.ImpactfulDeltas)
+	}
+}

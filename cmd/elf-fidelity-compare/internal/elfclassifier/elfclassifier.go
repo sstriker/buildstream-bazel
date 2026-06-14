@@ -1,10 +1,23 @@
-// Package elfclassifier compares the DYNAMIC-section / ABI surface of two ELF
+// Package elfclassifier compares the ELF STRUCTURE + dynamic/ABI surface of two
 // artifacts — a cmake-built one vs the converted-then-Bazel-built one — and
 // classifies each delta benign / impactful, mirroring the symbol-set classifier
-// (cmd/fidelity-compare) one tier deeper. It handles BOTH artifact kinds the
-// converter produces: shared libraries (.so) and executables (PIE, which readelf
-// reports as ET_DYN, and classic ET_EXEC) — the dynamic section is read the same
-// way for each.
+// (cmd/fidelity-compare) one tier deeper. It handles EVERY artifact kind the
+// converter produces: shared libraries (.so), executables (PIE/ET_EXEC), AND
+// static archives (.a) — the artifact compared is whatever cmake NATURALLY
+// builds (the lens does not dictate shared), so a static-default project (fmt)
+// compares its .a and a project with a SHARED target (zlib) compares its .so.
+//
+// Two comparison tiers:
+//   - ALL SECTIONS (readelf -S): the set of ELF section NAMES, normalized to
+//     base names so -ffunction-sections / -fdata-sections per-symbol granularity
+//     (`.text._ZN…`, `.rela.text._ZN…`) doesn't create noise. A section present
+//     on only one side is benign when toolchain-determined (debug, notes,
+//     build-id, .comment, symbol tables, relocation/PLT/GOT, hash style) and
+//     impactful when it carries link/runtime semantics (init/fini arrays, TLS,
+//     RELRO, .eh_frame). This is the one tier that works on a static archive.
+//   - DYNAMIC section (readelf -d / --version-info): SONAME, DT_NEEDED, symbol
+//     VERSIONING (.gnu.version_d), DT_RPATH/DT_RUNPATH — library/executable
+//     facts; a static archive carries none, so those tiers no-op cleanly on a .a.
 //
 // The symbol-fidelity lens compares EXPORTED-SYMBOL SETS (nm) — it deliberately
 // abstracts away binary structure, the right call for static archives. It
@@ -44,6 +57,7 @@ type ElfInfo struct {
 	Rpath       []string        // DT_RPATH path list (legacy)
 	Runpath     []string        // DT_RUNPATH path list
 	VersionDefs map[string]bool // .gnu.version_d node names, excluding the BASE node
+	Sections    map[string]bool // ELF section names present (readelf -S), all members for an archive
 }
 
 // Report is the structured result of comparing two shared objects.
@@ -60,6 +74,9 @@ type Report struct {
 
 	// VersionDefsBoth is the count of version-definition nodes on both sides.
 	VersionDefsBoth int `json:"version_defs_both"`
+
+	// SectionsBoth is the count of ELF section names present on both sides.
+	SectionsBoth int `json:"sections_both"`
 
 	// BenignDeltas catalogs explained differences (distro-default NEEDED,
 	// soname version-suffix, RUNPATH-vs-RPATH form, allowlist-suppressed).
@@ -90,6 +107,7 @@ func (r *Report) FormatForOperator() string {
 	}
 	fmt.Fprintf(&b, "  DT_NEEDED in both: %d\n", r.NeededBoth)
 	fmt.Fprintf(&b, "  version-def nodes in both: %d\n", r.VersionDefsBoth)
+	fmt.Fprintf(&b, "  sections in both: %d\n", r.SectionsBoth)
 	fmt.Fprintf(&b, "  benign deltas: %d\n", len(r.BenignDeltas))
 	fmt.Fprintf(&b, "  impactful deltas: %d\n", len(r.ImpactfulDeltas))
 	if len(r.ImpactfulDeltas) > 0 {
@@ -122,10 +140,12 @@ func Compare(cmakePath, bazelPath string, allowed Allowlist) (*Report, error) {
 	rep := &Report{CMakeArtifact: cmakePath, BazelArtifact: bazelPath}
 	rep.NeededBoth = countCommon(ci.Needed, bi.Needed)
 	rep.VersionDefsBoth = countCommon(ci.VersionDefs, bi.VersionDefs)
+	rep.SectionsBoth = countCommon(ci.Sections, bi.Sections)
 	classifySoname(rep, ci.Soname, bi.Soname, allowed)
 	classifyNeeded(rep, ci.Needed, bi.Needed, allowed)
 	classifyRunpath(rep, ci, bi)
 	classifyVersionDefs(rep, ci.VersionDefs, bi.VersionDefs, allowed)
+	classifySections(rep, ci.Sections, bi.Sections, allowed)
 	sortDeltas(rep.BenignDeltas)
 	sortDeltas(rep.ImpactfulDeltas)
 	return rep, nil
@@ -133,19 +153,102 @@ func Compare(cmakePath, bazelPath string, allowed Allowlist) (*Report, error) {
 
 // extract reads a shared object's dynamic section + version definitions.
 func extract(path string) (*ElfInfo, error) {
-	info := &ElfInfo{Needed: map[string]bool{}, VersionDefs: map[string]bool{}}
-	dyn, err := runReadelf("-d", path)
+	info := &ElfInfo{Needed: map[string]bool{}, VersionDefs: map[string]bool{}, Sections: map[string]bool{}}
+	// Section headers (`readelf -S`) drive the ALL-SECTIONS comparison. This is
+	// the one readelf call that works on EVERY artifact the converter produces —
+	// a .so, an executable, AND a static archive (.a, where readelf lists each
+	// member object's sections; the union of names is what we compare). It's
+	// also the only one that's never empty, so a static-lib member (which has no
+	// dynamic section) still yields a meaningful structural snapshot.
+	sec, err := runReadelf("-S", path)
 	if err != nil {
 		return nil, err
 	}
-	parseDynamic(dyn, info)
-	// Version definitions are optional (most libraries carry none); a readelf
-	// failure here is treated as "no version info" rather than fatal, so a
-	// stripped or version-less .so still compares.
+	parseSections(sec, info)
+	// The dynamic section + version definitions are LIBRARY/EXECUTABLE facts; a
+	// static archive has neither, so a readelf -d failure here is non-fatal (the
+	// section comparison still carries the artifact). A .so/exe populates them.
+	if dyn, dErr := runReadelf("-d", path); dErr == nil {
+		parseDynamic(dyn, info)
+	}
 	if v, vErr := runReadelf("--version-info", path); vErr == nil {
 		parseVersionDefs(v, info)
 	}
 	return info, nil
+}
+
+// parseSections collects ELF section names from `readelf -S -W` output, across
+// all member objects for an archive. Each section line is
+// `  [ Nr] Name  Type  Address …`; the NULL section (index 0) has an empty Name
+// and is skipped, as is a line whose first post-bracket field is an ELF section
+// TYPE keyword (i.e. the Name column was blank).
+func parseSections(buf []byte, info *ElfInfo) {
+	s := bufio.NewScanner(bytes.NewReader(buf))
+	for s.Scan() {
+		line := s.Text()
+		rb := strings.IndexByte(line, ']')
+		lb := strings.IndexByte(line, '[')
+		if lb < 0 || rb <= lb {
+			continue
+		}
+		// Confirm the bracket holds a section index (digits/spaces only).
+		idx := strings.TrimSpace(line[lb+1 : rb])
+		if idx == "" || strings.IndexFunc(idx, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+			continue
+		}
+		fields := strings.Fields(line[rb+1:])
+		if len(fields) == 0 {
+			continue
+		}
+		name := fields[0]
+		// Blank Name (NULL section) → fields[0] is the TYPE keyword instead.
+		if elfSectionType[name] {
+			continue
+		}
+		info.Sections[normalizeSection(name)] = true
+	}
+}
+
+// normalizeSection collapses the per-symbol section granularity that
+// -ffunction-sections / -fdata-sections produce (`.text._ZN3fmt…` → `.text`,
+// `.rodata.str1.1` → `.rodata`), so two toolchains that differ only in that
+// flag compare equal on the BASE section set. This matters most for static
+// archives (.a), where every object carries per-function sections. RELRO data
+// (`.data.rel.ro*`) is a distinct meaningful section and is preserved before the
+// `.data` collapse.
+func normalizeSection(n string) string {
+	if n == ".data.rel.ro" || strings.HasPrefix(n, ".data.rel.ro") {
+		return ".data.rel.ro"
+	}
+	// Relocation sections name their TARGET (`.rela.text._ZN…`,
+	// `.rela.eh_frame`); collapse to the relocation kind so per-function
+	// relocations don't explode the report. They're object/archive-level,
+	// classified benign anyway.
+	if strings.HasPrefix(n, ".rela.") {
+		return ".rela"
+	}
+	if strings.HasPrefix(n, ".rel.") {
+		return ".rel"
+	}
+	for _, base := range []string{
+		".text", ".rodata", ".data", ".bss", ".tdata", ".tbss",
+		".init_array", ".fini_array", ".gcc_except_table",
+	} {
+		if n == base || strings.HasPrefix(n, base+".") {
+			return base
+		}
+	}
+	return n
+}
+
+// elfSectionType is the set of readelf section-TYPE keywords, used to detect a
+// blank Name column (where the type would be fields[0]).
+var elfSectionType = map[string]bool{
+	"NULL": true, "PROGBITS": true, "SYMTAB": true, "STRTAB": true, "RELA": true,
+	"REL": true, "HASH": true, "GNU_HASH": true, "DYNAMIC": true, "NOTE": true,
+	"NOBITS": true, "DYNSYM": true, "INIT_ARRAY": true, "FINI_ARRAY": true,
+	"PREINIT_ARRAY": true, "GROUP": true, "SYMTAB_SHNDX": true, "VERSYM": true,
+	"VERDEF": true, "VERNEED": true, "RELR": true, "GNU_VERSYM": true,
 }
 
 func runReadelf(flag, path string) ([]byte, error) {
@@ -423,6 +526,64 @@ func classifyVersionDefs(rep *Report, cmake, bazel map[string]bool, allowed Allo
 		}
 		rep.ImpactfulDeltas = append(rep.ImpactfulDeltas, Delta{Kind: "version-node-only-in-bazel", Detail: n})
 	}
+}
+
+// classifySections buckets the ALL-SECTIONS diff. A section present on only one
+// side is a structural difference; most one-sided sections are TOOLCHAIN noise
+// (the host-distro gcc cmake build vs the hermetic Bazel cc toolchain emit
+// different debug/note/build-id/relocation-form sections) and classify benign.
+// A section that carries real link/runtime semantics (init/fini arrays, TLS,
+// exception tables, RELRO, symbol versioning) appearing on only one side is a
+// genuine structural fidelity delta — impactful unless allowlisted.
+func classifySections(rep *Report, cmake, bazel map[string]bool, allowed Allowlist) {
+	emit := func(name, kind string) {
+		switch {
+		case allowed.Match(name):
+			rep.BenignDeltas = append(rep.BenignDeltas, Delta{Kind: "section-allowlist-suppressed", Detail: name})
+		case isBenignSection(name):
+			rep.BenignDeltas = append(rep.BenignDeltas, Delta{Kind: kind + "-toolchain", Detail: name})
+		default:
+			rep.ImpactfulDeltas = append(rep.ImpactfulDeltas, Delta{Kind: kind, Detail: name})
+		}
+	}
+	for n := range setSub(cmake, bazel) {
+		emit(n, "section-only-in-cmake")
+	}
+	for n := range setSub(bazel, cmake) {
+		emit(n, "section-only-in-bazel")
+	}
+}
+
+// isBenignSection reports whether a section name's presence legitimately differs
+// between a host-distro toolchain build and the hermetic Bazel one — debug info,
+// build-id / notes, the compiler .comment stamp, symbol/string tables (stripping
+// varies), COMDAT groups, relocation sections (object/archive-level, and the
+// linker's PLT/GOT relocation form), the hash-style choice, and clang/annobin
+// vendor sections. These are toolchain-determined, not converter signal.
+func isBenignSection(name string) bool {
+	switch name {
+	case ".comment", ".gnu_debuglink", ".gnu.build.attributes",
+		".symtab", ".strtab", ".shstrtab", ".symtab_shndx",
+		".gnu.hash", ".hash", ".llvm_addrsig",
+		".got", ".got.plt", ".plt", ".plt.got", ".plt.sec", ".iplt", ".igot.plt",
+		// linker/compiler-version-determined padding + GCC transactional-memory
+		// clone table — present or not by toolchain, not by converter.
+		".relro_padding", ".tm_clone_table":
+		return true
+	}
+	for _, pre := range []string{
+		".debug", ".zdebug", ".note", ".rela", ".rel.", ".group",
+		".llvm", ".annobin", ".stab", ".gnu.lto_", ".gnu.warning",
+		// symbol-versioning sections: their SUBSTANCE (which version nodes) is
+		// already compared by classifyVersionDefs, so the section presence is
+		// redundant here (avoid double-reporting).
+		".gnu.version",
+	} {
+		if name == pre || strings.HasPrefix(name, pre) {
+			return true
+		}
+	}
+	return false
 }
 
 func pathSet(a, b []string) map[string]bool {

@@ -943,10 +943,14 @@ for entry in $projects; do
         _ef_conf="$repo_root/scripts/build-lens/$name.elffidelity"
         if [ -f "$_ef_conf" ]; then
             if [ "${SURVEY_SHARED:-0}" = "0" ]; then
-                # Without SURVEY_SHARED the converted workspace has no
-                # cc_shared_library, so there's no .so to compare — skip loudly
-                # rather than silently emit nothing.
-                echo "  $name: elf-fidelity -> skip(needs SURVEY_SHARED=1 for the .so)" >&2
+                # The lens compares cmake's NATURAL artifact (however cmake built
+                # it — .so for a project with a SHARED target, .a for a static
+                # one) against the bazel one. For the two sides to match, the
+                # bazel build-ws must ALSO be the natural config — which is what
+                # SURVEY_SHARED gives (the default forces BUILD_SHARED_LIBS=OFF).
+                # Skip loudly rather than compare a forced-static bazel artifact
+                # against cmake's natural one.
+                echo "  $name: elf-fidelity -> skip(needs SURVEY_SHARED=1 for the natural-config build)" >&2
             else
             (
                 ELFID_TARGET=""; ELFID_ARTIFACT=""; ELFID_CMAKE_ARTIFACT=""
@@ -966,10 +970,15 @@ for entry in $projects; do
                 _ef_bzlart="$(find -L "$proj_out/build-ws/bazel-bin" -name "$_ef_bzl" -type f 2>/dev/null | head -1)"
                 [ -z "$_ef_bzlart" ] && _ef_bzlart="$(find -L "$proj_out/build-ws/bazel-bin" -name "$_ef_bzl.*" -type f 2>/dev/null | head -1)"
 
-                # (2) Cmake side: configure+build the target natively with SHARED
-                # libraries. Defines mirror the build-lens convert (the .conf's
-                # --cmake-define pairs, sourced here) but with BUILD_SHARED_LIBS=ON.
-                _ef_defs="-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5 $ELFID_CMAKE_FLAGS"
+                # (2) Cmake side: configure+build the target in the project's
+                # NATURAL config — do NOT dictate shared. However cmake builds the
+                # target (a .so for a project with a SHARED target, a .a for a
+                # static one) is what we build and compare; the bazel side
+                # (SURVEY_SHARED, also natural) matches. Defines mirror the
+                # build-lens convert (the .conf's --cmake-define pairs, sourced
+                # here); BUILD_SHARED_LIBS is left UNSET so the project's own
+                # default decides.
+                _ef_defs="-DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 $ELFID_CMAKE_FLAGS"
                 _ef_cflags="$(
                     CONVERT_FLAGS=""
                     [ -f "$repo_root/scripts/build-lens/$name.conf" ] && . "$repo_root/scripts/build-lens/$name.conf" >/dev/null 2>&1 || true
