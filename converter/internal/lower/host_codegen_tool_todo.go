@@ -104,12 +104,15 @@ func classifyHostCodegenTool(genruleCmd string) (rawTok, driver string, absolute
 }
 
 // noteHostCodegenTool records a recovered genrule fallback whose driver is an
-// un-hermeticized host codegen tool, for the end-of-lower todo. No-op when the
-// sink isn't allocated (the report wasn't requested) or the driver is
-// hermeticized / benign. Called from the single recognizer-aware chokepoint
-// (recognizeOrGenrule), so it covers BOTH the standalone custom-command path
-// and the per-target ninja path — and fires regardless of --recognize-codegen
-// (the genrule fallback is what carries the non-hermetic driver either way).
+// un-hermeticized host codegen tool, for the end-of-lower todo. It always
+// records into the in-memory cc.HostCodegenTools sink (no-op only when cc is
+// nil or the driver is hermeticized / benign); the report itself is gated
+// downstream — emitHostCodegenToolTodos is a no-op on a nil collector, so the
+// recording is simply discarded when no report was requested. Called from the
+// single recognizer-aware chokepoint (recognizeOrGenrule), so it covers BOTH
+// the standalone custom-command path and the per-target ninja path — and fires
+// regardless of --recognize-codegen (the genrule fallback is what carries the
+// non-hermetic driver either way).
 func noteHostCodegenTool(cc *codegenContext, fallback ir.Target) {
 	if cc == nil {
 		return
