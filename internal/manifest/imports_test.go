@@ -335,3 +335,85 @@ func TestLoad_LegacyManifestWithoutPhase6Fields(t *testing.T) {
 		t.Errorf("legacy manifest should leave CMakeImportLabels nil: %v", e.CMakeImportLabels)
 	}
 }
+
+// TestTools_LookupAndValidation covers the `tools` section: basename and
+// absolute-path matches resolve to their labels, a relative multi-component
+// token is matched verbatim only (never by basename), duplicates fail under
+// Index, and empty match/label are authoring errors.
+func TestTools_LookupAndValidation(t *testing.T) {
+	r, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Tools: []*manifest.Tool{
+			{Match: "flatc", Label: "@flatbuffers//:flatc"},
+			{Match: "/opt/host/bin/gen.py", Label: "//tools:gen"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	if !r.HasTools() {
+		t.Error("HasTools should be true")
+	}
+	// A tools-only manifest has no cmake_target exports, so Empty (which
+	// reports export presence) stays true — the genrule fast-path relies on
+	// HasTools, not Empty, to proceed.
+	if !r.Empty() {
+		t.Error("a tools-only manifest should report Empty() (no exports)")
+	}
+	cases := []struct {
+		token, want string
+		ok          bool
+	}{
+		{"flatc", "@flatbuffers//:flatc", true},                // bare basename
+		{"/usr/local/bin/flatc", "@flatbuffers//:flatc", true}, // abs, basename match
+		{"./flatc", "", false},                                 // caller trims ./ before lookup; raw ./ no match
+		{"/opt/host/bin/gen.py", "//tools:gen", true},          // verbatim absolute
+		{"gen.py", "", false},                                  // basename of an abs-only entry: no match
+		{"build/gen/flatc", "", false},                         // relative multi: not basename-matched
+		{"thrift", "", false},                                  // unregistered
+	}
+	for _, c := range cases {
+		got, ok := r.LookupTool(c.token)
+		if ok != c.ok || got != c.want {
+			t.Errorf("LookupTool(%q) = (%q,%v), want (%q,%v)", c.token, got, ok, c.want, c.ok)
+		}
+	}
+
+	if _, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Tools:   []*manifest.Tool{{Match: "flatc", Label: "//a"}, {Match: "flatc", Label: "//b"}},
+	}); err == nil {
+		t.Error("duplicate tool match should be a strict-Index error")
+	}
+	if _, err := manifest.Index(&manifest.Imports{
+		Version: 1, Tools: []*manifest.Tool{{Match: "", Label: "//a"}},
+	}); err == nil {
+		t.Error("empty match should error")
+	}
+	if _, err := manifest.Index(&manifest.Imports{
+		Version: 1, Tools: []*manifest.Tool{{Match: "flatc", Label: ""}},
+	}); err == nil {
+		t.Error("empty label should error")
+	}
+}
+
+// TestTools_LoadMergedLastWins: a later doc's tool match overrides an earlier
+// one (same last-wins precedence the merge gives every other key).
+func TestTools_LoadMergedLastWins(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "base.json")
+	over := filepath.Join(dir, "over.json")
+	if err := os.WriteFile(base, []byte(`{"version":1,"tools":[{"match":"flatc","label":"//base:flatc"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(over, []byte(`{"version":1,"tools":[{"match":"flatc","label":"//over:flatc"}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := manifest.LoadMerged(base, over)
+	if err != nil {
+		t.Fatalf("LoadMerged: %v", err)
+	}
+	if got, _ := r.LookupTool("flatc"); got != "//over:flatc" {
+		t.Errorf("LookupTool(flatc) = %q, want //over:flatc (last wins)", got)
+	}
+}

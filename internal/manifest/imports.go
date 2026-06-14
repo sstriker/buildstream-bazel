@@ -16,7 +16,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // Imports is the top-level manifest object.
@@ -27,6 +29,45 @@ import (
 type Imports struct {
 	Version  int        `json:"version"`
 	Elements []*Element `json:"elements"`
+
+	// Tools maps host CODEGEN tools that have no native Bazel rule onto the
+	// label that provides them, so a recovered genrule drives the hermetic
+	// Bazel tool instead of cmake's configure-time host binary. See Tool.
+	// Top-level (not per-element) because a codegen tool is a build-time
+	// dependency of the conversion, not an export of any one converted
+	// element. Optional; empty for the common case.
+	Tools []*Tool `json:"tools,omitempty"`
+}
+
+// Tool maps a host codegen tool — one with no idiomatic native Bazel rule
+// (a project's own python/perl generator, flatc, thrift, an absolute
+// host-install binary) — onto the Bazel label that provides it. The genrule
+// recovery paths consult it through the single tool-swap chokepoint
+// (lower.rewriteToolFromTarget): a command token matching a Tool is rewritten
+// to `$(execpath <Label>)` and the label is added to the genrule's `tools`,
+// so the action runs the hermetic Bazel tool and Bazel stages it into the
+// sandbox. Without this an operator could only hermeticize a tool by abusing
+// an Export's LinkPaths with Kind=executable, and only when the command
+// referenced the tool by its absolute host path — basename-driven tools
+// (`flatc`, `python3`, `perl`) had no swap at all.
+//
+// This is the codegen counterpart to the recognizer registry: recognizers
+// cover tools WITH a native rule (protoc → proto_library); the tools map
+// covers tools WITHOUT one (they stay genrules, but hermetic ones).
+type Tool struct {
+	// Match is how a command token is recognized as this tool. Two forms:
+	//   - a bare BASENAME (no "/", e.g. "flatc", "python3") matches any
+	//     command token whose basename equals it — a PATH-resolved driver
+	//     or an absolute host path to the same program.
+	//   - an ABSOLUTE path (e.g. "/opt/host/bin/gen.py") matches that exact
+	//     token — the in-tree-script-by-absolute-path shape.
+	// A relative multi-component match is matched verbatim. Case-sensitive.
+	Match string `json:"match"`
+
+	// Label is the $(execpath)-able Bazel label that provides the tool, e.g.
+	// "@flatbuffers//:flatc" or "//tools:gen". Replaces the matched token and
+	// is added to the genrule's tools attribute.
+	Label string `json:"label"`
 }
 
 // Element represents one CMake source element (a converted package). Each
@@ -234,6 +275,8 @@ func LoadMerged(paths ...string) (*Resolver, error) {
 		byLinkPath:      map[string]*Export{},
 		byLinkLib:       map[string]*Export{},
 		byUmbrellaIncRt: map[string]string{},
+		byToolBasename:  map[string]string{},
+		byToolPath:      map[string]string{},
 	}
 	for _, p := range paths {
 		if p == "" {
@@ -274,6 +317,14 @@ func LoadMerged(paths ...string) (*Resolver, error) {
 				}
 			}
 		}
+		// Last-wins on tool-match collisions across merged docs (the same
+		// precedence the merge gives every other key): a producer --exports-in
+		// doc overrides the convention base.
+		for _, tl := range doc.Tools {
+			if err := r.addTool(tl, false); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return r, nil
 }
@@ -295,6 +346,8 @@ func Index(im *Imports) (*Resolver, error) {
 		byLinkPath:      map[string]*Export{},
 		byLinkLib:       map[string]*Export{},
 		byUmbrellaIncRt: map[string]string{},
+		byToolBasename:  map[string]string{},
+		byToolPath:      map[string]string{},
 	}
 	for _, el := range im.Elements {
 		if el == nil || el.Name == "" {
@@ -339,6 +392,13 @@ func Index(im *Imports) (*Resolver, error) {
 			}
 		}
 	}
+	// Strict: a duplicate tool match is an authoring ambiguity, surfaced here
+	// rather than silently won by last-write (mirrors the cmake_target rule).
+	for _, tl := range im.Tools {
+		if err := r.addTool(tl, true); err != nil {
+			return nil, err
+		}
+	}
 	return r, nil
 }
 
@@ -361,6 +421,67 @@ type Resolver struct {
 	byLinkPath      map[string]*Export
 	byLinkLib       map[string]*Export
 	byUmbrellaIncRt map[string]string // find_package include root → umbrella label
+	byToolBasename  map[string]string // codegen tool basename → bazel label
+	byToolPath      map[string]string // codegen tool abs/relative-multi path → label
+}
+
+// addTool registers one Tool entry into the resolver's by-basename / by-path
+// indexes. A bare basename (no "/") indexes by basename so any token whose
+// basename matches lifts; an absolute or relative-multi-component match
+// indexes verbatim. strict makes a duplicate match an error (Index); LoadMerged
+// passes strict=false for last-wins precedence.
+func (r *Resolver) addTool(t *Tool, strict bool) error {
+	if t == nil || t.Match == "" {
+		return fmt.Errorf("manifest: tool with empty match")
+	}
+	if t.Label == "" {
+		return fmt.Errorf("manifest: tool %q: empty label", t.Match)
+	}
+	dst := r.byToolPath
+	if !strings.Contains(t.Match, "/") {
+		dst = r.byToolBasename
+	}
+	if strict {
+		if _, dup := dst[t.Match]; dup {
+			return fmt.Errorf("manifest: duplicate tool match %q", t.Match)
+		}
+	}
+	dst[t.Match] = t.Label
+	return nil
+}
+
+// LookupTool returns the Bazel label registered for a command token naming a
+// codegen tool, or ("", false) if none. An absolute or relative-multi token
+// matches a verbatim path entry; an absolute path or a bare basename also
+// matches a registered basename. A relative multi-component token (typically
+// an in-tree output path) is NOT basename-matched — only its verbatim form —
+// so a tool name doesn't accidentally rewrite a same-basenamed output.
+func (r *Resolver) LookupTool(token string) (string, bool) {
+	if r == nil || token == "" {
+		return "", false
+	}
+	if label, ok := r.byToolPath[token]; ok {
+		return label, true
+	}
+	if len(r.byToolBasename) == 0 {
+		return "", false
+	}
+	if !strings.Contains(token, "/") || filepath.IsAbs(token) {
+		if label, ok := r.byToolBasename[filepath.Base(token)]; ok {
+			return label, true
+		}
+	}
+	return "", false
+}
+
+// HasTools reports whether the resolver carries any codegen-tool mappings.
+// The genrule tool-swap fast-path uses it to proceed even for a manifest that
+// has ONLY a tools section (no exports, so Empty() is true).
+func (r *Resolver) HasTools() bool {
+	if r == nil {
+		return false
+	}
+	return len(r.byToolBasename) > 0 || len(r.byToolPath) > 0
 }
 
 // UmbrellaForIncludeDir returns the umbrella label registered for an

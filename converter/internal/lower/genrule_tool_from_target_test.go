@@ -193,3 +193,53 @@ func TestRewriteToolFromTarget_ImportsAnchoredPrefix(t *testing.T) {
 		t.Errorf("no-prefix cmd = %q, want verbatim", cmd)
 	}
 }
+
+// TestRewriteToolFromTarget_ToolsMap covers the manifest `tools` section: a
+// host codegen tool with no native rule, matched by driver basename or
+// absolute path, is rewritten to $(execpath <label>) with the label in tools.
+// This is the channel that hermeticizes a basename-driven host tool (flatc,
+// python3, perl) — neither genrule path could do that through LinkPaths alone.
+func TestRewriteToolFromTarget_ToolsMap(t *testing.T) {
+	res, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Tools: []*manifest.Tool{
+			{Match: "flatc", Label: "@flatbuffers//:flatc"},
+			{Match: "/opt/host/bin/gen.py", Label: "//tools:gen"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Basename driver (PATH-resolved) + an absolute-path script arg; a
+	// same-basenamed relative output (build/gen.py) is left untouched.
+	cmd, tools := rewriteToolFromTarget(
+		"flatc --cpp foo.fbs && python /opt/host/bin/gen.py -o build/gen.py",
+		nil, nil, res, "")
+	want := "$(execpath @flatbuffers//:flatc) --cpp foo.fbs && python $(execpath //tools:gen) -o build/gen.py"
+	if cmd != want {
+		t.Errorf("cmd = %q\nwant %q", cmd, want)
+	}
+	if len(tools) != 2 {
+		t.Errorf("tools = %v, want both labels", tools)
+	}
+
+	// Absolute path whose basename matches a basename entry also lifts.
+	cmd, _ = rewriteToolFromTarget("/usr/bin/flatc x.fbs", nil, nil, res, "")
+	if cmd != "$(execpath @flatbuffers//:flatc) x.fbs" {
+		t.Errorf("abs-basename cmd = %q", cmd)
+	}
+
+	// VAR=<tool> form lifts the value, keeping the VAR= prefix.
+	cmd, _ = rewriteToolFromTarget("cmake -DFLATC=flatc .", nil, nil, res, "")
+	if cmd != "cmake -DFLATC=$(execpath @flatbuffers//:flatc) ." {
+		t.Errorf("VAR= cmd = %q", cmd)
+	}
+
+	// A tools-only manifest (no exports → Empty()==true) still drives the
+	// swap: the fast-path proceeds on HasTools().
+	cmd, _ = rewriteToolFromTarget("flatc x.fbs", nil, nil, res, "")
+	if cmd != "$(execpath @flatbuffers//:flatc) x.fbs" {
+		t.Errorf("tools-only cmd = %q", cmd)
+	}
+}

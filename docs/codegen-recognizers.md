@@ -266,6 +266,57 @@ Gate: `scripts/meta-cmake-recognizer-starlark.sh` loads an operator `.star` for
 a generator the built-ins don't know (`gen_pb`), asserts it fires + that the
 template compiles, and bazel-builds the result.
 
+## The complement: host codegen tools WITHOUT a native rule (the `tools` map)
+
+A recognizer is for a generator that *has* a native Bazel rule. The other
+half of fidelity is the generator that **doesn't** — a project's own
+python/perl script, a `flatc`/`thrift` you have no rules for, an absolute
+host-install binary. Those legitimately stay `genrule`s (the live-rerun rung
+of the [fidelity ladder](design/codegen-fidelity-ladder.md)), but the genrule
+must drive a **hermetic Bazel tool**, not the host binary cmake happened to
+resolve at configure time. Left raw, the recovered command keeps a host PATH
+name (`flatc …`) or an absolute host path (`/opt/host/bin/protoc …`) — which
+is invisible under a sandboxed `/tmp` and breaks on a clean executor.
+
+You hermeticize such a tool with a `tools` section in the imports manifest
+(`--imports-manifest`). It maps a command token — by **driver basename** or
+**absolute path** — onto the Bazel label that provides the tool:
+
+```json
+{
+  "version": 1,
+  "tools": [
+    { "match": "flatc",                 "label": "@flatbuffers//:flatc" },
+    { "match": "/opt/host/bin/gen.py",  "label": "//tools:gen" }
+  ]
+}
+```
+
+- A **bare basename** (`flatc`, `python3`, `perl`) matches any command token
+  whose basename equals it — a PATH-resolved driver *or* an absolute host
+  path to the same program.
+- An **absolute path** matches that exact token (the in-tree-script-by-
+  absolute-path shape).
+
+A matched token is rewritten to `$(execpath <label>)` and the label is added
+to the genrule's `tools`, so Bazel stages and runs the hermetic tool. This
+flows through the **single tool-swap chokepoint** (`rewriteToolFromTarget`),
+so it reaches *every* genrule recovery path — the standalone
+`add_custom_command` path and the ninja build-dir-copy path alike — with no
+per-path opt-in. It composes with the in-tree channel (a tool built *in* the
+graph already lifts to `$(location :name)`) and the imported-library channel
+(an `Export.LinkPaths` hit); the `tools` map is the explicit fallback for the
+no-native-rule case those two don't cover.
+
+A relative multi-component token (e.g. an in-tree output `build/gen/flatc`)
+is **not** basename-matched — only its verbatim form — so a tool name never
+accidentally rewrites a same-basenamed output.
+
+Schema + resolver: `internal/manifest/imports.go` (`Tools` / `Tool`,
+`Resolver.LookupTool`); swap: `rewriteToolFromTarget`
+(`converter/internal/lower/genrule_tool_from_target.go`); gate:
+`scripts/meta-cmake-host-codegen-tool.sh`.
+
 ## Where it sits
 
 - Starlark host (loader, `match`/`lower` shim, builtins, the host-side output
