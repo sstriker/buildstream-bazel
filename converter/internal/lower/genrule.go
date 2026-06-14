@@ -194,6 +194,15 @@ type codegenContext struct {
 	// after the built-ins (first-party wins), and only when RecognizeCodegen.
 	ExtraRecognizers []CodegenRecognizer
 
+	// NativeRuleSubPackage maps a recognized native rule's target name to the
+	// element-relative directory it should land in — the package owning the
+	// codegen output (e.g. foo_proto -> "pkg/a" for pkg/a/a.pb.cc). The
+	// recognizer names the rule + sets srcs by BASENAME, so it must be placed in
+	// the output's package for that basename to resolve and for cross-package
+	// proto imports to line up (//pkg/a:a_proto). Merged into Package.SubPackages
+	// after the native targets are emitted.
+	NativeRuleSubPackage map[string]string
+
 	// FileWriterTemplates maps a build-dir-relative path to the
 	// NON-EXPANDED composed content of its file(WRITE/APPEND) chain —
 	// the warm-pass harvest where a `${GIT_SHA}` reference survives
@@ -464,6 +473,7 @@ func newCodegenContext() *codegenContext {
 	return &codegenContext{
 		OutToGenrule:               map[string]string{},
 		OutToNativeConsumerDep:     map[string]string{},
+		NativeRuleSubPackage:       map[string]string{},
 		GendirMarkedOuts:           map[string]bool{},
 		RespfileHdrGroups:          map[string]string{},
 		CcEmbedSourceToHeader:      map[string]string{},
@@ -718,7 +728,9 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	// strips the generated src from the consuming target + wires the deps edge;
 	// OutToGenrule is registered only in the genrule fallback. Flag-off / no-match
 	// → the genrule unchanged.
-	tgts, recognized := recognizeOrGenrule(cc, codegenCommandFrom(rewrittenCmd, srcs, outs, cc.BazelPackagePath), gen)
+	recoCmd := codegenCommandFrom(rewrittenCmd, srcs, outs, cc.BazelPackagePath)
+	recoCmd.ProtoDeps = protoImportLabels(recoCmd.Srcs, cmakeSrc, cc.BazelPackagePath)
+	tgts, recognized := recognizeOrGenrule(cc, recoCmd, gen)
 	cc.Genrules = append(cc.Genrules, tgts...)
 	cc.SeenBuilds[b] = name
 	if !recognized {

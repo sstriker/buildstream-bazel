@@ -1915,6 +1915,10 @@ func emitStandaloneCustomCommands(pkg *ir.Package, g *ninja.Graph, opts Options,
 		// rule compiles the generated source itself. Runs regardless of the
 		// utility-edge walk above (it keys on OutToNativeConsumerDep).
 		rewriteNativeRuleConsumers(pkg, cc)
+		// Place recognized native rules in the package owning their codegen
+		// output (recorded by the dispatch), so the recognizer's basename srcs
+		// resolve and cross-package proto imports line up (//pkg/a:a_proto).
+		placeNativeRuleSubPackages(pkg, cc)
 	}
 }
 

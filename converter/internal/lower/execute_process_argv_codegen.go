@@ -3,6 +3,7 @@ package lower
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -169,7 +170,8 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 			srcs = append(srcs, rel)
 		}
 	}
-	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: argv[1:], Srcs: srcs})
+	protoDeps := protoImportLabels(srcs, anc.hostSrcDir, cc.BazelPackagePath)
+	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: argv[1:], Srcs: srcs, ProtoDeps: protoDeps})
 	if !matched || err != nil || len(res.DerivedOutputs) == 0 {
 		return nil, false
 	}
@@ -206,6 +208,15 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 		consumer := strings.TrimPrefix(res.ConsumerDeps[0], ":")
 		for _, rel := range rels {
 			cc.OutToNativeConsumerDep[rel] = consumer
+		}
+	}
+	// Sub-package placement (mirrors recognizeOrGenrule): land the native rules
+	// in the package owning the generated outputs.
+	if cc.NativeRuleSubPackage != nil && len(rels) > 0 {
+		if dir := path.Dir(rels[0]); dir != "" && dir != "." {
+			for _, t := range res.Targets {
+				cc.NativeRuleSubPackage[t.Name] = dir
+			}
 		}
 	}
 	return rels, true

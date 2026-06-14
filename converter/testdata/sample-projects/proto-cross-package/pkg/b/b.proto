@@ -1,0 +1,4 @@
+syntax = "proto3";
+package crosspkg.b;
+import "pkg/a/a.proto";
+message B { crosspkg.a.A a = 1; }

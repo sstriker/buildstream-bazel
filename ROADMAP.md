@@ -240,12 +240,22 @@ transition cleanly.
         output-authority cross-check stays host-side (the script declares
         `derived_outputs`, Go validates). `recognizers/protoc.star` is the
         template; gated by `scripts/meta-cmake-recognizer-starlark.sh` (a
-        non-built-in tool `gen_pb` whose operator script fires + builds). What's
-        LEFT, in order:
-        - **Cross-package proto import deps** via `protoImportClosure` → labels
-          on the `proto_library`'s `deps` (the recognizer already threads
-          `ProtoDeps`; the dispatch needs to compute + pass them).
-        - **Default-on + `--fidelity` gating**, then a corpus byte-sweep.
+        non-built-in tool `gen_pb` whose operator script fires + builds).
+        **Cross-package proto import deps + native-rule sub-package placement**
+        are SHIPPED too: a recognized proto_library/cc_proto_library lands in the
+        package owning its codegen output (`cc.NativeRuleSubPackage` →
+        `Package.SubPackages`, so the basename srcs resolve), and a `.proto`'s
+        source-tree `import`s are mapped to `proto_library` labels
+        (`protoImportLabels` → the recognizer's `deps`), so `import
+        "pkg/a/a.proto"` → `//pkg/a:a_proto`. Gated by
+        `scripts/meta-cmake-proto-cross-package.sh` (multi-package render +
+        `bazel build //pkg/b:b_cc_proto`). What's LEFT:
+        - **Default-on + `--fidelity` gating** — mechanically small (flip the
+          `--recognize-codegen` default, refuse-vs-fallback on a non-standard
+          claim per the dial), but the safety gate is a **corpus byte-sweep**:
+          flipping the default changes every corpus convert with protoc codegen,
+          so it must run in an environment where the survey corpus validates no
+          byte regressions (not a web container). Deferred until that can run.
         Fixture-driven; the existing grpc genrule path stays untouched until a
         grpc recognizer (`cc_grpc_library`) lands, then grpc can migrate.
     - **Generalized host-codegen-tool hermeticization — STILL NEEDED, for the

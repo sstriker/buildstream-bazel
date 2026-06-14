@@ -2,6 +2,8 @@ package lower
 
 import (
 	"fmt"
+	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -129,7 +131,62 @@ func recognizeOrGenrule(cc *codegenContext, cmd CodegenCommand, fallback ir.Targ
 			cc.OutToNativeConsumerDep[o] = consumer
 		}
 	}
+	// Sub-package placement: the recognizer named the rule + set srcs by
+	// basename, so the native targets must land in the package that owns the
+	// codegen output (dir of the recorded outputs) — else a multi-package
+	// project's basename srcs don't resolve and cross-package proto imports
+	// can't line up. Recorded here, merged into Package.SubPackages later.
+	if cc.NativeRuleSubPackage != nil && len(cmd.Outs) > 0 {
+		if dir := path.Dir(cmd.Outs[0]); dir != "" && dir != "." {
+			for _, t := range res.Targets {
+				cc.NativeRuleSubPackage[t.Name] = dir
+			}
+		}
+	}
 	return res.Targets, true
+}
+
+// protoImportLabels resolves the DIRECT proto imports of the sole .proto in srcs
+// (element-relative paths, e.g. "pkg/b/b.proto") to the proto_library labels the
+// recognizer's deps need — `import "pkg/a/a.proto"` → "//pkg/a:a_proto" (with
+// the element's bazelPackagePath prefixed). Only source-tree protos under
+// cmakeSrc are mapped (a well-known type from a -I include root isn't an
+// in-element dep). The label package + name mirror the recognizer's own
+// placement (dir of the proto, basename+"_proto"), so a cross-package edge
+// resolves. Empty when the proto has no in-tree imports.
+func protoImportLabels(srcs []string, cmakeSrc, bazelPackagePath string) []string {
+	proto := soleProtoInput(srcs)
+	if proto == "" || cmakeSrc == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(cmakeSrc, filepath.FromSlash(proto)))
+	if err != nil {
+		return nil
+	}
+	base := strings.Trim(bazelPackagePath, "/")
+	var labels []string
+	seen := map[string]bool{}
+	for _, imp := range parseProtoImports(string(data)) {
+		if imp == proto {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(cmakeSrc, filepath.FromSlash(imp))); err != nil {
+			continue // not an in-element proto (well-known type from a -I root)
+		}
+		pkgDir := path.Dir(imp)
+		name := strings.TrimSuffix(path.Base(imp), ".proto") + "_proto"
+		labelPkg := pkgDir
+		if base != "" {
+			labelPkg = path.Join(base, pkgDir)
+		}
+		label := "//" + labelPkg + ":" + name
+		if !seen[label] {
+			seen[label] = true
+			labels = append(labels, label)
+		}
+	}
+	sort.Strings(labels)
+	return labels
 }
 
 // outputClaimed reports whether a package-relative output is already wired to a
@@ -147,6 +204,22 @@ func (cc *codegenContext) outputClaimed(rel string) bool {
 	}
 	_, ok := cc.OutToNativeConsumerDep[rel]
 	return ok
+}
+
+// placeNativeRuleSubPackages merges the dispatch-recorded native-rule placements
+// (cc.NativeRuleSubPackage) into pkg.SubPackages, so the split transform lands
+// each recognized proto_library/cc_proto_library in the package owning its
+// codegen output.
+func placeNativeRuleSubPackages(pkg *ir.Package, cc *codegenContext) {
+	if pkg == nil || cc == nil || len(cc.NativeRuleSubPackage) == 0 {
+		return
+	}
+	if pkg.SubPackages == nil {
+		pkg.SubPackages = map[string]string{}
+	}
+	for name, dir := range cc.NativeRuleSubPackage {
+		pkg.SubPackages[name] = dir
+	}
 }
 
 // rewriteNativeRuleConsumers is the package-wide consumer rewrite for native
