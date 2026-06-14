@@ -203,6 +203,12 @@ type codegenContext struct {
 	// after the native targets are emitted.
 	NativeRuleSubPackage map[string]string
 
+	// LiftDerivedCodegen opts the derived-name stem-match recovery into a live
+	// genrule re-run (cd $(RULEDIR)) instead of the convert-time byte-bake, when
+	// placement is sound (Options.LiftDerivedCodegen / --lift-derived-codegen).
+	// Off by default — the bake is the safe fallback.
+	LiftDerivedCodegen bool
+
 	// FileWriterTemplates maps a build-dir-relative path to the
 	// NON-EXPANDED composed content of its file(WRITE/APPEND) chain —
 	// the warm-pass harvest where a `${GIT_SHA}` reference survives

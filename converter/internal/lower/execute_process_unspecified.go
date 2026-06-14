@@ -292,6 +292,14 @@ func liftUnspecifiedOutputs(ci int, call shadow.ExecuteProcessCall, anc execAnch
 		}
 	}
 	if orphans := plan.stemOuts[ci]; len(orphans) > 0 {
+		// Opt-in live upgrade: re-run the tool as a genrule instead of freezing
+		// the configure-written bytes, when placement is sound. Falls back to
+		// the bake when it can't (the safe default).
+		if cc.LiftDerivedCodegen {
+			if rels, lifted := liftDerivedOutputsRerun(call, orphans, anc, cc); lifted {
+				return rels, true
+			}
+		}
 		return bakeDerivedOutputs(call, orphans, anc, cc)
 	}
 	return nil, false
@@ -443,6 +451,124 @@ func rewriteArgvUnspecDir(argv []string, dirRel string, anc execAnchors, cc *cod
 		}
 		if i == 0 && filepath.IsAbs(a) {
 			rewritten = append(rewritten, shellQuoteArg(filepath.Base(a)))
+			continue
+		}
+		rewritten = append(rewritten, shellQuoteArg(a))
+	}
+	return srcs, rewritten, true
+}
+
+// liftDerivedOutputsRerun is the opt-in (--lift-derived-codegen) live upgrade of
+// the derived-name stem-match bake: instead of freezing the configure-written
+// bytes, emit a genrule that RE-RUNS the tool. The output isn't an argv operand
+// (the tool derives it from the input), so the genrule runs `cd $(RULEDIR)` and
+// the tool writes its derived name into the genrule's output dir. That placement
+// is sound only when every orphan sits at the build ROOT (a cwd-relative write
+// lands directly in $(RULEDIR)); a deeper path, an unliftable tool, or an
+// unstageable input declines to the bake. $(location) inputs are made absolute
+// (prefixed with the captured exec root $$ROOT) so they survive the cd.
+func liftDerivedOutputsRerun(call shadow.ExecuteProcessCall, orphans []string, anc execAnchors, cc *codegenContext) ([]string, bool) {
+	rels := append([]string(nil), orphans...)
+	sort.Strings(rels)
+	registered := 0
+	for _, rel := range rels {
+		if strings.Contains(rel, "/") {
+			return nil, false // not at the build root: cwd-relative placement unproven
+		}
+		if cc.outputClaimed(rel) {
+			registered++
+		}
+	}
+	if registered == len(rels) {
+		return rels, true // duplicate trace call: outputs already produced
+	}
+	if registered > 0 {
+		return nil, false // partial overlap with another recovery
+	}
+	argv := call.Commands[0]
+	if !argvToolLiftable(argv[0], anc, cc) {
+		return nil, false
+	}
+	srcs, rewritten, ok := rewriteArgvDerivedRerun(argv, anc, cc)
+	if !ok {
+		return nil, false
+	}
+	srcSet := map[string]bool{}
+	for _, s := range srcs {
+		srcSet[s] = true
+	}
+	for _, rel := range rels {
+		if srcSet[rel] {
+			return nil, false // in-place: an orphan that's also a staged (read-only) src
+		}
+	}
+	cmd := `ROOT="$$(pwd)" && cd "$(RULEDIR)" && ` + strings.Join(rewritten, " ")
+	driver := executeProcessDriverBasename(argv[0])
+	if driver == "" {
+		driver = "unknown"
+	}
+	tags := append(fileProducingTags(driver), "cmake-codegen-execute-process-derived-rerun")
+	sort.Strings(tags)
+	name := executeProcessGenruleName(rels[0])
+	cc.Genrules = append(cc.Genrules, ir.Target{
+		Name:        name,
+		Kind:        ir.KindGenrule,
+		Srcs:        srcs,
+		GenruleCmd:  cmd,
+		GenruleOuts: rels,
+		Tags:        tags,
+		Visibility:  []string{"//visibility:private"},
+	})
+	for _, rel := range rels {
+		cc.OutToGenrule[rel] = name
+	}
+	return rels, true
+}
+
+// rewriteArgvDerivedRerun rewrites a stem-match codegen argv for a `cd $(RULEDIR)`
+// re-run: argv[0] stays a PATH basename (re-runnable per the hoist contract);
+// each source-tree input becomes "$$ROOT/$(location <rel>)" (absolute, so it
+// survives the cd) and is staged as a src; a build-dir input already produced by
+// another recovery is referenced the same way; a non-path arg stays literal. A
+// build-dir path with no producer can't be staged → decline.
+func rewriteArgvDerivedRerun(argv []string, anc execAnchors, cc *codegenContext) (srcs, rewritten []string, ok bool) {
+	srcSet := map[string]bool{}
+	addSrc := func(rel string) {
+		if !srcSet[rel] {
+			srcSet[rel] = true
+			srcs = append(srcs, rel)
+		}
+	}
+	loc := func(rel string) string { return `"$$ROOT/$(location ` + rel + `)"` }
+	emitKeyed := func(a, repl string) string {
+		if eq := strings.IndexByte(a, '='); eq > 0 && !strings.ContainsAny(a[:eq], "/\\") {
+			return a[:eq+1] + repl
+		}
+		return repl
+	}
+	for i, a := range argv {
+		if i == 0 {
+			rewritten = append(rewritten, shellQuoteArg(filepath.Base(a)))
+			continue
+		}
+		p := stripArgvPathPrefix(a)
+		if rel, anchored := executeProcessAnchorSource(p, anc); anchored {
+			if rel == "" || isExistingDir(filepath.Join(anc.hostSrcDir, rel)) {
+				return nil, nil, false
+			}
+			if _, err := os.Stat(filepath.Join(anc.hostSrcDir, filepath.FromSlash(rel))); err != nil {
+				return nil, nil, false
+			}
+			addSrc(rel)
+			rewritten = append(rewritten, emitKeyed(a, loc(rel)))
+			continue
+		}
+		if rel, anchored := executeProcessAnchorOutput(p, anc); anchored {
+			if !cc.outputClaimed(rel) {
+				return nil, nil, false // unproduced build-dir path: can't stage
+			}
+			addSrc(rel)
+			rewritten = append(rewritten, emitKeyed(a, loc(rel)))
 			continue
 		}
 		rewritten = append(rewritten, shellQuoteArg(a))
