@@ -256,6 +256,17 @@ transition cleanly.
           flipping the default changes every corpus convert with protoc codegen,
           so it must run in an environment where the survey corpus validates no
           byte regressions (not a web container). Deferred until that can run.
+        - **Cross-package imports under a non-source-root `--proto_path`.**
+          `protoImportLabels` resolves a `.proto`'s `import`s literally under
+          `cmakeSrc` (the source root) to derive the `proto_library` dep label —
+          the standard layout where `--proto_path` IS the source root. A project
+          that rebases its proto path to a sub-dir (so `import "a.proto"` means
+          `<protoroot>/a.proto`, not `<srcroot>/a.proto`) has that in-tree import
+          dropped: the producer is still placed correctly, but the consumer
+          misses the `deps` edge → a LOUD build failure (never a silent wrong
+          build). Handle the proto_path-rebased shape (resolve imports against
+          the command's `-I`/`--proto_path` roots, not just the source root) when
+          a corpus member hits it.
         Fixture-driven; the existing grpc genrule path stays untouched until a
         grpc recognizer (`cc_grpc_library`) lands, then grpc can migrate.
     - **Generalized host-codegen-tool hermeticization — STILL NEEDED, for the
