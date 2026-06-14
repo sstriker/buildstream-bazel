@@ -41,11 +41,21 @@ type ToolConvention struct {
 }
 
 // builtinToolConventions maps a codegen tool's driver basename to its canonical
-// Bazel provider. Keep entries verified — each must name a real BCR label.
+// Bazel provider. Keep entries verified — each must name a real BCR label
+// (confirmed against the upstream BUILD + the module's BCR presence).
 var builtinToolConventions = map[string]ToolConvention{
 	// protoc: the protobuf BCR module exposes //:protoc; the converter already
 	// swaps a host protoc to this label on the grpc cd-shape path.
 	"protoc": {Label: "@protobuf//:protoc", Module: "protobuf"},
+	// flatc: flatbuffers' root BUILD defines `cc_binary(name = "flatc")` (the
+	// "public flatc compiler"); BCR module "flatbuffers".
+	"flatc": {Label: "@flatbuffers//:flatc", Module: "flatbuffers"},
+	// grpc_cpp_plugin: grpc's src/compiler/BUILD defines it (a grpc_proto_plugin
+	// → executable); BCR module "grpc". Note it's usually a protoc PLUGIN
+	// (`protoc --plugin=protoc-gen-grpc=<path>`), so the auto-swap fires only
+	// when it appears as a clean token, not buried in a `--plugin=k=v` arg; the
+	// registry entry still upgrades the host-codegen-tool todo's suggestion.
+	"grpc_cpp_plugin": {Label: "@grpc//src/compiler:grpc_cpp_plugin", Module: "grpc"},
 }
 
 // toolConventionFor returns the convention for a driver basename, or ok=false.

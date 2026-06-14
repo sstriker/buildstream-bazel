@@ -345,7 +345,9 @@ the remedy differs:
 
 For *well-known* generators the canonical Bazel label is a fixed convention,
 so the converter ships a curated **tool→label registry**
-(`tool_conventions.go`) — e.g. `protoc` → `@protobuf//:protoc`. It's used two
+(`tool_conventions.go`) — `protoc` → `@protobuf//:protoc`, `flatc` →
+`@flatbuffers//:flatc`, `grpc_cpp_plugin` → `@grpc//src/compiler:grpc_cpp_plugin`
+(each verified against the upstream BUILD + BCR). It's used two
 ways:
 - **Always on** — the `host-codegen-tool` todo for a known tool upgrades its
   `suggested_shape` to the REAL label (and names the `bazel_dep` to add)

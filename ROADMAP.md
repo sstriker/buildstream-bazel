@@ -308,10 +308,15 @@ transition cleanly.
       filegroup shape), and the consumer's tool-swap remaps the host prefix onto
       the anchor and rewrites the driver to `$(execpath <producing-label>)` with
       zero hand-authored entry (end-to-end contract pinned by
-      `TestRewriteToolFromTarget_ProducerExecutableExport`). What's LEFT:
-      BROADEN the convention registry beyond protoc (flatc/thrift/moc/… — each
-      entry must assert a verified BCR label; offline label verification is the
-      blocker, not the mechanism).
+      `TestRewriteToolFromTarget_ProducerExecutableExport`). The convention
+      registry now covers the BCR-available C++ codegen tools — `protoc`
+      (`@protobuf//:protoc`), `flatc` (`@flatbuffers//:flatc`), and
+      `grpc_cpp_plugin` (`@grpc//src/compiler:grpc_cpp_plugin`), each verified
+      against the upstream BUILD + the module's BCR presence. Further generators
+      (Apache `thrift`, Qt `moc`) have no stable BCR module, so they stay
+      operator-`tools`-map territory until one exists. This thread is COMPLETE;
+      remaining codegen work is the separate gRPC-service recognizer
+      (`cc_grpc_library`) tracked above.
   - **BDE** (`github.com/bloomberg/bde`) — ONBOARDED (scoped to `groups/bsl`),
     structural lenses run; build-lens follow-on below. Metadata-driven target
     construction via the BdeBuildSystem (BBS): each group builds via one

@@ -165,17 +165,22 @@ func TestHostCodegenTool_ConventionSuggestion(t *testing.T) {
 }
 
 func TestToolConventionTools(t *testing.T) {
-	tools := ToolConventionTools()
-	var found bool
-	for _, tl := range tools {
-		if tl.Match == "protoc" {
-			found = true
-			if tl.Label != "@protobuf//:protoc" {
-				t.Errorf("protoc convention label = %q", tl.Label)
-			}
-		}
+	want := map[string]string{
+		"protoc":          "@protobuf//:protoc",
+		"flatc":           "@flatbuffers//:flatc",
+		"grpc_cpp_plugin": "@grpc//src/compiler:grpc_cpp_plugin",
 	}
-	if !found {
-		t.Error("ToolConventionTools should include protoc")
+	got := map[string]string{}
+	for _, tl := range ToolConventionTools() {
+		got[tl.Match] = tl.Label
+	}
+	for m, label := range want {
+		if got[m] != label {
+			t.Errorf("convention[%q] = %q, want %q", m, got[m], label)
+		}
+		conv, ok := toolConventionFor(m)
+		if !ok || conv.Label != label || conv.Module == "" {
+			t.Errorf("toolConventionFor(%q) = %+v, ok=%v; want label %q + non-empty module", m, conv, ok, label)
+		}
 	}
 }
