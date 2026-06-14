@@ -270,6 +270,15 @@ type Options struct {
 	// to the bake, so existing converts are unchanged.
 	LiftDerivedCodegen bool
 
+	// Fidelity is the operator dial ("strict" / "best-effort", convmode
+	// vocabulary) governing how an unfaithful recovery is handled. Today it
+	// gates the recognizer's output cross-check: a matched-but-non-standard
+	// claim (derived outputs disagree with cmake's recorded ones) REFUSES under
+	// strict (a loud build-time stub) and FALLS BACK to the generic genrule
+	// under best-effort. "" = best-effort (preserves today's fall-back behavior
+	// when the dial isn't threaded). See docs/design/codegen-fidelity-ladder.md.
+	Fidelity string
+
 	// CMakeVars is the full cmake variable namespace captured
 	// at end of configure (cmakerun.Reply.Vars). Used by the
 	// configure_file lift as the values map for the lifted
@@ -1584,6 +1593,7 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 	cc.RecognizeCodegen = opts.RecognizeCodegen
 	cc.ExtraRecognizers = opts.ExtraCodegenRecognizers
 	cc.LiftDerivedCodegen = opts.LiftDerivedCodegen
+	cc.Fidelity = opts.Fidelity
 	traceDecoded, decodedTrace := tf.traceDecoded, tf.decodedTrace
 	decodedConfigureFiles, decodedFileGenerates, decodedExecuteProcesses := tf.decodedConfigureFiles, tf.decodedFileGenerates, tf.decodedExecuteProcesses
 	decodedOutOfTreeExecProcs := tf.decodedOutOfTreeExecProcs

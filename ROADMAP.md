@@ -250,14 +250,19 @@ transition cleanly.
         "pkg/a/a.proto"` → `//pkg/a:a_proto`. Gated by
         `scripts/meta-cmake-proto-cross-package.sh` (multi-package render +
         `bazel build //pkg/b:b_cc_proto`). What's LEFT:
-        - **Default-on for the opt-in codegen lifts** — mechanically small
-          (flip the `--recognize-codegen` default with `--fidelity`
-          refuse-vs-fallback, and the `--lift-derived-codegen` default for the
-          derived-name stem-match genrule re-run), but the safety gate is a
-          **corpus byte-sweep**: both flip convert outputs corpus-wide
-          (recognized protoc → native rules; stem-match bakes → live genrules),
-          so they must run where the survey corpus validates no regressions (not
-          a web container). Deferred until that can run.
+        - **Fold the codegen lifts under `--fidelity` (the master ladder).**
+          The preference order (native rule ≻ live genrule ≻ bake ≻ refusal) +
+          the dial mapping are codified in
+          `docs/design/codegen-fidelity-ladder.md`. `--fidelity` already gates
+          the recognizer's output cross-check (strict refuses a non-standard
+          claim with a loud stub; best-effort falls back) — the first wiring
+          increment, safe because the recognizer is opt-in. What's LEFT is the
+          **default flip**: make `strict` imply the lift opt-ins on +
+          `--bake-in=reject` + refuse-on-unsound (lift booleans become
+          overrides). That's mechanically small but changes convert output
+          corpus-wide (recognized protoc → native rules; stem-match bakes → live
+          genrules), so it's gated on a **survey-corpus byte-sweep** that can't
+          run in a web container. Deferred until that can run.
         - **Rebased `--proto_path` on the execute_process path.** The
           custom-command paths now handle a non-source-root `--proto_path` (the
           recognizer recovers the proto_path root from the proto src vs its
