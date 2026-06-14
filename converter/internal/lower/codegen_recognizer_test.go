@@ -4,10 +4,47 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
+
+// TestRecognizeOrGenrule_FidelityMismatch: a recognizer that MATCHES the tool
+// but whose derived outputs disagree with cmake's recorded ones refuses (a loud
+// build-time stub) under --fidelity=strict, and falls back to the genrule under
+// best-effort.
+func TestRecognizeOrGenrule_FidelityMismatch(t *testing.T) {
+	fallback := ir.Target{
+		Name: "g", Kind: ir.KindGenrule,
+		GenruleOuts: []string{"foo.pb.cc", "foo.pb.h", "foo.weird.h"},
+		GenruleCmd:  "protoc --cpp_out=. foo.proto",
+	}
+	// protoc claims it (--cpp_out) but cmake recorded an extra output the cpp
+	// convention doesn't predict → matched-but-non-standard.
+	cmd := CodegenCommand{
+		Driver: "protoc", Args: []string{"--cpp_out=."}, Srcs: []string{"foo.proto"},
+		Outs: []string{"foo.pb.cc", "foo.pb.h", "foo.weird.h"},
+	}
+	strict := newCodegenContext()
+	strict.RecognizeCodegen = true
+	strict.Fidelity = "strict"
+	tgts, recognized := recognizeOrGenrule(strict, cmd, fallback)
+	if recognized {
+		t.Error("a non-standard claim is not a recognized native lower")
+	}
+	if len(tgts) != 1 || !strings.Contains(tgts[0].GenruleCmd, "exit 1") {
+		t.Errorf("strict should emit a refusal stub, got %+v", tgts)
+	}
+
+	best := newCodegenContext()
+	best.RecognizeCodegen = true
+	best.Fidelity = "best-effort"
+	tgts, _ = recognizeOrGenrule(best, cmd, fallback)
+	if len(tgts) != 1 || tgts[0].GenruleCmd != fallback.GenruleCmd {
+		t.Errorf("best-effort should fall back to the genrule, got %+v", tgts)
+	}
+}
 
 // TestProtocCppRecognizer_SupplyMode: the execute_process shape passes no
 // recorded Outs, so the recognizer SUPPLIES the derived set without a

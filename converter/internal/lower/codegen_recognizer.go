@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/convmode"
 )
 
 // CodegenCommand is a recovered codegen custom-command a CodegenRecognizer
@@ -130,7 +131,20 @@ func recognizeOrGenrule(cc *codegenContext, cmd CodegenCommand, fallback ir.Targ
 		return []ir.Target{fallback}, false
 	}
 	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, cmd)
-	if !matched || err != nil {
+	if matched && err != nil {
+		// A recognizer claimed the tool but the invocation is non-standard (its
+		// derived outputs disagree with cmake's recorded ones). The --fidelity
+		// dial decides: strict REFUSES — emit a loud build-time stub rather than
+		// a generic genrule whose output set we couldn't validate; best-effort
+		// FALLS BACK to the genrule. The CLI's product default is strict (it
+		// canonicalizes "" → strict before threading); the lower-package zero
+		// value "" here is the best-effort fall-back for a direct caller.
+		if cc.Fidelity == string(convmode.FidelityStrict) {
+			return []ir.Target{recognizerRefusalStub(fallback, cmd, err)}, false
+		}
+		return []ir.Target{fallback}, false
+	}
+	if !matched {
 		return []ir.Target{fallback}, false
 	}
 	if cc.OutToNativeConsumerDep != nil && len(res.ConsumerDeps) > 0 {
@@ -141,6 +155,23 @@ func recognizeOrGenrule(cc *codegenContext, cmd CodegenCommand, fallback ir.Targ
 	}
 	recordNativeRulePlacement(cc, res, cmd)
 	return res.Targets, true
+}
+
+// recognizerRefusalStub turns the genrule fallback into a loud build-time
+// refusal: same name + declared outs (so consumers still resolve the label),
+// but a cmd that prints the reason and exits non-zero. Used under
+// --fidelity=strict when a recognizer matched the tool but the invocation is
+// non-standard — "faithful native rule, or a loud failure; never a genrule
+// whose outputs we couldn't validate."
+func recognizerRefusalStub(fallback ir.Target, cmd CodegenCommand, err error) ir.Target {
+	stub := fallback
+	stub.Kind = ir.KindGenrule
+	stub.GenruleTools = nil
+	msg := fmt.Sprintf("convert-element-cmake: --fidelity=strict refused a non-standard %q codegen invocation: %v; re-run with --fidelity=best-effort to fall back to a generic genrule.", cmd.Driver, err)
+	stub.GenruleCmd = "echo " + shellQuoteArg(msg) + " >&2; exit 1"
+	stub.Tags = append(append([]string(nil), fallback.Tags...), "cmake-codegen-recognizer-strict-refusal")
+	sort.Strings(stub.Tags)
+	return stub
 }
 
 // recordNativeRulePlacement notes the package each native target should land in

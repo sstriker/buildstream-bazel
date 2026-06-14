@@ -573,6 +573,7 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 			RecognizeCodegen:                  a.RecognizeCodegen,
 			ExtraCodegenRecognizers:           extraRecognizers,
 			LiftDerivedCodegen:                a.LiftDerivedCodegen,
+			Fidelity:                          a.Fidelity,
 			CMakeVars:                         cmakeVars,
 			GenexProbes:                       genexProbes,
 			ConfigureLog:                      configureLogEvents,

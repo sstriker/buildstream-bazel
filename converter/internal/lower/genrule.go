@@ -209,6 +209,12 @@ type codegenContext struct {
 	// Off by default — the bake is the safe fallback.
 	LiftDerivedCodegen bool
 
+	// Fidelity is the operator dial ("strict"/"best-effort") governing how a
+	// non-faithful recovery is handled (Options.Fidelity). Today it gates the
+	// recognizer cross-check mismatch: strict refuses (loud stub), best-effort
+	// (or "") falls back to the generic genrule.
+	Fidelity string
+
 	// FileWriterTemplates maps a build-dir-relative path to the
 	// NON-EXPANDED composed content of its file(WRITE/APPEND) chain —
 	// the warm-pass harvest where a `${GIT_SHA}` reference survives
