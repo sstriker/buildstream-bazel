@@ -335,6 +335,25 @@ the remedy differs:
   `/opt/prefix/…` form (never the per-run-ephemeral synth-prefix path), so
   the report stays byte-identical across converts.
 
+### Built-in conventions: auto-deriving the label (`--tool-conventions`)
+
+For *well-known* generators the canonical Bazel label is a fixed convention,
+so the converter ships a curated **tool→label registry**
+(`tool_conventions.go`) — e.g. `protoc` → `@protobuf//:protoc`. It's used two
+ways:
+- **Always on** — the `host-codegen-tool` todo for a known tool upgrades its
+  `suggested_shape` to the REAL label (and names the `bazel_dep` to add)
+  instead of a `//path/to:…` placeholder. Zero BUILD-output change.
+- **`--tool-conventions`** (opt-in, off by default) — registers the
+  conventions into the imports resolver's `tools` map, so a recovered genrule
+  driving a known host tool **auto-hermeticizes** through the tool-swap with no
+  hand-authored entry. An operator `tools` entry for the same tool wins (the
+  convention is a fallback), and the swapped label's BCR module must be in the
+  consumer's MODULE (the todo names it). Gated by
+  `scripts/meta-cmake-tool-convention.sh`.
+
+The registry is kept small and verified — each entry asserts a real BCR label.
+
 Schema + resolver: `internal/manifest/imports.go` (`Tools` / `Tool`,
 `Resolver.LookupTool`); swap: `rewriteToolFromTarget`
 (`converter/internal/lower/genrule_tool_from_target.go`); auto-detect todo:

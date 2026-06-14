@@ -202,14 +202,19 @@ func emitHostCodegenToolTodos(c *todos.Collector, notes []hostCodegenToolNote) {
 		if g.path != "" {
 			ev["path"] = g.path
 		}
+		conv, known := toolConventionFor(d)
+		if known {
+			ev["convention_label"] = conv.Label
+			ev["convention_module"] = conv.Module
+		}
 		c.Add(todos.Todo{
 			Kind:           "host-codegen-tool",
 			Disposition:    disp,
 			GroupKey:       d,
 			Anchors:        anchors,
 			Evidence:       ev,
-			SuggestedShape: hostCodegenToolStanza(d),
-			Prompt:         hostCodegenToolPrompt(d, g.absolute, g.prefix),
+			SuggestedShape: hostCodegenToolStanza(d, conv, known),
+			Prompt:         hostCodegenToolPrompt(d, g.absolute, g.prefix, known),
 		})
 	}
 }
@@ -219,10 +224,19 @@ func emitHostCodegenToolTodos(c *todos.Collector, notes []hostCodegenToolNote) {
 // orchestrator can auto-derive it), with a basename `tools` entry as a stopgap.
 // A host tool (PATH or host-install absolute) wants a `tools` entry mapping it
 // to the providing label (a BCR module, a wrapper rule).
-func hostCodegenToolPrompt(driver string, absolute, prefix bool) string {
+func hostCodegenToolPrompt(driver string, absolute, prefix, known bool) string {
 	base := "genrule(s) drive the codegen tool " + driver + " by " + hostToolRefKind(absolute, prefix) +
 		" — non-hermetic (it relies on the host toolchain, and an absolute path won't " +
 		"exist on a clean Bazel executor). "
+	if known {
+		// The canonical label is a known convention: name it, and offer the
+		// auto-apply opt-in.
+		return base + "It's a known tool with a canonical Bazel provider (see suggested_shape): " +
+			"add that imports-manifest `tools` entry AND the bazel_dep it names, or pass " +
+			"--tool-conventions to auto-apply the built-in conventions. The tool-swap then " +
+			"rewrites the driver to $(execpath <label>) and stages the hermetic tool. " +
+			"See docs/codegen-recognizers.md."
+	}
 	if prefix {
 		return base + "It resolved from the synth-prefix, so it's a CROSS-ELEMENT tool: " +
 			"wire it through the PRODUCING element's imports-manifest Export (the orchestrator " +
@@ -248,15 +262,25 @@ func hostToolRefKind(absolute, prefix bool) string {
 }
 
 // hostCodegenToolStanza renders the ready-to-paste imports-manifest `tools`
-// entry for one host tool, keyed by the (deterministic) basename. The label is
-// a placeholder the operator fills in with the real provider (a BCR module's
-// tool, a wrapper rule, the producing element's export).
-func hostCodegenToolStanza(match string) string {
+// entry for one host tool, keyed by the (deterministic) basename. For a KNOWN
+// tool (a built-in convention) the entry carries the REAL canonical label plus
+// the bazel_dep to add; otherwise the label is a placeholder the operator fills
+// in with the real provider (a wrapper rule, the producing element's export).
+func hostCodegenToolStanza(match string, conv ToolConvention, known bool) string {
+	label := "//path/to:" + sanitizeOutputName(filepath.Base(match))
+	comment := "  // the Bazel target that provides the tool\n"
+	if known {
+		label = conv.Label
+		comment = "\n"
+	}
 	var b strings.Builder
 	b.WriteString("# imports manifest (--imports-manifest), under top-level \"tools\":\n")
 	b.WriteString("{\n")
 	b.WriteString("  \"match\": " + starlarkStr(match) + ",\n")
-	b.WriteString("  \"label\": \"//path/to:" + sanitizeOutputName(filepath.Base(match)) + "\"  // the Bazel target that provides the tool\n")
+	b.WriteString("  \"label\": " + starlarkStr(label) + comment)
 	b.WriteString("}")
+	if known && conv.Module != "" {
+		b.WriteString("\n# MODULE.bazel: bazel_dep(name = " + starlarkStr(conv.Module) + ", version = \"…\")")
+	}
 	return b.String()
 }

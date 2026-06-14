@@ -334,6 +334,19 @@ func loadConversionInputs(a cli.Args, r *fileapi.Reply, ninjaPath, hostBuildDir 
 	if err != nil {
 		return nil, err
 	}
+	// --tool-conventions: register built-in tool→label conventions (protoc →
+	// @protobuf//:protoc, …) as FALLBACK `tools` mappings, so a recovered
+	// genrule driving a known host tool auto-hermeticizes through the tool-swap.
+	// An operator `tools` entry for the same tool wins (AddToolConventions skips
+	// existing matches); with no manifest at all, start from an empty resolver.
+	if a.ToolConventions {
+		if imports == nil {
+			imports = manifest.NewResolver()
+		}
+		if err := imports.AddToolConventions(lower.ToolConventionTools()); err != nil {
+			return nil, err
+		}
+	}
 
 	prefixAbs := ""
 	if a.PrefixDir != "" {

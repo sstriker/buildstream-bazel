@@ -125,3 +125,57 @@ func TestEmitHostCodegenToolTodos_Empty(t *testing.T) {
 		t.Errorf("empty notes should emit nothing, got %d", col.Len())
 	}
 }
+
+// TestHostCodegenTool_ConventionSuggestion: a known tool (protoc) gets the
+// REAL canonical label + bazel_dep in its suggested shape and evidence; an
+// unknown tool keeps the placeholder. And ToolConventionTools exposes the
+// registry as manifest tool mappings.
+func TestHostCodegenTool_ConventionSuggestion(t *testing.T) {
+	cc := newCodegenContext()
+	noteHostCodegenTool(cc, ir.Target{Name: "gen_pb", GenruleCmd: "protoc --cpp_out=. api.proto"})
+	noteHostCodegenTool(cc, ir.Target{Name: "gen_z", GenruleCmd: "zzunknown in out"})
+	col := todos.New()
+	emitHostCodegenToolTodos(col, cc.HostCodegenTools)
+	rep := col.Report(todos.Preamble{}, "")
+	var protoc, unknown *todos.Todo
+	for i := range rep.Todos {
+		switch rep.Todos[i].GroupKey {
+		case "protoc":
+			protoc = &rep.Todos[i]
+		case "zzunknown":
+			unknown = &rep.Todos[i]
+		}
+	}
+	if protoc == nil || unknown == nil {
+		t.Fatalf("missing todos: %+v", rep.Todos)
+	}
+	if protoc.Evidence["convention_label"] != "@protobuf//:protoc" || protoc.Evidence["convention_module"] != "protobuf" {
+		t.Errorf("protoc convention evidence = %v", protoc.Evidence)
+	}
+	if !strings.Contains(protoc.SuggestedShape, `"label": "@protobuf//:protoc"`) ||
+		!strings.Contains(protoc.SuggestedShape, `bazel_dep(name = "protobuf"`) {
+		t.Errorf("protoc suggested shape should carry the real label + bazel_dep:\n%s", protoc.SuggestedShape)
+	}
+	if _, ok := unknown.Evidence["convention_label"]; ok {
+		t.Errorf("unknown tool must not carry a convention label: %v", unknown.Evidence)
+	}
+	if !strings.Contains(unknown.SuggestedShape, "//path/to:") {
+		t.Errorf("unknown tool should keep the placeholder label:\n%s", unknown.SuggestedShape)
+	}
+}
+
+func TestToolConventionTools(t *testing.T) {
+	tools := ToolConventionTools()
+	var found bool
+	for _, tl := range tools {
+		if tl.Match == "protoc" {
+			found = true
+			if tl.Label != "@protobuf//:protoc" {
+				t.Errorf("protoc convention label = %q", tl.Label)
+			}
+		}
+	}
+	if !found {
+		t.Error("ToolConventionTools should include protoc")
+	}
+}
