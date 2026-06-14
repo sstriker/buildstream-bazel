@@ -275,18 +275,23 @@ transition cleanly.
           corpus member needs it.
         Fixture-driven; the existing grpc genrule path stays untouched until a
         grpc recognizer (`cc_grpc_library`) lands, then grpc can migrate.
-    - **Generalized host-codegen-tool hermeticization — STILL NEEDED, for the
-      no-native-rule tools.** protoc/grpc move OFF the genrule path (above), so
-      this is for the codegen tools with no native Bazel rule (a project's own
-      python/perl generator, `flatc`/`thrift` without rules, Qt `moc`, …):
-      "host tool → `$(execpath @repo//:tool)` + anchor outputs to `$(RULEDIR)`
-      + stage input closure + `tools`", driven by a tool→label MAP extending
-      the imports-manifest (a `tools` section), reached from BOTH the ninja
-      (`reanchorBuildDirCopyGenrule`) and standalone (`standalone_genrules.go`)
-      paths — the latter never calls the hermetic swap today. The
-      `$(RULEDIR)//<file>` double-slash fix
-      (`anchorGenruleOutputsToRuledir`/`genruleSrcs`) is general and lands
-      here. grpc's existing `cd`-shape path stays untouched (no regression).
+    - **Auto-emit `tools` entries (the manifest is hand-authored today).**
+      Host-codegen-tool hermeticization itself is SHIPPED: a `tools` section in
+      the imports manifest maps a host codegen tool with no native rule (a
+      project's own python/perl generator, `flatc`/`thrift` without rules, an
+      absolute host binary) — by driver basename or absolute path — onto the
+      label that provides it (`internal/manifest`'s `Tool`/`LookupTool`). The
+      single tool-swap chokepoint (`rewriteToolFromTarget`) rewrites the matched
+      token to `$(execpath <label>)` + adds the label to the genrule's `tools`,
+      so it reaches BOTH genrule paths (standalone `add_custom_command` + the
+      ninja build-dir-copy path) with no per-path opt-in; output anchoring to
+      `$(RULEDIR)` and the input closure were already general. Gated by
+      `scripts/meta-cmake-host-codegen-tool.sh` (render + bazel-build halves);
+      see [`docs/codegen-recognizers.md`](docs/codegen-recognizers.md). What's
+      LEFT is the producer side: the orchestrator's manifest synthesizer should
+      EMIT `tools` entries for a converted element's host codegen tools
+      (today an operator hand-authors them), so a corpus member hermeticizes its
+      generators without manual manifest authoring.
   - **BDE** (`github.com/bloomberg/bde`) — ONBOARDED (scoped to `groups/bsl`),
     structural lenses run; build-lens follow-on below. Metadata-driven target
     construction via the BdeBuildSystem (BBS): each group builds via one

@@ -38,6 +38,14 @@ import (
 // leak. In-tree lookup wins when both match (it shouldn't — the key
 // spaces are build-dir-relative vs absolute).
 //
+// imports ALSO carries the `tools` map (manifest.Resolver.LookupTool) — the
+// home for host codegen tools with NO native rule (a project's python/perl
+// generator, flatc, thrift, an absolute-path script). A token matching a tool
+// by absolute path or driver basename rewrites to `$(execpath <label>)` with
+// the label in tools, exactly like the imported-library channel. This is the
+// channel that makes BOTH genrule paths (ninja + standalone) hermeticize a
+// basename-driven host tool, which neither could do through LinkPaths alone.
+//
 // hostPrefix mirrors the link-fragment channel's pre-lookup rewrite
 // (lower.go's hostPrefix→manifestPrefixAnchor remap): orchestrator-
 // emitted manifests key link_paths in the ANCHORED /opt/prefix/ form
@@ -55,7 +63,7 @@ import (
 // don't rewrite. Conservative because the alternative — substring
 // rewrite — would corrupt args like `--toolchain=bin/foo/include`.
 func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArtifacts map[string]bool, imports *manifest.Resolver, hostPrefix string) (string, []string) {
-	if cmd == "" || (len(artifactToName) == 0 && imports.Empty()) {
+	if cmd == "" || (len(artifactToName) == 0 && imports.Empty() && !imports.HasTools()) {
 		return cmd, nil
 	}
 	var b strings.Builder
@@ -121,6 +129,16 @@ func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArt
 			emitImported(label)
 			return
 		}
+		// Manifest `tools` map: a host codegen tool with no native rule,
+		// matched by absolute path or driver basename. Checked AFTER the
+		// in-tree and link-path channels (an in-tree producer or an imported
+		// library's IMPORTED_LOCATION wins), so the tools map is the explicit
+		// fallback for the no-native-rule case (flatc, python3, perl, a
+		// project's own absolute-path script).
+		if label, ok := imports.LookupTool(key); ok {
+			emitImported(label)
+			return
+		}
 		// `VAR=<artifact-path>` form: a custom command passes the tool as a
 		// cmake -D arg, e.g. VTK's `-DEXE_SQLITE3=bin/Debug/sqlitebin-9.4`
 		// (libproj hardcodes `$<TARGET_FILE:VTK::sqlitebin>`, an in-tree built
@@ -135,6 +153,11 @@ func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArt
 				return
 			}
 			if label, ok := resolveImported(tok[eq+1:]); ok {
+				b.WriteString(tok[:eq+1])
+				emitImported(label)
+				return
+			}
+			if label, ok := imports.LookupTool(val); ok && val != "" {
 				b.WriteString(tok[:eq+1])
 				emitImported(label)
 				return
