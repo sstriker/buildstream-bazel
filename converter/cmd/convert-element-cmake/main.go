@@ -1855,6 +1855,14 @@ func buildExportsDoc(pkg *ir.Package, pkgName, nsPrefix, bazelPkgPath string, al
 		// matches when a consumer's custom command drives the tool by
 		// its prefix-resolved $<TARGET_FILE:Pkg::tool> path.
 		if lib.Kind == ir.KindCCBinary || lib.Kind == ir.KindCCTest {
+			// Mark it an executable export (matching the real-install-tree
+			// harvest path, internal/harvest): the consumer's genrule tool-swap
+			// resolves it through LinkPaths Kind-agnostically, but wrappergen
+			// keys on Kind to emit a file-shaped filegroup (a genrule `tools`
+			// member) rather than a cc_import — wrapping an ELF program as a
+			// static_library breaks at the consumer's link. Without this, a
+			// convert-time tool export was mis-wrapped as a library.
+			ex.Kind = manifest.KindExecutable
 			ex.LinkPaths = []string{lower.ManifestPrefixAnchor + installRel(lib)}
 		} else if name := linkLibName(lib.ArtifactName); name != "" {
 			ex.LinkLibraries = []string{name}

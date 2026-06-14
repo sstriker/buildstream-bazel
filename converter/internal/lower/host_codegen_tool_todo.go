@@ -238,11 +238,15 @@ func hostCodegenToolPrompt(driver string, absolute, prefix, known bool) string {
 			"See docs/codegen-recognizers.md."
 	}
 	if prefix {
-		return base + "It resolved from the synth-prefix, so it's a CROSS-ELEMENT tool: " +
-			"wire it through the PRODUCING element's imports-manifest Export (the orchestrator " +
-			"can auto-derive that label). As a stopgap, the basename `tools` entry in " +
-			"suggested_shape also works. The converter's tool-swap then rewrites the driver " +
-			"to $(execpath <label>) and stages the hermetic tool. See docs/codegen-recognizers.md."
+		return base + "It resolved from the synth-prefix, so it's a CROSS-ELEMENT tool. " +
+			"A producing element that INSTALLS the tool auto-exports it (its exports.json " +
+			"carries a Kind=executable row with the anchored bin/ path), and the consumer's " +
+			"tool-swap then resolves it to the producing element's label with NO manual entry " +
+			"— so this todo means the producing element isn't installing/exporting the tool, " +
+			"or its exports.json wasn't wired into this element's deps. Fix that, or as a " +
+			"stopgap add the basename `tools` entry in suggested_shape. The swap rewrites the " +
+			"driver to $(execpath <label>) and stages the hermetic tool. " +
+			"See docs/codegen-recognizers.md."
 	}
 	return base + "Map it to a Bazel label by adding the suggested_shape entry to the imports " +
 		"manifest (--imports-manifest): the tool-swap then rewrites the driver to " +

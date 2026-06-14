@@ -329,11 +329,17 @@ the remedy differs:
   entry mapping it to the providing label (a BCR module's tool, a wrapper
   rule).
 - **`prefix`** — it resolved from the orchestrator's synth-prefix, so it's a
-  **cross-element** tool: its label is the *producing element's* manifest
-  `Export` (the orchestrator-auto-derivable case), with a basename `tools`
-  entry as a stopgap. The recorded path is anchored to the
-  `/opt/prefix/…` form (never the per-run-ephemeral synth-prefix path), so
-  the report stays byte-identical across converts.
+  **cross-element** tool. This is **auto-wired**: a producing element that
+  *installs* the tool auto-exports it — `buildExportsDoc` emits a
+  `Kind=executable` `Export` whose `LinkPaths` carry the `/opt/prefix/…`-anchored
+  `bin/` path and whose label is the tool's converted target — and the
+  consumer's tool-swap remaps the host prefix onto the anchor, matches that
+  export, and rewrites the driver to `$(execpath <producing-element-label>)`
+  with NO hand-authored entry. So a `prefix` todo means the producing element
+  isn't installing/exporting the tool (or its `exports.json` wasn't wired into
+  the consumer's deps); the basename `tools` entry is the stopgap. The recorded
+  path is anchored to `/opt/prefix/…` (never the per-run-ephemeral synth-prefix
+  path), so the report stays byte-identical across converts.
 
 ### Built-in conventions: auto-deriving the label (`--tool-conventions`)
 

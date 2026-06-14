@@ -228,6 +228,12 @@ func TestBuildExportsDoc_InstalledExecutable(t *testing.T) {
 	if len(gen.LinkLibraries) != 0 {
 		t.Errorf("executables carry no -l semantics; LinkLibraries = %v", gen.LinkLibraries)
 	}
+	// Kind=executable matches the real-install harvest path, so wrappergen
+	// emits a filegroup (a genrule `tools` member) rather than a cc_import
+	// over an ELF program.
+	if gen.Kind != manifest.KindExecutable {
+		t.Errorf("installed executable export Kind = %q, want %q", gen.Kind, manifest.KindExecutable)
+	}
 }
 
 // TestBuildExportsDoc_NoDepsForConvertedElements pins the Export.Deps
