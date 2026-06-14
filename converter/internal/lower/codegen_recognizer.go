@@ -35,6 +35,11 @@ type CodegenCommand struct {
 	// the package layout). The proto recognizer threads them onto proto_library
 	// deps; empty for an import-free proto.
 	ProtoDeps []string
+	// SiblingCppProto is set by the dispatch when ANOTHER protoc --cpp_out call
+	// for this same .proto exists in the package — so a grpc-ONLY call can
+	// reference the proto_library + cc_proto_library that sibling emits instead
+	// of re-emitting (and double-producing) them. See grpcOnlyRecognizer.
+	SiblingCppProto bool
 }
 
 // CodegenResult is what a recognizer emits in place of the generic genrule: the
@@ -84,6 +89,11 @@ var codegenRegistry = []CodegenRecognizer{
 	// proto+cc_proto+cc_grpc set, not just the cpp pair the cpp recognizer would
 	// claim on the --cpp_out flag alone.
 	grpcCppRecognizer{},
+	// grpc-only call (services in a separate invocation): emits cc_grpc_library
+	// referencing the sibling cpp call's proto_library/cc_proto_library. Fires
+	// only with a confirmed sibling (cmd.SiblingCppProto); mutually exclusive
+	// with the two above (needs --grpc_out, no --cpp_out).
+	grpcOnlyRecognizer{},
 	protocCppRecognizer{},
 }
 
@@ -487,6 +497,61 @@ func (grpcCppRecognizer) Lower(cmd CodegenCommand) (CodegenResult, error) {
 	}
 	return CodegenResult{
 		Targets:        []ir.Target{protoLibraryFor(proto, protoName, cmd), ccProtoLibraryFor(ccName, protoName), grpcLib},
+		ConsumerDeps:   []string{":" + grpcName},
+		DerivedOutputs: derived,
+		SubPackage:     path.Dir(proto),
+	}, nil
+}
+
+// grpcOnlyRecognizer maps a grpc-ONLY `protoc … --grpc_out …` custom-command (no
+// --cpp_out — the C++ service stubs compiled in a SEPARATE invocation from the
+// messages) to a cc_grpc_library that REFERENCES the proto_library +
+// cc_proto_library a sibling `protoc --cpp_out` call emits in the same package,
+// rather than re-emitting them (which would collide on the names and
+// double-produce foo.pb.*). It fires only when the dispatch confirms that
+// sibling exists (cmd.SiblingCppProto); without one the referenced
+// :foo_proto/:foo_cc_proto would dangle, so it declines and the call stays a
+// genrule. grpc_only=True is correct here: cc_grpc_library generates only the
+// service stubs, taking the messages via the referenced cc_proto_library.
+type grpcOnlyRecognizer struct{}
+
+func (grpcOnlyRecognizer) Name() string { return "protoc-grpc-only" }
+
+func (grpcOnlyRecognizer) Match(cmd CodegenCommand) bool {
+	if !strings.HasPrefix(filepath.Base(cmd.Driver), "protoc") {
+		return false
+	}
+	return cmd.SiblingCppProto &&
+		hasFlagPrefix(cmd.Args, "--grpc_out") && !hasFlagPrefix(cmd.Args, "--cpp_out")
+}
+
+func (grpcOnlyRecognizer) Lower(cmd CodegenCommand) (CodegenResult, error) {
+	proto := soleProtoInput(cmd.Srcs)
+	if proto == "" {
+		return CodegenResult{}, fmt.Errorf("protoc-grpc-only: no single .proto input in srcs %v", cmd.Srcs)
+	}
+	base := strings.TrimSuffix(filepath.Base(proto), ".proto")
+	// Output AUTHORITY: this call produces ONLY the service stubs.
+	derived := []string{base + ".grpc.pb.cc", base + ".grpc.pb.h"}
+	if len(cmd.Outs) > 0 {
+		if err := derivedOutputsConsistent(cmd.Outs, derived); err != nil {
+			return CodegenResult{}, fmt.Errorf("protoc-grpc-only: %w", err)
+		}
+	}
+	protoName := base + "_proto"
+	ccName := base + "_cc_proto"
+	grpcName := base + "_cc_grpc"
+	grpcLib := ir.Target{
+		Name: grpcName, Kind: ir.KindNativeRule,
+		NativeRule: &ir.NativeRuleSpec{Kind: "cc_grpc_library", LoadFrom: "@grpc//bazel:cc_grpc_library.bzl", Attrs: []ir.NativeAttr{
+			{Name: "srcs", List: []string{":" + protoName}},
+			{Name: "deps", List: []string{":" + ccName}},
+			{Name: "grpc_only", Ident: "True"},
+			{Name: "visibility", List: []string{"//visibility:public"}},
+		}},
+	}
+	return CodegenResult{
+		Targets:        []ir.Target{grpcLib},
 		ConsumerDeps:   []string{":" + grpcName},
 		DerivedOutputs: derived,
 		SubPackage:     path.Dir(proto),
