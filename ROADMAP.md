@@ -279,11 +279,14 @@ transition cleanly.
         cc_proto_library + `cc_grpc_library(grpc_only = True)` from
         `@grpc//bazel:cc_grpc_library.bzl` (`grpcCppRecognizer`, registered ahead
         of the cpp one so it owns the combined command), gated by
-        `scripts/meta-cmake-protoc-grpc-recognize.sh`. LEFT: the grpc-ONLY call
-        shape (services compiled in a separate invocation from the messages)
-        stays on the genrule path — recognizing it needs cross-command
-        coordination to reuse the sibling cpp call's proto_library rather than
-        duplicate it.
+        `scripts/meta-cmake-protoc-grpc-recognize.sh`. The grpc-ONLY call shape
+        (services compiled in a separate invocation from the messages) is
+        handled too: `grpcOnlyRecognizer` emits cc_grpc_library REFERENCING the
+        sibling `--cpp_out` call's proto_library/cc_proto_library (a dispatch
+        pre-scan, `cmd.SiblingCppProto`, confirms the sibling exists; without it
+        the call stays a genrule so the reference can't dangle), so neither the
+        proto_library nor foo.pb.* is double-produced. Both shapes are gated +
+        unit-tested. The gRPC-service recognizer line is COMPLETE.
     - **Auto-emit `tools` entries (the manifest is hand-authored today).**
       Host-codegen-tool hermeticization itself is SHIPPED: a `tools` section in
       the imports manifest maps a host codegen tool with no native rule (a
@@ -325,7 +328,7 @@ transition cleanly.
       (Apache `thrift`, Qt `moc`) have no stable BCR module, so they stay
       operator-`tools`-map territory until one exists. This thread is COMPLETE;
       the gRPC-service recognizer (`cc_grpc_library`, combined-call shape) is
-      shipped too (tracked above) — only its grpc-only-call variant remains.
+      shipped too (tracked above), including the grpc-only-call variant.
   - **BDE** (`github.com/bloomberg/bde`) — ONBOARDED (scoped to `groups/bsl`),
     structural lenses run; build-lens follow-on below. Metadata-driven target
     construction via the BdeBuildSystem (BBS): each group builds via one

@@ -347,3 +347,75 @@ func TestGrpcCppRecognizer_OutputCrossCheck(t *testing.T) {
 		t.Error("expected a cross-check error for the missing grpc outputs")
 	}
 }
+
+// TestGrpcOnlyRecognizer_Match: fires on a grpc-only protoc call (--grpc_out,
+// NO --cpp_out) ONLY when a sibling cpp call exists (SiblingCppProto); declines
+// without the sibling, on a combined call, and on non-protoc.
+func TestGrpcOnlyRecognizer_Match(t *testing.T) {
+	r := grpcOnlyRecognizer{}
+	cases := []struct {
+		name string
+		cmd  CodegenCommand
+		want bool
+	}{
+		{"grpc-only+sibling", CodegenCommand{Driver: "protoc", Args: []string{"--grpc_out=.", "svc.proto"}, SiblingCppProto: true}, true},
+		{"grpc-only-no-sibling", CodegenCommand{Driver: "protoc", Args: []string{"--grpc_out=.", "svc.proto"}}, false},
+		{"combined", CodegenCommand{Driver: "protoc", Args: []string{"--cpp_out=.", "--grpc_out=.", "svc.proto"}, SiblingCppProto: true}, false},
+		{"cpp-only", CodegenCommand{Driver: "protoc", Args: []string{"--cpp_out=.", "svc.proto"}, SiblingCppProto: true}, false},
+		{"not-protoc", CodegenCommand{Driver: "flatc", Args: []string{"--grpc_out=.", "x.fbs"}, SiblingCppProto: true}, false},
+	}
+	for _, c := range cases {
+		if got := r.Match(c.cmd); got != c.want {
+			t.Errorf("%s: Match = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestGrpcOnlyRecognizer_Lower: emits ONLY cc_grpc_library referencing the
+// sibling cpp call's :svc_proto/:svc_cc_proto (no re-emitted proto rules),
+// grpc_only=True, consumer dep → the cc_grpc_library, derived = grpc outs only.
+func TestGrpcOnlyRecognizer_Lower(t *testing.T) {
+	cmd := CodegenCommand{
+		Driver:          "protoc",
+		Args:            []string{"--grpc_out=.", "svc.proto"},
+		Srcs:            []string{"svc.proto"},
+		Outs:            []string{"svc.grpc.pb.cc", "svc.grpc.pb.h"},
+		Pkg:             "pkg",
+		SiblingCppProto: true,
+	}
+	res, matched, err := recognizeCodegen(cmd)
+	if !matched || err != nil {
+		t.Fatalf("recognizeCodegen matched=%v err=%v", matched, err)
+	}
+	if len(res.Targets) != 1 {
+		t.Fatalf("want exactly 1 target (cc_grpc_library, no re-emitted proto rules), got %d: %+v", len(res.Targets), res.Targets)
+	}
+	g := res.Targets[0]
+	if g.Name != "svc_cc_grpc" || g.NativeRule.Kind != "cc_grpc_library" {
+		t.Fatalf("target = %+v, want cc_grpc_library svc_cc_grpc", g)
+	}
+	if got := attrList(t, g, "srcs"); len(got) != 1 || got[0] != ":svc_proto" {
+		t.Errorf("srcs = %v, want [:svc_proto] (the sibling proto_library)", got)
+	}
+	if got := attrList(t, g, "deps"); len(got) != 1 || got[0] != ":svc_cc_proto" {
+		t.Errorf("deps = %v, want [:svc_cc_proto] (the sibling cc_proto_library)", got)
+	}
+	if len(res.ConsumerDeps) != 1 || res.ConsumerDeps[0] != ":svc_cc_grpc" {
+		t.Errorf("ConsumerDeps = %v, want [:svc_cc_grpc]", res.ConsumerDeps)
+	}
+	if len(res.DerivedOutputs) != 2 || res.DerivedOutputs[0] != "svc.grpc.pb.cc" {
+		t.Errorf("DerivedOutputs = %v, want the grpc pair only", res.DerivedOutputs)
+	}
+}
+
+// TestGrpcOnlyRecognizer_NoSiblingFallsThrough: without a sibling cpp call the
+// grpc-only recognizer declines, so no recognizer claims it (genrule fallback).
+func TestGrpcOnlyRecognizer_NoSiblingFallsThrough(t *testing.T) {
+	cmd := CodegenCommand{
+		Driver: "protoc", Args: []string{"--grpc_out=.", "svc.proto"},
+		Srcs: []string{"svc.proto"}, Outs: []string{"svc.grpc.pb.cc", "svc.grpc.pb.h"},
+	}
+	if _, matched, _ := recognizeCodegen(cmd); matched {
+		t.Error("a grpc-only call with no sibling cpp proto must NOT be recognized (stays a genrule)")
+	}
+}

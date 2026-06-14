@@ -1,0 +1,4 @@
+syntax = "proto3";
+package svc;
+message Ping { string msg = 1; }
+service Echo { rpc Call(Ping) returns (Ping); }

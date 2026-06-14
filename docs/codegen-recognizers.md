@@ -382,11 +382,13 @@ Schema + resolver: `internal/manifest/imports.go` (`Tools` / `Tool`,
   `grpcCppRecognizer` (a COMBINED `protoc --cpp_out --grpc_out` →
   proto_library + cc_proto_library + `cc_grpc_library(grpc_only = True)` from
   `@grpc//bazel:cc_grpc_library.bzl`; gated by
-  `scripts/meta-cmake-protoc-grpc-recognize.sh`) then `protocCppRecognizer`
-  (`--cpp_out` alone → proto_library + cc_proto_library). A grpc-ONLY call
-  (services compiled separately from the messages) stays on the genrule path —
-  emitting the native pair there would duplicate the sibling cpp call's
-  proto_library.
+  `scripts/meta-cmake-protoc-grpc-recognize.sh`), `grpcOnlyRecognizer` (a
+  grpc-ONLY `--grpc_out` call whose messages are compiled by a SEPARATE
+  `--cpp_out` call → cc_grpc_library REFERENCING that sibling call's
+  `:base_proto`/`:base_cc_proto` rather than re-emitting them; fires only when
+  the dispatch confirms the sibling via a pre-scan, `cmd.SiblingCppProto`, else
+  declines to the genrule), then `protocCppRecognizer` (`--cpp_out` alone →
+  proto_library + cc_proto_library).
 - Consumer-dep wiring: `resolveCodegenHeaderConsumers`
   (`converter/internal/lower/lower.go`) → `Package.NativeRuleConsumerLabels`
   (`converter/ir/types.go`) → `generatedHeaderWrappers`

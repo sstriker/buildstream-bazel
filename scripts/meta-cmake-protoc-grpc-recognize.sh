@@ -63,4 +63,20 @@ grep -qF 'deps = [":svc_cc_proto"]' "$build" || fail "cc_grpc_library deps shoul
 grep -qF 'grpc_only = True' "$build" || fail "cc_grpc_library should set grpc_only = True (unquoted)" "$build"
 grep -qE '^genrule\(' "$build" && fail "the protoc genrule should be GONE under --recognize-codegen" "$build"
 echo "ok  meta-cmake-protoc-grpc-recognize: combined protoc lowered to proto + cc_proto + cc_grpc_library"
+
+# --- Two-call shape: a separate --cpp_out call + a grpc-ONLY call for the same
+#     .proto. The grpc-only call must emit cc_grpc_library REFERENCING the cpp
+#     call's proto_library/cc_proto_library, not re-emit them (exactly ONE
+#     proto_library — no duplicate / multiple-producer). ---
+twofix="$repo_root/converter/testdata/sample-projects/protoc-grpc-twocall"
+two="$work_dir/two.BUILD"
+"$bin_dir/convert-element-cmake" --source-root "$twofix" --out-build "$two" --recognize-codegen \
+    >"$work_dir/two.out" 2>"$work_dir/two.err" || fail "two-call convert failed" "$work_dir/two.err"
+grep -qE '^cc_grpc_library\(' "$two" || fail "two-call: grpc-only call should lower to cc_grpc_library" "$two"
+grep -qF 'srcs = [":svc_proto"]' "$two" || fail "two-call: cc_grpc_library should reference the sibling proto_library" "$two"
+grep -qF 'deps = [":svc_cc_proto"]' "$two" || fail "two-call: cc_grpc_library should reference the sibling cc_proto_library" "$two"
+nproto=$(grep -cE '^proto_library\(' "$two" || true)
+[ "$nproto" = "1" ] || fail "two-call: expected exactly ONE proto_library (no duplicate), got $nproto" "$two"
+grep -qE '^genrule\(' "$two" && fail "two-call: both protoc calls should be recognized (no genrule)" "$two"
+echo "ok  meta-cmake-protoc-grpc-recognize: two-call shape references the sibling proto rules (no duplicate)"
 echo "ok  meta-cmake-protoc-grpc-recognize: ok"

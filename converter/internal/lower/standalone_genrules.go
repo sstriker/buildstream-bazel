@@ -217,6 +217,12 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		customTargetAll[ct.Name] = ct.All
 	}
 
+	// Pre-scan: the .proto basenames that have a `protoc --cpp_out` call in this
+	// package — the protos whose proto_library + cc_proto_library a cpp/combined
+	// recognition emits, so a sibling grpc-ONLY call can reference (not
+	// re-emit) them. Computed up front so it's order-independent.
+	cppProtoBases := protocCppOutputBases(edges, g)
+
 	var out []ir.Target
 	seenNames := map[string]int{}
 	for _, b := range edges {
@@ -447,6 +453,9 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		}
 		codegenCmd := codegenCommandFrom(rewrittenCmd, srcs, outs, bazelPackagePath)
 		codegenCmd.ProtoDeps = protoImportLabels(codegenCmd.Srcs, codegenCmd.Outs, cmakeSrc, bazelPackagePath)
+		if p := soleProtoInput(codegenCmd.Srcs); p != "" && cppProtoBases[strings.TrimSuffix(filepath.Base(p), ".proto")] {
+			codegenCmd.SiblingCppProto = true
+		}
 		tgts, _ := recognizeOrGenrule(cc, codegenCmd, fallback)
 		out = append(out, tgts...)
 	}
@@ -476,6 +485,43 @@ func codegenCommandFrom(cmd string, srcs, outs []string, pkg string) CodegenComm
 		Outs:   outs,
 		Pkg:    pkg,
 	}
+}
+
+// protocCppOutputBases scans the edges for `protoc --cpp_out` commands and
+// returns the set of their sole .proto basenames — the protos a cpp/combined
+// recognition turns into proto_library + cc_proto_library, so a sibling
+// grpc-ONLY call (grpcOnlyRecognizer) can reference those targets instead of
+// re-emitting them. Order-independent (a pre-pass over all edges).
+func protocCppOutputBases(edges []*ninja.Build, g *ninja.Graph) map[string]bool {
+	bases := map[string]bool{}
+	for _, b := range edges {
+		cmd, ok := ninja.CommandFor(g, b)
+		if !ok || cmd == "" {
+			continue
+		}
+		if !strings.HasPrefix(extractDriver(cmd), "protoc") || !strings.Contains(cmd, "--cpp_out") {
+			continue
+		}
+		if base := soleProtoBaseInCmd(cmd); base != "" {
+			bases[base] = true
+		}
+	}
+	return bases
+}
+
+// soleProtoBaseInCmd returns the basename (sans .proto) of the single .proto
+// token in a command, or "" when there isn't exactly one.
+func soleProtoBaseInCmd(cmd string) string {
+	var protos []string
+	for _, tok := range splitShellTokens(cmd) {
+		if strings.EqualFold(filepath.Ext(tok), ".proto") {
+			protos = append(protos, tok)
+		}
+	}
+	if len(protos) != 1 {
+		return ""
+	}
+	return strings.TrimSuffix(filepath.Base(protos[0]), ".proto")
 }
 
 // standaloneEdgeFiltered reports whether a custom-command edge should be
