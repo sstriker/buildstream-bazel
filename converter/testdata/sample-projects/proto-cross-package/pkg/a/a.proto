@@ -1,0 +1,3 @@
+syntax = "proto3";
+package crosspkg.a;
+message A { int32 id = 1; }

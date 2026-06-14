@@ -1,6 +1,8 @@
 package lower
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 
@@ -43,6 +45,33 @@ func TestRewriteNativeRuleConsumers(t *testing.T) {
 	}
 	if !slices.Contains(tgt.Deps, ":foo_cc_proto") {
 		t.Errorf("Deps = %v, want to contain :foo_cc_proto", tgt.Deps)
+	}
+}
+
+// TestProtoImportLabels: a .proto's source-tree imports map to the proto_library
+// labels the recognizer's deps need; well-known types (not under cmakeSrc) drop.
+func TestProtoImportLabels(t *testing.T) {
+	dir := t.TempDir()
+	for rel, body := range map[string]string{
+		"pkg/a/a.proto": "syntax=\"proto3\";\n",
+		"pkg/b/b.proto": "syntax=\"proto3\";\nimport \"pkg/a/a.proto\";\nimport \"google/protobuf/any.proto\";\n",
+	} {
+		p := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := protoImportLabels([]string{"pkg/b/b.proto"}, dir, "")
+	if len(got) != 1 || got[0] != "//pkg/a:a_proto" {
+		t.Errorf("protoImportLabels = %v, want [//pkg/a:a_proto] (well-known any.proto dropped)", got)
+	}
+	// With an element package prefix.
+	got = protoImportLabels([]string{"pkg/b/b.proto"}, dir, "elements/x")
+	if len(got) != 1 || got[0] != "//elements/x/pkg/a:a_proto" {
+		t.Errorf("protoImportLabels(prefixed) = %v", got)
 	}
 }
 
