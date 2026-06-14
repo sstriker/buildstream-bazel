@@ -654,7 +654,7 @@ func liftCMakeETouch(paths []string, anc execAnchors, cc *codegenContext) ([]str
 			return nil, fmt.Sprintf("cmake -E touch path %q is not under the build dir", p), false
 		}
 		rels = append(rels, rel)
-		if _, exists := cc.OutToGenrule[rel]; exists {
+		if cc.outputClaimed(rel) {
 			// Already recovered (e.g., the same call appears
 			// multiple times in the trace from re-evaluation).
 			continue
@@ -729,7 +729,7 @@ func bakeBuildDirCopyOutput(op, dst string, anc execAnchors, cc *codegenContext)
 	if !ok {
 		return nil, false
 	}
-	if _, exists := cc.OutToGenrule[dstRel]; exists {
+	if cc.outputClaimed(dstRel) {
 		return []string{dstRel}, true
 	}
 	rendered, err := os.ReadFile(filepath.Join(anc.hostBuildDir, dstRel))
@@ -834,7 +834,7 @@ func emitCopyGenrule(what, tagOp, src, dst string, anc execAnchors, cc *codegenC
 		// staging copy, not an identity.
 		return nil, "", true
 	}
-	if _, exists := cc.OutToGenrule[dstRel]; exists {
+	if cc.outputClaimed(dstRel) {
 		return []string{dstRel}, "", true
 	}
 	name := executeProcessGenruleName(dstRel)
@@ -1338,7 +1338,7 @@ func liftCpFile(realSrcRel, dst, dstRel string, cc *codegenContext) ([]string, s
 			outRel = dstRel + "/" + base
 		}
 	}
-	if _, exists := cc.OutToGenrule[outRel]; exists {
+	if cc.outputClaimed(outRel) {
 		return []string{outRel}, "", true
 	}
 	name := executeProcessGenruleName(outRel)
@@ -1415,7 +1415,7 @@ func emitDirCopyGenrule(real, realSrcRel, dstRel, subPrefix, op string, anc exec
 			srcFileRel = realSrcRel + "/" + fileUnder
 		}
 		outRel := dirCopyOutRel(dstRel, subPrefix, fileUnder)
-		if _, exists := cc.OutToGenrule[outRel]; exists {
+		if cc.outputClaimed(outRel) {
 			return nil
 		}
 		pairs = append(pairs, pair{src: srcFileRel, out: outRel})
@@ -1628,7 +1628,7 @@ func liftCMakeEConfigureFile(args []string, anc execAnchors, liftEnabled bool, c
 	if !ok {
 		return nil, fmt.Sprintf("cmake -E configure_file: destination %q is not under the build dir", dst), false
 	}
-	if _, exists := cc.OutToGenrule[dstRel]; exists {
+	if cc.outputClaimed(dstRel) {
 		return []string{dstRel}, "", true
 	}
 
@@ -1827,13 +1827,13 @@ func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *code
 		case rel == dstRel:
 			mergeStderr = true
 		default:
-			if _, exists := cc.OutToGenrule[rel]; exists {
+			if cc.outputClaimed(rel) {
 				return nil, fmt.Sprintf("ERROR_FILE %q collides with an already-produced output", call.ErrorFile), false
 			}
 			errRel = rel
 		}
 	}
-	if _, exists := cc.OutToGenrule[dstRel]; exists {
+	if cc.outputClaimed(dstRel) {
 		return []string{dstRel}, "", true
 	}
 

@@ -831,7 +831,7 @@ func bakeNestedGeneratedHeaders(nb NestedBuildInput, cc *codegenContext, opts Op
 			return nil
 		}
 		outRel := nb.BuildRel + "/" + rel
-		if _, produced := cc.OutToGenrule[outRel]; produced {
+		if cc.outputClaimed(outRel) {
 			// Another channel already owns the bytes (typically the
 			// nested lowering's own re-homed build-dir bake); don't
 			// duplicate the rule, but DO surface the out so the outer

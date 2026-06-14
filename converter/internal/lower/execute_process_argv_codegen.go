@@ -245,7 +245,7 @@ func argvToolLiftable(tool string, anc execAnchors, cc *codegenContext) bool {
 		return false
 	}
 	if rel, ok := relativeArgvBuildRel(tool); ok {
-		if _, produced := cc.OutToGenrule[rel]; produced {
+		if cc.outputClaimed(rel) {
 			return false
 		}
 		if st, err := os.Stat(filepath.Join(anc.hostBuildDir, filepath.FromSlash(rel))); err == nil && !st.IsDir() {
@@ -290,7 +290,7 @@ func classifyArgvOutputs(argv []string, anc execAnchors, cc *codegenContext) (ma
 			if !ok {
 				continue
 			}
-			if _, produced := cc.OutToGenrule[r]; produced {
+			if cc.outputClaimed(r) {
 				continue
 			}
 			if st, err := os.Stat(filepath.Join(anc.hostBuildDir, filepath.FromSlash(r))); err == nil && !st.IsDir() {
@@ -298,7 +298,7 @@ func classifyArgvOutputs(argv []string, anc execAnchors, cc *codegenContext) (ma
 			}
 			continue
 		}
-		if _, produced := cc.OutToGenrule[rel]; produced {
+		if cc.outputClaimed(rel) {
 			continue
 		}
 		st, err := os.Stat(filepath.Join(anc.hostBuildDir, filepath.FromSlash(rel)))
@@ -372,7 +372,7 @@ func rewriteArgvCodegen(argv []string, outs map[int]string, anc execAnchors, cc 
 			continue
 		}
 		if rel, ok := relativeArgvBuildRel(path); ok && !filepath.IsAbs(path) {
-			if _, produced := cc.OutToGenrule[rel]; produced {
+			if cc.outputClaimed(rel) {
 				// Relative reference to another recovery's generated file.
 				addSrc(rel)
 				rewritten = append(rewritten, emitKeyed(a, fmt.Sprintf("$(location %s)", rel)))

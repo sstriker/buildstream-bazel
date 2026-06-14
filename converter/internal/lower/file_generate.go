@@ -173,7 +173,7 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 				continue
 			}
 
-			if _, exists := cc.OutToGenrule[rel]; exists {
+			if cc.outputClaimed(rel) {
 				// Some other lifter (configure_file, execute_process)
 				// already claimed this output path. Two recoveries
 				// emitting the same rel would land duplicate rule

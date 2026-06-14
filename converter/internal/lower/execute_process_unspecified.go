@@ -312,7 +312,7 @@ func liftDirOperandOutputs(call shadow.ExecuteProcessCall, dirRel string, anc ex
 		}
 		if rel, ok := relativeIfInsideRelaxed(anc.hostBuildDir, p); ok {
 			if !cc.NinjaOuts[rel] {
-				if _, produced := cc.OutToGenrule[rel]; produced {
+				if cc.outputClaimed(rel) {
 					registered++
 				}
 				rels = append(rels, rel)
@@ -385,7 +385,7 @@ func unspecBuildOperandRel(p, dirRel string, anc execAnchors, cc *codegenContext
 	if rel == dirRel {
 		return rel, true
 	}
-	if _, produced := cc.OutToGenrule[rel]; produced {
+	if cc.outputClaimed(rel) {
 		return rel, true
 	}
 	if _, err := os.Stat(filepath.Join(anc.hostBuildDir, filepath.FromSlash(rel))); err == nil {
@@ -420,7 +420,7 @@ func rewriteArgvUnspecDir(argv []string, dirRel string, anc execAnchors, cc *cod
 				rewritten = append(rewritten, emitKeyed(a, "$(RULEDIR)/"+dirRel))
 				continue
 			}
-			if _, produced := cc.OutToGenrule[rel]; produced {
+			if cc.outputClaimed(rel) {
 				addSrc(rel)
 				rewritten = append(rewritten, emitKeyed(a, fmt.Sprintf("$(location %s)", rel)))
 				continue
@@ -465,7 +465,7 @@ func bakeDerivedOutputs(call shadow.ExecuteProcessCall, orphans []string, anc ex
 	sort.Strings(tags)
 	var rels []string
 	for _, rel := range orphans {
-		if _, produced := cc.OutToGenrule[rel]; produced {
+		if cc.outputClaimed(rel) {
 			rels = append(rels, rel)
 			continue
 		}
