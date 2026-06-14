@@ -31,27 +31,38 @@ work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
 fail() { echo "FAIL: $1"; shift; for f in "$@"; do sed 's/^/   /' "$f" 2>/dev/null || true; done; exit 1; }
 
-# --- Control: no manifest → raw host-tool reference, no execpath swap. ---
+# --- Control: no manifest → raw host-tool reference, no execpath swap, AND a
+#     `host-codegen-tool` conversion-todo telling the operator to map it. ---
 c="$work_dir/c"; mkdir -p "$c"
 "$bin_dir/convert-element-cmake" --source-root "$fixture" \
-    --out-build "$c/BUILD.bazel" >"$c/out" 2>"$c/err" || fail "control convert failed" "$c/err"
+    --out-build "$c/BUILD.bazel" --conversion-todos-report "$c/todos.json" \
+    >"$c/out" 2>"$c/err" || fail "control convert failed" "$c/err"
 grep -qF 'cmd = "gen.sh greeting.in' "$c/BUILD.bazel" \
     || fail "control should keep the raw host-tool reference (gen.sh)" "$c/BUILD.bazel"
 grep -qF 'execpath' "$c/BUILD.bazel" \
     && fail "control must not swap to an execpath label without a manifest" "$c/BUILD.bazel"
 echo "ok  meta-cmake-host-codegen-tool: control keeps the raw host-tool reference"
 
-# --- Manifest: the `tools` map drives the hermetic swap. ---
+grep -qF '"kind": "host-codegen-tool"' "$c/todos.json" \
+    || fail "control should surface a host-codegen-tool conversion-todo" "$c/todos.json"
+grep -qF '"match": "gen.sh"' "$c/todos.json" \
+    || fail "the todo should name the un-hermeticized driver as the suggested tools match" "$c/todos.json"
+echo "ok  meta-cmake-host-codegen-tool: control surfaces a host-codegen-tool todo (suggested tools entry)"
+
+# --- Manifest: the `tools` map drives the hermetic swap AND suppresses the todo. ---
 m="$work_dir/m"; mkdir -p "$m"
 "$bin_dir/convert-element-cmake" --source-root "$fixture" \
     --imports-manifest "$fixture/imports.json" \
-    --out-build "$m/BUILD.bazel" >"$m/out" 2>"$m/err" || fail "manifest convert failed" "$m/err"
+    --out-build "$m/BUILD.bazel" --conversion-todos-report "$m/todos.json" \
+    >"$m/out" 2>"$m/err" || fail "manifest convert failed" "$m/err"
 b="$m/BUILD.bazel"
 grep -qF '$(execpath //:gen_tool) greeting.in $(RULEDIR)/greeting.c' "$b" \
     || fail "the genrule should drive the hermetic tool via \$(execpath //:gen_tool)" "$b"
 grep -qF 'tools = ["//:gen_tool"]' "$b" \
     || fail "the genrule should carry the swapped label in tools" "$b"
-echo "ok  meta-cmake-host-codegen-tool: the tools map swaps the host tool to \$(execpath)"
+grep -qF '"kind": "host-codegen-tool"' "$m/todos.json" \
+    && fail "a hermeticized tool must NOT surface a host-codegen-tool todo" "$m/todos.json"
+echo "ok  meta-cmake-host-codegen-tool: the tools map swaps the host tool to \$(execpath) (todo suppressed)"
 
 # --- Bazel-build half: prove the swapped tool actually runs. ---
 if command -v bazel >/dev/null 2>&1; then BZL=bazel

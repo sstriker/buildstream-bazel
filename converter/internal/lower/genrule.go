@@ -235,6 +235,14 @@ type codegenContext struct {
 	// an operator who wants the repo-rule form. See download_lift.go.
 	DownloadLifts []downloadLiftRecord
 
+	// HostCodegenTools records each recovered genrule whose driver is an
+	// un-hermeticized HOST codegen tool — a generator with no native rule that
+	// wasn't swapped to $(execpath)/$(location) and isn't a benign cmake -E /
+	// shell builtin. emitHostCodegenToolTodos surfaces a structured
+	// `host-codegen-tool` todo (grouped by driver) telling the operator which
+	// imports-manifest `tools` entry to author. See host_codegen_tool_todo.go.
+	HostCodegenTools []hostCodegenToolNote
+
 	// No-silent-drops accounting + the build-dir on-disk bake (see
 	// build_dir_source_bake.go). ElidedSources records every
 	// codemodel-referenced source the lowering dropped WITHOUT recovery

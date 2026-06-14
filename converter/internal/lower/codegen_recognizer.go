@@ -128,6 +128,7 @@ func recognizeCodegenWith(extra []CodegenRecognizer, cmd CodegenCommand) (Codege
 // wrapper — OutToGenrule is deliberately NOT set for the native case.
 func recognizeOrGenrule(cc *codegenContext, cmd CodegenCommand, fallback ir.Target) ([]ir.Target, bool) {
 	if cc == nil || !cc.RecognizeCodegen {
+		noteHostCodegenTool(cc, fallback)
 		return []ir.Target{fallback}, false
 	}
 	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, cmd)
@@ -142,9 +143,11 @@ func recognizeOrGenrule(cc *codegenContext, cmd CodegenCommand, fallback ir.Targ
 		if cc.Fidelity == string(convmode.FidelityStrict) {
 			return []ir.Target{recognizerRefusalStub(fallback, cmd, err)}, false
 		}
+		noteHostCodegenTool(cc, fallback)
 		return []ir.Target{fallback}, false
 	}
 	if !matched {
+		noteHostCodegenTool(cc, fallback)
 		return []ir.Target{fallback}, false
 	}
 	if cc.OutToNativeConsumerDep != nil && len(res.ConsumerDeps) > 0 {
