@@ -216,10 +216,17 @@ func resultFromStarlark(cmd CodegenCommand, v starlark.Value) (CodegenResult, er
 	if len(derived) == 0 {
 		return CodegenResult{}, fmt.Errorf("result must declare derived_outputs for the output-authority cross-check")
 	}
-	if err := derivedOutputsConsistent(cmd.Outs, derived); err != nil {
-		return CodegenResult{}, err
+	// Same output-authority policy as the built-in recognizers: when cmake
+	// RECORDED the outputs (the custom-command paths), validate the script's
+	// derived set against them; when it didn't (the execute_process
+	// `--cpp_out=DIR` shape passes empty Outs), the script SUPPLIES the set and
+	// the caller corroborates it against on-disk + codemodel evidence.
+	if len(cmd.Outs) > 0 {
+		if err := derivedOutputsConsistent(cmd.Outs, derived); err != nil {
+			return CodegenResult{}, err
+		}
 	}
-	return CodegenResult{Targets: targets, ConsumerDeps: consumer}, nil
+	return CodegenResult{Targets: targets, ConsumerDeps: consumer, DerivedOutputs: derived}, nil
 }
 
 func starlarkTargets(v starlark.Value) ([]ir.Target, error) {

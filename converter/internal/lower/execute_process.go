@@ -255,6 +255,14 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			// add_custom_command-equivalent contract recovered from the
 			// configure's own on-disk evidence, no convert-time execution.
 			if v.Bucket == BucketRefuse {
+				// Recognizer-first (opt-in): a codegen tool whose outputs are
+				// DERIVED from a flag dir (protoc --cpp_out=DIR), so they're not
+				// in the argv for liftArgvFileProducing to find. The recognizer
+				// supplies + on-disk-corroborates them and emits the native rule.
+				if rels, lifted := liftRecognizedExecuteProcessCodegen(call, anc, cc); lifted {
+					collect(rels)
+					continue
+				}
 				if rels, lifted := liftArgvFileProducing(call, anc, cc); lifted {
 					collect(rels)
 					continue

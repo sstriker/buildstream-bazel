@@ -3,6 +3,7 @@ package lower
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -39,6 +40,13 @@ type CodegenCommand struct {
 type CodegenResult struct {
 	Targets      []ir.Target
 	ConsumerDeps []string
+	// DerivedOutputs is the package-relative output set the recognizer derives
+	// from the tool convention (protoc `foo.proto` → `foo.pb.{cc,h}`). The
+	// custom-command paths already have cmake's recorded outputs and ignore
+	// this; the execute_process path — where the outputs aren't recorded in the
+	// argv (protoc `--cpp_out=DIR`) — uses it as the OUTPUT AUTHORITY's supplied
+	// set, corroborated against on-disk + codemodel evidence by the caller.
+	DerivedOutputs []string
 }
 
 // CodegenRecognizer maps a recovered codegen custom-command to the idiomatic
@@ -124,6 +132,71 @@ func recognizeOrGenrule(cc *codegenContext, cmd CodegenCommand, fallback ir.Targ
 	return res.Targets, true
 }
 
+// outputClaimed reports whether a package-relative output is already wired to a
+// producer — a recovered genrule (OutToGenrule) or a recognized native rule
+// (OutToNativeConsumerDep). It's the single "is this file already produced?"
+// predicate every producer site consults before emitting, so two recoveries
+// never claim the same output (the genrule/bake-vs-native-rule overlap, and
+// duplicate trace calls).
+func (cc *codegenContext) outputClaimed(rel string) bool {
+	if cc == nil {
+		return false
+	}
+	if _, ok := cc.OutToGenrule[rel]; ok {
+		return true
+	}
+	_, ok := cc.OutToNativeConsumerDep[rel]
+	return ok
+}
+
+// rewriteNativeRuleConsumers is the package-wide consumer rewrite for native
+// rules: a cc target that lists a recognized codegen output as a SOURCE (or
+// header) — e.g. an execute_process project that compiles the generated
+// `foo.pb.cc` into a library — has that file STRIPPED from its srcs/hdrs and a
+// DIRECT deps edge to the native rule's consumer label added in its place,
+// because the native rule (cc_proto_library) compiles the generated source
+// itself. Keyed on cc.OutToNativeConsumerDep (the recognizer's output → consumer
+// label map), so a listed generated source IS the codemodel-demand signal that
+// both confirms the output and attributes the consumer. Complements the
+// #include-driven wiring (resolveCodegenHeaderConsumers + split), which handles
+// consumers that include a generated header without listing it as a source.
+func rewriteNativeRuleConsumers(pkg *ir.Package, cc *codegenContext) {
+	if pkg == nil || cc == nil || len(cc.OutToNativeConsumerDep) == 0 {
+		return
+	}
+	for i := range pkg.Targets {
+		t := &pkg.Targets[i]
+		switch t.Kind {
+		case ir.KindCCLibrary, ir.KindCCBinary, ir.KindCCTest:
+		default:
+			continue
+		}
+		labels := map[string]bool{}
+		strip := func(files []string) []string {
+			kept := files[:0:0]
+			for _, f := range files {
+				if consumer, ok := cc.OutToNativeConsumerDep[f]; ok {
+					labels[":"+consumer] = true
+					continue
+				}
+				kept = append(kept, f)
+			}
+			return kept
+		}
+		srcs, hdrs := strip(t.Srcs), strip(t.Hdrs)
+		if len(labels) == 0 {
+			continue
+		}
+		t.Srcs, t.Hdrs = srcs, hdrs
+		for l := range labels {
+			if !slices.Contains(t.Deps, l) {
+				t.Deps = append(t.Deps, l)
+			}
+		}
+		sort.Strings(t.Deps)
+	}
+}
+
 // protocCppRecognizer maps a `protoc … --cpp_out …` custom-command to a
 // proto_library + cc_proto_library pair. (The gRPC service variant — --grpc_out
 // → cc_grpc_library — is a sibling recognizer, added next.)
@@ -145,11 +218,17 @@ func (r protocCppRecognizer) Lower(cmd CodegenCommand) (CodegenResult, error) {
 	}
 	base := strings.TrimSuffix(filepath.Base(proto), ".proto")
 	// Output AUTHORITY: protoc --cpp_out's convention is foo.proto -> foo.pb.{h,cc}.
-	// Cross-check against what cmake recorded; a mismatch is a non-standard
-	// invocation this recognizer must not claim.
+	// When cmake RECORDED the outputs (the custom-command paths), cross-check the
+	// derivation against them — a mismatch is a non-standard invocation this
+	// recognizer must not claim. When the outputs WEREN'T recorded (the
+	// execute_process `--cpp_out=DIR` shape passes empty Outs), the recognizer
+	// SUPPLIES the derived set and the caller corroborates it against on-disk +
+	// codemodel evidence (it can't be validated here).
 	derived := []string{base + ".pb.cc", base + ".pb.h"}
-	if err := derivedOutputsConsistent(cmd.Outs, derived); err != nil {
-		return CodegenResult{}, fmt.Errorf("protoc-cpp: %w", err)
+	if len(cmd.Outs) > 0 {
+		if err := derivedOutputsConsistent(cmd.Outs, derived); err != nil {
+			return CodegenResult{}, fmt.Errorf("protoc-cpp: %w", err)
+		}
 	}
 	protoName := base + "_proto"
 	ccName := base + "_cc_proto"
@@ -171,7 +250,11 @@ func (r protocCppRecognizer) Lower(cmd CodegenCommand) (CodegenResult, error) {
 			{Name: "visibility", List: []string{"//visibility:public"}},
 		}},
 	}
-	return CodegenResult{Targets: []ir.Target{protoLib, ccLib}, ConsumerDeps: []string{":" + ccName}}, nil
+	return CodegenResult{
+		Targets:        []ir.Target{protoLib, ccLib},
+		ConsumerDeps:   []string{":" + ccName},
+		DerivedOutputs: derived,
+	}, nil
 }
 
 // hasFlagPrefix reports whether any arg begins with the given flag (covering

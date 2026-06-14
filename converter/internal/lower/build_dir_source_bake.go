@@ -54,6 +54,15 @@ func buildDirBakeTags() []string {
 // and false when the bytes aren't available (offline replay without a
 // recorded mirror).
 func bakeBuildDirFile(rel string, lc targetLowerCtx) (string, bool) {
+	// Already wired to a producer? Don't byte-bake it. The motivating case is a
+	// recognized native rule (e.g. an execute_process `protoc --cpp_out` lowered
+	// to cc_proto_library, which compiles foo.pb.{cc,h} itself) —
+	// rewriteNativeRuleConsumers strips it from the consumer's srcs and wires the
+	// deps edge; recoverExecuteProcess populates the claim before target lowering
+	// runs. The generic outputClaimed predicate also covers a genrule producer.
+	if lc.cc.outputClaimed(rel) {
+		return "", false
+	}
 	// Producer first (the bake-audit's tie-to-the-generation-command
 	// close-out): a traced file() writer chain recovers the file from
 	// its COMMAND — a true cp lift for COPY/COPY_FILE, trace-content
