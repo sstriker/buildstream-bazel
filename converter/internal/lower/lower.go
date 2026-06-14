@@ -3401,7 +3401,7 @@ func lowerGeneratedSource(irt *ir.Target, t *fileapi.Target, src fileapi.TargetS
 	// falsely rejected here. Mirrors the ordinary-source build-dir path
 	// (recoverOrElideBuildDirSource); OutToGenrule keys are build-dir-relative.
 	if brel, inside := relativeIfInside(cmakeBuild, src.Path); inside {
-		if _, produced := cc.OutToGenrule[brel]; produced {
+		if cc.outputClaimed(brel) {
 			st.consumesCodegen = true
 			if sp := attachGeneratedSource(irt, brel, inCG, false, cc.CcEmbedSourceToHeader[brel]); sp != "" {
 				st.srcEmitPath[i] = sp
@@ -3577,7 +3577,7 @@ func recoverOrElideBuildDirSource(irt *ir.Target, src fileapi.TargetSource, rel 
 	// build-dir-relative `rel` matches OutToGenrule's
 	// keys (both relativize against the codemodel build
 	// dir; see recoverConfigureFiles' recordedBuildDir).
-	if _, produced := cc.OutToGenrule[rel]; produced {
+	if cc.outputClaimed(rel) {
 		st.consumesCodegen = true
 		if sp := attachGeneratedSource(irt, rel, inCG, false, cc.CcEmbedSourceToHeader[rel]); sp != "" {
 			st.srcEmitPath[i] = sp

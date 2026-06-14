@@ -245,24 +245,6 @@ transition cleanly.
         - **Cross-package proto import deps** via `protoImportClosure` → labels
           on the `proto_library`'s `deps` (the recognizer already threads
           `ProtoDeps`; the dispatch needs to compute + pass them).
-        - **Recognizer parity across the remaining codegen-emit site** — the
-          per-target ninja `recoverGenrule` path (genrule.go:704) still emits
-          genrules without consulting the registry. Route it through the shared
-          `recognizeOrGenrule` sink (the standalone + execute_process paths
-          already are), so a protoc `add_custom_command` whose `.pb.cc` is a
-          target `src` recognizes too.
-        - **Audit all producer claim-checks → the generic `outputClaimed`
-          guard.** `outputClaimed(rel)` (OutToGenrule ∪ OutToNativeConsumerDep)
-          is the single "is this output already wired to a producer?" predicate;
-          the recognizer-blast-radius sites (build-dir bake, execute_process
-          recovery, argv lift) use it. But ~20 other per-site `OutToGenrule[rel]`
-          idempotency checks (execute_process.go, file_generate.go,
-          configure_file.go, the autoinit/pch/configure bakes, …) predate it and
-          don't all share semantics ("all claimed → reuse" vs "any → decline" vs
-          OutToGenrule-only by design). Audit each and migrate where the
-          semantics match — deliberately, with the unit + render gates as the
-          safety net — so a recognized native output can never be double-claimed
-          by another producer regardless of which recovery runs first.
         - **Default-on + `--fidelity` gating**, then a corpus byte-sweep.
         Fixture-driven; the existing grpc genrule path stays untouched until a
         grpc recognizer (`cc_grpc_library`) lands, then grpc can migrate.

@@ -30,7 +30,7 @@ func liftCMakeETarCreate(args []string, anc execAnchors, cc *codegenContext) ([]
 	if !ok {
 		return nil, fmt.Sprintf("cmake -E tar create: archive %q is not under the build dir", archive), false
 	}
-	if _, exists := cc.OutToGenrule[archiveRel]; exists {
+	if cc.outputClaimed(archiveRel) {
 		return []string{archiveRel}, "", true
 	}
 

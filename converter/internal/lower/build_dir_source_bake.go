@@ -211,7 +211,7 @@ func walkBuildDirHeaders(inc string, lc targetLowerCtx) {
 		if !nestedBakeableHeader(rel) || cc.NinjaOuts[rel] {
 			return nil
 		}
-		if _, produced := cc.OutToGenrule[rel]; produced {
+		if cc.outputClaimed(rel) {
 			return nil
 		}
 		// Delegate to bakeBuildDirFile: it runs the writer-index lift
