@@ -83,7 +83,10 @@ type Todo struct {
 	// "cmake-internal-drop" | "install-script" | "install-code" |
 	// "rejection:<code>" | "bake" | "genex-unresolved" |
 	// "execute-process-refusal" (the structured per-call mirror that
-	// supersedes rejection:unsupported-execute-process).
+	// supersedes rejection:unsupported-execute-process) |
+	// "host-codegen-tool" (a recovered genrule drives an un-hermeticized host
+	// codegen tool with no native rule / manifest mapping — names the tool +
+	// the imports-manifest `tools` entry to author).
 	Kind string `json:"kind"`
 	// Disposition is the best-guess qualifier (actionable | improvement |
 	// informational); see Disposition. Always set by the producer.

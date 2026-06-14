@@ -2419,6 +2419,7 @@ func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts
 	emitRejectionTodos(opts.Todos, opts.Rejections, cmakeBuild)
 	emitBakeTodos(opts.Todos, pkg, cc.bakeTodoDisposition)
 	emitUnresolvedGenexTodos(opts.Todos, pkg)
+	emitHostCodegenToolTodos(opts.Todos, cc.HostCodegenTools)
 
 	// Surface target launchers (CROSSCOMPILING_EMULATOR /
 	// TEST_LAUNCHER). Bazel has no per-target run-launcher; these

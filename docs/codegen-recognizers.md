@@ -312,9 +312,21 @@ A relative multi-component token (e.g. an in-tree output `build/gen/flatc`)
 is **not** basename-matched — only its verbatim form — so a tool name never
 accidentally rewrites a same-basenamed output.
 
+**You don't have to find these by hand.** The converter can't *invent* a
+label for a host tool, but it auto-**detects** the ones still un-hermeticized:
+any recovered genrule whose driver is a host tool (not swapped to
+`$(execpath)`/`$(location)`, not a benign `cmake -E`/shell builtin) emits a
+`host-codegen-tool` entry in `conversion-todos.json`
+(`--conversion-todos-report`), grouped per driver, with the exact `tools`
+entry to paste in `suggested_shape`. An absolute-host-path driver is
+`actionable` (it can't resolve on a clean executor); a PATH-resolved basename
+is `improvement`. Add the manifest entry and the todo disappears on the next
+convert.
+
 Schema + resolver: `internal/manifest/imports.go` (`Tools` / `Tool`,
 `Resolver.LookupTool`); swap: `rewriteToolFromTarget`
-(`converter/internal/lower/genrule_tool_from_target.go`); gate:
+(`converter/internal/lower/genrule_tool_from_target.go`); auto-detect todo:
+`converter/internal/lower/host_codegen_tool_todo.go`; gate:
 `scripts/meta-cmake-host-codegen-tool.sh`.
 
 ## Where it sits

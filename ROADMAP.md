@@ -287,11 +287,18 @@ transition cleanly.
       ninja build-dir-copy path) with no per-path opt-in; output anchoring to
       `$(RULEDIR)` and the input closure were already general. Gated by
       `scripts/meta-cmake-host-codegen-tool.sh` (render + bazel-build halves);
-      see [`docs/codegen-recognizers.md`](docs/codegen-recognizers.md). What's
-      LEFT is the producer side: the orchestrator's manifest synthesizer should
-      EMIT `tools` entries for a converted element's host codegen tools
-      (today an operator hand-authors them), so a corpus member hermeticizes its
-      generators without manual manifest authoring.
+      see [`docs/codegen-recognizers.md`](docs/codegen-recognizers.md).
+      Auto-DETECTION is now SHIPPED too: a recovered genrule driving an
+      un-hermeticized host tool (not swapped, not a benign `cmake -E`/shell
+      builtin) emits a `host-codegen-tool` conversion-todo grouped per driver,
+      with the exact `tools` entry to paste (`actionable` for an absolute host
+      path, `improvement` for a PATH basename) —
+      `host_codegen_tool_todo.go`, asserted by the gate. What's LEFT is auto-
+      DERIVATION of the *label*: the converter names the tool + the entry to
+      author, but can't invent the providing label. A tool→label CONVENTION
+      registry (e.g. `flatc`→`@flatbuffers//:flatc`, `protoc`→`@protobuf//:protoc`)
+      or an orchestrator that knows the providing element would close the last
+      gap so common generators hermeticize with zero manual authoring.
   - **BDE** (`github.com/bloomberg/bde`) — ONBOARDED (scoped to `groups/bsl`),
     structural lenses run; build-lens follow-on below. Metadata-driven target
     construction via the BdeBuildSystem (BBS): each group builds via one
