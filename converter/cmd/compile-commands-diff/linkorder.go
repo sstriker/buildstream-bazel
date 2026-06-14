@@ -8,18 +8,23 @@ package main
 // Ninja generator emits no link.txt) against Bazel's (`aquery
 // 'mnemonic("CppLink",//...)'` arguments).
 //
-// SCOPE (v1): SYSTEM libraries only — stdc++, m, pthread, dl, rt, … — because
-// those name identically on both sides. Project archives can't be matched
-// reliably yet: Bazel keys them by the cmake TARGET name (`-lelements_Szlib_…`
-// from target `zlib`) while cmake's link line uses the OUTPUT_NAME (`libz.so`
-// from `OUTPUT_NAME z`), so `zlib` != `z`. Mapping target↔output-name (the
-// converter has both: codemodel Name vs NameOnDisk) is the next layer.
+// SCOPE: SYSTEM libraries (stdc++, m, pthread, dl, rt, … — they name
+// identically on both sides) AND PROJECT ARCHIVES. A project archive maps to its
+// cmake Target.Name on both sides via three forms: cmake's link fragment (a
+// library path like lib/libz.so) → Target.Name through the NameOnDisk map;
+// Bazel's DYNAMIC solib ref (-lelements_Szlib_Slibzlib) → Target.Name through
+// demangleBazelSolib; and Bazel's STATIC archive path
+// (bazel-out/.../bin/<pkg>/lib<target>.a, under --dynamic_mode=off) →
+// Target.Name through targetFromBazelArchive. So the same cmake Name is the
+// common key whichever link mode Bazel used.
 //
-// CAVEAT surfaced in the report: Bazel may link cc_library deps DYNAMICALLY
-// (default dynamic_mode in fastbuild) where symbol resolution is order-
-// independent, while cmake here links static — so a project-archive order
-// divergence is less alarming than a system-lib one. The system-lib tail is
-// comparable regardless.
+// CAVEAT surfaced in the report: under DEFAULT dynamic_mode Bazel links
+// cc_library deps DYNAMICALLY, where symbol resolution is order-INDEPENDENT,
+// while cmake here links static — so a project-archive order divergence only
+// has teeth when Bazel ALSO links static (the derive-build-lens-link-mode work,
+// --dynamic_mode=off for all-static codemodels). The system-lib tail is
+// comparable regardless. find_package/external libs (mapping via the imports
+// manifest's BazelLabel) are the remaining sub-layer, not yet matched.
 
 import (
 	"encoding/json"
@@ -136,18 +141,43 @@ func orderedLibIdentities(tokens []string, nameToTarget map[string]string) []str
 			add("tgt:" + tgt)
 			continue
 		}
-		// cmake in-tree path fragment (or a .a/.so path on either side) ->
-		// target via the NameOnDisk map.
+		// A .a/.so library PATH. On the cmake side (nameToTarget != nil) resolve
+		// it via the NameOnDisk map. On the Bazel side (nil map) it's the STATIC
+		// link form — `bazel-out/.../bin/<pkg>/lib<target>.a` — so the target is
+		// the basename with lib/.a stripped (the rule name == cmake Target.Name);
+		// this is what makes project-archive order comparable under
+		// --dynamic_mode=off (dynamic project deps arrive as -l<mangled> solibs,
+		// handled above).
 		if strings.Contains(t, ".so") || strings.HasSuffix(t, ".a") {
-			key := sonameBase(filepath.Base(strings.TrimSpace(t)))
 			if nameToTarget != nil {
+				key := sonameBase(filepath.Base(strings.TrimSpace(t)))
 				if tgt, ok := nameToTarget[key]; ok {
 					add("tgt:" + tgt)
 				}
+			} else if tgt := targetFromBazelArchive(t); tgt != "" {
+				add("tgt:" + tgt)
 			}
 		}
 	}
 	return out
+}
+
+// targetFromBazelArchive maps a Bazel STATIC archive path (the --dynamic_mode=off
+// link form, `bazel-out/.../bin/<pkg>/lib<target>.a`) to its cmake target name:
+// the basename with the `lib` prefix and `.a` suffix stripped. The converter
+// names a cc_library after the cmake Target.Name, so its artifact is
+// lib<Name>.a — landing on the same key the cmake side resolves via NameOnDisk.
+// "" when the token isn't a lib*.a path.
+func targetFromBazelArchive(tok string) string {
+	tok = strings.TrimSpace(tok)
+	if !strings.HasSuffix(tok, ".a") {
+		return ""
+	}
+	base := filepath.Base(tok)
+	if !strings.HasPrefix(base, "lib") {
+		return ""
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(base, "lib"), ".a")
 }
 
 // aqueryLinkDoc is the slice of a CppLink aquery jsonproto needed to recover
