@@ -250,12 +250,14 @@ transition cleanly.
         "pkg/a/a.proto"` → `//pkg/a:a_proto`. Gated by
         `scripts/meta-cmake-proto-cross-package.sh` (multi-package render +
         `bazel build //pkg/b:b_cc_proto`). What's LEFT:
-        - **Default-on + `--fidelity` gating** — mechanically small (flip the
-          `--recognize-codegen` default, refuse-vs-fallback on a non-standard
-          claim per the dial), but the safety gate is a **corpus byte-sweep**:
-          flipping the default changes every corpus convert with protoc codegen,
-          so it must run in an environment where the survey corpus validates no
-          byte regressions (not a web container). Deferred until that can run.
+        - **Default-on for the opt-in codegen lifts** — mechanically small
+          (flip the `--recognize-codegen` default with `--fidelity`
+          refuse-vs-fallback, and the `--lift-derived-codegen` default for the
+          derived-name stem-match genrule re-run), but the safety gate is a
+          **corpus byte-sweep**: both flip convert outputs corpus-wide
+          (recognized protoc → native rules; stem-match bakes → live genrules),
+          so they must run where the survey corpus validates no regressions (not
+          a web container). Deferred until that can run.
         - **Rebased `--proto_path` on the execute_process path.** The
           custom-command paths now handle a non-source-root `--proto_path` (the
           recognizer recovers the proto_path root from the proto src vs its

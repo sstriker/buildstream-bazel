@@ -264,6 +264,12 @@ type Options struct {
 	// consulted when RecognizeCodegen is set.
 	ExtraCodegenRecognizers []CodegenRecognizer
 
+	// LiftDerivedCodegen opts the derived-name stem-match execute_process
+	// recovery into a live genrule re-run instead of the convert-time byte-bake
+	// (--lift-derived-codegen). Off by default; a non-liftable shape falls back
+	// to the bake, so existing converts are unchanged.
+	LiftDerivedCodegen bool
+
 	// CMakeVars is the full cmake variable namespace captured
 	// at end of configure (cmakerun.Reply.Vars). Used by the
 	// configure_file lift as the values map for the lifted
@@ -1577,6 +1583,7 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 	cc.LiftDownload = opts.LiftDownload
 	cc.RecognizeCodegen = opts.RecognizeCodegen
 	cc.ExtraRecognizers = opts.ExtraCodegenRecognizers
+	cc.LiftDerivedCodegen = opts.LiftDerivedCodegen
 	traceDecoded, decodedTrace := tf.traceDecoded, tf.decodedTrace
 	decodedConfigureFiles, decodedFileGenerates, decodedExecuteProcesses := tf.decodedConfigureFiles, tf.decodedFileGenerates, tf.decodedExecuteProcesses
 	decodedOutOfTreeExecProcs := tf.decodedOutOfTreeExecProcs
