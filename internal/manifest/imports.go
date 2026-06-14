@@ -484,6 +484,48 @@ func (r *Resolver) HasTools() bool {
 	return len(r.byToolBasename) > 0 || len(r.byToolPath) > 0
 }
 
+// NewResolver returns an empty, ready-to-use resolver. Used by callers that
+// build a resolver from in-memory data rather than a manifest file — e.g.
+// registering built-in tool conventions when no --imports-manifest was given.
+func NewResolver() *Resolver {
+	return &Resolver{
+		byCMakeTarget:   map[string]*Export{},
+		byElement:       map[string]*Element{},
+		byLinkPath:      map[string]*Export{},
+		byLinkLib:       map[string]*Export{},
+		byUmbrellaIncRt: map[string]string{},
+		byToolBasename:  map[string]string{},
+		byToolPath:      map[string]string{},
+	}
+}
+
+// AddToolConventions adds FALLBACK tool mappings (built-in conventions) that do
+// NOT override an existing match — an operator's explicit `tools` entry (or an
+// earlier convention) wins. Each match/label must be non-empty.
+func (r *Resolver) AddToolConventions(tools []Tool) error {
+	if r == nil {
+		return fmt.Errorf("manifest: AddToolConventions on a nil resolver")
+	}
+	for i := range tools {
+		t := tools[i]
+		if t.Match == "" {
+			return fmt.Errorf("manifest: tool convention with empty match")
+		}
+		if t.Label == "" {
+			return fmt.Errorf("manifest: tool convention %q: empty label", t.Match)
+		}
+		dst := r.byToolPath
+		if !strings.Contains(t.Match, "/") {
+			dst = r.byToolBasename
+		}
+		if _, exists := dst[t.Match]; exists {
+			continue // operator / prior mapping wins
+		}
+		dst[t.Match] = t.Label
+	}
+	return nil
+}
+
 // UmbrellaForIncludeDir returns the umbrella label registered for an
 // absolute find_package include root, or "" if none. lower calls this
 // when it would otherwise drop an out-of-tree include dir, so a

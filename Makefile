@@ -403,6 +403,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-sanitizer-features.sh \
 	scripts/meta-cmake-split-packages.sh \
 	scripts/meta-cmake-host-codegen-tool.sh \
+	scripts/meta-cmake-tool-convention.sh \
 	scripts/meta-cmake-standalone-custom-command.sh \
 	scripts/meta-cmake-workspace-root.sh
 

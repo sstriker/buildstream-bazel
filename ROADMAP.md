@@ -288,17 +288,24 @@ transition cleanly.
       `$(RULEDIR)` and the input closure were already general. Gated by
       `scripts/meta-cmake-host-codegen-tool.sh` (render + bazel-build halves);
       see [`docs/codegen-recognizers.md`](docs/codegen-recognizers.md).
-      Auto-DETECTION is now SHIPPED too: a recovered genrule driving an
+      Auto-DETECTION is SHIPPED: a recovered genrule driving an
       un-hermeticized host tool (not swapped, not a benign `cmake -E`/shell
       builtin) emits a `host-codegen-tool` conversion-todo grouped per driver,
       with the exact `tools` entry to paste (`actionable` for an absolute host
-      path, `improvement` for a PATH basename) —
-      `host_codegen_tool_todo.go`, asserted by the gate. What's LEFT is auto-
-      DERIVATION of the *label*: the converter names the tool + the entry to
-      author, but can't invent the providing label. A tool→label CONVENTION
-      registry (e.g. `flatc`→`@flatbuffers//:flatc`, `protoc`→`@protobuf//:protoc`)
-      or an orchestrator that knows the providing element would close the last
-      gap so common generators hermeticize with zero manual authoring.
+      path / `improvement` for a PATH basename), origin-tagged `host` vs
+      `prefix` (synth-prefix paths anchored to `/opt/prefix/…` for a
+      byte-identical report) — `host_codegen_tool_todo.go`. Auto-DERIVATION of
+      the *label* is SHIPPED for well-known tools: a curated tool→label
+      CONVENTION registry (`tool_conventions.go`, e.g. `protoc` →
+      `@protobuf//:protoc`) upgrades the todo's suggestion to the real label +
+      `bazel_dep`, and the opt-in `--tool-conventions` auto-hermeticizes a
+      known tool through the swap (operator `tools` entry wins). Gated by
+      `scripts/meta-cmake-tool-convention.sh`. What's LEFT: (a) BROADEN the
+      registry beyond protoc (flatc/thrift/moc/… — each entry must assert a
+      verified BCR label), and (b) the `prefix`-origin case — an orchestrator
+      that wires a cross-element tool straight to the producing element's
+      manifest `Export` (the todo already flags it as auto-derivable), so a
+      corpus member hermeticizes its generators with zero manual authoring.
   - **BDE** (`github.com/bloomberg/bde`) — ONBOARDED (scoped to `groups/bsl`),
     structural lenses run; build-lens follow-on below. Metadata-driven target
     construction via the BdeBuildSystem (BBS): each group builds via one

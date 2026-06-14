@@ -267,6 +267,15 @@ type Args struct {
 	// Off by default; a non-liftable shape falls back to the bake.
 	LiftDerivedCodegen bool
 
+	// ToolConventions registers the built-in tool→label conventions (e.g.
+	// protoc → @protobuf//:protoc) into the imports resolver's `tools` map, so a
+	// recovered genrule driving a known host codegen tool auto-hermeticizes
+	// through the tool-swap without a hand-authored manifest entry. Off by
+	// default — additive opt-in; an operator `tools` entry for the same tool
+	// wins, and an unknown tool is unaffected. The swapped label's BCR module
+	// must be in the consumer's MODULE (the `host-codegen-tool` todo names it).
+	ToolConventions bool
+
 	// ToolchainFeaturesFrom points the raw-flag → feature lift at the
 	// operator's REAL Bazel toolchain: a path to a cc_toolchain_config.bzl
 	// (or a toolchains/ dir of *.bzl) whose declared feature() names are
@@ -821,6 +830,7 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.BoolVar(&a.RecognizeCodegen, "recognize-codegen", false, "route recovered codegen custom-commands a registered recognizer claims (protoc --cpp_out → proto_library + cc_proto_library) to the idiomatic native rule instead of a generic genrule. Off by default; non-standard invocations fall back to the genrule.")
 	fs.StringVar(&a.Recognizers, "recognizers", "", "glob of operator-supplied Starlark recognizer files (e.g. 'recognizers/*.star'), each defining match(cmd)/lower(cmd), added to the registry without recompiling. Loaded after the built-in recognizers; requires --recognize-codegen to take effect.")
 	fs.BoolVar(&a.LiftDerivedCodegen, "lift-derived-codegen", false, "re-run a derived-name codegen execute_process (output not in argv, e.g. tool foo.in -> foo.gen.h) as a live genrule (cd $(RULEDIR)) instead of baking the configure-written bytes, when output placement is sound. Off by default; non-liftable shapes fall back to the bake.")
+	fs.BoolVar(&a.ToolConventions, "tool-conventions", false, "register built-in tool→label conventions (e.g. protoc → @protobuf//:protoc) so a recovered genrule driving a known host codegen tool auto-hermeticizes through the tool-swap without a hand-authored imports-manifest entry. Off by default; an operator `tools` entry wins, and the swapped label's BCR module must be in the consumer's MODULE.")
 	fs.StringVar(&a.ToolchainFeaturesFrom, "toolchain-features-from", "", "path to the operator's cc_toolchain_config.bzl (or a toolchains/ dir of *.bzl); its declared feature() names gate the raw-flag → cc_toolchain feature lift instead of the converter's generated default, so the lift matches the real toolchain. Unset keeps the generated default; when set, only features the toolchain literally declares lift (a wrapper/computed-name toolchain the parser can't read → only the built-in pic lifts, with a warning).")
 	fs.BoolVar(&a.DumpVars, "dump-vars", true, "stage the dump-vars.cmake hook to capture cmake's variable namespace into <build>/cmake-to-bazel.vars.dump. Read by configure_file lift (@VAR@ / ${VAR} substitution) and find_package variable-form attribution (<Pkg>_LIBRARIES correlation on cmakes below the 3.32 find_package-v1 floor). On by default; requires cmake 3.24+ (silently inactive on older cmakes — the hook's CMAKE_PROJECT_TOP_LEVEL_INCLUDES injection floor).")
 	fs.BoolVar(&a.UnsupportedExecuteProcessFallback, "unsupported-execute-process-fallback", false, "on classifier refusal of execute_process calls, emit empty cc_library/cc_binary stubs so downstream consumers' label resolution still works (round-2 mode). Off by default; see docs/design/rendezvous.md. Low-level per-kind escape hatch; --fidelity=best-effort enables it implicitly, and an explicit value here overrides the dial-derived default.")

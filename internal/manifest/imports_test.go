@@ -417,3 +417,36 @@ func TestTools_LoadMergedLastWins(t *testing.T) {
 		t.Errorf("LookupTool(flatc) = %q, want //over:flatc (last wins)", got)
 	}
 }
+
+// TestAddToolConventions: built-in conventions register as fallback tool
+// mappings on a fresh resolver and do NOT override an operator's existing
+// match (operator wins).
+func TestAddToolConventions(t *testing.T) {
+	r := manifest.NewResolver()
+	if r.HasTools() {
+		t.Error("fresh resolver should have no tools")
+	}
+	if err := r.AddToolConventions([]manifest.Tool{{Match: "protoc", Label: "@protobuf//:protoc"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.LookupTool("protoc"); got != "@protobuf//:protoc" {
+		t.Errorf("LookupTool(protoc) = %q, want the convention label", got)
+	}
+	// Operator mapping already present → convention must not override it.
+	r2, err := manifest.Index(&manifest.Imports{
+		Version: 1, Tools: []*manifest.Tool{{Match: "protoc", Label: "//local:my_protoc"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r2.AddToolConventions([]manifest.Tool{{Match: "protoc", Label: "@protobuf//:protoc"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r2.LookupTool("protoc"); got != "//local:my_protoc" {
+		t.Errorf("operator mapping should win, got %q", got)
+	}
+	// Empty match/label are errors.
+	if err := r.AddToolConventions([]manifest.Tool{{Match: "", Label: "//a"}}); err == nil {
+		t.Error("empty match should error")
+	}
+}
