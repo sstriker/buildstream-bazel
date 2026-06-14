@@ -243,3 +243,40 @@ func TestRewriteToolFromTarget_ToolsMap(t *testing.T) {
 		t.Errorf("tools-only cmd = %q", cmd)
 	}
 }
+
+// TestRewriteToolFromTarget_ProducerExecutableExport is the END-TO-END
+// prefix->Export contract: a PRODUCING element's installed codegen tool is
+// exported (buildExportsDoc) as a Kind=executable row with a
+// ManifestPrefixAnchor-anchored LinkPath + the tool's converted BazelLabel.
+// When a CONSUMER's recovered genrule drives that tool by its real synth-prefix
+// path, the tool-swap remaps the host prefix onto the anchor, matches the
+// export, and rewrites the driver to $(execpath <producing-element-label>) —
+// hermeticizing a cross-element host codegen tool with no hand-authored entry.
+func TestRewriteToolFromTarget_ProducerExecutableExport(t *testing.T) {
+	// The export shape buildExportsDoc emits for an installed cc_binary tool.
+	res, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "toolpkg",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "Tool::gen",
+				BazelLabel:  "//elements/toolpkg:gen",
+				Kind:        manifest.KindExecutable,
+				LinkPaths:   []string{ManifestPrefixAnchor + "bin/gen"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostPrefix := "/tmp/synth-prefix"
+	cmd, tools := rewriteToolFromTarget(
+		hostPrefix+"/bin/gen --emit api.proto -o out.c", nil, nil, res, hostPrefix)
+	want := "$(execpath //elements/toolpkg:gen) --emit api.proto -o out.c"
+	if cmd != want {
+		t.Errorf("cmd = %q\nwant %q", cmd, want)
+	}
+	if len(tools) != 1 || tools[0] != "//elements/toolpkg:gen" {
+		t.Errorf("tools = %v, want [//elements/toolpkg:gen]", tools)
+	}
+}

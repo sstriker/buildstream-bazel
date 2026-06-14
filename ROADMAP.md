@@ -300,12 +300,18 @@ transition cleanly.
       `@protobuf//:protoc`) upgrades the todo's suggestion to the real label +
       `bazel_dep`, and the opt-in `--tool-conventions` auto-hermeticizes a
       known tool through the swap (operator `tools` entry wins). Gated by
-      `scripts/meta-cmake-tool-convention.sh`. What's LEFT: (a) BROADEN the
-      registry beyond protoc (flatc/thrift/moc/… — each entry must assert a
-      verified BCR label), and (b) the `prefix`-origin case — an orchestrator
-      that wires a cross-element tool straight to the producing element's
-      manifest `Export` (the todo already flags it as auto-derivable), so a
-      corpus member hermeticizes its generators with zero manual authoring.
+      `scripts/meta-cmake-tool-convention.sh`. The `prefix`-origin
+      (cross-element) case is SHIPPED: a producing element that installs a
+      codegen tool auto-exports it — `buildExportsDoc` emits a `Kind=executable`
+      `Export` with the `/opt/prefix/…`-anchored `bin/` path + the tool's
+      converted label (matching the real-install harvest path + `wrappergen`'s
+      filegroup shape), and the consumer's tool-swap remaps the host prefix onto
+      the anchor and rewrites the driver to `$(execpath <producing-label>)` with
+      zero hand-authored entry (end-to-end contract pinned by
+      `TestRewriteToolFromTarget_ProducerExecutableExport`). What's LEFT:
+      BROADEN the convention registry beyond protoc (flatc/thrift/moc/… — each
+      entry must assert a verified BCR label; offline label verification is the
+      blocker, not the mechanism).
   - **BDE** (`github.com/bloomberg/bde`) — ONBOARDED (scoped to `groups/bsl`),
     structural lenses run; build-lens follow-on below. Metadata-driven target
     construction via the BdeBuildSystem (BBS): each group builds via one
