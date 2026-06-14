@@ -273,8 +273,17 @@ transition cleanly.
           recognizer supplies them), so a rebased proto_path via execute_process
           declines / falls back rather than mis-emitting — wire it through when a
           corpus member needs it.
-        Fixture-driven; the existing grpc genrule path stays untouched until a
-        grpc recognizer (`cc_grpc_library`) lands, then grpc can migrate.
+        Fixture-driven. The gRPC-service recognizer is SHIPPED: a COMBINED
+        `protoc --cpp_out --grpc_out` invocation (the common
+        `protobuf_generate(... PLUGIN grpc)` shape) lowers to proto_library +
+        cc_proto_library + `cc_grpc_library(grpc_only = True)` from
+        `@grpc//bazel:cc_grpc_library.bzl` (`grpcCppRecognizer`, registered ahead
+        of the cpp one so it owns the combined command), gated by
+        `scripts/meta-cmake-protoc-grpc-recognize.sh`. LEFT: the grpc-ONLY call
+        shape (services compiled in a separate invocation from the messages)
+        stays on the genrule path — recognizing it needs cross-command
+        coordination to reuse the sibling cpp call's proto_library rather than
+        duplicate it.
     - **Auto-emit `tools` entries (the manifest is hand-authored today).**
       Host-codegen-tool hermeticization itself is SHIPPED: a `tools` section in
       the imports manifest maps a host codegen tool with no native rule (a
@@ -315,8 +324,8 @@ transition cleanly.
       against the upstream BUILD + the module's BCR presence. Further generators
       (Apache `thrift`, Qt `moc`) have no stable BCR module, so they stay
       operator-`tools`-map territory until one exists. This thread is COMPLETE;
-      remaining codegen work is the separate gRPC-service recognizer
-      (`cc_grpc_library`) tracked above.
+      the gRPC-service recognizer (`cc_grpc_library`, combined-call shape) is
+      shipped too (tracked above) — only its grpc-only-call variant remains.
   - **BDE** (`github.com/bloomberg/bde`) — ONBOARDED (scoped to `groups/bsl`),
     structural lenses run; build-lens follow-on below. Metadata-driven target
     construction via the BdeBuildSystem (BBS): each group builds via one

@@ -404,6 +404,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-split-packages.sh \
 	scripts/meta-cmake-host-codegen-tool.sh \
 	scripts/meta-cmake-tool-convention.sh \
+	scripts/meta-cmake-protoc-grpc-recognize.sh \
 	scripts/meta-cmake-standalone-custom-command.sh \
 	scripts/meta-cmake-workspace-root.sh
 

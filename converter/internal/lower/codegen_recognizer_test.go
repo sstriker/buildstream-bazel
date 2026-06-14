@@ -255,3 +255,95 @@ func TestProtocCppRecognizer_OutputCrossCheck(t *testing.T) {
 		t.Errorf("expected a cross-check error on the extra recorded output")
 	}
 }
+
+// TestGrpcCppRecognizer_Match: fires on a COMBINED protoc --cpp_out+--grpc_out,
+// not on cpp-only, grpc-only, or non-protoc.
+func TestGrpcCppRecognizer_Match(t *testing.T) {
+	r := grpcCppRecognizer{}
+	cases := []struct {
+		name string
+		cmd  CodegenCommand
+		want bool
+	}{
+		{"combined", CodegenCommand{Driver: "protoc", Args: []string{"--cpp_out=.", "--grpc_out=.", "foo.proto"}}, true},
+		{"cpp-only", CodegenCommand{Driver: "protoc", Args: []string{"--cpp_out=.", "foo.proto"}}, false},
+		{"grpc-only", CodegenCommand{Driver: "protoc", Args: []string{"--grpc_out=.", "foo.proto"}}, false},
+		{"not-protoc", CodegenCommand{Driver: "flatc", Args: []string{"--cpp_out=.", "--grpc_out=.", "x.fbs"}}, false},
+	}
+	for _, c := range cases {
+		if got := r.Match(c.cmd); got != c.want {
+			t.Errorf("%s: Match = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestGrpcCppRecognizer_Lower: a combined command lowers to proto_library +
+// cc_proto_library + cc_grpc_library(grpc_only=True), consumer dep → the
+// cc_grpc_library, and the 4-output set cross-checked.
+func TestGrpcCppRecognizer_Lower(t *testing.T) {
+	cmd := CodegenCommand{
+		Driver: "protoc",
+		Args:   []string{"--cpp_out=.", "--grpc_out=.", "svc.proto"},
+		Srcs:   []string{"svc.proto"},
+		Outs:   []string{"svc.pb.cc", "svc.pb.h", "svc.grpc.pb.cc", "svc.grpc.pb.h"},
+		Pkg:    "pkg",
+	}
+	res, matched, err := recognizeCodegen(cmd)
+	if !matched || err != nil {
+		t.Fatalf("recognizeCodegen matched=%v err=%v", matched, err)
+	}
+	if len(res.Targets) != 3 {
+		t.Fatalf("want 3 targets (proto, cc_proto, cc_grpc), got %d: %+v", len(res.Targets), res.Targets)
+	}
+	pl, cc, grpc := res.Targets[0], res.Targets[1], res.Targets[2]
+	if pl.NativeRule.Kind != "proto_library" || pl.Name != "svc_proto" {
+		t.Errorf("target 0 = %+v, want proto_library svc_proto", pl)
+	}
+	if cc.NativeRule.Kind != "cc_proto_library" || cc.Name != "svc_cc_proto" {
+		t.Errorf("target 1 = %+v, want cc_proto_library svc_cc_proto", cc)
+	}
+	if grpc.NativeRule.Kind != "cc_grpc_library" || grpc.Name != "svc_cc_grpc" {
+		t.Fatalf("target 2 = %+v, want cc_grpc_library svc_cc_grpc", grpc)
+	}
+	if grpc.NativeRule.LoadFrom != "@grpc//bazel:cc_grpc_library.bzl" {
+		t.Errorf("cc_grpc_library LoadFrom = %q", grpc.NativeRule.LoadFrom)
+	}
+	if got := attrList(t, grpc, "srcs"); len(got) != 1 || got[0] != ":svc_proto" {
+		t.Errorf("cc_grpc_library srcs = %v, want [:svc_proto]", got)
+	}
+	if got := attrList(t, grpc, "deps"); len(got) != 1 || got[0] != ":svc_cc_proto" {
+		t.Errorf("cc_grpc_library deps = %v, want [:svc_cc_proto]", got)
+	}
+	var grpcOnly string
+	for _, a := range grpc.NativeRule.Attrs {
+		if a.Name == "grpc_only" {
+			grpcOnly = a.Ident
+		}
+	}
+	if grpcOnly != "True" {
+		t.Errorf("grpc_only = %q (Ident), want True", grpcOnly)
+	}
+	if len(res.ConsumerDeps) != 1 || res.ConsumerDeps[0] != ":svc_cc_grpc" {
+		t.Errorf("ConsumerDeps = %v, want [:svc_cc_grpc]", res.ConsumerDeps)
+	}
+}
+
+// TestGrpcCppRecognizer_OutputCrossCheck: a combined command whose recorded
+// outputs omit a grpc output is non-standard → Lower errors (so the dispatch
+// refuses/falls back per fidelity).
+func TestGrpcCppRecognizer_OutputCrossCheck(t *testing.T) {
+	cmd := CodegenCommand{
+		Driver: "protoc",
+		Args:   []string{"--cpp_out=.", "--grpc_out=.", "svc.proto"},
+		Srcs:   []string{"svc.proto"},
+		Outs:   []string{"svc.pb.cc", "svc.pb.h"}, // missing the .grpc.pb.* pair
+		Pkg:    "pkg",
+	}
+	_, matched, err := recognizeCodegen(cmd)
+	if !matched {
+		t.Fatal("expected the grpc recognizer to MATCH the combined command")
+	}
+	if err == nil {
+		t.Error("expected a cross-check error for the missing grpc outputs")
+	}
+}

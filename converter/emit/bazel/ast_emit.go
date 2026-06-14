@@ -105,9 +105,12 @@ func nativeRuleExpr(t ir.Target) (*build.CallExpr, error) {
 	call, r := newCall(s.Kind)
 	r.SetAttr("name", strExpr(t.Name))
 	for _, a := range s.Attrs {
-		if a.List != nil {
+		switch {
+		case a.List != nil:
 			r.SetAttr(a.Name, strListExpr(a.List))
-		} else {
+		case a.Ident != "":
+			r.SetAttr(a.Name, &build.Ident{Name: a.Ident})
+		default:
 			r.SetAttr(a.Name, strExpr(a.Str))
 		}
 	}
