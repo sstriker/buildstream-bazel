@@ -421,17 +421,12 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			rewrittenCmd = renameAnchoredGenruleOutputs(rewrittenCmd, inPlaceRenames)
 			tags = append(tags, "cmake-codegen-genrule-inplace-rewrite")
 		}
-		// Codegen-recognizer dispatch (opt-in, --recognize-codegen): a recovered
-		// codegen command a registered recognizer claims (protoc --cpp_out today)
-		// lowers to its idiomatic native rule (proto_library + cc_proto_library)
-		// instead of this generic genrule, and a #include-driven consumer wires a
-		// direct deps edge to it — see dispatchCodegenRecognizer. A non-match or a
-		// non-standard claim falls through to the genrule, never regressing.
-		if tgts, ok := dispatchCodegenRecognizer(cc, rewrittenCmd, srcs, outs, bazelPackagePath); ok {
-			out = append(out, tgts...)
-			continue
-		}
-		out = append(out, ir.Target{
+		// Emit through the single recognizer-aware chokepoint: a recovered
+		// codegen command a recognizer claims (protoc --cpp_out today) lowers to
+		// its idiomatic native rule (proto_library + cc_proto_library) and a
+		// #include-driven consumer wires a direct deps edge to it; otherwise the
+		// genrule fallback below is emitted unchanged (flag-off → byte-identical).
+		fallback := ir.Target{
 			Name:         name,
 			Kind:         ir.KindGenrule,
 			Srcs:         srcs,
@@ -440,36 +435,11 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			GenruleTools: tools,
 			Visibility:   visibility,
 			Tags:         tags,
-		})
+		}
+		tgts, _ := recognizeOrGenrule(cc, codegenCommandFrom(rewrittenCmd, srcs, outs, bazelPackagePath), fallback)
+		out = append(out, tgts...)
 	}
 	return out
-}
-
-// dispatchCodegenRecognizer tries the codegen-recognizer registry on a recovered
-// custom-command (opt-in via cc.RecognizeCodegen). On a confident match it
-// returns the native rule target(s) and registers each output's CONSUMER-dep
-// label in cc.OutToNativeConsumerDep — so a target that #includes a generated
-// header gets a DIRECT deps edge to the native rule (wired by
-// resolveCodegenHeaderConsumers + split), not the file-oriented
-// generated_includes wrapper (OutToGenrule is deliberately left unset for that
-// reason). Returns (nil, false) when the flag is off, no recognizer claims the
-// command, or the claim is non-standard (output cross-check mismatch) — the
-// caller then falls back to the generic genrule, never regressing.
-func dispatchCodegenRecognizer(cc *codegenContext, rewrittenCmd string, srcs, outs []string, bazelPackagePath string) ([]ir.Target, bool) {
-	if cc == nil || !cc.RecognizeCodegen {
-		return nil, false
-	}
-	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, codegenCommandFrom(rewrittenCmd, srcs, outs, bazelPackagePath))
-	if !matched || err != nil {
-		return nil, false
-	}
-	if cc.OutToNativeConsumerDep != nil && len(res.ConsumerDeps) > 0 {
-		consumer := strings.TrimPrefix(res.ConsumerDeps[0], ":")
-		for _, o := range outs {
-			cc.OutToNativeConsumerDep[o] = consumer
-		}
-	}
-	return res.Targets, true
 }
 
 // codegenCommandFrom builds the recognizer's authoritative view of a recovered

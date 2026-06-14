@@ -92,6 +92,38 @@ func recognizeCodegenWith(extra []CodegenRecognizer, cmd CodegenCommand) (Codege
 	return CodegenResult{}, false, nil
 }
 
+// recognizeOrGenrule is the single emit chokepoint every codegen recovery
+// front-end routes its final emit through: given the recovered command and the
+// genrule the site would otherwise emit, it returns either the recognizer's
+// native rule(s) or the genrule fallback. The bool reports whether a recognizer
+// claimed the command (true → native targets; false → []fallback), so a caller
+// can do its genrule-only bookkeeping (e.g. registering OutToGenrule) only in
+// the fallback case.
+//
+// Off by default (cc.RecognizeCodegen) and on any no-match / non-standard claim
+// (output cross-check mismatch → err) it returns the fallback unchanged, so
+// flag-off is byte-identical at every call site. On a match it registers the
+// native rule's CONSUMER LABEL against each output in cc.OutToNativeConsumerDep,
+// so a #include of a generated header wires a direct deps edge to the rule
+// (resolveCodegenHeaderConsumers + split) rather than the genrule's file
+// wrapper — OutToGenrule is deliberately NOT set for the native case.
+func recognizeOrGenrule(cc *codegenContext, cmd CodegenCommand, fallback ir.Target) ([]ir.Target, bool) {
+	if cc == nil || !cc.RecognizeCodegen {
+		return []ir.Target{fallback}, false
+	}
+	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, cmd)
+	if !matched || err != nil {
+		return []ir.Target{fallback}, false
+	}
+	if cc.OutToNativeConsumerDep != nil && len(res.ConsumerDeps) > 0 {
+		consumer := strings.TrimPrefix(res.ConsumerDeps[0], ":")
+		for _, o := range cmd.Outs {
+			cc.OutToNativeConsumerDep[o] = consumer
+		}
+	}
+	return res.Targets, true
+}
+
 // protocCppRecognizer maps a `protoc … --cpp_out …` custom-command to a
 // proto_library + cc_proto_library pair. (The gRPC service variant — --grpc_out
 // → cc_grpc_library — is a sibling recognizer, added next.)
