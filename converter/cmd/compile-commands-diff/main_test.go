@@ -333,3 +333,36 @@ func TestFactsFromArgv_IDirAfter(t *testing.T) {
 		}
 	}
 }
+
+func TestTargetFromBazelArchive(t *testing.T) {
+	cases := map[string]string{
+		"bazel-out/k8-fastbuild/bin/elements/zlib/libzlib.a": "zlib",
+		"bazel-out/k8-opt/bin/elements/curl/libcurl.a":       "curl",
+		"libfoo.a":                       "foo",
+		"-lelements_Szlib_Slibzlib":      "", // -l solib ref, not a path
+		"bazel-out/.../libz.so":          "", // .so, not a static archive
+		"/usr/lib/x86_64-linux/notlib.a": "", // basename has no lib prefix
+	}
+	for in, want := range cases {
+		if got := targetFromBazelArchive(in); got != want {
+			t.Errorf("targetFromBazelArchive(%q) = %q want %q", in, got, want)
+		}
+	}
+}
+
+// TestOrderedLibIdentities_StaticBazelArchive: under --dynamic_mode=off the
+// Bazel link line carries project archives as lib*.a PATHS (not -l solib refs);
+// orderedLibIdentities resolves each to its cmake target, so static
+// project-archive order is comparable against cmake's.
+func TestOrderedLibIdentities_StaticBazelArchive(t *testing.T) {
+	bz := []string{
+		"bazel-out/k8-fastbuild/bin/elements/curl/libcurl.a",
+		"bazel-out/k8-fastbuild/bin/elements/zlib/libzlib.a",
+		"-lpthread",
+	}
+	got := orderedLibIdentities(bz, nil)
+	want := "tgt:curl,tgt:zlib,sys:pthread"
+	if strings.Join(got, ",") != want {
+		t.Errorf("static bazel order = %v want %v", got, want)
+	}
+}

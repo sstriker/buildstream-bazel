@@ -53,28 +53,23 @@ transition cleanly.
   to the DEFAULT once the corpus is green under it (so green + the fidelity
   lens run against the config cmake produces).
 
-- **Derive build-lens link mode from the project's static config (drop the
-  per-member `--dynamic_mode=off` knobs).** The build lens forces
-  `BUILD_SHARED_LIBS=OFF` (the forced-static alignment), so every surveyed
-  project's codemodel reports `STATIC_LIBRARY` targets and cmake links its test
-  executables against the static archives — pulling in ALL objects, including
-  `-fvisibility=hidden` internals the tests reference. Bazel's DEFAULT
-  `--dynamic_mode=default` instead builds those cc_libraries as `.so`s in
-  fastbuild/dbg, which don't export the hidden internals, so the cc_tests fail
-  to link. Today this is hand-patched per member via `.conf` `BAZEL_FLAGS=
-  --dynamic_mode=off` (glog, llvm) and re-threaded into the symbol-fidelity
-  lens's release rebuild. The faithful, DERIVED fix: when the surveyed config is
-  all-static (codemodel has `STATIC_LIBRARY` targets and no `SHARED_LIBRARY`/
-  `MODULE_LIBRARY`), the build lens should default `--dynamic_mode=off` — i.e.
-  build the link model the project actually uses — and the per-member knobs drop
-  out. Note this is a LINK-MODE change, not a fidelity one (it doesn't alter the
-  `.a`/`.lo` archives the symbol-fidelity lens compares — only whether
-  test/binary linking is static), so the payoff is robustness + dropping knobs,
-  not a fidelity number. It needs a build-lens corpus re-green first: forcing
-  static linking can surface ODR / duplicate-symbol issues a dynamic build
-  tolerated (cf. the curl shared/static SIGSEGV precedent above). Fold it in when
-  `SURVEY_SHARED`'s default flips (link mode gets re-validated corpus-wide
-  anyway), or as its own deliberate re-green pass.
+- **Derive build-lens link mode from the project's static config — flip the
+  default (the opt-in mechanism is SHIPPED).** The build lens forces
+  `BUILD_SHARED_LIBS=OFF`, so every surveyed project's codemodel reports
+  `STATIC_LIBRARY` targets and cmake links its test executables against the
+  static archives. Bazel's DEFAULT `--dynamic_mode=default` instead builds those
+  cc_libraries as `.so`s in fastbuild/dbg, so the cc_tests fail to link —
+  hand-patched per member via `.conf` `BAZEL_FLAGS=--dynamic_mode=off`
+  (glog, llvm). SHIPPED: `SURVEY_DERIVE_LINK_MODE=1` (run-survey.sh) derives the
+  mode from the codemodel — when there's no `SHARED_LIBRARY`/`MODULE_LIBRARY`
+  target it links the aquery + build `--dynamic_mode=off` (skips under
+  `SURVEY_SHARED` and when a member already pins `--dynamic_mode`). Smoke-tested:
+  fires on fmt + spdlog (all-static, build ok), correctly SKIPS zlib (declares
+  `add_library(zlib SHARED)`). It's a LINK-MODE change, not a fidelity one.
+  LEFT: flip it ON by default + drop the per-member knobs — gated on a build-lens
+  corpus re-green (forcing static can surface ODR / duplicate-symbol issues a
+  dynamic build tolerated; cf. the curl shared/static SIGSEGV), folded with
+  `SURVEY_SHARED`'s default flip (link mode re-validates corpus-wide there).
 
 - **Test-target coverage — enable the scoped-out members' tests.** The build
   lens builds `//...`, which already INCLUDES test targets where the project's
@@ -405,23 +400,24 @@ transition cleanly.
   `SURVEY_COMPILE_DB=1`, writing `<out>/<name>/fidelity.json`) diffs cmake's
   `CMAKE_EXPORT_COMPILE_COMMANDS=ON` db against Bazel's
   `aquery 'mnemonic("CppCompile",//...)'` per TU on defines, -std, includes,
-  copts, and link-line ORDER (system-libs v1) — all LANDED & wired.
-  Remaining (PARKED): extend the link-order check to compare ALL libraries in
-  order (system libs AND project archives AND find_package/external deps), not
-  just system libs, since the first-to-satisfy-a-symbol rule applies across all
-  of them. Gated on cross-build-system identity matching for the non-system
-  libs: map cmake's link-fragment path basename → target via `NameOnDisk`, and
-  Bazel's mangled `-lelements_Szlib_Slibzlib` → target by reversing the solib
-  escape (`_S`→`/`, `_U`→`_`, basename, strip `lib`) — both land on the cmake
-  `Target.Name`, the common key; external/find_package libs map via the imports
-  manifest's BazelLabel. Also handle Bazel `.a`-path link forms (static mode) vs
-  the solib `-l` form (default dynamic), and the static-vs-dynamic caveat
-  (dynamic linking is order-independent, so a project-archive order divergence
-  only matters where Bazel links static). Caveats still open: TU keying by
-  basename collides across dirs (disambiguate by normalized relative-suffix —
-  zstd reports `matched: 0` because its `build/cmake` root and overlaid `lib/`
-  sources never align under basename keying), and config alignment (cmake db is
-  single-config).
+  copts, and link-line ORDER — LANDED & wired. The link-order check now compares
+  system libs AND project archives, matching a project lib to its cmake
+  `Target.Name` across all three forms: cmake's link-fragment path → Name via
+  `NameOnDisk`; Bazel's DYNAMIC solib ref (`-lelements_Szlib_Slibzlib`) via the
+  solib-escape reversal; and Bazel's STATIC archive path (`lib<target>.a`, under
+  `--dynamic_mode=off`) via `targetFromBazelArchive` (all unit-tested).
+  KEY FINDING (smoke-tested fmt/spdlog/zlib): an IN-ELEMENT cc_library is linked
+  into a binary as its constituent `.o` objects (`_objs/fmt/format.pic.o`), NOT
+  as `libfmt.a`, even under `--dynamic_mode=off` — so it has no archive-level
+  order to compare (all objects always linked; no archive-selection), and the
+  lens correctly shows no spurious project-archive entries for it. The static
+  `.a`-path matching therefore has teeth for CROSS-ELEMENT / external prebuilt
+  archives (`cc_import`), which is where the remaining sub-layer lives:
+  external/find_package libs map via the imports manifest's BazelLabel (the
+  cmake side has no `reply.Targets` entry for them) — NOT yet wired. Other
+  caveats still open: TU keying by basename collides across dirs (disambiguate by
+  normalized relative-suffix — zstd reports `matched: 0`), and config alignment
+  (cmake db is single-config).
 
 - **Include over-propagation is the `root_headers` element-root grant, NOT
   per-target include scope (THE real include-fidelity item — DETECTION shipped,

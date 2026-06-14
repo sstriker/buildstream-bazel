@@ -111,6 +111,16 @@ case "$split_packages" in 0|no|off|false) split_packages="" ;; esac
 # wired — i.e. what cmake would actually build. The default (off) keeps the
 # forced-static alignment the green corpus is validated under; SURVEY_SHARED is
 # the path to re-greening each member against its natural config.
+# SURVEY_DERIVE_LINK_MODE=1 derives the bazel link mode from the (forced-static)
+# codemodel for the compile-db lens: when the project declares no SHARED/MODULE
+# library targets, the aquery + build link STATIC (--dynamic_mode=off) — the
+# model cmake actually uses — instead of bazel's default dynamic cc_library
+# .so's, which is what makes the project-archive link-ORDER comparison
+# meaningful and drops the per-member --dynamic_mode=off knobs for all-static
+# members. Opt-in: forcing static can surface ODR/duplicate-symbol issues a
+# dynamic build tolerated, so it's gated pending a corpus re-green (then the
+# default flips, folded with SURVEY_SHARED's flip). Skipped under SURVEY_SHARED
+# and when a member already pins --dynamic_mode. Off → byte-identical surveys.
 bazel_build="${SURVEY_BAZEL_BUILD:-}"
 build_lens_default="fmt libxml2 brotli"
 
@@ -464,6 +474,29 @@ EOF
         # shellcheck disable=SC2086
         if cmake -S "$_bb_src" -B "$_cc_cm" -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON $_cc_defs \
                 >> "$_bb_po/fidelity.log" 2>&1 && [ -f "$_cc_cm/compile_commands.json" ]; then
+            # Derive the build's link mode from this (forced-static) codemodel
+            # (opt-in SURVEY_DERIVE_LINK_MODE; skipped under SURVEY_SHARED and
+            # when the member already pins --dynamic_mode). When the project
+            # declares NO SHARED/MODULE library targets, link the bazel
+            # aquery + build STATIC (--dynamic_mode=off) — the model cmake
+            # actually uses here — instead of bazel's default dynamic cc_library
+            # .so's. This is what makes the project-archive link-ORDER check
+            # below meaningful (dynamic linking is order-independent), and drops
+            # the per-member --dynamic_mode=off knobs for all-static members.
+            # Rides the compile-db lens's codemodel (the link-order lens is where
+            # static linking matters); generalizing to the pure-build path is a
+            # follow-up. Forcing static can surface ODR/duplicate-symbol issues a
+            # dynamic build tolerated, so it stays opt-in pending a corpus re-green.
+            if [ "${SURVEY_DERIVE_LINK_MODE:-0}" != "0" ] && [ "${SURVEY_SHARED:-0}" = "0" ]; then
+                case " $_bb_bzlflags " in
+                    *" --dynamic_mode"*) ;;  # explicit per-member override wins
+                    *)
+                        if ! grep -rlq '"SHARED_LIBRARY"\|"MODULE_LIBRARY"' "$_cc_cm/.cmake/api/v1/reply" 2>/dev/null; then
+                            _bb_bzlflags="$_bb_bzlflags --dynamic_mode=off"
+                            echo "  $_bb_name: derive-link-mode -> --dynamic_mode=off (all-static codemodel)" >&2
+                        fi ;;
+                esac
+            fi
             # Align the aquery's config with cmake's EFFECTIVE build type. cmake's
             # single-config configure resolves a CMAKE_BUILD_TYPE — often the
             # project's own default (fmt/spdlog default to Release) — so its
