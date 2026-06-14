@@ -170,8 +170,13 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 			srcs = append(srcs, rel)
 		}
 	}
-	protoDeps := protoImportLabels(srcs, anc.hostSrcDir, cc.BazelPackagePath)
-	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: argv[1:], Srcs: srcs, ProtoDeps: protoDeps})
+	// outs aren't known until the recognizer supplies them (execute_process
+	// records none), so the proto_path root can't be recovered here — resolve
+	// imports under the source root (the standard layout). A rebased
+	// --proto_path via execute_process declines earlier / falls back; the
+	// custom-command paths carry the full proto_path handling.
+	protoDeps := protoImportLabels(srcs, nil, anc.hostSrcDir, cc.BazelPackagePath)
+	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: argv[1:], Srcs: srcs, Pkg: cc.BazelPackagePath, ProtoDeps: protoDeps})
 	if !matched || err != nil || len(res.DerivedOutputs) == 0 {
 		return nil, false
 	}

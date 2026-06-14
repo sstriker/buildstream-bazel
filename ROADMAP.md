@@ -256,17 +256,16 @@ transition cleanly.
           flipping the default changes every corpus convert with protoc codegen,
           so it must run in an environment where the survey corpus validates no
           byte regressions (not a web container). Deferred until that can run.
-        - **Cross-package imports under a non-source-root `--proto_path`.**
-          `protoImportLabels` resolves a `.proto`'s `import`s literally under
-          `cmakeSrc` (the source root) to derive the `proto_library` dep label —
-          the standard layout where `--proto_path` IS the source root. A project
-          that rebases its proto path to a sub-dir (so `import "a.proto"` means
-          `<protoroot>/a.proto`, not `<srcroot>/a.proto`) has that in-tree import
-          dropped: the producer is still placed correctly, but the consumer
-          misses the `deps` edge → a LOUD build failure (never a silent wrong
-          build). Handle the proto_path-rebased shape (resolve imports against
-          the command's `-I`/`--proto_path` roots, not just the source root) when
-          a corpus member hits it.
+        - **Rebased `--proto_path` on the execute_process path.** The
+          custom-command paths now handle a non-source-root `--proto_path` (the
+          recognizer recovers the proto_path root from the proto src vs its
+          canonical output name → places the rule in the proto_path-root package
+          + sets `strip_import_prefix` + resolves imports relative to that root;
+          gated by `meta-cmake-proto-path.sh`). The execute_process supply path
+          can't recover the root the same way (its outputs aren't known until the
+          recognizer supplies them), so a rebased proto_path via execute_process
+          declines / falls back rather than mis-emitting — wire it through when a
+          corpus member needs it.
         Fixture-driven; the existing grpc genrule path stays untouched until a
         grpc recognizer (`cc_grpc_library`) lands, then grpc can migrate.
     - **Generalized host-codegen-tool hermeticization — STILL NEEDED, for the

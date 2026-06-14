@@ -49,6 +49,14 @@ type CodegenResult struct {
 	// argv (protoc `--cpp_out=DIR`) — uses it as the OUTPUT AUTHORITY's supplied
 	// set, corroborated against on-disk + codemodel evidence by the caller.
 	DerivedOutputs []string
+	// SubPackage is the element-relative directory the native rule(s) should be
+	// placed in (the package owning the codegen output). "" lets the dispatch
+	// fall back to the output's dir. The protoc recognizer sets it to the
+	// .proto's own directory so basename srcs resolve AND a rebased
+	// `--proto_path` (proto under a sub-dir, output named relative to the root)
+	// places the rule where the .proto actually lives, paired with
+	// strip_import_prefix so the import path stays proto_path-relative.
+	SubPackage string
 }
 
 // CodegenRecognizer maps a recovered codegen custom-command to the idiomatic
@@ -131,30 +139,71 @@ func recognizeOrGenrule(cc *codegenContext, cmd CodegenCommand, fallback ir.Targ
 			cc.OutToNativeConsumerDep[o] = consumer
 		}
 	}
-	// Sub-package placement: the recognizer named the rule + set srcs by
-	// basename, so the native targets must land in the package that owns the
-	// codegen output (dir of the recorded outputs) — else a multi-package
-	// project's basename srcs don't resolve and cross-package proto imports
-	// can't line up. Recorded here, merged into Package.SubPackages later.
-	if cc.NativeRuleSubPackage != nil && len(cmd.Outs) > 0 {
-		if dir := path.Dir(cmd.Outs[0]); dir != "" && dir != "." {
-			for _, t := range res.Targets {
-				cc.NativeRuleSubPackage[t.Name] = dir
-			}
-		}
-	}
+	recordNativeRulePlacement(cc, res, cmd)
 	return res.Targets, true
 }
 
+// recordNativeRulePlacement notes the package each native target should land in
+// (merged into Package.SubPackages later). The recognizer names the rule + sets
+// srcs by basename, so the rule must land in the package owning the .proto for
+// the basename to resolve and cross-package imports to line up. Prefers the
+// recognizer's SubPackage (the .proto's own dir — correct even under a rebased
+// --proto_path); falls back to the output's dir for recognizers that don't set
+// it.
+func recordNativeRulePlacement(cc *codegenContext, res CodegenResult, cmd CodegenCommand) {
+	if cc.NativeRuleSubPackage == nil {
+		return
+	}
+	dir := res.SubPackage
+	if dir == "" && len(cmd.Outs) > 0 {
+		dir = path.Dir(cmd.Outs[0])
+	}
+	if dir == "" || dir == "." {
+		return
+	}
+	for _, t := range res.Targets {
+		cc.NativeRuleSubPackage[t.Name] = dir
+	}
+}
+
+// canonicalProtoPath returns the proto-path-relative name of the proto a protoc
+// command compiled, recovered from its output: foo.pb.cc -> foo.proto. (protoc
+// names outputs by the input's path RELATIVE to --proto_path, so the output
+// basename path IS the canonical import name.)
+func canonicalProtoPath(outs []string) string {
+	for _, suffix := range []string{".pb.cc", ".pb.h"} {
+		for _, o := range outs {
+			if strings.HasSuffix(o, suffix) {
+				return strings.TrimSuffix(o, suffix) + ".proto"
+			}
+		}
+	}
+	return ""
+}
+
+// protoPathRoot recovers the element-relative `--proto_path` root from the
+// mismatch between a .proto's source-tree path and its canonical (proto_path-
+// relative) name: proto "proto/dep.proto" with canonical "dep.proto" -> root
+// "proto". "" when the proto_path IS the source root (the common case:
+// canonical == source path), i.e. no strip_import_prefix is needed.
+func protoPathRoot(proto string, outs []string) string {
+	canon := canonicalProtoPath(outs)
+	if canon == "" || !strings.HasSuffix(proto, canon) {
+		return ""
+	}
+	return strings.Trim(strings.TrimSuffix(proto, canon), "/")
+}
+
 // protoImportLabels resolves the DIRECT proto imports of the sole .proto in srcs
-// (element-relative paths, e.g. "pkg/b/b.proto") to the proto_library labels the
-// recognizer's deps need — `import "pkg/a/a.proto"` → "//pkg/a:a_proto" (with
-// the element's bazelPackagePath prefixed). Only source-tree protos under
-// cmakeSrc are mapped (a well-known type from a -I include root isn't an
-// in-element dep). The label package + name mirror the recognizer's own
-// placement (dir of the proto, basename+"_proto"), so a cross-package edge
-// resolves. Empty when the proto has no in-tree imports.
-func protoImportLabels(srcs []string, cmakeSrc, bazelPackagePath string) []string {
+// to the proto_library labels the recognizer's deps need. Imports are written
+// RELATIVE TO the command's --proto_path root (recovered from srcs+outs), so
+// they're resolved under <cmakeSrc>/<protoPathRoot>: `import "pkg/a/a.proto"`
+// with a source-root proto_path → //pkg/a:a_proto; `import "dep.proto"` with a
+// rebased proto_path=proto → //proto:dep_proto (the imported proto lives at
+// proto/dep.proto, placed in //proto, matching its own recognizer placement).
+// Only in-tree protos are mapped (a well-known type from a -I root isn't an
+// in-element dep). Empty when the proto has no in-tree imports.
+func protoImportLabels(srcs, outs []string, cmakeSrc, bazelPackagePath string) []string {
 	proto := soleProtoInput(srcs)
 	if proto == "" || cmakeSrc == "" {
 		return nil
@@ -163,21 +212,23 @@ func protoImportLabels(srcs []string, cmakeSrc, bazelPackagePath string) []strin
 	if err != nil {
 		return nil
 	}
+	root := protoPathRoot(proto, outs) // element-relative --proto_path root ("" = source root)
 	base := strings.Trim(bazelPackagePath, "/")
 	var labels []string
 	seen := map[string]bool{}
 	for _, imp := range parseProtoImports(string(data)) {
-		if imp == proto {
+		// imp is proto_path-relative; the imported file lives at <root>/<imp>.
+		rel := path.Join(root, imp)
+		if rel == proto {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(cmakeSrc, filepath.FromSlash(imp))); err != nil {
+		if _, err := os.Stat(filepath.Join(cmakeSrc, filepath.FromSlash(rel))); err != nil {
 			continue // not an in-element proto (well-known type from a -I root)
 		}
-		pkgDir := path.Dir(imp)
-		name := strings.TrimSuffix(path.Base(imp), ".proto") + "_proto"
-		labelPkg := pkgDir
+		labelPkg := path.Dir(rel)
+		name := strings.TrimSuffix(path.Base(rel), ".proto") + "_proto"
 		if base != "" {
-			labelPkg = path.Join(base, pkgDir)
+			labelPkg = path.Join(base, labelPkg)
 		}
 		label := "//" + labelPkg + ":" + name
 		if !seen[label] {
@@ -306,6 +357,14 @@ func (r protocCppRecognizer) Lower(cmd CodegenCommand) (CodegenResult, error) {
 	protoName := base + "_proto"
 	ccName := base + "_cc_proto"
 	protoAttrs := []ir.NativeAttr{{Name: "srcs", List: []string{filepath.Base(proto)}}}
+	// Rebased --proto_path: the .proto lives under a sub-dir but is imported by
+	// its proto_path-relative name (import "dep.proto", not "proto/dep.proto").
+	// strip_import_prefix = the repo-relative proto_path root makes the
+	// proto_library present that same name, so imports resolve. Empty root (the
+	// proto_path IS the source root) needs no strip.
+	if root := protoPathRoot(proto, cmd.Outs); root != "" {
+		protoAttrs = append(protoAttrs, ir.NativeAttr{Name: "strip_import_prefix", Str: "/" + path.Join(cmd.Pkg, root)})
+	}
 	if len(cmd.ProtoDeps) > 0 {
 		deps := append([]string(nil), cmd.ProtoDeps...)
 		sort.Strings(deps)
@@ -327,6 +386,7 @@ func (r protocCppRecognizer) Lower(cmd CodegenCommand) (CodegenResult, error) {
 		Targets:        []ir.Target{protoLib, ccLib},
 		ConsumerDeps:   []string{":" + ccName},
 		DerivedOutputs: derived,
+		SubPackage:     path.Dir(proto),
 	}, nil
 }
 

@@ -729,7 +729,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	// OutToGenrule is registered only in the genrule fallback. Flag-off / no-match
 	// → the genrule unchanged.
 	recoCmd := codegenCommandFrom(rewrittenCmd, srcs, outs, cc.BazelPackagePath)
-	recoCmd.ProtoDeps = protoImportLabels(recoCmd.Srcs, cmakeSrc, cc.BazelPackagePath)
+	recoCmd.ProtoDeps = protoImportLabels(recoCmd.Srcs, recoCmd.Outs, cmakeSrc, cc.BazelPackagePath)
 	tgts, recognized := recognizeOrGenrule(cc, recoCmd, gen)
 	cc.Genrules = append(cc.Genrules, tgts...)
 	cc.SeenBuilds[b] = name
