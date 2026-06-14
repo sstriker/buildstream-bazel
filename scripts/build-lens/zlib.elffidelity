@@ -1,0 +1,8 @@
+# ELF section/dynamic fidelity lens config for zlib (8th survey lens,
+# SURVEY_ELF_FIDELITY — pairs with SURVEY_SHARED=1 for the natural-config build).
+# zlib declares an explicit add_library(zlib SHARED), so its natural build is a
+# real libz.so — compared (SONAME, DT_NEEDED, .gnu.version_d nodes, all section
+# names) against the converted cc_shared_library libz.so. Residue (if any) lands
+# in testdata/fidelity/zlib.elf-allowlist.txt.
+ELFID_TARGET=zlib
+ELFID_ARTIFACT=libz.so
