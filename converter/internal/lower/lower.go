@@ -275,8 +275,11 @@ type Options struct {
 	// gates the recognizer's output cross-check: a matched-but-non-standard
 	// claim (derived outputs disagree with cmake's recorded ones) REFUSES under
 	// strict (a loud build-time stub) and FALLS BACK to the generic genrule
-	// under best-effort. "" = best-effort (preserves today's fall-back behavior
-	// when the dial isn't threaded). See docs/design/codegen-fidelity-ladder.md.
+	// under best-effort. The lower-package ZERO VALUE "" is treated as
+	// best-effort (a direct caller that leaves it unset gets the fall-back); the
+	// PRODUCT default is strict — the CLI canonicalizes "" → strict
+	// (ParseFidelity, flags.go) before threading it here. See
+	// docs/design/codegen-fidelity-ladder.md.
 	Fidelity string
 
 	// CMakeVars is the full cmake variable namespace captured

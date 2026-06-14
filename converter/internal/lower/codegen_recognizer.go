@@ -136,7 +136,9 @@ func recognizeOrGenrule(cc *codegenContext, cmd CodegenCommand, fallback ir.Targ
 		// derived outputs disagree with cmake's recorded ones). The --fidelity
 		// dial decides: strict REFUSES — emit a loud build-time stub rather than
 		// a generic genrule whose output set we couldn't validate; best-effort
-		// (the default when the dial isn't threaded) FALLS BACK to the genrule.
+		// FALLS BACK to the genrule. The CLI's product default is strict (it
+		// canonicalizes "" → strict before threading); the lower-package zero
+		// value "" here is the best-effort fall-back for a direct caller.
 		if cc.Fidelity == string(convmode.FidelityStrict) {
 			return []ir.Target{recognizerRefusalStub(fallback, cmd, err)}, false
 		}
