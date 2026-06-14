@@ -834,7 +834,7 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.StringVar(&a.ToolchainFeaturesFrom, "toolchain-features-from", "", "path to the operator's cc_toolchain_config.bzl (or a toolchains/ dir of *.bzl); its declared feature() names gate the raw-flag → cc_toolchain feature lift instead of the converter's generated default, so the lift matches the real toolchain. Unset keeps the generated default; when set, only features the toolchain literally declares lift (a wrapper/computed-name toolchain the parser can't read → only the built-in pic lifts, with a warning).")
 	fs.BoolVar(&a.DumpVars, "dump-vars", true, "stage the dump-vars.cmake hook to capture cmake's variable namespace into <build>/cmake-to-bazel.vars.dump. Read by configure_file lift (@VAR@ / ${VAR} substitution) and find_package variable-form attribution (<Pkg>_LIBRARIES correlation on cmakes below the 3.32 find_package-v1 floor). On by default; requires cmake 3.24+ (silently inactive on older cmakes — the hook's CMAKE_PROJECT_TOP_LEVEL_INCLUDES injection floor).")
 	fs.BoolVar(&a.UnsupportedExecuteProcessFallback, "unsupported-execute-process-fallback", false, "on classifier refusal of execute_process calls, emit empty cc_library/cc_binary stubs so downstream consumers' label resolution still works (round-2 mode). Off by default; see docs/design/rendezvous.md. Low-level per-kind escape hatch; --fidelity=best-effort enables it implicitly, and an explicit value here overrides the dial-derived default.")
-	fs.StringVar(&a.Fidelity, "fidelity", "", "operator-facing refusal-handling dial: \"strict\" (default; refusals exit non-zero) or \"best-effort\" (refusals lower to placeholder shapes — for kind:cmake, an enumeration of cc_library/cc_binary stubs over the install-root TreeArtifact (via pick_file)). Implicitly enables --unsupported-execute-process-fallback. Threaded verbatim from cmd/write-a; the same vocabulary applies to convert-element-meson / -pyproject so a higher-level operator dial reads consistently across kinds.")
+	fs.StringVar(&a.Fidelity, "fidelity", "", "operator-facing MASTER dial. \"strict\" (the unset default for refusal handling; refusals exit non-zero) or \"best-effort\" (refusals lower to placeholder shapes — for kind:cmake, cc_library/cc_binary stubs over the install-root TreeArtifact via pick_file; implicitly enables --unsupported-execute-process-fallback). When set EXPLICITLY it also drives the combo so one dial replaces several flags: it enables the staging-free codegen lifts (--recognize-codegen, --lift-derived-codegen, --tool-conventions) and, for strict, --bake-in=reject (best-effort leaves bakes at warn). \"strict\" = be faithful or fail (use when you're sure the project converts cleanly); \"best-effort\" = faithful where sound, else fall back. Any explicit individual flag overrides the dial-derived value; the unset default stays conservative (no lift/bake combo) so existing converts are byte-identical. Threaded verbatim from cmd/write-a; same vocabulary on convert-element-meson / -pyproject.")
 	fs.StringVar(&a.BakeIn, "bake-in", "", "convert-time-baking policy: \"warn\" (default; the baking-warnings post-pass emits the per-rule inventory on stderr but conversion succeeds), \"allow\" (silent), or \"reject\" (any bake-shaped emission exits non-zero with the inventory embedded). Orthogonal to --fidelity; threaded verbatim from cmd/write-a's --bake-in dial.")
 	fs.BoolVar(&a.Diagnostics, "diagnostics", false, "operator-facing diagnostic-mode dial: when set, every Tier-1 refusal is collected (write the report via --rejections-report) and the run continues past each refusal rather than aborting on the first. Implicitly enables --ignore-rejections-for-diagnostics. Threaded verbatim from cmd/write-a's --diagnostics; the same flag exists on convert-element-meson and -pyproject for CLI uniformity.")
 	fs.BoolVar(&a.AllowCMakeVersionMismatch, "allow-cmake-version-mismatch", false, "let convert-element-cmake run with cmake older than the codemodel-v2 floor (local-dev escape hatch)")
@@ -969,6 +969,34 @@ func parseValidate(a Args, fs *flag.FlagSet, stderr io.Writer) (Args, int) {
 	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
 	if fidelity == convmode.FidelityStrict && !explicit["strict-trace"] {
 		a.StrictTrace = true
+	}
+	// --fidelity as the MASTER dial: when the operator EXPLICITLY chooses a
+	// level (vs the unset default, which stays conservative per-flag so existing
+	// converts are byte-identical), it drives the codegen LIFT opt-ins +
+	// --bake-in in combination — one dial instead of a handful of flags.
+	//   strict      = "I'm sure: be faithful or fail"  → lifts on + reject bakes
+	//   best-effort = "I'm not sure: faithful where sound, else fall back"
+	//                 → lifts on + bakes warn (+ the exec-process fallback above)
+	// An explicit individual flag always wins over the dial-derived value. Only
+	// the STAGING-FREE lifts are auto-enabled (recognize-codegen,
+	// lift-derived-codegen, tool-conventions); the tool-staging lifts
+	// (--lift-configure-file/-download/-cc-embed/-cc-hash, --cmake-script-*) stay
+	// explicit, since they need the downstream envelope to stage their tool.
+	// (Flipping the UNSET default to engage this combo corpus-wide is gated on a
+	// survey byte-sweep — see ROADMAP.)
+	if explicit["fidelity"] {
+		if !explicit["recognize-codegen"] {
+			a.RecognizeCodegen = true
+		}
+		if !explicit["lift-derived-codegen"] {
+			a.LiftDerivedCodegen = true
+		}
+		if !explicit["tool-conventions"] {
+			a.ToolConventions = true
+		}
+		if fidelity == convmode.FidelityStrict && !explicit["bake-in"] {
+			a.BakeIn = string(convmode.BakeInReject)
+		}
 	}
 	if _, err := convmode.ParseBakeIn(a.BakeIn); err != nil {
 		fmt.Fprintln(stderr, "convert-element-cmake: "+err.Error())
