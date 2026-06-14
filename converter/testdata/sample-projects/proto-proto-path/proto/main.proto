@@ -1,0 +1,4 @@
+syntax = "proto3";
+package pp.main;
+import "dep.proto";
+message Main { pp.dep.Dep d = 1; }

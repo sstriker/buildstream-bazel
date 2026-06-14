@@ -446,7 +446,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			Tags:         tags,
 		}
 		codegenCmd := codegenCommandFrom(rewrittenCmd, srcs, outs, bazelPackagePath)
-		codegenCmd.ProtoDeps = protoImportLabels(codegenCmd.Srcs, cmakeSrc, bazelPackagePath)
+		codegenCmd.ProtoDeps = protoImportLabels(codegenCmd.Srcs, codegenCmd.Outs, cmakeSrc, bazelPackagePath)
 		tgts, _ := recognizeOrGenrule(cc, codegenCmd, fallback)
 		out = append(out, tgts...)
 	}

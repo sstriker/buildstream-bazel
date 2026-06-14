@@ -64,14 +64,35 @@ func TestProtoImportLabels(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := protoImportLabels([]string{"pkg/b/b.proto"}, dir, "")
+	outs := []string{"pkg/b/b.pb.cc"} // proto_path = source root → no rebase
+	got := protoImportLabels([]string{"pkg/b/b.proto"}, outs, dir, "")
 	if len(got) != 1 || got[0] != "//pkg/a:a_proto" {
 		t.Errorf("protoImportLabels = %v, want [//pkg/a:a_proto] (well-known any.proto dropped)", got)
 	}
 	// With an element package prefix.
-	got = protoImportLabels([]string{"pkg/b/b.proto"}, dir, "elements/x")
+	got = protoImportLabels([]string{"pkg/b/b.proto"}, outs, dir, "elements/x")
 	if len(got) != 1 || got[0] != "//elements/x/pkg/a:a_proto" {
 		t.Errorf("protoImportLabels(prefixed) = %v", got)
+	}
+}
+
+// TestProtoPathRoot: the proto_path root is recovered from the mismatch between
+// the proto's source path and its canonical (output-derived) name.
+func TestProtoPathRoot(t *testing.T) {
+	cases := []struct {
+		proto string
+		outs  []string
+		want  string
+	}{
+		{"foo.proto", []string{"foo.pb.cc", "foo.pb.h"}, ""},             // root proto, proto_path = source root
+		{"pkg/a/a.proto", []string{"pkg/a/a.pb.cc", "pkg/a/a.pb.h"}, ""}, // subdir proto, proto_path = source root
+		{"proto/dep.proto", []string{"dep.pb.cc", "dep.pb.h"}, "proto"},  // rebased proto_path = proto/
+		{"x/y/m.proto", []string{"m.pb.cc"}, "x/y"},                      // rebased two levels
+	}
+	for _, c := range cases {
+		if got := protoPathRoot(c.proto, c.outs); got != c.want {
+			t.Errorf("protoPathRoot(%q, %v) = %q, want %q", c.proto, c.outs, got, c.want)
+		}
 	}
 }
 
