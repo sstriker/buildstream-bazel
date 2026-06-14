@@ -29,12 +29,35 @@ func TestClassifyHostCodegenTool(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			d, abs, ok := classifyHostCodegenTool(c.cmd)
+			_, d, abs, ok := classifyHostCodegenTool(c.cmd)
 			if d != c.wantDriver || abs != c.wantAbs || ok != c.ok {
 				t.Errorf("classifyHostCodegenTool(%q) = (%q,%v,%v), want (%q,%v,%v)",
 					c.cmd, d, abs, ok, c.wantDriver, c.wantAbs, c.ok)
 			}
 		})
+	}
+}
+
+// TestNoteHostCodegenTool_PrefixAnchoring: an absolute driver under the
+// (per-run-ephemeral) synth-prefix is recorded as a `prefix`-origin tool with
+// its path ANCHORED to /opt/prefix/… — never the ephemeral path — so the report
+// stays byte-identical across converts and the suggestion stays portable.
+func TestNoteHostCodegenTool_PrefixAnchoring(t *testing.T) {
+	cc := newCodegenContext()
+	cc.HostPrefixDir = "/tmp/convert-run-7f3a/synth-prefix"
+	noteHostCodegenTool(cc, ir.Target{
+		Name:       "gen_x",
+		GenruleCmd: "/tmp/convert-run-7f3a/synth-prefix/bin/foogen --out $(RULEDIR)/x.c",
+	})
+	if len(cc.HostCodegenTools) != 1 {
+		t.Fatalf("want 1 note, got %d", len(cc.HostCodegenTools))
+	}
+	n := cc.HostCodegenTools[0]
+	if !n.Prefix || !n.Absolute || n.Driver != "foogen" {
+		t.Fatalf("note = %+v, want prefix+absolute foogen", n)
+	}
+	if n.Path != "/opt/prefix/bin/foogen" {
+		t.Errorf("path = %q, want anchored /opt/prefix/bin/foogen (no ephemeral synth-prefix)", n.Path)
 	}
 }
 
@@ -80,11 +103,16 @@ func TestNoteAndEmitHostCodegenTools(t *testing.T) {
 	if gen.Disposition != todos.Actionable {
 		t.Errorf("gen (absolute host path) should be Actionable, got %q", gen.Disposition)
 	}
-	if gen.Evidence["match"] != "/opt/host/bin/gen" {
-		t.Errorf("absolute driver match should be the verbatim path, got %v", gen.Evidence["match"])
+	// The suggested match is the deterministic BASENAME; the absolute path is
+	// informational evidence; origin is host (not prefix).
+	if gen.Evidence["match"] != "gen" || gen.Evidence["origin"] != "host" {
+		t.Errorf("gen evidence match/origin = %v/%v, want gen/host", gen.Evidence["match"], gen.Evidence["origin"])
 	}
-	if !strings.Contains(gen.SuggestedShape, `"match": "/opt/host/bin/gen"`) {
-		t.Errorf("suggested shape should carry the absolute match key:\n%s", gen.SuggestedShape)
+	if gen.Evidence["path"] != "/opt/host/bin/gen" {
+		t.Errorf("absolute driver path evidence = %v, want /opt/host/bin/gen", gen.Evidence["path"])
+	}
+	if !strings.Contains(gen.SuggestedShape, `"match": "gen"`) {
+		t.Errorf("suggested shape should key on the basename match:\n%s", gen.SuggestedShape)
 	}
 }
 

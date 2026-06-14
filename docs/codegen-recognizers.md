@@ -318,10 +318,22 @@ any recovered genrule whose driver is a host tool (not swapped to
 `$(execpath)`/`$(location)`, not a benign `cmake -E`/shell builtin) emits a
 `host-codegen-tool` entry in `conversion-todos.json`
 (`--conversion-todos-report`), grouped per driver, with the exact `tools`
-entry to paste in `suggested_shape`. An absolute-host-path driver is
-`actionable` (it can't resolve on a clean executor); a PATH-resolved basename
-is `improvement`. Add the manifest entry and the todo disappears on the next
-convert.
+entry to paste in `suggested_shape` (keyed by the deterministic **basename**).
+An absolute-path driver is `actionable` (it can't resolve on a clean
+executor); a PATH-resolved basename is `improvement`. Add the manifest entry
+and the todo disappears on the next convert.
+
+The todo's `origin` evidence distinguishes where the tool came from, because
+the remedy differs:
+- **`host`** — a host-PATH name or host-install absolute path: add a `tools`
+  entry mapping it to the providing label (a BCR module's tool, a wrapper
+  rule).
+- **`prefix`** — it resolved from the orchestrator's synth-prefix, so it's a
+  **cross-element** tool: its label is the *producing element's* manifest
+  `Export` (the orchestrator-auto-derivable case), with a basename `tools`
+  entry as a stopgap. The recorded path is anchored to the
+  `/opt/prefix/…` form (never the per-run-ephemeral synth-prefix path), so
+  the report stays byte-identical across converts.
 
 Schema + resolver: `internal/manifest/imports.go` (`Tools` / `Tool`,
 `Resolver.LookupTool`); swap: `rewriteToolFromTarget`
