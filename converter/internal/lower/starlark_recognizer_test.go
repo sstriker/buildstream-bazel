@@ -94,6 +94,19 @@ func TestStarlarkRecognizer_MatchDeclines(t *testing.T) {
 	}
 }
 
+// Supply mode (execute_process shape): empty Outs → no cross-check, the script's
+// derived_outputs are returned for the caller to corroborate on-disk.
+func TestStarlarkRecognizer_SupplyMode(t *testing.T) {
+	r := loadStarFromString(t, "protoc.star", protocStar)
+	res, err := r.Lower(CodegenCommand{Driver: "protoc", Args: []string{"--cpp_out=."}, Srcs: []string{"foo.proto"}})
+	if err != nil {
+		t.Fatalf("Lower supply mode: %v", err)
+	}
+	if got := res.DerivedOutputs; len(got) != 2 || got[0] != "foo.pb.cc" || got[1] != "foo.pb.h" {
+		t.Errorf("DerivedOutputs = %v, want [foo.pb.cc foo.pb.h]", got)
+	}
+}
+
 // The host runs the output-authority cross-check: a derived-vs-recorded
 // mismatch surfaces as a Lower error (→ genrule fallback).
 func TestStarlarkRecognizer_OutputCrossCheck(t *testing.T) {

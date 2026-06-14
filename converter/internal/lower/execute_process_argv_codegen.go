@@ -83,7 +83,7 @@ func liftArgvFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *
 	rels := sortedArgvOuts(outSet)
 	registered := 0
 	for _, rel := range rels {
-		if _, exists := cc.OutToGenrule[rel]; exists {
+		if cc.outputClaimed(rel) {
 			registered++
 		}
 	}
@@ -142,6 +142,95 @@ func liftArgvFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *
 		cc.OutToGenrule[rel] = name
 	}
 	return rels, true
+}
+
+// liftRecognizedExecuteProcessCodegen handles the execute_process codegen shape
+// the argv-output lift can't: a tool that DERIVES its outputs from a flag
+// directory (protoc `--cpp_out=DIR`) rather than naming them in argv, so
+// classifyArgvOutputs finds nothing. The recognizer is the OUTPUT AUTHORITY —
+// it SUPPLIES the derived output set from the tool convention; this corroborates
+// that set against the files the configure's own run already produced on disk
+// before emitting the native rule, so a mis-derivation declines to the existing
+// genrule/refusal path (never a regression). Opt-in via cc.RecognizeCodegen.
+// Consumer wiring (a target that lists a generated output as a source) is
+// handled package-wide by rewriteNativeRuleConsumers via OutToNativeConsumerDep.
+func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc execAnchors, cc *codegenContext) ([]string, bool) {
+	if cc == nil || !cc.RecognizeCodegen || !argvCodegenEligible(call) || anc.hostBuildDir == "" {
+		return nil, false
+	}
+	argv := call.Commands[0]
+	driver := executeProcessDriverBasename(argv[0])
+	if driver == "" {
+		return nil, false
+	}
+	var srcs []string
+	for _, a := range argv[1:] {
+		if rel, ok := executeProcessAnchorSource(stripArgvPathPrefix(a), anc); ok && rel != "" && rel != "." {
+			srcs = append(srcs, rel)
+		}
+	}
+	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: argv[1:], Srcs: srcs})
+	if !matched || err != nil || len(res.DerivedOutputs) == 0 {
+		return nil, false
+	}
+	// Anchor each derived output under the tool's output directory, then
+	// corroborate it against the configure's on-disk evidence.
+	outDir := argvCodegenOutDir(argv, anc)
+	rels := make([]string, 0, len(res.DerivedOutputs))
+	for _, d := range res.DerivedOutputs {
+		rel := d
+		if outDir != "" {
+			rel = filepath.ToSlash(filepath.Join(outDir, d))
+		}
+		if st, err := os.Stat(filepath.Join(anc.hostBuildDir, filepath.FromSlash(rel))); err != nil || st.IsDir() {
+			return nil, false
+		}
+		rels = append(rels, rel)
+	}
+	sort.Strings(rels)
+	// Idempotency across duplicate trace calls (already wired by any producer).
+	claimed := 0
+	for _, rel := range rels {
+		if cc.outputClaimed(rel) {
+			claimed++
+		}
+	}
+	if claimed == len(rels) {
+		return rels, true
+	}
+	if claimed > 0 {
+		return nil, false
+	}
+	cc.Genrules = append(cc.Genrules, res.Targets...)
+	if len(res.ConsumerDeps) > 0 {
+		consumer := strings.TrimPrefix(res.ConsumerDeps[0], ":")
+		for _, rel := range rels {
+			cc.OutToNativeConsumerDep[rel] = consumer
+		}
+	}
+	return rels, true
+}
+
+// argvCodegenOutDir returns the build-relative output directory a codegen tool
+// writes to, from a `*_out=DIR` flag (protoc's --cpp_out / --grpc_out
+// convention), anchored under the build root. "" means the build root itself
+// (or no such flag). The bare two-token `--flag DIR` form isn't handled — the
+// `=` form is what cmake's generators emit.
+func argvCodegenOutDir(argv []string, anc execAnchors) string {
+	for _, a := range argv[1:] {
+		eq := strings.IndexByte(a, '=')
+		if eq <= 0 || !strings.HasSuffix(a[:eq], "_out") {
+			continue
+		}
+		if rel, ok := executeProcessAnchorOutput(a[eq+1:], anc); ok {
+			if rel == "." {
+				return ""
+			}
+			return rel
+		}
+		return ""
+	}
+	return ""
 }
 
 // argvToolLiftable reports whether argv[0] is a re-runnable tool. A

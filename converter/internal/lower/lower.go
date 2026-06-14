@@ -1909,6 +1909,12 @@ func emitStandaloneCustomCommands(pkg *ir.Package, g *ninja.Graph, opts Options,
 		if len(codegenConsumerDeps) > 0 {
 			resolveCodegenHeaderConsumers(pkg, g, stand, cc, codegenConsumerDeps, utilityIDs, utilityIDToName, isTargetName)
 		}
+		// A cc target that LISTS a recognized codegen output as a source (the
+		// execute_process shape: the generated foo.pb.cc compiled into a lib) has
+		// it stripped + a direct deps edge to the native rule added — the native
+		// rule compiles the generated source itself. Runs regardless of the
+		// utility-edge walk above (it keys on OutToNativeConsumerDep).
+		rewriteNativeRuleConsumers(pkg, cc)
 	}
 }
 

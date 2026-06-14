@@ -1,10 +1,62 @@
 package lower
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
+
+// TestProtocCppRecognizer_SupplyMode: the execute_process shape passes no
+// recorded Outs, so the recognizer SUPPLIES the derived set without a
+// cross-check (the caller corroborates on-disk).
+func TestProtocCppRecognizer_SupplyMode(t *testing.T) {
+	res, matched, err := recognizeCodegen(CodegenCommand{
+		Driver: "protoc", Args: []string{"--cpp_out=."}, Srcs: []string{"foo.proto"},
+	})
+	if !matched || err != nil {
+		t.Fatalf("matched=%v err=%v", matched, err)
+	}
+	if got := res.DerivedOutputs; len(got) != 2 || got[0] != "foo.pb.cc" || got[1] != "foo.pb.h" {
+		t.Errorf("DerivedOutputs = %v, want [foo.pb.cc foo.pb.h]", got)
+	}
+}
+
+// TestRewriteNativeRuleConsumers: a cc target listing a recognized codegen
+// output as a src/hdr has it stripped and a direct deps edge to the native rule
+// added.
+func TestRewriteNativeRuleConsumers(t *testing.T) {
+	cc := newCodegenContext()
+	cc.OutToNativeConsumerDep["foo.pb.cc"] = "foo_cc_proto"
+	cc.OutToNativeConsumerDep["foo.pb.h"] = "foo_cc_proto"
+	pkg := &ir.Package{Targets: []ir.Target{{
+		Name: "use_foo", Kind: ir.KindCCLibrary,
+		Srcs: []string{"foo.pb.cc", "use_foo.cc"}, Hdrs: []string{"foo.pb.h"}, Deps: []string{"//x:y"},
+	}}}
+	rewriteNativeRuleConsumers(pkg, cc)
+	tgt := pkg.Targets[0]
+	if len(tgt.Srcs) != 1 || tgt.Srcs[0] != "use_foo.cc" {
+		t.Errorf("Srcs = %v, want [use_foo.cc]", tgt.Srcs)
+	}
+	if len(tgt.Hdrs) != 0 {
+		t.Errorf("Hdrs = %v, want []", tgt.Hdrs)
+	}
+	if !slices.Contains(tgt.Deps, ":foo_cc_proto") {
+		t.Errorf("Deps = %v, want to contain :foo_cc_proto", tgt.Deps)
+	}
+}
+
+func TestOutputClaimed(t *testing.T) {
+	cc := newCodegenContext()
+	if cc.outputClaimed("x") {
+		t.Error("x should be unclaimed")
+	}
+	cc.OutToGenrule["g"] = "gen"
+	cc.OutToNativeConsumerDep["n"] = "lib"
+	if !cc.outputClaimed("g") || !cc.outputClaimed("n") {
+		t.Error("g (genrule) and n (native) should both be claimed")
+	}
+}
 
 func attrList(t *testing.T, tgt ir.Target, name string) []string {
 	t.Helper()

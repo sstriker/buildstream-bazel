@@ -1,0 +1,6 @@
+#!/bin/sh
+# A project-specific protobuf compiler wrapper (stand-in for a vendored tool the
+# converter has no built-in recognizer for). Delegates to protoc so the
+# configure-time execute_process actually produces foo.pb.{cc,h} on disk — the
+# evidence the recognizer's supplied outputs are corroborated against.
+exec protoc "$@"
