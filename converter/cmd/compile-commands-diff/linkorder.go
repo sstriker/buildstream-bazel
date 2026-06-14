@@ -239,7 +239,16 @@ func linkOrderDiff(replyDir, aqueryLinkPath string) (*linkOrderReport, error) {
 	if err := json.Unmarshal(b, &doc); err != nil {
 		return nil, fmt.Errorf("aquery-link parse: %w", err)
 	}
+	return compareLinkOrder(reply, &doc), nil
+}
 
+// compareLinkOrder is the pure comparison half of linkOrderDiff: given a loaded
+// cmake codemodel reply and a parsed CppLink aquery, it builds each matched
+// executable's ordered lib identities on both sides and reports the order
+// inversions. Split out so the wiring (cmake Link.CommandFragments → ordered
+// identities, aquery args → ordered identities, binary matching by basename,
+// inversion detection) is unit-testable without an on-disk reply dir.
+func compareLinkOrder(reply *fileapi.Reply, doc *aqueryLinkDoc) *linkOrderReport {
 	// Map every in-tree library target's artifact basename (sonameBase form) to
 	// its cmake target name, so cmake-side link fragments (which name libraries
 	// by output path, e.g. lib/libcurl.a) resolve to the same identity Bazel's
@@ -307,7 +316,7 @@ func linkOrderDiff(replyDir, aqueryLinkPath string) (*linkOrderReport, error) {
 			rep.BazelOrder[base] = bord
 		}
 	}
-	return rep, nil
+	return rep
 }
 
 // orderInversions returns the pairs (x before y) whose relative order differs
