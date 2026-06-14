@@ -709,10 +709,22 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 		Tags:         tags,
 		Visibility:   []string{"//visibility:private"},
 	}
-	cc.Genrules = append(cc.Genrules, gen)
+	// Route the final emit through the shared recognizer chokepoint: a consumed
+	// codegen custom-command a recognizer claims (a protoc add_custom_command
+	// whose .pb.cc is a target src) lowers to its native rule instead of this
+	// genrule. The ninja edge RECORDED the outputs, so the recognizer's output
+	// cross-check validates (no supply mode needed here). On a match the sink
+	// registers OutToNativeConsumerDep, and rewriteNativeRuleConsumers later
+	// strips the generated src from the consuming target + wires the deps edge;
+	// OutToGenrule is registered only in the genrule fallback. Flag-off / no-match
+	// → the genrule unchanged.
+	tgts, recognized := recognizeOrGenrule(cc, codegenCommandFrom(rewrittenCmd, srcs, outs, cc.BazelPackagePath), gen)
+	cc.Genrules = append(cc.Genrules, tgts...)
 	cc.SeenBuilds[b] = name
-	for _, o := range outs {
-		cc.OutToGenrule[o] = name
+	if !recognized {
+		for _, o := range outs {
+			cc.OutToGenrule[o] = name
+		}
 	}
 	return relOut, name, nil
 }

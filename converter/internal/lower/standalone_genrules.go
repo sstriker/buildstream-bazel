@@ -176,6 +176,15 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		return nil
 	}
 	covered := coveredOuts(existing)
+	// Outputs a recognized native rule already claimed (recoverGenrule lowered a
+	// consumed protoc add_custom_command to cc_proto_library) carry no genrule
+	// out for coveredOuts to see — fold them in so this pass doesn't re-process
+	// the same edge and double-emit the native targets.
+	if cc != nil {
+		for o := range cc.OutToNativeConsumerDep {
+			covered[o] = true
+		}
+	}
 	edges := ninja.CustomCommandEdges(g)
 	if len(edges) == 0 {
 		return nil
