@@ -1058,6 +1058,10 @@ type NativeAttr struct {
 	Name string
 	Str  string
 	List []string
+	// Ident renders as a BARE identifier (unquoted) — e.g. `grpc_only = True`.
+	// Non-empty selects this form over Str; used for bool/keyword attribute
+	// values a native rule expects unquoted (cc_grpc_library's grpc_only).
+	Ident string
 }
 
 // CMakeConfigureFileSpec carries the attributes for a

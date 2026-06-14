@@ -378,7 +378,15 @@ Schema + resolver: `internal/manifest/imports.go` (`Tools` / `Tool`,
 - Interface, registry, recognizers, dispatch helper:
   `converter/internal/lower/codegen_recognizer.go`,
   `converter/internal/lower/standalone_genrules.go`
-  (`dispatchCodegenRecognizer`).
+  (`dispatchCodegenRecognizer`). Built-ins, in registry order:
+  `grpcCppRecognizer` (a COMBINED `protoc --cpp_out --grpc_out` →
+  proto_library + cc_proto_library + `cc_grpc_library(grpc_only = True)` from
+  `@grpc//bazel:cc_grpc_library.bzl`; gated by
+  `scripts/meta-cmake-protoc-grpc-recognize.sh`) then `protocCppRecognizer`
+  (`--cpp_out` alone → proto_library + cc_proto_library). A grpc-ONLY call
+  (services compiled separately from the messages) stays on the genrule path —
+  emitting the native pair there would duplicate the sibling cpp call's
+  proto_library.
 - Consumer-dep wiring: `resolveCodegenHeaderConsumers`
   (`converter/internal/lower/lower.go`) → `Package.NativeRuleConsumerLabels`
   (`converter/ir/types.go`) → `generatedHeaderWrappers`

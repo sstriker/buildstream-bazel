@@ -80,6 +80,10 @@ type CodegenRecognizer interface {
 // codegenRegistry is the ordered recognizer list; the first Match wins, and no
 // match means the command stays on the generic (hermetic) genrule path.
 var codegenRegistry = []CodegenRecognizer{
+	// grpc first: a combined --cpp_out+--grpc_out command must lower to the full
+	// proto+cc_proto+cc_grpc set, not just the cpp pair the cpp recognizer would
+	// claim on the --cpp_out flag alone.
+	grpcCppRecognizer{},
 	protocCppRecognizer{},
 }
 
@@ -355,9 +359,9 @@ func rewriteNativeRuleConsumers(pkg *ir.Package, cc *codegenContext) {
 	}
 }
 
-// protocCppRecognizer maps a `protoc … --cpp_out …` custom-command to a
-// proto_library + cc_proto_library pair. (The gRPC service variant — --grpc_out
-// → cc_grpc_library — is a sibling recognizer, added next.)
+// protocCppRecognizer maps a `protoc … --cpp_out …` custom-command (WITHOUT
+// --grpc_out — a combined call is claimed first by grpcCppRecognizer) to a
+// proto_library + cc_proto_library pair.
 type protocCppRecognizer struct{}
 
 func (protocCppRecognizer) Name() string { return "protoc-cpp" }
@@ -390,35 +394,100 @@ func (r protocCppRecognizer) Lower(cmd CodegenCommand) (CodegenResult, error) {
 	}
 	protoName := base + "_proto"
 	ccName := base + "_cc_proto"
-	protoAttrs := []ir.NativeAttr{{Name: "srcs", List: []string{filepath.Base(proto)}}}
-	// Rebased --proto_path: the .proto lives under a sub-dir but is imported by
-	// its proto_path-relative name (import "dep.proto", not "proto/dep.proto").
-	// strip_import_prefix = the repo-relative proto_path root makes the
-	// proto_library present that same name, so imports resolve. Empty root (the
-	// proto_path IS the source root) needs no strip.
+	return CodegenResult{
+		Targets:        []ir.Target{protoLibraryFor(proto, protoName, cmd), ccProtoLibraryFor(ccName, protoName)},
+		ConsumerDeps:   []string{":" + ccName},
+		DerivedOutputs: derived,
+		SubPackage:     path.Dir(proto),
+	}, nil
+}
+
+// protoLibraryFor builds the proto_library target a protoc recognizer emits for
+// `proto`. Shared by the cpp and grpc recognizers: srcs = the .proto basename,
+// strip_import_prefix for a rebased --proto_path (the .proto under a sub-dir but
+// imported by its proto_path-relative name), resolved import deps, public
+// visibility.
+func protoLibraryFor(proto, protoName string, cmd CodegenCommand) ir.Target {
+	attrs := []ir.NativeAttr{{Name: "srcs", List: []string{filepath.Base(proto)}}}
 	if root := protoPathRoot(proto, cmd.Outs); root != "" {
-		protoAttrs = append(protoAttrs, ir.NativeAttr{Name: "strip_import_prefix", Str: "/" + path.Join(cmd.Pkg, root)})
+		attrs = append(attrs, ir.NativeAttr{Name: "strip_import_prefix", Str: "/" + path.Join(cmd.Pkg, root)})
 	}
 	if len(cmd.ProtoDeps) > 0 {
 		deps := append([]string(nil), cmd.ProtoDeps...)
 		sort.Strings(deps)
-		protoAttrs = append(protoAttrs, ir.NativeAttr{Name: "deps", List: deps})
+		attrs = append(attrs, ir.NativeAttr{Name: "deps", List: deps})
 	}
-	protoAttrs = append(protoAttrs, ir.NativeAttr{Name: "visibility", List: []string{"//visibility:public"}})
-	protoLib := ir.Target{
+	attrs = append(attrs, ir.NativeAttr{Name: "visibility", List: []string{"//visibility:public"}})
+	return ir.Target{
 		Name: protoName, Kind: ir.KindNativeRule,
-		NativeRule: &ir.NativeRuleSpec{Kind: "proto_library", LoadFrom: "@protobuf//bazel:proto_library.bzl", Attrs: protoAttrs},
+		NativeRule: &ir.NativeRuleSpec{Kind: "proto_library", LoadFrom: "@protobuf//bazel:proto_library.bzl", Attrs: attrs},
 	}
-	ccLib := ir.Target{
+}
+
+// ccProtoLibraryFor builds the cc_proto_library wrapping a proto_library.
+func ccProtoLibraryFor(ccName, protoName string) ir.Target {
+	return ir.Target{
 		Name: ccName, Kind: ir.KindNativeRule,
 		NativeRule: &ir.NativeRuleSpec{Kind: "cc_proto_library", LoadFrom: "@protobuf//bazel:cc_proto_library.bzl", Attrs: []ir.NativeAttr{
 			{Name: "deps", List: []string{":" + protoName}},
 			{Name: "visibility", List: []string{"//visibility:public"}},
 		}},
 	}
+}
+
+// grpcCppRecognizer maps a COMBINED `protoc … --cpp_out … --grpc_out …`
+// custom-command (one invocation generating both the message classes and the
+// C++ service stubs — the common `protobuf_generate(... PLUGIN grpc)` shape) to
+// proto_library + cc_proto_library + cc_grpc_library(grpc_only=True). It
+// requires BOTH flags so it owns the whole self-contained set: a grpc-ONLY call
+// (services compiled in a separate invocation from the messages) would
+// duplicate the sibling cpp call's proto_library/cc_proto_library, so it's left
+// on the genrule path for now (a cross-command-coordination follow-up).
+type grpcCppRecognizer struct{}
+
+func (grpcCppRecognizer) Name() string { return "protoc-grpc-cpp" }
+
+func (grpcCppRecognizer) Match(cmd CodegenCommand) bool {
+	if !strings.HasPrefix(filepath.Base(cmd.Driver), "protoc") {
+		return false
+	}
+	return hasFlagPrefix(cmd.Args, "--grpc_out") && hasFlagPrefix(cmd.Args, "--cpp_out")
+}
+
+func (grpcCppRecognizer) Lower(cmd CodegenCommand) (CodegenResult, error) {
+	proto := soleProtoInput(cmd.Srcs)
+	if proto == "" {
+		return CodegenResult{}, fmt.Errorf("protoc-grpc-cpp: no single .proto input in srcs %v", cmd.Srcs)
+	}
+	base := strings.TrimSuffix(filepath.Base(proto), ".proto")
+	// Output AUTHORITY: --cpp_out → foo.pb.{cc,h}, --grpc_out → foo.grpc.pb.{cc,h}.
+	// Same cross-check/supply contract as the cpp recognizer.
+	derived := []string{base + ".pb.cc", base + ".pb.h", base + ".grpc.pb.cc", base + ".grpc.pb.h"}
+	if len(cmd.Outs) > 0 {
+		if err := derivedOutputsConsistent(cmd.Outs, derived); err != nil {
+			return CodegenResult{}, fmt.Errorf("protoc-grpc-cpp: %w", err)
+		}
+	}
+	protoName := base + "_proto"
+	ccName := base + "_cc_proto"
+	grpcName := base + "_cc_grpc"
+	// cc_grpc_library(grpc_only=True): generate ONLY the service stubs, taking
+	// the message library (cc_proto_library) via deps. It re-exports that
+	// cc_proto_library to its own consumers (deps headers propagate), so a single
+	// consumer dep on the cc_grpc_library covers both the foo.pb.h messages and
+	// the foo.grpc.pb.h service includes.
+	grpcLib := ir.Target{
+		Name: grpcName, Kind: ir.KindNativeRule,
+		NativeRule: &ir.NativeRuleSpec{Kind: "cc_grpc_library", LoadFrom: "@grpc//bazel:cc_grpc_library.bzl", Attrs: []ir.NativeAttr{
+			{Name: "srcs", List: []string{":" + protoName}},
+			{Name: "deps", List: []string{":" + ccName}},
+			{Name: "grpc_only", Ident: "True"},
+			{Name: "visibility", List: []string{"//visibility:public"}},
+		}},
+	}
 	return CodegenResult{
-		Targets:        []ir.Target{protoLib, ccLib},
-		ConsumerDeps:   []string{":" + ccName},
+		Targets:        []ir.Target{protoLibraryFor(proto, protoName, cmd), ccProtoLibraryFor(ccName, protoName), grpcLib},
+		ConsumerDeps:   []string{":" + grpcName},
 		DerivedOutputs: derived,
 		SubPackage:     path.Dir(proto),
 	}, nil
