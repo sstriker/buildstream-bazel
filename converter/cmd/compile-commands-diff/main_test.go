@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 )
 
 func TestFactsFromArgv(t *testing.T) {
@@ -364,5 +366,72 @@ func TestOrderedLibIdentities_StaticBazelArchive(t *testing.T) {
 	want := "tgt:curl,tgt:zlib,sys:pthread"
 	if strings.Join(got, ",") != want {
 		t.Errorf("static bazel order = %v want %v", got, want)
+	}
+}
+
+// TestCompareLinkOrder_FiresOnInfidelity is the end-to-end "the lens actually
+// fires on a link-order infidelity" test: a deliberate project-archive order
+// divergence (cmake links foo before bar; Bazel's static .a paths link bar
+// before foo) flows through the real wiring — cmake Link.CommandFragments ->
+// ordered identities (via NameOnDisk), Bazel CppLink args -> ordered identities
+// (via targetFromBazelArchive), binary matching by basename — and surfaces a
+// non-empty Inversions. The matching CLEAN case (Bazel mirrors cmake's order)
+// must report none, so the firing is the divergence, not a false positive.
+func TestCompareLinkOrder_FiresOnInfidelity(t *testing.T) {
+	reply := &fileapi.Reply{Targets: map[string]fileapi.Target{
+		"app": {Type: "EXECUTABLE", Name: "app", NameOnDisk: "app", Link: &fileapi.TargetLink{
+			// cmake order: foo, bar, then system libs.
+			CommandFragments: []fileapi.CommandFragment{
+				{Role: "libraries", Fragment: "lib/libfoo.a lib/libbar.a -lm -lpthread"},
+			},
+		}},
+		"foo": {Type: "STATIC_LIBRARY", Name: "foo", NameOnDisk: "libfoo.a"},
+		"bar": {Type: "STATIC_LIBRARY", Name: "bar", NameOnDisk: "libbar.a"},
+	}}
+	// Helper to build an aquery doc for one CppLink action producing "app".
+	docFor := func(args []string) *aqueryLinkDoc {
+		d := &aqueryLinkDoc{}
+		d.Actions = append(d.Actions, struct {
+			Mnemonic        string   `json:"mnemonic"`
+			Arguments       []string `json:"arguments"`
+			PrimaryOutputId int      `json:"primaryOutputId"`
+			OutputIds       []int    `json:"outputIds"`
+		}{Mnemonic: "CppLink", Arguments: args, PrimaryOutputId: 1})
+		d.Artifacts = append(d.Artifacts, struct {
+			Id             int `json:"id"`
+			PathFragmentId int `json:"pathFragmentId"`
+		}{Id: 1, PathFragmentId: 10})
+		d.PathFragments = append(d.PathFragments, struct {
+			Id       int    `json:"id"`
+			Label    string `json:"label"`
+			ParentId int    `json:"parentId"`
+		}{Id: 10, Label: "app", ParentId: 0})
+		return d
+	}
+
+	// INVERTED: Bazel links the static archives bar before foo.
+	inverted := docFor([]string{
+		"bazel-out/k8-fastbuild/bin/elements/p/libbar.a",
+		"bazel-out/k8-fastbuild/bin/elements/p/libfoo.a",
+		"-lm", "-lpthread",
+	})
+	rep := compareLinkOrder(reply, inverted)
+	if rep.Matched != 1 {
+		t.Fatalf("expected the app binary to match on both sides, Matched=%d", rep.Matched)
+	}
+	inv := rep.Inversions["app"]
+	// orderInversions formats the pair in cmake's order (foo before bar).
+	if len(inv) != 1 || inv[0] != "tgt:foo<->tgt:bar" {
+		t.Fatalf("lens did not fire on the foo/bar order divergence: %v", inv)
+	}
+
+	// CLEAN: Bazel mirrors cmake's order (foo before bar) -> no inversion.
+	clean := docFor([]string{
+		"bazel-out/k8-fastbuild/bin/elements/p/libfoo.a",
+		"bazel-out/k8-fastbuild/bin/elements/p/libbar.a",
+		"-lm", "-lpthread",
+	})
+	if rep := compareLinkOrder(reply, clean); len(rep.Inversions) != 0 {
+		t.Errorf("clean order must not fire: %v", rep.Inversions)
 	}
 }
