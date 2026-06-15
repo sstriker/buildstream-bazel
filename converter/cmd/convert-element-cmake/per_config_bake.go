@@ -47,8 +47,9 @@ func runPerConfigBakes(ctx context.Context, a cli.Args, hostBuildDir string, tra
 	if abs, absErr := filepath.Abs(srcRoot); absErr == nil {
 		srcRoot = abs
 	}
-	// a.PerConfigBake is canonicalized by cli.Args.Finalize; re-parse here so a
-	// direct caller that bypassed Finalize still gets the alias handling.
+	// a.PerConfigBake is canonicalized by cli.Parse (parseValidate →
+	// applyOperatorDials); re-parse here so a direct caller that bypassed Parse
+	// still gets the alias handling.
 	perConfigBake, _ := convmode.ParsePerConfigBake(a.PerConfigBake)
 	switch perConfigBake {
 	case convmode.PerConfigBakeOff:
