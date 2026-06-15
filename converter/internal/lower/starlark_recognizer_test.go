@@ -120,6 +120,36 @@ def lower(cmd):
 	}
 }
 
+// Parity with the Go built-ins: a recognizer can place its rule via
+// result(sub_package=…) and branch on cmd.sibling_cpp_proto — the two fields
+// protoc/grpc built-ins use that the bridge previously didn't expose.
+func TestStarlarkRecognizer_SubPackageAndSiblingProto(t *testing.T) {
+	const star = `
+def match(cmd):
+    return cmd.driver == "protoc"
+
+def lower(cmd):
+    base = cmd.srcs[0].rsplit("/", 1)[-1][:-len(".proto")]
+    dir = cmd.srcs[0].rsplit("/", 1)[0] if "/" in cmd.srcs[0] else ""
+    tgts = [native_rule("proto_library", base + "_proto", attrs = {"srcs": [base + ".proto"]})]
+    # Only emit cc_proto when a sibling cpp call isn't already producing it.
+    if not cmd.sibling_cpp_proto:
+        tgts.append(native_rule("cc_proto_library", base + "_cc_proto", attrs = {"deps": [":" + base + "_proto"]}))
+    return result(targets = tgts, derived_outputs = [base + ".pb.cc", base + ".pb.h"], sub_package = dir)
+`
+	r := loadStarFromString(t, "p.star", star)
+	res, err := r.Lower(CodegenCommand{Driver: "protoc", Srcs: []string{"sub/a.proto"}, SiblingCppProto: true})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	if res.SubPackage != "sub" {
+		t.Errorf("sub_package = %q, want sub", res.SubPackage)
+	}
+	if len(res.Targets) != 1 || res.Targets[0].Name != "a_proto" {
+		t.Errorf("sibling_cpp_proto=true should suppress the cc_proto target; got %+v", res.Targets)
+	}
+}
+
 // A non-matching driver: Match declines.
 func TestStarlarkRecognizer_MatchDeclines(t *testing.T) {
 	r := loadStarFromString(t, "protoc.star", protocStar)

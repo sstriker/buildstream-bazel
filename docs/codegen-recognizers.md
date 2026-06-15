@@ -220,7 +220,7 @@ A recognizer script defines two top-level functions and uses two builtins
 (`native_rule(...)`, `result(...)`) — that's the whole API:
 
 ```python
-def match(cmd):            # cmd.driver, cmd.args, cmd.srcs, cmd.outs, cmd.pkg, cmd.proto_deps, cmd.discovered_outputs
+def match(cmd):            # cmd.driver, cmd.args, cmd.srcs, cmd.outs, cmd.pkg, cmd.proto_deps, cmd.discovered_outputs, cmd.sibling_cpp_proto
     return cmd.driver.startswith("protoc") and \
            any([a.startswith("--cpp_out") for a in cmd.args])
 
@@ -250,6 +250,14 @@ Starlark path safe by construction:
 - **`native_rule(kind, name, load_from=, load_symbol=, attrs={})`** maps 1:1 to
   the `NativeRuleSpec` substrate; the `load()` is auto-emitted. `attrs` is a
   dict of attr-name → string *or* list-of-strings, emitted in insertion order.
+- **`result(…, sub_package="dir")`** places the rule(s) in `dir` (element-
+  relative) instead of the output's dir — e.g. the `.proto`'s own directory, so
+  basename `srcs` resolve and cross-package proto imports line up. Empty = the
+  output's dir (the default).
+- **`cmd.sibling_cpp_proto`** is the host's pre-scan signal that a sibling
+  `--cpp_out` call already produces this proto's `proto_library`/
+  `cc_proto_library` — a grpc-only recognizer references them rather than
+  re-emitting (double-producing) them.
 - **Output authority stays first-party.** The script declares `derived_outputs`;
   the Go host cross-checks them against cmake's recorded outputs and falls back
   to the genrule (best-effort) / refuses (strict) on a mismatch — the soundness
