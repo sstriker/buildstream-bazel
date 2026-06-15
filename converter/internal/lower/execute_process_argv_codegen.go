@@ -355,6 +355,15 @@ func argvCodegenOutDir(argv []string, anc execAnchors) string {
 		}
 		return ""
 	}
+	// No `--*_out=DIR` flag: fall back to a SOLE positional build-dir directory
+	// operand (`mygen out/ in.x`), reusing the genrule path's discriminator
+	// (argvDirOperands: anchored, on-disk, non-scratch). This brings the
+	// recognizer's DiscoveredOutputs discovery to parity with the genrule path,
+	// which already handles positional output dirs. Two+ candidate dirs are
+	// ambiguous (which is the output?) → decline, don't guess.
+	if dirs := argvDirOperands(argv, anc); len(dirs) == 1 {
+		return dirs[0]
+	}
 	return ""
 }
 

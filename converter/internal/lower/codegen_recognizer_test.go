@@ -650,6 +650,34 @@ func TestLiftRecognizedExecuteProcess_PerTargetPlacement(t *testing.T) {
 	}
 }
 
+// TestLiftRecognizedExecuteProcess_PositionalOutDir: a recognized tool that
+// names its output dir POSITIONALLY (no --*_out= flag) still gets its
+// DiscoveredOutputs from the on-disk enumeration — parity with the genrule path.
+func TestLiftRecognizedExecuteProcess_PositionalOutDir(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	writeTree(t, hostSrc, "in.x", "spec\n")
+	writeTree(t, hostBuild, "gen/a.h", "A")
+	writeTree(t, hostBuild, "gen/a.cc", "AC")
+	call := argvCall(hostSrc, "mygen", filepath.Join(hostBuild, "gen"), filepath.Join(hostSrc, "in.x"))
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	cc.ExtraRecognizers = []CodegenRecognizer{discoveredSubsetRecognizer{}}
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("refusals: %+v", refusals)
+	}
+	var got []string
+	for _, o := range outs {
+		got = append(got, o.RelOutput)
+	}
+	if len(got) != 1 || got[0] != "gen/a.h" {
+		t.Fatalf("recognizer should claim the .h subset discovered under the positional out dir; got %v", got)
+	}
+	if len(cc.Genrules) != 1 || cc.Genrules[0].Name != "mygen_rule" {
+		t.Fatalf("recognizer's native rule should be emitted; got %+v", cc.Genrules)
+	}
+}
+
 // TestRewriteNativeRuleConsumers_QualifiesAmbiguousDep: when a consumer-dep name
 // is produced in MORE THAN ONE package (two same-basename protos →
 // a/msg_cc_proto, b/msg_cc_proto), the consumer's dep is package-qualified to the
