@@ -25,3 +25,19 @@ add_custom_command(
 
 add_library(use_greeting STATIC ${CMAKE_CURRENT_BINARY_DIR}/greeting.cpp use_greeting.cc)
 target_include_directories(use_greeting PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+# Sub-package output-dir variant (widening): the tool writes into gen/ under the
+# build dir, so the declared output is gen/greeting.cpp.
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/gen/greeting.cpp
+    COMMAND ${CMAKE_COMMAND}
+        -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+        -DBIN_DIR=${CMAKE_CURRENT_BINARY_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/gen_wrap_sub.cmake
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/greeting.def
+            ${CMAKE_CURRENT_SOURCE_DIR}/gen.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}/gen_wrap_sub.cmake
+    VERBATIM)
+
+add_library(use_greeting_sub STATIC ${CMAKE_CURRENT_BINARY_DIR}/gen/greeting.cpp use_greeting_sub.cc)
+target_include_directories(use_greeting_sub PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/gen)

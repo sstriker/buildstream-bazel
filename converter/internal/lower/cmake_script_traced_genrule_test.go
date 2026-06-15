@@ -20,20 +20,28 @@ func TestArgvFlagValue(t *testing.T) {
 	}
 }
 
-func TestArgvOutputAnchorsBuildRoot(t *testing.T) {
+func TestArgvWritesToDir(t *testing.T) {
 	hostSrc, hostBuild := t.TempDir(), t.TempDir()
 	anc := execAnchors{hostSrcDir: hostSrc, recordedSrcDir: hostSrc, hostBuildDir: hostBuild, recordedBuildDir: hostBuild}
-	// A --out-dir= pointing at the build root is the writes-to-build-root signal.
-	if !argvOutputAnchorsBuildRoot([]string{"sh", "gen.sh", "--out-dir=" + hostBuild, filepath.Join(hostSrc, "in.def")}, anc) {
-		t.Errorf("expected build-root output to be detected via --out-dir=")
+	// A --out-dir= pointing at the build root matches dir ".".
+	if !argvWritesToDir([]string{"sh", "gen.sh", "--out-dir=" + hostBuild, filepath.Join(hostSrc, "in.def")}, ".", anc) {
+		t.Errorf("expected build-root output dir to match via --out-dir=")
 	}
 	// A bare positional build-root dir counts too.
-	if !argvOutputAnchorsBuildRoot([]string{"mygen", hostBuild, filepath.Join(hostSrc, "in.def")}, anc) {
-		t.Errorf("expected build-root output to be detected via positional dir")
+	if !argvWritesToDir([]string{"mygen", hostBuild, filepath.Join(hostSrc, "in.def")}, ".", anc) {
+		t.Errorf("expected build-root output dir to match via positional dir")
 	}
-	// No build-root operand (only source inputs) → not detected.
-	if argvOutputAnchorsBuildRoot([]string{"mygen", filepath.Join(hostSrc, "in.def")}, anc) {
-		t.Errorf("source-only argv should not anchor a build-root output")
+	// A build SUBDIR output (--out-dir=<build>/gen) matches dir "gen" (the widening).
+	if !argvWritesToDir([]string{"sh", "gen.sh", "--out-dir=" + filepath.Join(hostBuild, "gen"), filepath.Join(hostSrc, "in.def")}, "gen", anc) {
+		t.Errorf("expected build-subdir output dir to match via --out-dir=")
+	}
+	// The subdir argv does NOT match the build root.
+	if argvWritesToDir([]string{"sh", "gen.sh", "--out-dir=" + filepath.Join(hostBuild, "gen"), filepath.Join(hostSrc, "in.def")}, ".", anc) {
+		t.Errorf("a subdir output dir should not match the build root")
+	}
+	// No build-dir operand (only source inputs) → no match.
+	if argvWritesToDir([]string{"mygen", filepath.Join(hostSrc, "in.def")}, ".", anc) {
+		t.Errorf("source-only argv should not match a build output dir")
 	}
 }
 

@@ -2,6 +2,7 @@ package lower
 
 import (
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -24,20 +25,30 @@ import (
 // genrule — neither needs --cmake-script-runner (we run the real tool, not
 // `cmake -P`).
 //
-// v1 scope (decline → fall through to bake/runner/refuse, never worse than
-// today): exactly ONE liftable tool call that writes into the build tree (>1
-// producer is ambiguous), and every declared output exists on disk under the
-// build dir — the trace ran the tool, so its real outputs corroborate the
-// declaration before we emit a genrule the build would otherwise reject.
+// Scope (decline → fall through to bake/runner/refuse, never worse than today):
+// exactly ONE liftable tool call writing into the declared outputs' directory
+// (>1 producer is ambiguous), the declared outputs all share one parent dir (the
+// tool's output dir — the build root OR a build SUBDIR; anchorGenruleOutputDir
+// Flags maps the `--out=<dir>` flag to $(RULEDIR)[/subdir]), and every declared
+// output exists on disk under the build dir — the trace ran the tool, so its
+// real outputs corroborate the declaration before we emit a genrule the build
+// would otherwise reject. Rarer shapes (a bare positional output DIR, or a
+// multi-tool chain whose final output is flag-derived) don't match the single-
+// flag-writer selection and fall back gracefully; an argv-NAMED-output chain is
+// already handled upstream by recoverExecuteProcess (pass A).
 func (cc *codegenContext) recoverTracedToolCommand(b *ninja.Build, calls []shadow.ExecuteProcessCall, cmakeSrc, buildDir, relOut string, g *ninja.Graph) (string, bool) {
 	declared := genruleOuts(b, buildDir)
 	if len(declared) == 0 {
 		return "", false
 	}
 	inDeclared := false
+	outsParent := path.Dir(declared[0])
 	for _, o := range declared {
 		if o == relOut {
 			inDeclared = true
+		}
+		if path.Dir(o) != outsParent {
+			return "", false // v1: the declared outputs share one directory
 		}
 		if st, err := os.Stat(filepath.Join(buildDir, filepath.FromSlash(o))); err != nil || st.IsDir() {
 			return "", false // declared output the trace didn't actually produce
@@ -53,7 +64,10 @@ func (cc *codegenContext) recoverTracedToolCommand(b *ninja.Build, calls []shado
 		if !argvCodegenEligibleRelaxed(c) || !argvToolLiftable(c.Commands[0][0], anc, cc) {
 			continue
 		}
-		if !argvOutputAnchorsBuildRoot(c.Commands[0], anc) {
+		// The producer is the call that writes into the declared outputs' parent
+		// directory (build root or a build SUBDIR) — a `--out=<dir>` flag value
+		// or a bare positional dir anchoring to outsParent.
+		if !argvWritesToDir(c.Commands[0], outsParent, anc) {
 			continue
 		}
 		if chosen != nil {
@@ -77,14 +91,21 @@ func (cc *codegenContext) recoverTracedToolCommand(b *ninja.Build, calls []shado
 	return cc.SeenBuilds[b], true
 }
 
-// argvOutputAnchorsBuildRoot reports whether some argv operand (or the value of
-// a `--flag=value` form) names the BUILD ROOT — the directory the tool was told
-// to write into. It's the signal that pairs with the custom command's declared
-// build-root outputs: the tool writes there, the declaration says what lands
-// there. A `--flag=<builddir>` and a bare positional `<builddir>` both count.
-func argvOutputAnchorsBuildRoot(argv []string, anc execAnchors) bool {
+// argvWritesToDir reports whether some argv operand (a `--flag=value` value or a
+// bare positional) names the build-relative directory dir — the directory the
+// tool was told to write into. It pairs with the custom command's declared
+// outputs (which all live under dir): the tool writes there, the declaration
+// says what lands there. dir is "." for the build root.
+func argvWritesToDir(argv []string, dir string, anc execAnchors) bool {
 	for _, a := range argv[1:] {
-		if rel, anchored := executeProcessAnchorOutput(stripArgvPathPrefix(argvFlagValue(a)), anc); anchored && (rel == "." || rel == "") {
+		rel, anchored := executeProcessAnchorOutput(stripArgvPathPrefix(argvFlagValue(a)), anc)
+		if !anchored {
+			continue
+		}
+		if rel == "" {
+			rel = "."
+		}
+		if rel == dir {
 			return true
 		}
 	}
