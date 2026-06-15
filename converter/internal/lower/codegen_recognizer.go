@@ -244,19 +244,28 @@ func recognizerRefusalStub(fallback ir.Target, cmd CodegenCommand, err error) ir
 	return stub
 }
 
-// codegenInputKey identifies a recognizer invocation by its INPUTS — the driver
-// plus the sorted source set. It's the dedup unit: the SAME input run into
-// different output dirs is one canonical native rule (Bazel produces the output
-// at a single location, so the cmake out-dir duplication collapses), while
-// DIFFERENT inputs get distinct keys and stay separate rules.
-func codegenInputKey(cmd CodegenCommand) string {
+// codegenRuleKey identifies a recognizer EMISSION for dedup: the driver + sorted
+// input set + the sorted set of rule names the recognizer produced. The SAME
+// input run into different output dirs yields the SAME rule names (names derive
+// from the input, not the out dir), so it collapses to one canonical native rule
+// (Bazel produces the output at a single location). But the SAME input through
+// DIFFERENT, complementary recognizers — `protoc --cpp_out` (→ foo_proto/
+// foo_cc_proto) and a sibling `protoc --grpc_out` (→ foo_cc_grpc) — produces
+// DIFFERENT names, so they DON'T collapse: messages and services are distinct
+// outputs, both needed. DIFFERENT inputs get distinct keys regardless.
+func codegenRuleKey(cmd CodegenCommand, res CodegenResult) string {
 	ins := cmd.InputFiles
 	if len(ins) == 0 {
 		ins = cmd.Srcs
 	}
-	keyed := append([]string(nil), ins...)
-	sort.Strings(keyed)
-	return cmd.Driver + "\x00" + strings.Join(keyed, "\x00")
+	inSorted := append([]string(nil), ins...)
+	sort.Strings(inSorted)
+	names := make([]string, 0, len(res.Targets))
+	for _, t := range res.Targets {
+		names = append(names, t.Name)
+	}
+	sort.Strings(names)
+	return cmd.Driver + "\x00" + strings.Join(inSorted, "\x00") + "\x00#\x00" + strings.Join(names, "\x00")
 }
 
 // dedupRecognizedRule decides whether a matched recognizer's targets should be
@@ -278,13 +287,14 @@ func (cc *codegenContext) dedupRecognizedRule(cmd CodegenCommand, res CodegenRes
 	if len(res.ConsumerDeps) > 0 {
 		consumer = strings.TrimPrefix(res.ConsumerDeps[0], ":")
 	}
-	key := codegenInputKey(cmd)
+	key := codegenRuleKey(cmd, res)
 	if prevConsumer, dup := cc.recognizedConsumerByInput[key]; dup {
-		// Same input as an earlier invocation — reuse that rule; wire this call's
+		// Same input AND same produced rule(s) as an earlier invocation (e.g. the
+		// same proto into a second out dir) — reuse that rule; wire this call's
 		// outputs to it (consumer) instead of re-emitting a duplicate target.
 		return nil, prevConsumer, true
 	}
-	// New input: a different input must not already own one of our names here.
+	// New emission: a different input must not already own one of our names here.
 	for _, t := range res.Targets {
 		if owner, taken := cc.recognizedNameOwner[subPkg+"\x00"+t.Name]; taken && owner != key {
 			return nil, "", false

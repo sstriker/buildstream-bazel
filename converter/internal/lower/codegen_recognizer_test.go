@@ -188,6 +188,28 @@ func TestLiftRecognizedExecuteProcess_GeneratedInputsNotDeduped(t *testing.T) {
 	}
 }
 
+// TestRecognizeCodegen_CppAndGrpcOnlySameProtoBothEmit: the same .proto through
+// the complementary cpp (--cpp_out → proto_library + cc_proto_library) and
+// grpc-only (--grpc_out + sibling → cc_grpc_library) recognizers must NOT
+// collapse — same input, but DIFFERENT produced rules (messages vs services),
+// both needed. Guards the dedup against keying on input alone.
+func TestRecognizeCodegen_CppAndGrpcOnlySameProtoBothEmit(t *testing.T) {
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+
+	cpp := CodegenCommand{Driver: "protoc", Args: []string{"--cpp_out=."}, Srcs: []string{"svc.proto"}, Outs: []string{"svc.pb.cc", "svc.pb.h"}}
+	tCpp, okCpp := recognizeOrGenrule(cc, cpp, ir.Target{Name: "g_cpp", Kind: ir.KindGenrule, GenruleOuts: []string{"svc.pb.cc", "svc.pb.h"}})
+	if !okCpp || len(tCpp) != 2 {
+		t.Fatalf("cpp call should emit proto_library + cc_proto_library; got ok=%v t=%+v", okCpp, tCpp)
+	}
+
+	grpc := CodegenCommand{Driver: "protoc", Args: []string{"--grpc_out=."}, Srcs: []string{"svc.proto"}, Outs: []string{"svc.grpc.pb.cc", "svc.grpc.pb.h"}, SiblingCppProto: true}
+	tGrpc, okGrpc := recognizeOrGenrule(cc, grpc, ir.Target{Name: "g_grpc", Kind: ir.KindGenrule, GenruleOuts: []string{"svc.grpc.pb.cc", "svc.grpc.pb.h"}})
+	if !okGrpc || len(tGrpc) != 1 || tGrpc[0].NativeRule == nil || tGrpc[0].NativeRule.Kind != "cc_grpc_library" {
+		t.Fatalf("grpc-only call (same proto) must NOT be deduped away — it emits a distinct cc_grpc_library; got ok=%v t=%+v", okGrpc, tGrpc)
+	}
+}
+
 // TestRecognizeOrGenrule_FidelityMismatch: a recognizer that MATCHES the tool
 // but whose derived outputs disagree with cmake's recorded ones refuses (a loud
 // build-time stub) under --fidelity=strict, and falls back to the genrule under
