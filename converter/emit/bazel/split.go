@@ -100,7 +100,7 @@ func EmitSplit(pkg *ir.Package, opts Options) (map[string][]byte, error) {
 	}
 
 	for _, t := range pkg.Targets {
-		dir := plan.targetDir(t.Name)
+		dir := plan.targetDirT(t)
 		// Synthesized output-producing rules (genrule custom-command
 		// recovery, write_file configure_file/file(GENERATE) bakes,
 		// cmake_configure_file lifts) carry no SubPackages entry, so
@@ -415,13 +415,25 @@ func (p *splitPlan) targetDir(name string) string {
 	return ""
 }
 
+// targetDirT is targetDir with the PER-TARGET placement override a recognized
+// native rule carries (NativeRuleSpec.SubPackage). It's authoritative for those
+// rules because the name-keyed p.sub can't distinguish two same-named rules in
+// different packages (a/msg.proto + b/msg.proto → two //…:msg_proto). Falls back
+// to the name-keyed dir for everything else.
+func (p *splitPlan) targetDirT(t ir.Target) string {
+	if t.NativeRule != nil && t.NativeRule.SubPackage != "" {
+		return t.NativeRule.SubPackage
+	}
+	return p.targetDir(t.Name)
+}
+
 // landingDir returns the Bazel package dir a target is placed in by the emit
 // loop: its declaring dir, overridden (local regime) to the package owning its
 // primary generated output so the out is package-local. Mirrors the dir
 // computation in EmitSplit's partition loop; used by the cross-package
 // gen-output publicize pre-pass.
 func (p *splitPlan) landingDir(t ir.Target, local bool) string {
-	dir := p.targetDir(t.Name)
+	dir := p.targetDirT(t)
 	if local {
 		if out := primaryGeneratedOutput(t); out != "" {
 			if od := p.deepestPkg(out); od != "" {
@@ -913,6 +925,15 @@ func planSplit(pkg *ir.Package, local bool) *splitPlan {
 	pkgSet := map[string]struct{}{"": {}}
 	for _, d := range p.sub {
 		pkgSet[normDir(d)] = struct{}{}
+	}
+	// Per-target native-rule placements (NativeRuleSpec.SubPackage) — the
+	// name-keyed p.sub can't represent two same-named rules in different
+	// packages, so add each carried dir directly or the clashing package would
+	// be missing from the set.
+	for _, t := range pkg.Targets {
+		if t.NativeRule != nil && t.NativeRule.SubPackage != "" {
+			pkgSet[normDir(t.NativeRule.SubPackage)] = struct{}{}
+		}
 	}
 	for r := range p.headerLibs {
 		pkgSet[normDir(r)] = struct{}{}

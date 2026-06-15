@@ -952,3 +952,37 @@ func TestEmit_Split_InSourceWorkdirGenrule_CrossPackageRefs(t *testing.T) {
 		t.Errorf("root package must export gen.py for the cross-package genrule ref; got root BUILD:\n%s", root)
 	}
 }
+
+// TestEmit_Split_SameNameNativeRulesDistinctPackages: two recognized native
+// rules sharing a name but carrying different per-target SubPackage placements
+// (a/msg.proto and b/msg.proto → //a:msg_proto, //b:msg_proto) must each land in
+// their OWN package — the name-keyed SubPackages map can't represent both, so
+// the per-target NativeRuleSpec.SubPackage drives placement.
+func TestEmit_Split_SameNameNativeRulesDistinctPackages(t *testing.T) {
+	mk := func(dir string) ir.Target {
+		return ir.Target{
+			Name: "msg_proto", Kind: ir.KindNativeRule,
+			NativeRule: &ir.NativeRuleSpec{
+				Kind:       "proto_library",
+				LoadFrom:   "@protobuf//bazel:proto_library.bzl",
+				Attrs:      []ir.NativeAttr{{Name: "srcs", List: []string{"msg.proto"}}},
+				SubPackage: dir,
+			},
+		}
+	}
+	pkg := &ir.Package{Targets: []ir.Target{mk("a"), mk("b")}}
+	tree, err := bazel.EmitSplit(pkg, bazel.Options{BazelPackagePath: "elements/p"})
+	if err != nil {
+		t.Fatalf("EmitSplit: %v", err)
+	}
+	a, b, root := string(tree["a"]), string(tree["b"]), string(tree[""])
+	if strings.Count(a, `name = "msg_proto"`) != 1 {
+		t.Errorf("package a must carry exactly one msg_proto; got:\n%s", a)
+	}
+	if strings.Count(b, `name = "msg_proto"`) != 1 {
+		t.Errorf("package b must carry exactly one msg_proto; got:\n%s", b)
+	}
+	if strings.Contains(root, `name = "msg_proto"`) {
+		t.Errorf("root must not carry msg_proto (both are sub-packaged); got:\n%s", root)
+	}
+}
