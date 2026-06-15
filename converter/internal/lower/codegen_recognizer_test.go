@@ -339,20 +339,19 @@ func attrList(t *testing.T, tgt ir.Target, name string) []string {
 // TestProtocCppRecognizer_Match: fires on protoc --cpp_out, not on a
 // grpc-only protoc invocation or a non-protoc tool.
 func TestProtocCppRecognizer_Match(t *testing.T) {
-	r := protocCppRecognizer{}
 	cases := []struct {
 		name string
 		cmd  CodegenCommand
 		want bool
 	}{
-		{"cpp", CodegenCommand{Driver: "protoc", Args: []string{"--cpp_out=.", "foo.proto"}}, true},
-		{"cpp-eq-dir", CodegenCommand{Driver: "protoc", Args: []string{"--cpp_out=gen", "foo.proto"}}, true},
-		{"grpc-only", CodegenCommand{Driver: "protoc", Args: []string{"--grpc_out=.", "foo.proto"}}, false},
-		{"not-protoc", CodegenCommand{Driver: "flatc", Args: []string{"--cpp_out=.", "x.fbs"}}, false},
+		{"cpp", CodegenCommand{Driver: "protoc", Args: []string{"--cpp_out=.", "foo.proto"}, Srcs: []string{"foo.proto"}}, true},
+		{"cpp-eq-dir", CodegenCommand{Driver: "protoc", Args: []string{"--cpp_out=gen", "foo.proto"}, Srcs: []string{"foo.proto"}}, true},
+		{"grpc-only", CodegenCommand{Driver: "protoc", Args: []string{"--grpc_out=.", "foo.proto"}, Srcs: []string{"foo.proto"}}, false},
+		{"not-protoc", CodegenCommand{Driver: "flatc", Args: []string{"--cpp_out=.", "x.fbs"}, Srcs: []string{"x.fbs"}}, false},
 	}
 	for _, c := range cases {
-		if got := r.Match(c.cmd); got != c.want {
-			t.Errorf("%s: Match = %v, want %v", c.name, got, c.want)
+		if got := codegenRecognizerMatches(nil, c.cmd); got != c.want {
+			t.Errorf("%s: matched = %v, want %v", c.name, got, c.want)
 		}
 	}
 }
@@ -437,21 +436,26 @@ func TestProtocCppRecognizer_OutputCrossCheck(t *testing.T) {
 // TestGrpcCppRecognizer_Match: fires on a COMBINED protoc --cpp_out+--grpc_out,
 // not on cpp-only, grpc-only, or non-protoc.
 func TestGrpcCppRecognizer_Match(t *testing.T) {
-	r := grpcCppRecognizer{}
-	cases := []struct {
-		name string
-		cmd  CodegenCommand
-		want bool
-	}{
-		{"combined", CodegenCommand{Driver: "protoc", Args: []string{"--cpp_out=.", "--grpc_out=.", "foo.proto"}}, true},
-		{"cpp-only", CodegenCommand{Driver: "protoc", Args: []string{"--cpp_out=.", "foo.proto"}}, false},
-		{"grpc-only", CodegenCommand{Driver: "protoc", Args: []string{"--grpc_out=.", "foo.proto"}}, false},
-		{"not-protoc", CodegenCommand{Driver: "flatc", Args: []string{"--cpp_out=.", "--grpc_out=.", "x.fbs"}}, false},
-	}
-	for _, c := range cases {
-		if got := r.Match(c.cmd); got != c.want {
-			t.Errorf("%s: Match = %v, want %v", c.name, got, c.want)
+	emitsGrpc := func(args ...string) bool {
+		res, matched, _ := recognizeCodegen(CodegenCommand{Driver: "protoc", Args: args, Srcs: []string{"foo.proto"}})
+		if !matched {
+			return false
 		}
+		for _, tg := range res.Targets {
+			if tg.NativeRule != nil && tg.NativeRule.Kind == "cc_grpc_library" {
+				return true
+			}
+		}
+		return false
+	}
+	if !emitsGrpc("--cpp_out=.", "--grpc_out=.", "foo.proto") {
+		t.Error("combined --cpp_out+--grpc_out should lower to a cc_grpc_library")
+	}
+	if emitsGrpc("--cpp_out=.", "foo.proto") {
+		t.Error("cpp-only must not emit a cc_grpc_library")
+	}
+	if _, m, _ := recognizeCodegen(CodegenCommand{Driver: "flatc", Args: []string{"--cpp_out=.", "--grpc_out=.", "x.fbs"}, Srcs: []string{"x.fbs"}}); m {
+		t.Error("flatc must not be recognized")
 	}
 }
 
@@ -530,22 +534,18 @@ func TestGrpcCppRecognizer_OutputCrossCheck(t *testing.T) {
 // NO --cpp_out) ONLY when a sibling cpp call exists (SiblingCppProto); declines
 // without the sibling, on a combined call, and on non-protoc.
 func TestGrpcOnlyRecognizer_Match(t *testing.T) {
-	r := grpcOnlyRecognizer{}
-	cases := []struct {
-		name string
-		cmd  CodegenCommand
-		want bool
-	}{
-		{"grpc-only+sibling", CodegenCommand{Driver: "protoc", Args: []string{"--grpc_out=.", "svc.proto"}, SiblingCppProto: true}, true},
-		{"grpc-only-no-sibling", CodegenCommand{Driver: "protoc", Args: []string{"--grpc_out=.", "svc.proto"}}, false},
-		{"combined", CodegenCommand{Driver: "protoc", Args: []string{"--cpp_out=.", "--grpc_out=.", "svc.proto"}, SiblingCppProto: true}, false},
-		{"cpp-only", CodegenCommand{Driver: "protoc", Args: []string{"--cpp_out=.", "svc.proto"}, SiblingCppProto: true}, false},
-		{"not-protoc", CodegenCommand{Driver: "flatc", Args: []string{"--grpc_out=.", "x.fbs"}, SiblingCppProto: true}, false},
+	// grpc-only + sibling → exactly a lone cc_grpc_library (references the
+	// sibling's proto rules, doesn't re-emit them).
+	res, matched, _ := recognizeCodegen(CodegenCommand{
+		Driver: "protoc", Args: []string{"--grpc_out=.", "svc.proto"}, Srcs: []string{"svc.proto"}, SiblingCppProto: true,
+	})
+	if !matched || len(res.Targets) != 1 || res.Targets[0].NativeRule == nil || res.Targets[0].NativeRule.Kind != "cc_grpc_library" {
+		t.Errorf("grpc-only+sibling should lower to a lone cc_grpc_library; matched=%v targets=%+v", matched, res.Targets)
 	}
-	for _, c := range cases {
-		if got := r.Match(c.cmd); got != c.want {
-			t.Errorf("%s: Match = %v, want %v", c.name, got, c.want)
-		}
+	// grpc-only WITHOUT a sibling → not recognized (the referenced proto rules
+	// would dangle), so it stays a genrule.
+	if _, m, _ := recognizeCodegen(CodegenCommand{Driver: "protoc", Args: []string{"--grpc_out=.", "svc.proto"}, Srcs: []string{"svc.proto"}}); m {
+		t.Error("grpc-only without a sibling must not be recognized")
 	}
 }
 
