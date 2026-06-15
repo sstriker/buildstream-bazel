@@ -1148,7 +1148,48 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 	return cmd
 }
 
-// recordCodegenIncludeClosure appends the transitive `include "..."`
+// anchorGenruleOutputDirFlags rewrites a `--<flag>=<dir>` operand whose value is
+// a declared output's PARENT directory to point at $(RULEDIR), for codegen tools
+// that take an output DIRECTORY and DERIVE the filenames (protoc --cpp_out=DIR,
+// `gen --out-dir=DIR`). anchorGenruleOutputsToRuledir only anchors output FILES
+// named literally in the cmd; a dir-writing tool names none of its outputs, so
+// without this the post-strip `--out=.` / `--out=<subdir>` makes the tool write
+// into the exec-root cwd rather than $(RULEDIR), and the build fails on the
+// missing declared output.
+//
+// Keyed on an EXACT match between the flag value and a declared output's parent
+// directory (build-relative, the post-rewrite form: "." for a build-root output,
+// "<subdir>" otherwise), so a cmd with no such operand is untouched — the
+// recognized and literal-output cases are no-ops. The exact-value + token-
+// boundary match avoids mauling an unrelated `--flag=.`/`--flag=sub` argument
+// that doesn't correspond to an output dir.
+func anchorGenruleOutputDirFlags(cmd string, outs []string) string {
+	if cmd == "" || len(outs) == 0 {
+		return cmd
+	}
+	seen := map[string]bool{}
+	for _, o := range outs {
+		if o == "" || path.IsAbs(o) {
+			continue
+		}
+		dir := path.Dir(o)
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		repl := "$(RULEDIR)"
+		if dir != "." {
+			repl += "/" + dir
+		}
+		// Match `=<dir>` at the end of a flag token: the value must be the whole
+		// operand (followed by whitespace, a quote, or end-of-string), so
+		// `--out=.` matches but `--out=./keep` and `--out=.foo` do not.
+		re := regexp.MustCompile(`=` + regexp.QuoteMeta(dir) + `(\s|["']|$)`)
+		cmd = re.ReplaceAllString(cmd, "="+repl+"$1")
+	}
+	return cmd
+}
+
 // closure of each include-resolving codegen genrule's primary input to
 // its srcs — the tablegen shape: a tool that reads `-I <dir>` roots and
 // resolves `include "x.td"` directives against them.

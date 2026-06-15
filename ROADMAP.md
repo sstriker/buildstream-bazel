@@ -338,6 +338,22 @@ transition cleanly.
         the call stays a genrule so the reference can't dangle), so neither the
         proto_library nor foo.pb.* is double-produced. Both shapes are gated +
         unit-tested. The gRPC-service recognizer line is COMPLETE.
+        - **Widen the declared-output direct-tool genrule past build-root /
+          single-call.** A traced-but-UNRECOGNIZED codegen tool inside a
+          `cmake -P` wrapper is recovered runner-free now: the wrapping custom
+          command's DECLARED outputs are the authority, so the script path
+          substitutes the real tool command for `cmake -P <script>` and reuses
+          the shared genrule emission (`emitRecoveredGenrule` → recognizer or
+          genrule, with `anchorGenruleOutputDirFlags` mapping an output-DIR flag
+          like `--out=DIR`/`--cpp_out=DIR` to `$(RULEDIR)` — a fix the ordinary
+          custom-command path shares). This demotes `--cmake-script-runner` to a
+          true last resort (only a script whose effect can't be recovered as a
+          tool call AND must run live at build time). v1 handles exactly one
+          liftable tool call writing to the BUILD ROOT; the follow-ups are a
+          sub-package output dir (the tool writes under `<build>/<sub>`), a
+          multi-call producer chain (several tools feeding the declared outs),
+          and a bare positional output-dir operand (`mygen <dir> in`) —
+          `gated by scripts/meta-cmake-traced-tool-declared-outs.sh`.
     - **Auto-emit `tools` entries (the manifest is hand-authored today).**
       Host-codegen-tool hermeticization itself is SHIPPED: a `tools` section in
       the imports manifest maps a host codegen tool with no native rule (a

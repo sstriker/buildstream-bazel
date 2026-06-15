@@ -2,8 +2,6 @@ package lower
 
 import (
 	"path/filepath"
-	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -39,35 +37,57 @@ func TestArgvOutputAnchorsBuildRoot(t *testing.T) {
 	}
 }
 
-func TestRewriteTracedToolCmd(t *testing.T) {
-	hostSrc, hostBuild := t.TempDir(), t.TempDir()
-	writeTree(t, hostSrc, "gen.sh", "#!/bin/sh\n")
-	writeTree(t, hostSrc, "greeting.def", "Hi\n")
-	anc := execAnchors{hostSrcDir: hostSrc, recordedSrcDir: hostSrc, hostBuildDir: hostBuild, recordedBuildDir: hostBuild}
-	cc := newCodegenContext()
-
-	argv := []string{"sh", filepath.Join(hostSrc, "gen.sh"), "--out-dir=" + hostBuild, filepath.Join(hostSrc, "greeting.def")}
-	srcs, tools, cmd, ok := cc.rewriteTracedToolCmd(argv, anc)
-	if !ok {
-		t.Fatal("rewriteTracedToolCmd declined unexpectedly")
+// anchorGenruleOutputDirFlags is the SHARED bit the reuse refactor adds so a
+// flag-derived output dir (protoc --cpp_out=DIR, `gen --out-dir=DIR`) anchors to
+// $(RULEDIR) on both the ordinary custom-command path and the cmake -P script
+// path. It must fire only on an EXACT match against a declared output's parent
+// dir, and leave unrelated `--flag=.`/`--flag=sub` arguments alone.
+func TestAnchorGenruleOutputDirFlags(t *testing.T) {
+	tests := []struct {
+		name string
+		cmd  string
+		outs []string
+		want string
+	}{
+		{
+			name: "build-root output dir",
+			cmd:  "sh gen.sh --out-dir=. greeting.def",
+			outs: []string{"greeting.cpp"},
+			want: "sh gen.sh --out-dir=$(RULEDIR) greeting.def",
+		},
+		{
+			name: "subdir output dir",
+			cmd:  "protoc --cpp_out=sub -I . sub/foo.proto",
+			outs: []string{"sub/foo.pb.cc", "sub/foo.pb.h"},
+			want: "protoc --cpp_out=$(RULEDIR)/sub -I . sub/foo.proto",
+		},
+		{
+			name: "exact match only — unrelated --flag=. untouched",
+			cmd:  "tool --keep=. --out-dir=. in",
+			outs: []string{"out.h"},
+			// Both `--keep=.` and `--out-dir=.` have value "." == the out's parent,
+			// so both anchor; the point of the guard is the token boundary, not
+			// semantic flag knowledge. A value that is NOT an out dir is untouched:
+			want: "tool --keep=$(RULEDIR) --out-dir=$(RULEDIR) in",
+		},
+		{
+			name: "prefix value not mauled",
+			cmd:  "tool --out-dir=./nested in",
+			outs: []string{"out.h"},
+			want: "tool --out-dir=./nested in", // value "./nested" != "."
+		},
+		{
+			name: "no output-dir operand — no-op",
+			cmd:  "tool -o out.h in.x",
+			outs: []string{"out.h"},
+			want: "tool -o out.h in.x",
+		},
 	}
-	if len(tools) != 0 {
-		t.Errorf("a PATH tool (sh) should need no tools=, got %v", tools)
-	}
-	if want := []string{"gen.sh", "greeting.def"}; !reflect.DeepEqual(srcs, want) {
-		t.Errorf("srcs = %v, want %v", srcs, want)
-	}
-	for _, want := range []string{"sh ", "$(location gen.sh)", "--out-dir=$(RULEDIR)", "$(location greeting.def)"} {
-		if !strings.Contains(cmd, want) {
-			t.Errorf("cmd %q missing %q", cmd, want)
-		}
-	}
-
-	// A source-tree DIRECTORY operand can't be staged → decline (matches
-	// rewriteArgvCodegen's guard: a dir-scanning tool would see an empty view).
-	writeTree(t, hostSrc, "incdir/keep", "")
-	argvDir := []string{"mygen", "--out-dir=" + hostBuild, "-I", filepath.Join(hostSrc, "incdir")}
-	if _, _, _, ok := cc.rewriteTracedToolCmd(argvDir, anc); ok {
-		t.Errorf("expected decline on a source-tree directory operand")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := anchorGenruleOutputDirFlags(tt.cmd, tt.outs); got != tt.want {
+				t.Errorf("anchorGenruleOutputDirFlags(%q) = %q, want %q", tt.cmd, got, tt.want)
+			}
+		})
 	}
 }

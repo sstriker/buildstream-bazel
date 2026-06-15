@@ -61,15 +61,15 @@ rec="$work_dir/rec"; mkdir -p "$rec"
     >"$rec/out" 2>"$rec/err" || fail "recover convert (--recognize-codegen --cmake-script-trace) failed" "$rec/err"
 b="$rec/BUILD.bazel"
 grep -qE '^genrule\(' "$b" || fail "expected a direct-tool genrule" "$b"
-grep -qF 'cmake-codegen-cmake-script-traced-tool' "$b" || fail "genrule should carry the traced-tool tag" "$b"
 grep -qF '"greeting.cpp"' "$b" || fail "genrule should declare greeting.cpp as an out" "$b"
-grep -qF -- '--out-dir=$(RULEDIR)' "$b" || fail "the output dir should be rewritten to \$(RULEDIR)" "$b"
-grep -qF '$(location greeting.def)' "$b" || fail "greeting.def should be staged via \$(location)" "$b"
+grep -qF -- '--out-dir=$(RULEDIR)' "$b" || fail "the output dir should be rewritten to \$(RULEDIR) (shared anchoring)" "$b"
+grep -qF '"greeting.def"' "$b" || fail "greeting.def should be a genrule src" "$b"
+grep -qF '"gen.sh"' "$b" || fail "gen.sh should be a genrule src" "$b"
 # The genrule runs the tool directly — its cmd must NOT shell out to cmake -P.
 # (Match the cmd line specifically; the carried CMakeLists comment legitimately
 # mentions "cmake -P".)
 grep -E '^[[:space:]]*cmd = ' "$b" | grep -qF 'cmake' && fail "the genrule cmd should run the tool directly, not cmake" "$b"
-echo "ok  meta-cmake-traced-tool-declared-outs: unrecognized tool recovered to a runner-free direct-tool genrule"
+echo "ok  meta-cmake-traced-tool-declared-outs: unrecognized tool recovered to a runner-free direct-tool genrule (reusing the shared emission)"
 
 # --- Bazel-build half ---
 if command -v bazel >/dev/null 2>&1; then BZL=bazel
@@ -80,7 +80,7 @@ case "$bzlmajor" in [0-9]*) ;; *) bzlmajor=0 ;; esac
 if [ "$bzlmajor" -lt 7 ]; then echo "ok  meta-cmake-traced-tool-declared-outs: bazel < 7, skipping build half"; exit 0; fi
 
 ws="$work_dir/ws"; mkdir -p "$ws"
-cp "$fixture/gen.sh" "$fixture/greeting.def" "$fixture/use_greeting.cc" "$ws/"
+cp "$fixture/gen.sh" "$fixture/greeting.def" "$fixture/gen_wrap.cmake" "$fixture/use_greeting.cc" "$ws/"
 cp "$b" "$ws/BUILD.bazel"
 cat > "$ws/MODULE.bazel" <<EOF
 module(name = "tracedtooldeclaredouts", version = "0.0.0")

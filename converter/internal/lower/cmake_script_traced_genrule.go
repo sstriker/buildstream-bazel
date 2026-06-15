@@ -3,67 +3,51 @@ package lower
 import (
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
-	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
-// liftTracedToolDeclaredOutputs lifts a traced-but-UNRECOGNIZED codegen tool
-// inside a `cmake -P` script into a direct-tool genrule, using the wrapping
-// custom command's DECLARED outputs (the ninja edge's outs) as the output
-// authority. It is the runner-free fallback the codegen path takes when the
-// recognizer + the shared execute_process lifts can't claim relOut but the
-// trace still gave us a real tool call and the custom command told us exactly
-// which files it must produce — "lift whenever there is enough data, in any
-// form": the OUTPUT clause is enough data, even when the tool derives its
-// outputs from an output-dir flag the argv-output lift can't read.
+// recoverTracedToolCommand recovers a traced-but-unrecognized codegen tool
+// inside a `cmake -P` wrapper by SUBSTITUTING the real tool command (recovered
+// from the script trace) for `cmake -P <script>` and reusing the shared genrule
+// emission (emitRecoveredGenrule). The wrapping custom command's DECLARED
+// outputs (the ninja edge's outs) are the authority — "lift whenever there is
+// enough data, in any form": the OUTPUT clause is enough, even when the tool
+// derives its outputs from an output-dir flag no recognizer claims.
 //
-// Unlike the runner-genrule fallback (liftCmakeScriptGenrule), this needs NO
-// --cmake-script-runner: it runs the observed tool directly at Bazel build time
-// (the tool the project already depends on), not `cmake -P <script>`. The
-// output dir the tool wrote to is rewritten to $(RULEDIR); the tool's source
-// inputs are staged via $(location).
+// Reuse, not parallel logic: emitRecoveredGenrule runs the same
+// rewriteGenruleCmd / rewriteToolFromTarget / output-dir + file anchoring /
+// recognizeOrGenrule the ordinary custom-command path uses, so a recognized tool
+// still lowers to its native rule and an unrecognized one to a direct-tool
+// genrule — neither needs --cmake-script-runner (we run the real tool, not
+// `cmake -P`).
 //
 // v1 scope (decline → fall through to bake/runner/refuse, never worse than
-// today): build-ROOT declared outputs only (so the genrule lands at the package
-// root and the output-dir → $(RULEDIR) rewrite is unambiguous), and exactly ONE
-// liftable tool call that writes to the build root (>1 producer is ambiguous).
-// Every declared output must exist on disk under the build dir — the trace ran
-// the tool, so its real outputs corroborate the declaration, the same on-disk
-// backstop the recognizer uses. A sub-package output dir and multi-call chains
-// are follow-ups (see ROADMAP).
-func (cc *codegenContext) liftTracedToolDeclaredOutputs(b *ninja.Build, calls []shadow.ExecuteProcessCall, cmakeSrc, buildDir, relOut string) (string, bool) {
+// today): exactly ONE liftable tool call that writes into the build tree (>1
+// producer is ambiguous), and every declared output exists on disk under the
+// build dir — the trace ran the tool, so its real outputs corroborate the
+// declaration before we emit a genrule the build would otherwise reject.
+func (cc *codegenContext) recoverTracedToolCommand(b *ninja.Build, calls []shadow.ExecuteProcessCall, cmakeSrc, buildDir, relOut string, g *ninja.Graph) (string, bool) {
 	declared := genruleOuts(b, buildDir)
 	if len(declared) == 0 {
 		return "", false
 	}
 	inDeclared := false
 	for _, o := range declared {
-		if strings.Contains(o, "/") {
-			return "", false // v1: build-root outputs only
-		}
 		if o == relOut {
 			inDeclared = true
+		}
+		if st, err := os.Stat(filepath.Join(buildDir, filepath.FromSlash(o))); err != nil || st.IsDir() {
+			return "", false // declared output the trace didn't actually produce
 		}
 	}
 	if !inDeclared {
 		return "", false
 	}
-	// On-disk corroboration: the trace ran the tool, so every declared output
-	// exists under the build dir. A declaration the trace didn't actually
-	// produce declines rather than emitting a genrule Bazel would reject.
-	for _, o := range declared {
-		if st, err := os.Stat(filepath.Join(buildDir, filepath.FromSlash(o))); err != nil || st.IsDir() {
-			return "", false
-		}
-	}
 	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir}
-	// Find THE single liftable tool call that writes to the build root.
-	var chosen shadow.ExecuteProcessCall
-	found := false
+	var chosen []string
 	for _, raw := range calls {
 		c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))
 		if !argvCodegenEligibleRelaxed(c) || !argvToolLiftable(c.Commands[0][0], anc, cc) {
@@ -72,59 +56,25 @@ func (cc *codegenContext) liftTracedToolDeclaredOutputs(b *ninja.Build, calls []
 		if !argvOutputAnchorsBuildRoot(c.Commands[0], anc) {
 			continue
 		}
-		if found {
+		if chosen != nil {
 			return "", false // ambiguous producer — don't guess
 		}
-		chosen, found = c, true
+		chosen = c.Commands[0]
 	}
-	if !found {
+	if chosen == nil {
 		return "", false
 	}
-	srcs, tools, cmd, ok := cc.rewriteTracedToolCmd(chosen.Commands[0], anc)
-	if !ok {
+	// Substitute the traced tool argv for `cmake -P <script>` and reuse the
+	// shared emission. emitRecoveredGenrule declares the edge's outs, so relOut
+	// is registered (OutToGenrule, or OutToNativeConsumerDep on a recognizer
+	// match); confirm that before claiming success.
+	if _, _, err := cc.emitRecoveredGenrule(b, strings.Join(chosen, " "), cmakeSrc, buildDir, relOut, g); err != nil {
 		return "", false
 	}
-	// In-place guard: Bazel rejects a file that is both a src and an out.
-	declaredSet := map[string]bool{}
-	for _, o := range declared {
-		declaredSet[o] = true
-	}
-	for _, s := range srcs {
-		if declaredSet[s] {
-			return "", false
-		}
-	}
-	// Idempotency across duplicate trace calls (mirrors the other lifts).
-	claimed := 0
-	for _, o := range declared {
-		if cc.outputClaimed(o) {
-			claimed++
-		}
-	}
-	name := genruleNameFor(b, buildDir)
-	if claimed == len(declared) {
-		cc.SeenBuilds[b] = name
-		return name, true
-	}
-	if claimed > 0 {
+	if !cc.outputClaimed(relOut) {
 		return "", false
 	}
-	sort.Strings(declared)
-	cc.Genrules = append(cc.Genrules, ir.Target{
-		Name:         name,
-		Kind:         ir.KindGenrule,
-		Srcs:         srcs,
-		GenruleCmd:   cmd,
-		GenruleOuts:  declared,
-		GenruleTools: tools,
-		Tags:         []string{"cmake-codegen-cmake-script-traced-tool"},
-		Visibility:   []string{"//visibility:private"},
-	})
-	for _, o := range declared {
-		cc.OutToGenrule[o] = name
-	}
-	cc.SeenBuilds[b] = name
-	return name, true
+	return cc.SeenBuilds[b], true
 }
 
 // argvOutputAnchorsBuildRoot reports whether some argv operand (or the value of
@@ -151,70 +101,4 @@ func argvFlagValue(a string) string {
 		}
 	}
 	return a
-}
-
-// rewriteTracedToolCmd renders the genrule cmd for a traced tool argv: the
-// build-root output dir → $(RULEDIR); source-tree FILE inputs → srcs +
-// $(location); a build-dir input another recovery produces → srcs +
-// $(location); an absolute tool path → its basename (PATH portability). A
-// source-tree DIRECTORY operand declines (a literal path can't be staged, so a
-// dir-scanning tool would see an empty view under the sandbox — the same guard
-// rewriteArgvCodegen takes). After building the argv it runs the tool-from-
-// target rewrite so a manifest/in-tree tool maps to $(execpath <label>) + tools.
-func (cc *codegenContext) rewriteTracedToolCmd(argv []string, anc execAnchors) (srcs, tools []string, cmd string, ok bool) {
-	srcSet := map[string]bool{}
-	addSrc := func(rel string) {
-		if !srcSet[rel] {
-			srcSet[rel] = true
-			srcs = append(srcs, rel)
-		}
-	}
-	emitKeyed := func(a, repl string) string {
-		if strings.HasPrefix(a, "-") {
-			if eq := strings.IndexByte(a, '='); eq > 0 {
-				return a[:eq+1] + repl
-			}
-		}
-		return repl
-	}
-	var rewritten []string
-	for i, a := range argv {
-		if i == 0 {
-			if filepath.IsAbs(a) {
-				rewritten = append(rewritten, shellQuoteArg(filepath.Base(a)))
-			} else {
-				rewritten = append(rewritten, shellQuoteArg(a))
-			}
-			continue
-		}
-		val := argvFlagValue(a)
-		p := stripArgvPathPrefix(val)
-		if rel, anchored := executeProcessAnchorOutput(p, anc); anchored {
-			if rel == "." || rel == "" {
-				rewritten = append(rewritten, emitKeyed(a, "$(RULEDIR)"))
-				continue
-			}
-			// A non-root build-dir operand: a generated input another recovery
-			// produces, referenced via its location. (A build-dir OUTPUT under a
-			// subdir is out of v1 scope — the build-root guard above declines it.)
-			addSrc(rel)
-			rewritten = append(rewritten, emitKeyed(a, "$(location "+rel+")"))
-			continue
-		}
-		if rel, anchored := executeProcessAnchorSource(p, anc); anchored {
-			if rel == "" || isExistingDir(filepath.Join(anc.hostSrcDir, rel)) {
-				return nil, nil, "", false
-			}
-			if _, err := os.Stat(filepath.Join(anc.hostSrcDir, filepath.FromSlash(rel))); err != nil {
-				return nil, nil, "", false
-			}
-			addSrc(rel)
-			rewritten = append(rewritten, emitKeyed(a, "$(location "+rel+")"))
-			continue
-		}
-		rewritten = append(rewritten, shellQuoteArg(a))
-	}
-	cmd = strings.Join(rewritten, " ")
-	cmd, tools = rewriteToolFromTarget(cmd, cc.ArtifactToName, cc.ExecArtifacts, cc.Imports, cc.HostPrefixDir)
-	return srcs, tools, cmd, true
 }

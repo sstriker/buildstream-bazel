@@ -583,7 +583,7 @@ func (cc *codegenContext) recoverCmakeScriptGenrule(b *ninja.Build, cmd, cmakeSr
 	// fidelity than the bake/runner genrule, so it runs first. Declines (offline /
 	// flags off / output not recovered) fall through to bake/runner/refuse. See
 	// recoverCmakeScriptCodegen (P2 of the wrapper-codegen coverage).
-	if name, ok := cc.recoverCmakeScriptCodegen(b, cmd, script, cmakeSrc, buildDir, relOut); ok {
+	if name, ok := cc.recoverCmakeScriptCodegen(b, cmd, script, cmakeSrc, buildDir, relOut, g); ok {
 		return relOut, name, nil
 	}
 	var liftReason string
@@ -726,8 +726,23 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 		return cc.recoverCmakeScriptGenrule(b, cmd, cmakeSrc, buildDir, relOut, g)
 	}
 
+	return cc.emitRecoveredGenrule(b, cmd, cmakeSrc, buildDir, relOut, g)
+}
+
+// emitRecoveredGenrule builds and registers a recovered custom-command as a
+// genrule for ninja edge b, routing the final emit through the shared
+// recognizer chokepoint (recognizeOrGenrule): a consumed codegen command a
+// recognizer claims lowers to its native rule, else the genrule fallback is
+// emitted. Returns (relOut, name, nil) for drop-in use by recoverGenrule.
+//
+// Shared by recoverGenrule (the ninja edge's OWN command) and the cmake -P
+// script path (the real tool command recovered from the script trace,
+// substituted for `cmake -P <script>`), so both get identical tool resolution,
+// output anchoring, build-dir reanchor, and recognizer dispatch — instead of
+// the script path hand-rolling a parallel genrule builder.
+func (cc *codegenContext) emitRecoveredGenrule(b *ninja.Build, cmd, cmakeSrc, buildDir, relOut string, g *ninja.Graph) (string, string, error) {
 	// Sanitize a name from the build statement's first output.
-	name = genruleNameFor(b, buildDir)
+	name := genruleNameFor(b, buildDir)
 
 	outs := genruleOuts(b, buildDir)
 	// recoverGenrule predates the umbrella promotion and has no
@@ -764,6 +779,13 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	// keeps churn-free for the stdout-redirect recovered genrules.
 	if len(outs) > 0 {
 		rewrittenCmd = anchorGenruleOutputsToRuledir(rewrittenCmd, outs)
+		// Anchor a tool's output-DIRECTORY operand (protoc --cpp_out=DIR,
+		// `gen --out-dir=DIR`) to $(RULEDIR): such a tool DERIVES its filenames
+		// and names no output literally, so anchorGenruleOutputsToRuledir is a
+		// no-op and the post-strip `--out=.`/`--out=<subdir>` would write to the
+		// exec-root cwd, not where Bazel expects the declared out. No-op unless a
+		// flag value exactly matches a declared output's parent dir.
+		rewrittenCmd = anchorGenruleOutputDirFlags(rewrittenCmd, outs)
 	}
 	// Build-dir staging-copy reanchor: when the raw command ran in a build-dir
 	// subdir of CONFIGURE-time-copied inputs (`cd <buildDir>/<sub> && tool -I .

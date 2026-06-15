@@ -55,7 +55,7 @@ const maxScriptRecursionDepth = 8
 // that has already completed by the time a target's generated source re-traces
 // its script, so such a call records into the sink too late to lift and falls
 // through to refuse — never worse than today. See ROADMAP for that residual.
-func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptArg, cmakeSrc, buildDir, relOut string) (string, bool) {
+func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptArg, cmakeSrc, buildDir, relOut string, g *ninja.Graph) (string, bool) {
 	if cc == nil || !cc.RecognizeCodegen || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || buildDir == "" {
 		return "", false
 	}
@@ -101,9 +101,10 @@ func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptA
 	}
 	// The recognizer + the shared lifts didn't claim relOut, but the wrapping
 	// custom command DECLARES its outputs — enough data to lift even an
-	// unrecognized tool into a direct-tool genrule (no cmake runner). Try that
-	// before falling through to bake/runner/refuse.
-	if name, ok := cc.liftTracedToolDeclaredOutputs(b, calls, cmakeSrc, buildDir, relOut); ok {
+	// unrecognized tool. Substitute the traced tool command and reuse the shared
+	// genrule emission (no cmake runner) before falling through to
+	// bake/runner/refuse.
+	if name, ok := cc.recoverTracedToolCommand(b, calls, cmakeSrc, buildDir, relOut, g); ok {
 		return name, true
 	}
 	return "", false
