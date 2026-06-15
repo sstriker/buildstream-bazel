@@ -40,8 +40,9 @@ func TestArgvOutputAnchorsBuildRoot(t *testing.T) {
 // anchorGenruleOutputDirFlags is the SHARED bit the reuse refactor adds so a
 // flag-derived output dir (protoc --cpp_out=DIR, `gen --out-dir=DIR`) anchors to
 // $(RULEDIR) on both the ordinary custom-command path and the cmake -P script
-// path. It must fire only on an EXACT match against a declared output's parent
-// dir, and leave unrelated `--flag=.`/`--flag=sub` arguments alone.
+// path. It fires only when the flag NAME is a known output-dir spelling AND its
+// value EXACTLY equals a declared output's parent dir — a coincidental
+// non-output `=.`/`=sub` (a `-DSOMEDIR=.` define) is left alone.
 func TestAnchorGenruleOutputDirFlags(t *testing.T) {
 	tests := []struct {
 		name string
@@ -62,13 +63,19 @@ func TestAnchorGenruleOutputDirFlags(t *testing.T) {
 			want: "protoc --cpp_out=$(RULEDIR)/sub -I . sub/foo.proto",
 		},
 		{
-			name: "exact match only — unrelated --flag=. untouched",
-			cmd:  "tool --keep=. --out-dir=. in",
+			// The reviewer's concern: a coincidental non-output `=.` (a -D define)
+			// shares the build-root parent dir but is NOT an output-dir flag, so it
+			// must be left alone — only the real output-dir flag anchors.
+			name: "non-output flag with matching value left alone",
+			cmd:  "tool -DSOMEDIR=. --out-dir=. in",
 			outs: []string{"out.h"},
-			// Both `--keep=.` and `--out-dir=.` have value "." == the out's parent,
-			// so both anchor; the point of the guard is the token boundary, not
-			// semantic flag knowledge. A value that is NOT an out dir is untouched:
-			want: "tool --keep=$(RULEDIR) --out-dir=$(RULEDIR) in",
+			want: "tool -DSOMEDIR=. --out-dir=$(RULEDIR) in",
+		},
+		{
+			name: "protoc *_out family recognized",
+			cmd:  "protoc --grpc_out=. foo.proto",
+			outs: []string{"foo.grpc.pb.cc"},
+			want: "protoc --grpc_out=$(RULEDIR) foo.proto",
 		},
 		{
 			name: "prefix value not mauled",
@@ -77,7 +84,13 @@ func TestAnchorGenruleOutputDirFlags(t *testing.T) {
 			want: "tool --out-dir=./nested in", // value "./nested" != "."
 		},
 		{
-			name: "no output-dir operand — no-op",
+			name: "output-dir flag pointing elsewhere left alone",
+			cmd:  "tool --out-dir=other in",
+			outs: []string{"out.h"},
+			want: "tool --out-dir=other in", // value "other" != "." (the out's parent)
+		},
+		{
+			name: "no =-form output-dir operand — no-op",
 			cmd:  "tool -o out.h in.x",
 			outs: []string{"out.h"},
 			want: "tool -o out.h in.x",
