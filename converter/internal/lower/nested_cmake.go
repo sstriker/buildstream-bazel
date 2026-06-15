@@ -871,6 +871,69 @@ func nestedBakeableHeader(rel string) bool {
 	return false
 }
 
+// nestedCompiledArtifact reports whether a nested-build-relative file is a
+// COMPILED artifact (library / archive / object) — evidence the nested build
+// produces real link targets a lift would emit, which a header bake can't stand
+// in for. Used to keep the not-lifted todo when those targets are genuinely
+// missing.
+func nestedCompiledArtifact(rel string) bool {
+	switch strings.ToLower(filepath.Ext(rel)) {
+	case ".a", ".so", ".dylib", ".lib", ".o", ".obj", ".dll", ".pyd":
+		return true
+	}
+	// Versioned shared libs (libfoo.so.1.2).
+	return strings.Contains(filepath.Base(rel), ".so.")
+}
+
+// nestedBuildFullyRecovered reports whether a NOT-lifted nested build is
+// nonetheless fully accounted for: it's HEADER-ONLY (no compiled
+// library/archive/object on disk — nothing a lift would have emitted as a link
+// target) and EVERY consumable header under it was already recovered (claimed by
+// the outer build-dir bake / another channel). In that case the
+// nested-cmake-not-lifted todo is redundant — the configure-generated headers
+// the outer compiles include are present, and there are no missing targets — so
+// it's suppressed. Requires a live build dir (offline runs can't bake the bytes,
+// so the headers wouldn't be recovered and the todo correctly stands).
+func nestedBuildFullyRecovered(buildRel, hostBuildDir string, cc *codegenContext) bool {
+	if hostBuildDir == "" {
+		return false
+	}
+	root := filepath.Join(hostBuildDir, filepath.FromSlash(buildRel))
+	if st, err := os.Stat(root); err != nil || !st.IsDir() {
+		return false
+	}
+	sawHeader, recovered := false, true
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if n := d.Name(); n == "CMakeFiles" || n == ".cmake" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		r, rerr := filepath.Rel(root, p)
+		if rerr != nil {
+			return nil
+		}
+		r = filepath.ToSlash(r)
+		switch {
+		case nestedCompiledArtifact(r):
+			recovered = false // a real link target the bake can't replace
+			return filepath.SkipAll
+		case nestedBakeableHeader(r):
+			sawHeader = true
+			if !cc.outputClaimed(buildRel + "/" + r) {
+				recovered = false // a consumable header that wasn't recovered
+				return filepath.SkipAll
+			}
+		}
+		return nil
+	})
+	return recovered && sawHeader
+}
+
 // warningsOrDiscard guards the nil-Warnings case for the nested lift's
 // stderr breadcrumbs.
 func warningsOrDiscard(w interface{ Write([]byte) (int, error) }) interface{ Write([]byte) (int, error) } {
@@ -895,9 +958,16 @@ func warnUnliftedNestedBuilds(opts Options, cc *codegenContext) {
 	}
 	var rels []string
 	for rel := range cc.NestedConfigureSink {
-		if !cc.NestedLifted[rel] {
-			rels = append(rels, rel)
+		if cc.NestedLifted[rel] {
+			continue
 		}
+		// Not lifted, but if the build is header-only and all its
+		// configure-generated headers were recovered (outer build-dir bake),
+		// there are no missing targets — the not-lifted todo would be redundant.
+		if nestedBuildFullyRecovered(rel, opts.BuildDir, cc) {
+			continue
+		}
+		rels = append(rels, rel)
 	}
 	if len(rels) == 0 {
 		return
