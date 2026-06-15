@@ -677,3 +677,36 @@ func TestLiftRecognizedExecuteProcess_PositionalOutDir(t *testing.T) {
 		t.Fatalf("recognizer's native rule should be emitted; got %+v", cc.Genrules)
 	}
 }
+
+// TestRewriteNativeRuleConsumers_QualifiesAmbiguousDep: when a consumer-dep name
+// is produced in MORE THAN ONE package (two same-basename protos →
+// a/msg_cc_proto, b/msg_cc_proto), the consumer's dep is package-qualified to the
+// specific output's producer (//…/a:msg_cc_proto) so it can't relabel to the
+// wrong package via the name-keyed split map. A single-package name keeps the
+// bare relative label (byte-identical).
+func TestRewriteNativeRuleConsumers_QualifiesAmbiguousDep(t *testing.T) {
+	cc := newCodegenContext()
+	cc.BazelPackagePath = "elements/p"
+	cc.OutToNativeConsumerDep["a/msg.pb.cc"] = "msg_cc_proto"
+	cc.OutToNativeConsumerPkg["a/msg.pb.cc"] = "a"
+	cc.OutToNativeConsumerDep["b/msg.pb.cc"] = "msg_cc_proto"
+	cc.OutToNativeConsumerPkg["b/msg.pb.cc"] = "b"
+	cc.OutToNativeConsumerDep["c/uniq.pb.cc"] = "uniq_cc_proto"
+	cc.OutToNativeConsumerPkg["c/uniq.pb.cc"] = "c"
+
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "use_a", Kind: ir.KindCCLibrary, Srcs: []string{"a/msg.pb.cc", "main.cc"}},
+		{Name: "use_uniq", Kind: ir.KindCCLibrary, Srcs: []string{"c/uniq.pb.cc"}},
+	}}
+	rewriteNativeRuleConsumers(pkg, cc)
+
+	if !slices.Contains(pkg.Targets[0].Deps, "//elements/p/a:msg_cc_proto") {
+		t.Errorf("ambiguous consumer should get the package-qualified dep; got %v", pkg.Targets[0].Deps)
+	}
+	if slices.Contains(pkg.Targets[0].Deps, ":msg_cc_proto") {
+		t.Errorf("ambiguous consumer must NOT get the bare (clobber-prone) dep; got %v", pkg.Targets[0].Deps)
+	}
+	if !slices.Contains(pkg.Targets[1].Deps, ":uniq_cc_proto") {
+		t.Errorf("unambiguous consumer should keep the bare dep (byte-identical); got %v", pkg.Targets[1].Deps)
+	}
+}

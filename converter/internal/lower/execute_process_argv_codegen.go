@@ -239,6 +239,9 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 	if consumer != "" {
 		for _, rel := range rels {
 			cc.OutToNativeConsumerDep[rel] = consumer
+			if cc.OutToNativeConsumerPkg != nil {
+				cc.OutToNativeConsumerPkg[rel] = subPkg
+			}
 		}
 	}
 	if len(emit) == 0 {
