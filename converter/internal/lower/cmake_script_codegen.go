@@ -37,18 +37,36 @@ func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptA
 	if cc == nil || !cc.RecognizeCodegen || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || buildDir == "" {
 		return "", false
 	}
-	// A script outside the source root won't survive Bazel's sandbox; its reads
-	// (and the recovered native rule's inputs) wouldn't resolve. Decline — the
-	// runner/bake paths carry the same guard.
-	if _, ok := relativeIfInside(cmakeSrc, scriptArg); !ok {
+	if scriptArg == "" {
 		return "", false
 	}
+	// NB: do NOT gate on the SCRIPT living under the source root. The script is
+	// only re-traced at convert time and never becomes a Bazel input — the
+	// recovered native rule references the recognized tool's SOURCE inputs (the
+	// `.proto`), not the script — so a build-dir-generated / vendored script can
+	// still drive an in-tree codegen tool. Correctness is gated downstream, not
+	// on the script's path: liftRecognizedExecuteProcessCodegen anchors the
+	// tool's inputs under the source root (an out-of-tree input yields no srcs →
+	// the recognizer declines) and corroborates the derived outputs on disk under
+	// buildDir. (Gating on the script's location is the over-strict check the
+	// runner/bake genrule path needs — it stages the script AS a src — but it
+	// would wrongly drop valid recoveries here.)
 	dArgs := extractCmakePDashArgs(cmd)
 	traceRaw, err := TraceCmakeScript(context.Background(), cc.CMakeBinary, scriptArg, dArgs, "")
 	if err != nil {
 		return "", false
 	}
-	calls := shadow.ExtractExecuteProcess(traceRaw, cmakeSrc)
+	// Harvest EVERY execute_process in the script trace, not just in-source-tree
+	// call sites: when we re-trace a script, all of its calls are "the script's"
+	// by definition, so the source-tree filter ExtractExecuteProcess applies (to
+	// separate project calls from cmake-internal/subproject ones in the MAIN
+	// configure trace) is the wrong filter here — it would drop the calls of a
+	// script that lives outside the source root. Decode splits in-tree
+	// (ExecuteProcesses) from out-of-tree (OutOfTreeExecuteProcesses); take both.
+	// cmake-internal probe noise that rides along declines harmlessly (the
+	// recognizer only claims corroborated codegen tools).
+	dec := shadow.Decode(traceRaw, cmakeSrc, nil)
+	calls := append(append([]shadow.ExecuteProcessCall(nil), dec.ExecuteProcesses...), dec.OutOfTreeExecuteProcesses...)
 	if len(calls) == 0 {
 		return "", false
 	}
