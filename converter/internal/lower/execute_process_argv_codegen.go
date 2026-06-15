@@ -185,7 +185,8 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 	// convention, so it returns this set (or a subset/transform) as DerivedOutputs.
 	outDir := argvCodegenOutDir(argv, anc)
 	discovered := discoverCodegenOutDirFiles(outDir, anc, cc)
-	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: recArgs, Srcs: srcs, Pkg: cc.BazelPackagePath, ProtoDeps: protoDeps, DiscoveredOutputs: discovered})
+	cmd := CodegenCommand{Driver: driver, Args: recArgs, Srcs: srcs, Pkg: cc.BazelPackagePath, ProtoDeps: protoDeps, DiscoveredOutputs: discovered}
+	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, cmd)
 	if !matched || err != nil || len(res.DerivedOutputs) == 0 {
 		return nil, false
 	}
@@ -216,20 +217,34 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 	if claimed > 0 {
 		return nil, false
 	}
-	cc.Genrules = append(cc.Genrules, res.Targets...)
-	if len(res.ConsumerDeps) > 0 {
-		consumer := strings.TrimPrefix(res.ConsumerDeps[0], ":")
+	// Sub-package placement (mirrors recognizeOrGenrule): land the native rules
+	// in the package owning the generated outputs.
+	subPkg := ""
+	if len(rels) > 0 {
+		if dir := path.Dir(rels[0]); dir != "." {
+			subPkg = dir
+		}
+	}
+	emit, consumer, ok := cc.dedupRecognizedRule(cmd, res, subPkg)
+	if !ok {
+		// A DIFFERENT input already owns one of these names here; let the generic
+		// argv / unspecified-output lift emit an output-path-named genrule instead.
+		return nil, false
+	}
+	if consumer != "" {
 		for _, rel := range rels {
 			cc.OutToNativeConsumerDep[rel] = consumer
 		}
 	}
-	// Sub-package placement (mirrors recognizeOrGenrule): land the native rules
-	// in the package owning the generated outputs.
-	if cc.NativeRuleSubPackage != nil && len(rels) > 0 {
-		if dir := path.Dir(rels[0]); dir != "" && dir != "." {
-			for _, t := range res.Targets {
-				cc.NativeRuleSubPackage[t.Name] = dir
-			}
+	if len(emit) == 0 {
+		// Deduped against the same input's earlier invocation (a different output
+		// dir): the rule's emitted; this dir's outputs are wired to it above.
+		return rels, true
+	}
+	cc.Genrules = append(cc.Genrules, emit...)
+	if cc.NativeRuleSubPackage != nil && subPkg != "" {
+		for _, t := range emit {
+			cc.NativeRuleSubPackage[t.Name] = subPkg
 		}
 	}
 	return rels, true

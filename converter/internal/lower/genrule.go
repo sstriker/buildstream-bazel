@@ -204,6 +204,23 @@ type codegenContext struct {
 	// after the native targets are emitted.
 	NativeRuleSubPackage map[string]string
 
+	// recognizedConsumerByInput dedups recognized native rules by INPUT identity
+	// (codegenInputKey: driver + sorted source set). The SAME input run into
+	// different output dirs is ONE canonical native rule — a proto_library /
+	// cc_proto_library produces its output at a single Bazel location, so the
+	// cmake out-dir duplication collapses; a second emit would be a duplicate
+	// target. Keyed input -> the rule's consumer-dep label, so a repeat
+	// invocation wires its outputs to the already-emitted rule instead of
+	// re-emitting it. DIFFERENT inputs get distinct keys (and distinct
+	// names/packages) and stay separate rules.
+	recognizedConsumerByInput map[string]string
+	// recognizedNameOwner maps a placed native-rule identity (subpackage + name)
+	// to the input key that owns it, so a DIFFERENT input that would emit a
+	// colliding target name (a recognizer naming bug — e.g. a fixed rule name
+	// across distinct inputs) is detected and falls back to the generic genrule
+	// rather than emitting a load-breaking duplicate.
+	recognizedNameOwner map[string]string
+
 	// LiftDerivedCodegen opts the derived-name stem-match recovery into a live
 	// genrule re-run (cd $(RULEDIR)) instead of the convert-time byte-bake, when
 	// placement is sound (Options.LiftDerivedCodegen / --lift-derived-codegen).
@@ -495,6 +512,8 @@ func newCodegenContext() *codegenContext {
 		OutToGenrule:               map[string]string{},
 		OutToNativeConsumerDep:     map[string]string{},
 		NativeRuleSubPackage:       map[string]string{},
+		recognizedConsumerByInput:  map[string]string{},
+		recognizedNameOwner:        map[string]string{},
 		GendirMarkedOuts:           map[string]bool{},
 		RespfileHdrGroups:          map[string]string{},
 		CcEmbedSourceToHeader:      map[string]string{},
