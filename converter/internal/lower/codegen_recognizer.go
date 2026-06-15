@@ -28,6 +28,19 @@ type CodegenCommand struct {
 	// Outs are cmake's RECORDED outputs (package-relative) — the cross-check
 	// the recognizer validates its derived output set against.
 	Outs []string
+	// DiscoveredOutputs is the converter's best discovery of what the tool
+	// ACTUALLY produced — the output set the GENERIC genrule fallback would
+	// declare: the genrule's `outs` on the custom-command / standalone paths, or
+	// the on-disk enumeration under the tool's output directory on the
+	// execute_process path. Unlike Outs (a convention cross-check), it carries no
+	// derivation assumption — feed it to a recognizer whose tool derives its
+	// outputs from the INPUT CONTENTS (so no fixed naming convention predicts
+	// them): Lower can return this set verbatim, a subset, or a transformed set
+	// as DerivedOutputs / its rule's outs. It's in the SAME frame as this path's
+	// outputs (package-relative on the custom-command path, output-dir-relative
+	// on the execute_process path — matching Outs / DerivedOutputs respectively).
+	// Empty when the front-end couldn't discover an output set.
+	DiscoveredOutputs []string
 	// Pkg is the Bazel package path the codegen lives in.
 	Pkg string
 	// ProtoDeps are the already-resolved proto_library labels for this input's
@@ -163,6 +176,12 @@ func recognizeOrGenrule(cc *codegenContext, cmd CodegenCommand, fallback ir.Targ
 	if cc == nil || !cc.RecognizeCodegen {
 		noteHostCodegenTool(cc, fallback)
 		return []ir.Target{fallback}, false
+	}
+	// Feed the recognizer the output set the genrule would otherwise declare —
+	// the discovery a content-derived-output tool needs (it can't predict outputs
+	// from a naming convention). A recognizer that doesn't care ignores it.
+	if cmd.DiscoveredOutputs == nil {
+		cmd.DiscoveredOutputs = fallback.GenruleOuts
 	}
 	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, cmd)
 	if matched && err != nil {

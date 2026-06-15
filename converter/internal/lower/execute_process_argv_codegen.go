@@ -2,6 +2,7 @@ package lower
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -178,13 +179,18 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 	// --proto_path via execute_process declines earlier / falls back; the
 	// custom-command paths carry the full proto_path handling.
 	protoDeps := protoImportLabels(srcs, nil, anc.hostSrcDir, cc.BazelPackagePath)
-	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: recArgs, Srcs: srcs, Pkg: cc.BazelPackagePath, ProtoDeps: protoDeps})
+	// The configure already ran, so the tool's outputs exist on disk under its
+	// output dir. Discover them (outDir-relative) and feed the recognizer: a tool
+	// that derives outputs from input CONTENTS can't predict them from a naming
+	// convention, so it returns this set (or a subset/transform) as DerivedOutputs.
+	outDir := argvCodegenOutDir(argv, anc)
+	discovered := discoverCodegenOutDirFiles(outDir, anc, cc)
+	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: recArgs, Srcs: srcs, Pkg: cc.BazelPackagePath, ProtoDeps: protoDeps, DiscoveredOutputs: discovered})
 	if !matched || err != nil || len(res.DerivedOutputs) == 0 {
 		return nil, false
 	}
 	// Anchor each derived output under the tool's output directory, then
 	// corroborate it against the configure's on-disk evidence.
-	outDir := argvCodegenOutDir(argv, anc)
 	rels := make([]string, 0, len(res.DerivedOutputs))
 	for _, d := range res.DerivedOutputs {
 		rel := d
@@ -227,6 +233,37 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 		}
 	}
 	return rels, true
+}
+
+// discoverCodegenOutDirFiles enumerates the on-disk files under the tool's
+// build-relative output directory (outDir), returned OUTDIR-RELATIVE (slash
+// form) to match the recognizer's DerivedOutputs convention — directories,
+// ninja-built outputs, and already-claimed outputs excluded. The execute_process
+// counterpart to the genrule fallback's dir-operand walk: the configure already
+// produced these, so they ARE the tool's discovered output set, fed to the
+// recognizer for a content-derived-output tool. Empty outDir (the build root)
+// returns nil — walking the whole build dir would sweep unrelated files.
+func discoverCodegenOutDirFiles(outDir string, anc execAnchors, cc *codegenContext) []string {
+	if outDir == "" || outDir == "." || anc.hostBuildDir == "" {
+		return nil
+	}
+	root := filepath.Join(anc.hostBuildDir, filepath.FromSlash(outDir))
+	var rels []string
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		buildRel, ok := relativeIfInsideRelaxed(anc.hostBuildDir, p)
+		if !ok || cc.NinjaOuts[buildRel] || cc.outputClaimed(buildRel) {
+			return nil
+		}
+		if rel := strings.TrimPrefix(buildRel, outDir+"/"); rel != buildRel && rel != "" {
+			rels = append(rels, rel)
+		}
+		return nil
+	})
+	sort.Strings(rels)
+	return rels
 }
 
 // argvCodegenOutDir returns the build-relative output directory a codegen tool
