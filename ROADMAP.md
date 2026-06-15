@@ -304,6 +304,41 @@ transition cleanly.
           recognizer supplies them), so a rebased proto_path via execute_process
           declines / falls back rather than mis-emitting — wire it through when a
           corpus member needs it.
+        - **Recover codegen hidden behind `cmake -P` / `cmake -E` wrappers
+          (trace-led, recursive).** A ninja `CUSTOM_COMMAND` edge (or an
+          `execute_process`) can be a `cmake -P <script>` — or a `cmake -E env/echo
+          … <tool>` prefix — WRAPPER that hides the real tool (e.g. `protoc`) from
+          the recognizer: recovery keys on the EDGE command (`Driver="cmake"`), so
+          it falls back to a generic genrule / script-bake instead of the native
+          rule, while the TRACE records the real command. Custom-command recovery
+          is ninja-LED but should be trace-LED for the command (and outputs): the
+          `add_custom_command` trace (`shadow.AddCustomCommandCall`) carries the
+          real per-COMMAND argv + declared `Outputs` + `WorkingDirectory`. Wrappers
+          NEST (a `-P` script can `execute_process(protoc)`, `execute_process(cmake
+          -P …)`, or a nested `cmake -S … -B …`), so the general fix is a RECURSIVE
+          expansion over wrapper boundaries that reuses per-form recovery at each
+          level and bottoms out at real tools (the execute_process recognizer /
+          genrule pipeline) — ninja-led for "which edges fire", trace-led
+          (recursively) for "what they run". The outer edge's declared outputs
+          anchor the cross-check; any failure degrades to today's wrapper handling
+          (never worse than current). Deliver in 3 PRs:
+          - **P1 — generated-wrapper unwrap (no re-exec).** Index `output →
+            AddCustomCommandCall`; when an edge is a `cmake -P` / `cmake -E`
+            wrapper, dispatch the recognizer on the trace's real `Commands` (and
+            `Outputs`), gated to a SINGLE-COMMAND custom command (recognizing one
+            command of a multi-step wrapper would drop the others). Covers cmake's
+            own multi-command / genex wrapping of a user `add_custom_command(COMMAND
+            protoc …)`. The recognizer's output-authority cross-check is the
+            backstop.
+          - **P2 — recurse one level into a user `cmake -P` script.** Extend
+            `cmake_script_trace` to harvest the script's `execute_process` /
+            `file()` / `configure_file` calls and route them through
+            `recoverExecuteProcess`. Re-traces the script at convert time (same
+            opt-in trade as `--cmake-script-trace`; offline degrades to today).
+          - **P3 — full recursion.** An `expandCommandSources` driver loops P2 +
+            the nested-cmake lift (`lowerNestedBuilds`) until it bottoms out at real
+            tools, with a visited-set (script path / build dir) + depth cap. Removes
+            this item.
         Fixture-driven. The gRPC-service recognizer is SHIPPED: a COMBINED
         `protoc --cpp_out --grpc_out` invocation (the common
         `protobuf_generate(... PLUGIN grpc)` shape) lowers to proto_library +
