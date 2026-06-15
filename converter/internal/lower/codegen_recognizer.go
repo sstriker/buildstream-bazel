@@ -214,8 +214,12 @@ func recognizeOrGenrule(cc *codegenContext, cmd CodegenCommand, fallback ir.Targ
 		return []ir.Target{fallback}, false
 	}
 	if cc.OutToNativeConsumerDep != nil && consumer != "" {
+		subPkg := nativeRuleSubPkg(res, cmd)
 		for _, o := range cmd.Outs {
 			cc.OutToNativeConsumerDep[o] = consumer
+			if cc.OutToNativeConsumerPkg != nil {
+				cc.OutToNativeConsumerPkg[o] = subPkg
+			}
 		}
 	}
 	if len(emit) == 0 {
@@ -471,6 +475,26 @@ func rewriteNativeRuleConsumers(pkg *ir.Package, cc *codegenContext) {
 	if pkg == nil || cc == nil || len(cc.OutToNativeConsumerDep) == 0 {
 		return
 	}
+	// A consumer-dep NAME is AMBIGUOUS when its producing rules span >1 package
+	// (two same-basename protos: a/msg_cc_proto and b/msg_cc_proto). For those a
+	// bare ":msg_cc_proto" relabels via the name-keyed split map (which can hold
+	// only one package) to the wrong one, so qualify the label by the SPECIFIC
+	// output's producer package. The common single-package case keeps the bare
+	// relative label (byte-identical).
+	pkgsByName := map[string]map[string]bool{}
+	for out, name := range cc.OutToNativeConsumerDep {
+		if pkgsByName[name] == nil {
+			pkgsByName[name] = map[string]bool{}
+		}
+		pkgsByName[name][cc.OutToNativeConsumerPkg[out]] = true
+	}
+	base := strings.Trim(cc.BazelPackagePath, "/")
+	depLabel := func(out, name string) string {
+		if len(pkgsByName[name]) > 1 { // ambiguous → qualify by the output's package
+			return "//" + path.Join(base, cc.OutToNativeConsumerPkg[out]) + ":" + name
+		}
+		return ":" + name
+	}
 	for i := range pkg.Targets {
 		t := &pkg.Targets[i]
 		switch t.Kind {
@@ -483,7 +507,7 @@ func rewriteNativeRuleConsumers(pkg *ir.Package, cc *codegenContext) {
 			kept := files[:0:0]
 			for _, f := range files {
 				if consumer, ok := cc.OutToNativeConsumerDep[f]; ok {
-					labels[":"+consumer] = true
+					labels[depLabel(f, consumer)] = true
 					continue
 				}
 				kept = append(kept, f)
