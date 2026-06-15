@@ -12,6 +12,11 @@
 #   cmd.outs        outputs cmake recorded (the output-authority cross-check)
 #   cmd.pkg         the Bazel package path
 #   cmd.proto_deps  pre-resolved proto_library labels for the input's imports
+#   cmd.discovered_outputs  the output set the generic genrule would declare —
+#                   for a tool whose outputs derive from the input CONTENTS (no
+#                   naming convention to predict them); return it / a subset as
+#                   derived_outputs. Convention-based recognizers (this one)
+#                   ignore it.
 
 def _basename(p):
     return p.rsplit("/", 1)[-1]

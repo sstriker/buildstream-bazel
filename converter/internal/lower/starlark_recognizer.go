@@ -17,7 +17,7 @@ import (
 // converter: a recognizer is a Starlark file (`*.star`) defining two
 // functions, loaded at startup via --recognizers and appended to the registry.
 //
-//	def match(cmd):  # cmd.driver, cmd.args, cmd.srcs, cmd.outs, cmd.pkg, cmd.proto_deps
+//	def match(cmd):  # cmd.driver, cmd.args, cmd.srcs, cmd.outs, cmd.pkg, cmd.proto_deps, cmd.discovered_outputs
 //	    return cmd.driver.startswith("protoc") and \
 //	           any([a.startswith("--cpp_out") for a in cmd.args])
 //
@@ -123,12 +123,13 @@ func (r *starlarkRecognizer) Lower(cmd CodegenCommand) (CodegenResult, error) {
 // commandToStarlark exposes a CodegenCommand to the script as a struct.
 func commandToStarlark(cmd CodegenCommand) starlark.Value {
 	return starlarkstruct.FromStringDict(starlarkstruct.Default, starlark.StringDict{
-		"driver":     starlark.String(cmd.Driver),
-		"args":       stringsToStarlark(cmd.Args),
-		"srcs":       stringsToStarlark(cmd.Srcs),
-		"outs":       stringsToStarlark(cmd.Outs),
-		"pkg":        starlark.String(cmd.Pkg),
-		"proto_deps": stringsToStarlark(cmd.ProtoDeps),
+		"driver":             starlark.String(cmd.Driver),
+		"args":               stringsToStarlark(cmd.Args),
+		"srcs":               stringsToStarlark(cmd.Srcs),
+		"outs":               stringsToStarlark(cmd.Outs),
+		"pkg":                starlark.String(cmd.Pkg),
+		"proto_deps":         stringsToStarlark(cmd.ProtoDeps),
+		"discovered_outputs": stringsToStarlark(cmd.DiscoveredOutputs),
 	})
 }
 
