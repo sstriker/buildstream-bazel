@@ -4,8 +4,53 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
+
+// TestTracedCmakeScriptForEdge pins the generated-dispatch unwrap: when a ninja
+// edge is a cmake-GENERATED dispatch wrapper, the re-trace must target the REAL
+// `cmake -P <script>` from the add_custom_command trace (keyed by the edge's
+// outputs), not the edge's own dispatch `-P` arg. Synthetic trace data, mirroring
+// TestTraceWrapperRealArgv (the generated-dispatch shape doesn't reproduce on
+// cmake 4.x + Ninja, which inlines the real command).
+func TestTracedCmakeScriptForEdge(t *testing.T) {
+	const buildDir = "/abs/build"
+	cmds := []shadow.AddCustomCommandCall{
+		// A user cmake -P wrapped by a generated dispatch — outputs recorded in
+		// the trace's ABSOLUTE (--trace-expand) form.
+		{Outputs: []string{"/abs/build/gen/foo.h"}, Commands: [][]string{{"cmake", "-DBIN=/abs/build", "-P", "/abs/src/user.cmake"}}},
+		// A non-cmake real command (protoc) — NOT a cmake -P, so not indexed
+		// (the recognizer unwrap path owns it).
+		{Outputs: []string{"/abs/build/foo.pb.cc"}, Commands: [][]string{{"protoc", "--cpp_out=.", "foo.proto"}}},
+		// Multi-COMMAND — skipped (genrule fallback owns it).
+		{Outputs: []string{"/abs/build/multi.out"}, Commands: [][]string{{"cmake", "-P", "a.cmake"}, {"cp", "a", "b"}}},
+	}
+	cc := newCodegenContext()
+	cc.OutToTracedCmakeScript = buildOutToTracedCmakeScript(cmds, buildDir)
+
+	// Build-relative edge output matches the absolute trace output → real script.
+	edge := &ninja.Build{Outputs: []string{"gen/foo.h"}}
+	script, dArgs, ok := cc.tracedCmakeScriptForEdge(edge, buildDir)
+	if !ok || script != "/abs/src/user.cmake" {
+		t.Fatalf("expected the real user.cmake script; got (%q, %v, %v)", script, dArgs, ok)
+	}
+	if !reflect.DeepEqual(dArgs, []string{"-DBIN=/abs/build"}) {
+		t.Errorf("expected the real command's -D args; got %v", dArgs)
+	}
+	// A non-cmake real command isn't indexed (recognizer unwrap handles it).
+	if _, _, ok := cc.tracedCmakeScriptForEdge(&ninja.Build{Outputs: []string{"foo.pb.cc"}}, buildDir); ok {
+		t.Errorf("a non-cmake real command must not resolve to a cmake -P script")
+	}
+	// Multi-COMMAND records are skipped.
+	if _, _, ok := cc.tracedCmakeScriptForEdge(&ninja.Build{Outputs: []string{"multi.out"}}, buildDir); ok {
+		t.Errorf("multi-COMMAND records must not resolve")
+	}
+	// No matching output → no resolution (the common case: edge carries the real script).
+	if _, _, ok := cc.tracedCmakeScriptForEdge(&ninja.Build{Outputs: []string{"unrelated.h"}}, buildDir); ok {
+		t.Errorf("an unindexed output must not resolve")
+	}
+}
 
 // TestNestedCmakeScriptCall pins the argv-level `cmake -P` wrapper detector that
 // drives the P3 recursion: a harvested execute_process that is itself a

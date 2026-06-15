@@ -298,7 +298,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// consumers wire to it the same way a configure-time nested build's do.
 		// Gated on the trace opt-in (+ RecognizeCodegen, the codegen-recovery
 		// umbrella) since it re-runs the script at convert time.
-		if cc.standaloneScriptDrivesNestedConfigure(cmd, cmakeSrc, buildDir) {
+		if cc.standaloneScriptDrivesNestedConfigure(b, cmd, cmakeSrc, buildDir) {
 			continue
 		}
 

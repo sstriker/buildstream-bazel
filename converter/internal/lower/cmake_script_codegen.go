@@ -74,6 +74,14 @@ func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptA
 	// genrule path needs — it stages the script AS a src — but it would wrongly
 	// drop valid recoveries here.)
 	dArgs := extractCmakePDashArgs(cmd)
+	// When the ninja edge is a cmake-GENERATED dispatch wrapper, scriptArg/dArgs
+	// extracted from the edge point at the dispatch, not the real user script.
+	// Recover the real `cmake -P <script>` from the add_custom_command trace by
+	// the edge's outputs and re-trace THAT (no-op when the edge already carries
+	// the real script — the common case).
+	if real, rdArgs, ok := cc.tracedCmakeScriptForEdge(b, buildDir); ok {
+		scriptArg, dArgs = real, rdArgs
+	}
 	calls := cc.expandCommandSources(scriptArg, dArgs, cmakeSrc, buildDir)
 	if len(calls) == 0 {
 		return "", false
@@ -116,11 +124,97 @@ func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptA
 // effect so the warm-pass/pass-2 lift handles it. The standalone path then skips
 // emitting a (broken) `cmake -P` genrule for the edge. Gated on RecognizeCodegen
 // + CMakeScriptTrace + a usable cmake (the script re-trace's opt-in). nil-safe.
-func (cc *codegenContext) standaloneScriptDrivesNestedConfigure(cmd, cmakeSrc, buildDir string) bool {
+func (cc *codegenContext) standaloneScriptDrivesNestedConfigure(b *ninja.Build, cmd, cmakeSrc, buildDir string) bool {
 	if cc == nil || !cc.RecognizeCodegen || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || !usesCmakeScriptMode(cmd) {
 		return false
 	}
-	return cc.recordNestedConfiguresFromScript(extractCmakeScriptPath(cmd), extractCmakePDashArgs(cmd), cmakeSrc, buildDir)
+	// Prefer the real `cmake -P <script>` from the add_custom_command trace when
+	// the edge is a cmake-GENERATED dispatch wrapper; fall back to the edge's own
+	// -P arg otherwise.
+	script, dArgs := extractCmakeScriptPath(cmd), extractCmakePDashArgs(cmd)
+	if real, rdArgs, ok := cc.tracedCmakeScriptForEdge(b, buildDir); ok {
+		script, dArgs = real, rdArgs
+	}
+	return cc.recordNestedConfiguresFromScript(script, dArgs, cmakeSrc, buildDir)
+}
+
+// tracedScript is a USER `cmake -P <script>` recovered from an add_custom_command
+// trace record: the real script + its `-D <var>=<val>` cache args.
+type tracedScript struct {
+	script string
+	dArgs  []string
+}
+
+// buildOutToTracedCmakeScript indexes each add_custom_command whose REAL command
+// (the trace's single-COMMAND argv) is a `cmake [-D…] -P <script>` by its OUTPUT
+// paths — in both the raw trace form and the build-relative form — so a ninja
+// edge can recover the real script when the edge itself is a cmake-GENERATED
+// dispatch wrapper. Multi-COMMAND records are skipped (the genrule fallback owns
+// them, mirroring traceWrapperRealArgv). nil-safe; empty map when nothing
+// qualifies (the common case where edges carry the real `-P` script directly).
+func buildOutToTracedCmakeScript(cmds []shadow.AddCustomCommandCall, buildDir string) map[string]tracedScript {
+	m := map[string]tracedScript{}
+	for i := range cmds {
+		c := &cmds[i]
+		if len(c.Commands) != 1 || len(c.Commands[0]) == 0 {
+			continue
+		}
+		cmd := strings.Join(c.Commands[0], " ")
+		if !usesCmakeScriptMode(cmd) {
+			continue
+		}
+		script := extractCmakeScriptPath(cmd)
+		if script == "" || script == "<unknown-script>" {
+			continue
+		}
+		ts := tracedScript{script: script, dArgs: extractCmakePDashArgs(cmd)}
+		for _, o := range append(append([]string(nil), c.Outputs...), c.ByProducts...) {
+			for _, key := range outputKeyForms(o, buildDir) {
+				if _, exists := m[key]; !exists {
+					m[key] = ts
+				}
+			}
+		}
+	}
+	return m
+}
+
+// outputKeyForms returns the lookup keys for a custom-command output: the raw
+// form (as the trace recorded it — relative, or absolute under --trace-expand)
+// plus the build-relative form when it anchors under buildDir, so a build-rel
+// ninja edge output matches an absolute trace output and vice versa.
+func outputKeyForms(o, buildDir string) []string {
+	if o == "" {
+		return nil
+	}
+	forms := []string{o}
+	if rel, ok := relativeIfInsideRelaxed(buildDir, o); ok && rel != o {
+		forms = append(forms, rel)
+	}
+	return forms
+}
+
+// tracedCmakeScriptForEdge returns the real USER `cmake -P <script>` (+ -D args)
+// for a ninja edge whose own command is a cmake-GENERATED dispatch wrapper,
+// recovered from the add_custom_command trace by the edge's outputs. ok=false
+// when no trace record maps the edge to a `cmake -P` real command (the common
+// case — the edge already carries the real script, or the real command is a
+// non-cmake tool the recognizer unwrap handles). The re-trace paths prefer this
+// over extractCmakeScriptPath(edge) so they re-trace the real script, not the
+// generated dispatch.
+func (cc *codegenContext) tracedCmakeScriptForEdge(b *ninja.Build, buildDir string) (string, []string, bool) {
+	if cc == nil || len(cc.OutToTracedCmakeScript) == 0 || b == nil {
+		return "", nil, false
+	}
+	outs := append(append([]string(nil), b.Outputs...), b.ImplicitOuts...)
+	for _, o := range outs {
+		for _, key := range outputKeyForms(o, buildDir) {
+			if ts, ok := cc.OutToTracedCmakeScript[key]; ok {
+				return ts.script, ts.dArgs, true
+			}
+		}
+	}
+	return "", nil, false
 }
 
 // recordNestedConfiguresFromScript re-traces a `cmake -P <script>` and records
