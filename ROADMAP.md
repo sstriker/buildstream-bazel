@@ -304,26 +304,6 @@ transition cleanly.
           recognizer supplies them), so a rebased proto_path via execute_process
           declines / falls back rather than mis-emitting — wire it through when a
           corpus member needs it.
-        - **Recover codegen hidden behind a nested `cmake -S … -B …`
-          configure INSIDE a `cmake -P` script.** Codegen hidden behind nested
-          `cmake -P` / `cmake -E` wrappers is recovered now: a cmake-GENERATED
-          wrapper is unwrapped from the `add_custom_command` trace's real
-          per-COMMAND argv (no re-exec); a USER-authored `cmake -P` script is
-          re-traced at convert time and the `expandCommandSources` driver loops
-          the script recursion (a `-P` script that `execute_process(cmake -P …)`s
-          another script) — visited-set on script path + depth cap — until the
-          calls bottom out at real tools, and routes them through the full
-          `recoverExecuteProcess` so the script's `cmake -E` / `file()` /
-          `configure_file` / argv-declared / unspecified-output codegen is
-          recovered too (gated on `--cmake-script-trace`; offline / non-clean
-          recognition degrades to the genrule / refusal, never worse than today).
-          The residual is a nested `cmake -S … -B …` configure run from inside a
-          script: the nested-build lift (`lowerNestedBuilds`) is a top-level warm
-          SECOND pass that has already completed by the time a target's generated
-          source re-traces its script, so such a call records into the sink too
-          late to lift and falls through to refuse. Closing it needs the nested-
-          build machinery reachable from (or deferred until after) the script
-          re-trace — not just another recursion level. Removes this item.
         Fixture-driven. The gRPC-service recognizer is SHIPPED: a COMBINED
         `protoc --cpp_out --grpc_out` invocation (the common
         `protobuf_generate(... PLUGIN grpc)` shape) lowers to proto_library +
