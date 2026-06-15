@@ -619,3 +619,33 @@ func TestGrpcOnlyRecognizer_NoSiblingFallsThrough(t *testing.T) {
 		t.Error("a grpc-only call with no sibling cpp proto must NOT be recognized (stays a genrule)")
 	}
 }
+
+// TestLiftRecognizedExecuteProcess_PerTargetPlacement: the execute_process
+// recognizer path also carries per-target placement (NativeRuleSpec.SubPackage),
+// so configure-time protoc into a sub-dir places its proto_library there — and
+// two same-basename protos across dirs wouldn't clobber via this path either.
+func TestLiftRecognizedExecuteProcess_PerTargetPlacement(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	writeTree(t, hostSrc, "a/svc.proto", "syntax = \"proto3\";\n")
+	writeTree(t, hostBuild, "a/svc.pb.cc", "x")
+	writeTree(t, hostBuild, "a/svc.pb.h", "x")
+	call := argvCall(hostSrc, "protoc", "--cpp_out="+filepath.Join(hostBuild, "a"), filepath.Join(hostSrc, "a/svc.proto"))
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("refusals: %+v", refusals)
+	}
+	var found bool
+	for _, g := range cc.Genrules {
+		if g.NativeRule != nil && g.NativeRule.Kind == "proto_library" {
+			found = true
+			if g.NativeRule.SubPackage != "a" {
+				t.Errorf("execute_process-recognized proto_library SubPackage = %q, want a", g.NativeRule.SubPackage)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a recognized proto_library; got %+v", cc.Genrules)
+	}
+}

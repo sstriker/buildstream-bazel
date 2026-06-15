@@ -247,9 +247,18 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 		return rels, true
 	}
 	cc.Genrules = append(cc.Genrules, emit...)
-	if cc.NativeRuleSubPackage != nil && subPkg != "" {
+	if subPkg != "" {
 		for _, t := range emit {
-			cc.NativeRuleSubPackage[t.Name] = subPkg
+			// Per-target placement (the split's authoritative source for native
+			// rules); mirror it into the legacy name-keyed map for the common
+			// unique-name case. The NativeRule pointer is shared with the appended
+			// cc.Genrules entry, so the field reaches the split.
+			if t.NativeRule != nil {
+				t.NativeRule.SubPackage = subPkg
+			}
+			if cc.NativeRuleSubPackage != nil {
+				cc.NativeRuleSubPackage[t.Name] = subPkg
+			}
 		}
 	}
 	return rels, true
