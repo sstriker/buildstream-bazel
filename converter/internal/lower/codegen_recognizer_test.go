@@ -8,7 +8,80 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
+
+// discoveredSubsetRecognizer models a tool whose outputs are derived from input
+// CONTENTS: it can't predict them from a naming convention, so it returns the
+// ".h" subset of the converter's DiscoveredOutputs as its DerivedOutputs.
+type discoveredSubsetRecognizer struct{}
+
+func (discoveredSubsetRecognizer) Name() string                  { return "test-discovered-subset" }
+func (discoveredSubsetRecognizer) Match(cmd CodegenCommand) bool { return cmd.Driver == "mygen" }
+func (discoveredSubsetRecognizer) Lower(cmd CodegenCommand) (CodegenResult, error) {
+	var outs []string
+	for _, o := range cmd.DiscoveredOutputs {
+		if strings.HasSuffix(o, ".h") {
+			outs = append(outs, o)
+		}
+	}
+	return CodegenResult{
+		DerivedOutputs: outs,
+		Targets:        []ir.Target{{Name: "mygen_rule", Kind: ir.KindGenrule, GenruleOuts: outs}},
+	}, nil
+}
+
+// TestRecognizeOrGenrule_FeedsDiscoveredOutputs: the chokepoint feeds the
+// recognizer the genrule fallback's outs as DiscoveredOutputs, so a
+// content-derived-output recognizer can return a subset.
+func TestRecognizeOrGenrule_FeedsDiscoveredOutputs(t *testing.T) {
+	fallback := ir.Target{
+		Name: "g", Kind: ir.KindGenrule,
+		GenruleOuts: []string{"a.cc", "a.h", "b.h"},
+		GenruleCmd:  "mygen in.x",
+	}
+	cmd := CodegenCommand{Driver: "mygen", Args: []string{"in.x"}}
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	cc.ExtraRecognizers = []CodegenRecognizer{discoveredSubsetRecognizer{}}
+	tgts, recognized := recognizeOrGenrule(cc, cmd, fallback)
+	if !recognized || len(tgts) != 1 {
+		t.Fatalf("recognizer should claim via discovered outputs; recognized=%v tgts=%+v", recognized, tgts)
+	}
+	if got := tgts[0].GenruleOuts; len(got) != 2 || got[0] != "a.h" || got[1] != "b.h" {
+		t.Errorf("recognizer should return the .h subset of discovered outs; got %v", got)
+	}
+}
+
+// On the execute_process path the converter discovers the on-disk files under
+// the tool's --*_out dir and feeds them as DiscoveredOutputs (output-dir-
+// relative); the recognizer returns the subset, which the caller anchors +
+// corroborates on disk.
+func TestLiftRecognizedExecuteProcess_FeedsDiscoveredOutputs(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	writeTree(t, hostSrc, "in.x", "spec\n")
+	writeTree(t, hostBuild, "gen/a.h", "A")
+	writeTree(t, hostBuild, "gen/a.cc", "AC")
+	writeTree(t, hostBuild, "gen/b.h", "B")
+	call := argvCall(hostSrc, "mygen", "--mygen_out="+filepath.Join(hostBuild, "gen"), filepath.Join(hostSrc, "in.x"))
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	cc.ExtraRecognizers = []CodegenRecognizer{discoveredSubsetRecognizer{}}
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("refusals: %+v", refusals)
+	}
+	got := make([]string, len(outs))
+	for i, o := range outs {
+		got[i] = o.RelOutput
+	}
+	if len(got) != 2 || got[0] != "gen/a.h" || got[1] != "gen/b.h" {
+		t.Fatalf("recognizer should claim the .h subset under the out dir; got %v", got)
+	}
+	if len(cc.Genrules) != 1 || cc.Genrules[0].Name != "mygen_rule" {
+		t.Fatalf("recognizer's native rule should be emitted; got %+v", cc.Genrules)
+	}
+}
 
 // TestRecognizeOrGenrule_FidelityMismatch: a recognizer that MATCHES the tool
 // but whose derived outputs disagree with cmake's recorded ones refuses (a loud
