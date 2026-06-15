@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
+	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -253,5 +254,35 @@ func TestPartitionOutOfTreeExec_RecognizerSignal(t *testing.T) {
 	lift, note = partitionOutOfTreeExec([]shadow.ExecuteProcessCall{nc}, "/build", "/synth", nil, on)
 	if len(lift) != 0 || len(note) != 1 || note[0].Recognized {
 		t.Errorf("unrecognized build-dir call should stay an un-recognized note; got lift=%d note=%+v", len(lift), note)
+	}
+}
+
+// TestPartitionOutOfTreeExec_FidelityLift: best-effort lifts a build-dir codegen
+// call even when NO recognizer catches it (genrule fallback); strict only lifts
+// when recognized (else surface). prefix-tree (a dependency's) is never
+// genrule-lifted regardless of fidelity.
+func TestPartitionOutOfTreeExec_FidelityLift(t *testing.T) {
+	be := newCodegenContext()
+	be.Fidelity = string(convmode.FidelityBestEffort)
+	st := newCodegenContext() // Fidelity "" == strict
+
+	// Unrecognized build-dir codegen call.
+	nc := ootCall("/build/gen/CMakeLists.txt", 1, "python3", "gen.py")
+
+	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{nc}, "/build", "/synth", nil, be)
+	if len(lift) != 1 || len(note) != 0 {
+		t.Fatalf("best-effort should LIFT an unrecognized build-dir call (genrule fallback); got lift=%d note=%d", len(lift), len(note))
+	}
+
+	lift, note = partitionOutOfTreeExec([]shadow.ExecuteProcessCall{nc}, "/build", "/synth", nil, st)
+	if len(lift) != 0 || len(note) != 1 {
+		t.Fatalf("strict should NOT genrule-lift an unrecognized build-dir call; got lift=%d note=%d", len(lift), len(note))
+	}
+
+	// prefix-tree (dependency's) is never genrule-lifted, even under best-effort.
+	pt := ootCall("/synth/lib/cmake/Foo/FooConfig.cmake", 1, "python3", "gen.py")
+	lift, note = partitionOutOfTreeExec([]shadow.ExecuteProcessCall{pt}, "/build", "/synth", nil, be)
+	if len(lift) != 0 || len(note) != 1 || note[0].Signal != signalPrefixTree {
+		t.Fatalf("prefix-tree must stay a note even under best-effort (dependency's codegen); got lift=%d note=%+v", len(lift), note)
 	}
 }

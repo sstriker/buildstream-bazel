@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
+	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -54,12 +55,17 @@ import (
 // tool, e.g. protoc --cpp_out) is location-independent and refines the last
 // bucket — the codemodel-source check isn't the only way to know a call is real
 // codegen (the codemodel often doesn't attribute an out-of-tree tool's outputs
-// as sources, dropping good signal). So when --recognize-codegen is on: a
-// build-dir-without-codemodel-sources call a recognizer claims is the project's
-// OWN under-attributed codegen and is LIFTED like a subproject (the lift
-// corroborates the derived outputs on disk before emitting, so a mis-match still
-// declines safely); a prefix-tree call a recognizer claims stays a NOTE (the
-// dependency emits it) but the todo names the tool + the native-rule shape.
+// as sources, dropping good signal). A build-dir-without-codemodel-sources call
+// a recognizer claims is the project's OWN under-attributed codegen and is
+// LIFTED like a subproject (the lift corroborates the derived outputs on disk
+// before emitting, so a mis-match still declines safely). The --fidelity dial
+// extends this: under BEST-EFFORT such a build-dir call is lifted even WITHOUT a
+// recognizer match (recoverExecuteProcess gives a genrule/probe fallback —
+// recover something runnable); under STRICT it lifts only on a recognizer match,
+// else stays a note (faithful-or-fail — don't silently genrule an unattributed
+// call). A prefix-tree call is the DEPENDENCY's codegen, so it's never
+// genrule-lifted (that would re-emit the dependency's rules) — it stays a NOTE,
+// sharpened to name the tool + native-rule shape when recognized.
 
 // outOfTreeExecSignal records WHY an out-of-tree execute_process call was
 // surfaced — the signal feeds the todo's grouping and prompt so an author
@@ -123,24 +129,33 @@ func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedBuildDir,
 			continue
 		}
 		// Recognizer signal (location-independent): a registered recognizer
-		// claiming the tool (protoc --cpp_out, …) means this is real codegen, not
-		// a vague probe — high-confidence regardless of where it was issued.
+		// claiming the tool (protoc --cpp_out, …) means this is real codegen.
 		recognized := outOfTreeExecRecognized(c, cc)
-		if recognized && sig == signalBuildDirOther {
-			// A build-dir codegen call the codemodel didn't attribute sources to,
-			// but a recognizer claims — the project's OWN codegen, under-attributed.
-			// Lift it through the recognizer like a subproject; the lift
-			// corroborates the derived outputs against the configure's on-disk
-			// files before emitting, so a mis-match declines safely.
+		if sig == signalBuildDirOther && (recognized || outOfTreeBestEffort(cc)) {
+			// A build-dir codegen call the codemodel didn't attribute sources to.
+			// RECOGNIZED → recoverExecuteProcess lifts it via the recognizer (the
+			// native rule), in BOTH fidelity modes. UNRECOGNIZED under BEST-EFFORT
+			// → lift it anyway so recoverExecuteProcess gives a genrule/probe
+			// fallback (best-effort = recover something runnable). UNRECOGNIZED
+			// under STRICT falls through to a note: faithful-or-fail, don't
+			// silently genrule an unattributed out-of-tree call. The lift
+			// corroborates outputs on disk before emitting, so it declines safely.
 			lift = append(lift, c)
 			continue
 		}
 		// prefix-tree (a dependency's codegen) stays a note even when recognized —
-		// the dependency emits it; we just sharpen the todo. An unrecognized
-		// build-dir/prefix call stays the generic note.
+		// the dependency emits it; we just sharpen the todo. A strict unrecognized
+		// build-dir call, and any unrecognized prefix call, stay the generic note.
 		note = append(note, outOfTreeExecNote{File: c.File, Line: c.Line, Argv: c.Commands[0], Signal: sig, Recognized: recognized})
 	}
 	return lift, note
+}
+
+// outOfTreeBestEffort reports whether the conversion is in best-effort fidelity
+// — where an out-of-tree codegen call worth recovering is lifted (genrule
+// fallback) even without a recognizer match; strict only lifts on a match.
+func outOfTreeBestEffort(cc *codegenContext) bool {
+	return cc != nil && cc.Fidelity == string(convmode.FidelityBestEffort)
 }
 
 // outOfTreeExecRecognized reports whether a codegen recognizer claims an
