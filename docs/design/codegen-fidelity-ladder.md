@@ -51,18 +51,39 @@ Four operator dials touch this, threaded from `cmd/write-a`:
   bake (rung 3) to a live genrule re-run (rung 2) when placement is
   sound.
 
-The lift opt-ins (`--recognize-codegen`, `--lift-derived-codegen`) are
-**off by default**: turning them on changes convert output corpus-wide
-(bakes/genrules → native rules / live genrules), so flipping the default
-needs a survey-corpus byte-sweep to confirm no regression — tracked in
-`ROADMAP.md`.
+## `--fidelity` as the master dial (SHIPPED, explicit-engaged)
 
-**Target consolidation (corpus-gated, on the roadmap):** make
-`--fidelity` the *master* ladder dial — `strict` ⇒ lift opt-ins on +
-`--bake-in=reject` + refuse-on-unsound; `best-effort` ⇒ lift-where-sound
-+ bake fallback — so the lift booleans become overrides rather than the
-primary surface. The recognizer-mismatch gating above is the first
-increment of that wiring (safe because the recognizer is opt-in).
+`--fidelity` is the *master* dial: setting it EXPLICITLY drives the combo so
+one flag replaces several. `strict` = "I'm sure: be faithful or fail";
+`best-effort` = "I'm not sure: faithful where sound, else fall back."
+
+| Behavior / lift | flag (default) | unset (legacy) | explicit `strict` | explicit `best-effort` |
+|---|---|---|---|---|
+| Tier-1 refusal handling | `--fidelity` | refuse | refuse (exit ≠0) | lower to stubs |
+| Missing cmake trace | `--strict-trace` (derived) | on (refuse) | on (refuse) | off (warn) |
+| execute_process refusal | `--unsupported-execute-process-fallback` (derived) | off | off | on (stubs) |
+| Recognizer output cross-check mismatch | `--fidelity` gate | n/a | refusal stub | genrule fallback |
+| Codegen recognizer (rung 1) | `--recognize-codegen` (off) | off | **on** | **on** |
+| Derived-codegen live genrule (rung 2 vs 3) | `--lift-derived-codegen` (off) | off | **on** | **on** |
+| Host-tool hermeticize | `--tool-conventions` (off) | off | **on** | **on** |
+| Bake tolerance | `--bake-in` (warn) | warn | **reject** | warn |
+
+Rules: an explicit individual flag always wins over the dial-derived value
+(e.g. `--fidelity=strict --recognize-codegen=false`). The **unset** default
+stays conservative (no lift/bake combo) so existing converts are
+byte-identical. Only the **staging-free** lifts are auto-enabled —
+`--lift-configure-file`, `--lift-download`, `--lift-cc-embed`/`-cc-hash`,
+`--cmake-script-*` need the downstream envelope to stage their tool, so they
+stay explicit. `--bake-in` is otherwise orthogonal (the dial only derives
+`reject` under strict; you can still set it independently).
+
+Ordering note: the recognizer dispatch keys on the PRE-tool-swap driver, so
+`--recognize-codegen` + `--tool-conventions` together still lower to the
+native rule (the higher rung) rather than the swapped genrule.
+
+**Remaining (corpus-gated):** flipping the UNSET default to engage the strict
+combo corpus-wide needs a survey byte-sweep (lifts on / `--bake-in=reject`
+change output for every member) — tracked in `ROADMAP.md`.
 
 ## Performance
 

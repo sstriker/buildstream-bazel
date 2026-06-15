@@ -523,3 +523,62 @@ func TestParse_CmakeDefineLeadingDashRejected(t *testing.T) {
 		t.Errorf("stderr should explain the -D issue, got %q", stderr.String())
 	}
 }
+
+// TestParse_FidelityMasterDial pins the consolidated dial: an EXPLICIT
+// --fidelity drives the staging-free lifts + --bake-in; the unset default stays
+// conservative (byte-identical); explicit individual flags override the dial.
+func TestParse_FidelityMasterDial(t *testing.T) {
+	parse := func(extra ...string) Args {
+		var stderr bytes.Buffer
+		args, code := Parse(append([]string{"--source-root", "/proj"}, extra...), &stderr)
+		if code != ExitSuccess {
+			t.Fatalf("code = %d, stderr=%q", code, stderr.String())
+		}
+		return args
+	}
+
+	// Unset default: strict refusal handling, but NO combo (legacy).
+	d := parse()
+	if d.Fidelity != "strict" {
+		t.Errorf("unset --fidelity should canonicalize to strict, got %q", d.Fidelity)
+	}
+	if d.RecognizeCodegen || d.LiftDerivedCodegen || d.ToolConventions {
+		t.Errorf("unset --fidelity must NOT auto-enable lifts: %+v", d)
+	}
+	if d.BakeIn != "" {
+		t.Errorf("unset --fidelity must leave --bake-in at its default, got %q", d.BakeIn)
+	}
+
+	// Explicit strict: lifts on + bake-in=reject ("be faithful or fail").
+	s := parse("--fidelity", "strict")
+	if !s.RecognizeCodegen || !s.LiftDerivedCodegen || !s.ToolConventions {
+		t.Errorf("explicit strict should enable the staging-free lifts: %+v", s)
+	}
+	if s.BakeIn != "reject" {
+		t.Errorf("explicit strict should derive --bake-in=reject, got %q", s.BakeIn)
+	}
+
+	// Explicit best-effort: lifts on, bakes stay warn (default), exec-fallback on.
+	b := parse("--fidelity", "best-effort")
+	if !b.RecognizeCodegen || !b.LiftDerivedCodegen || !b.ToolConventions {
+		t.Errorf("best-effort should enable the staging-free lifts: %+v", b)
+	}
+	if b.BakeIn == "reject" {
+		t.Errorf("best-effort should NOT reject bakes, got %q", b.BakeIn)
+	}
+	if !b.UnsupportedExecuteProcessFallback {
+		t.Errorf("best-effort should enable the execute-process fallback")
+	}
+
+	// Explicit individual flags override the dial.
+	o := parse("--fidelity", "strict", "--recognize-codegen=false", "--bake-in", "warn")
+	if o.RecognizeCodegen {
+		t.Errorf("explicit --recognize-codegen=false must win over the dial")
+	}
+	if o.BakeIn != "warn" {
+		t.Errorf("explicit --bake-in=warn must win over the dial, got %q", o.BakeIn)
+	}
+	if !o.LiftDerivedCodegen { // the non-overridden lifts still derive
+		t.Errorf("non-overridden lifts should still enable under explicit strict")
+	}
+}

@@ -384,6 +384,14 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			ccImports = cc.Imports
 			ccHostPrefix = cc.HostPrefixDir
 		}
+		// Capture the cmd BEFORE the tool-swap: the recognizer dispatch keys on
+		// the original DRIVER (e.g. `protoc`), but rewriteToolFromTarget can
+		// rewrite it to `$(execpath <label>)` (the --tool-conventions / manifest
+		// tools map, e.g. protoc -> @protobuf//:protoc). Recognizing the native
+		// rule is higher-fidelity than the swapped genrule, so the recognizer
+		// must see the pre-swap driver — otherwise --recognize-codegen +
+		// --tool-conventions together silently drop to the genrule.
+		preToolSwapCmd := rewrittenCmd
 		rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, artifactToName, execArtifacts, ccImports, ccHostPrefix)
 		// The tool-from-target lift hoisted the generator binary into
 		// `tools` and rewrote the cmd to $(location :tool); drop the
@@ -451,7 +459,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			Visibility:   visibility,
 			Tags:         tags,
 		}
-		codegenCmd := codegenCommandFrom(rewrittenCmd, srcs, outs, bazelPackagePath)
+		codegenCmd := codegenCommandFrom(preToolSwapCmd, srcs, outs, bazelPackagePath)
 		codegenCmd.ProtoDeps = protoImportLabels(codegenCmd.Srcs, codegenCmd.Outs, cmakeSrc, bazelPackagePath)
 		if p := soleProtoInput(codegenCmd.Srcs); p != "" && cppProtoBases[strings.TrimSuffix(filepath.Base(p), ".proto")] {
 			codegenCmd.SiblingCppProto = true
@@ -463,13 +471,13 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 }
 
 // codegenCommandFrom builds the recognizer's authoritative view of a recovered
-// custom-command: the DRIVER tool + argv tokenized from the REWRITTEN command
-// (the cd-prefix and buildDir paths already stripped). The driver basename + the
-// flag prefixes a recognizer keys on survive that rewrite — the standalone path
-// does NOT $(location)-swap the driver, so fields[0] is still the bare tool
-// (e.g. `protoc`). Were the dispatch ever moved after a tool-swap, this would
-// need the pre-swap form. Plus the recovered srcs, cmake's recorded outs (the
-// recognizer's output cross-check), and the Bazel package.
+// custom-command: the DRIVER tool + argv tokenized from the rewritten command
+// (cd-prefix and buildDir paths already stripped). Callers MUST pass the
+// PRE-tool-swap cmd so fields[0] is still the bare tool (e.g. `protoc`) the
+// recognizer matches on — the tool-swap (--tool-conventions / manifest tools
+// map) rewrites the driver to `$(execpath <label>)`, which would hide it. Plus
+// the recovered srcs, cmake's recorded outs (the recognizer's output
+// cross-check), and the Bazel package.
 func codegenCommandFrom(cmd string, srcs, outs []string, pkg string) CodegenCommand {
 	fields := strings.Fields(cmd)
 	var driver string

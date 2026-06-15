@@ -245,19 +245,23 @@ transition cleanly.
         "pkg/a/a.proto"` → `//pkg/a:a_proto`. Gated by
         `scripts/meta-cmake-proto-cross-package.sh` (multi-package render +
         `bazel build //pkg/b:b_cc_proto`). What's LEFT:
-        - **Fold the codegen lifts under `--fidelity` (the master ladder).**
-          The preference order (native rule ≻ live genrule ≻ bake ≻ refusal) +
-          the dial mapping are codified in
-          `docs/design/codegen-fidelity-ladder.md`. `--fidelity` already gates
-          the recognizer's output cross-check (strict refuses a non-standard
-          claim with a loud stub; best-effort falls back) — the first wiring
-          increment, safe because the recognizer is opt-in. What's LEFT is the
-          **default flip**: make `strict` imply the lift opt-ins on +
-          `--bake-in=reject` + refuse-on-unsound (lift booleans become
-          overrides). That's mechanically small but changes convert output
-          corpus-wide (recognized protoc → native rules; stem-match bakes → live
-          genrules), so it's gated on a **survey-corpus byte-sweep** that can't
-          run in a web container. Deferred until that can run.
+        - **Fold the codegen lifts under `--fidelity` (the master ladder) —
+          SHIPPED (explicit-engaged); default flip remains.** Setting
+          `--fidelity` EXPLICITLY now drives the combo (one dial, not several
+          flags): it enables the staging-free lifts (`--recognize-codegen`,
+          `--lift-derived-codegen`, `--tool-conventions`) and, for `strict`,
+          `--bake-in=reject` (best-effort leaves bakes at warn) — plus the
+          existing refusal-handling + recognizer cross-check gating. An explicit
+          individual flag overrides the dial; the recognizer keys on the
+          pre-tool-swap driver so `--recognize-codegen` + `--tool-conventions`
+          still lower to the native rule. The full table is in
+          `docs/design/codegen-fidelity-ladder.md`. What's LEFT is the **default
+          flip**: making the UNSET default engage the strict combo changes
+          convert output corpus-wide (protoc → native rules; stem-match bakes →
+          live genrules; remaining bakes → reject), so it's gated on a
+          survey-corpus byte-sweep that can't run in a web container. The
+          staging-dependent lifts (`--lift-configure-file`/`-download`/`-cc-embed`/
+          `-cc-hash`, `--cmake-script-*`) stay explicit (they need tool staging).
         - **Rebased `--proto_path` on the execute_process path.** The
           custom-command paths now handle a non-source-root `--proto_path` (the
           recognizer recovers the proto_path root from the proto src vs its

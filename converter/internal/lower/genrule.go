@@ -707,6 +707,12 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	// here: the per-target recovery path isn't reached under the workspace-root
 	// umbrella promotion (that surfaces on the standalone path).
 	rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, "", cc.BazelPackagePath)
+	// Pre-tool-swap cmd for the recognizer dispatch: the swap can rewrite the
+	// DRIVER to $(execpath <label>) (--tool-conventions / manifest tools map),
+	// which would hide the driver the recognizer matches on (e.g. protoc). The
+	// native rule is higher-fidelity than the swapped genrule, so the recognizer
+	// keys on the pre-swap driver. See standalone_genrules.go for the same guard.
+	preToolSwapCmd := rewrittenCmd
 	rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName, cc.ExecArtifacts, cc.Imports, cc.HostPrefixDir)
 	// Anchor declared outputs to $(RULEDIR)/<out> so a cmd that names its
 	// output as a literal arg (curl's `perl mk-lib1521.pl < curl.h lib1521.c`,
@@ -748,7 +754,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	// strips the generated src from the consuming target + wires the deps edge;
 	// OutToGenrule is registered only in the genrule fallback. Flag-off / no-match
 	// → the genrule unchanged.
-	recoCmd := codegenCommandFrom(rewrittenCmd, srcs, outs, cc.BazelPackagePath)
+	recoCmd := codegenCommandFrom(preToolSwapCmd, srcs, outs, cc.BazelPackagePath)
 	recoCmd.ProtoDeps = protoImportLabels(recoCmd.Srcs, recoCmd.Outs, cmakeSrc, cc.BazelPackagePath)
 	tgts, recognized := recognizeOrGenrule(cc, recoCmd, gen)
 	cc.Genrules = append(cc.Genrules, tgts...)
