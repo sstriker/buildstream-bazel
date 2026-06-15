@@ -25,6 +25,14 @@ type CodegenCommand struct {
 	Args []string
 	// Srcs are the recovered input sources (package-relative), e.g. the .proto.
 	Srcs []string
+	// InputFiles, when set, is the COMPLETE recovered input set — source-tree AND
+	// generated/build-dir inputs (a tool whose input is itself produced by another
+	// rule) — used to identify the invocation for dedup. Srcs alone is
+	// source-tree-only on the execute_process path, so two calls on DISTINCT
+	// generated inputs would otherwise share an (empty) source-src set and collapse.
+	// Empty on paths where Srcs already lists every input (the custom-command
+	// genrule srcs include generated inputs), where the key falls back to Srcs.
+	InputFiles []string
 	// Outs are cmake's RECORDED outputs (package-relative) — the cross-check
 	// the recognizer validates its derived output set against.
 	Outs []string
@@ -202,14 +210,25 @@ func recognizeOrGenrule(cc *codegenContext, cmd CodegenCommand, fallback ir.Targ
 		noteHostCodegenTool(cc, fallback)
 		return []ir.Target{fallback}, false
 	}
-	if cc.OutToNativeConsumerDep != nil && len(res.ConsumerDeps) > 0 {
-		consumer := strings.TrimPrefix(res.ConsumerDeps[0], ":")
+	emit, consumer, ok := cc.dedupRecognizedRule(cmd, res, nativeRuleSubPkg(res, cmd))
+	if !ok {
+		// A DIFFERENT input already owns one of these target names in this package
+		// — emitting would be a duplicate. Fall back to the generic genrule.
+		noteHostCodegenTool(cc, fallback)
+		return []ir.Target{fallback}, false
+	}
+	if cc.OutToNativeConsumerDep != nil && consumer != "" {
 		for _, o := range cmd.Outs {
 			cc.OutToNativeConsumerDep[o] = consumer
 		}
 	}
+	if len(emit) == 0 {
+		// Deduped against the same input's earlier invocation (a different output
+		// dir): outputs wired above; the rule's already emitted + placed.
+		return nil, true
+	}
 	recordNativeRulePlacement(cc, res, cmd)
-	return res.Targets, true
+	return emit, true
 }
 
 // recognizerRefusalStub turns the genrule fallback into a loud build-time
@@ -229,6 +248,74 @@ func recognizerRefusalStub(fallback ir.Target, cmd CodegenCommand, err error) ir
 	return stub
 }
 
+// codegenInputKey identifies a recognizer invocation by its INPUTS — the driver
+// plus the sorted source set. It's the dedup unit: the SAME input run into
+// different output dirs is one canonical native rule (Bazel produces the output
+// at a single location, so the cmake out-dir duplication collapses), while
+// DIFFERENT inputs get distinct keys and stay separate rules.
+func codegenInputKey(cmd CodegenCommand) string {
+	ins := cmd.InputFiles
+	if len(ins) == 0 {
+		ins = cmd.Srcs
+	}
+	keyed := append([]string(nil), ins...)
+	sort.Strings(keyed)
+	return cmd.Driver + "\x00" + strings.Join(keyed, "\x00")
+}
+
+// dedupRecognizedRule decides whether a matched recognizer's targets should be
+// EMITTED or DEDUPED against an identical earlier invocation. subPkg is the
+// package the targets will be placed in (so the name-collision guard keys on the
+// final identity). Returns:
+//
+//	emit     — the targets to append (nil when deduped: a repeat of the same input)
+//	consumer — the consumer-dep label to wire the call's outputs to (the
+//	           already-emitted rule's on a dedup, this result's otherwise)
+//	ok       — false ONLY when a DIFFERENT input already owns one of these target
+//	           names in subPkg (a recognizer naming bug); the caller falls back to
+//	           the generic genrule rather than emit a load-breaking duplicate.
+//
+// Pure bookkeeping on the first call for a given input; existing
+// single-invocation fixtures never hit the dedup or the guard, so behavior is
+// unchanged there.
+func (cc *codegenContext) dedupRecognizedRule(cmd CodegenCommand, res CodegenResult, subPkg string) (emit []ir.Target, consumer string, ok bool) {
+	if len(res.ConsumerDeps) > 0 {
+		consumer = strings.TrimPrefix(res.ConsumerDeps[0], ":")
+	}
+	key := codegenInputKey(cmd)
+	if prevConsumer, dup := cc.recognizedConsumerByInput[key]; dup {
+		// Same input as an earlier invocation — reuse that rule; wire this call's
+		// outputs to it (consumer) instead of re-emitting a duplicate target.
+		return nil, prevConsumer, true
+	}
+	// New input: a different input must not already own one of our names here.
+	for _, t := range res.Targets {
+		if owner, taken := cc.recognizedNameOwner[subPkg+"\x00"+t.Name]; taken && owner != key {
+			return nil, "", false
+		}
+	}
+	for _, t := range res.Targets {
+		cc.recognizedNameOwner[subPkg+"\x00"+t.Name] = key
+	}
+	cc.recognizedConsumerByInput[key] = consumer
+	return res.Targets, consumer, true
+}
+
+// nativeRuleSubPkg is the element-relative package a recognizer's targets land
+// in: the recognizer's SubPackage (the .proto's own dir — correct even under a
+// rebased --proto_path), else the output's dir. "" (the element root, where a
+// bare name needs no placement) for an empty / "." result.
+func nativeRuleSubPkg(res CodegenResult, cmd CodegenCommand) string {
+	dir := res.SubPackage
+	if dir == "" && len(cmd.Outs) > 0 {
+		dir = path.Dir(cmd.Outs[0])
+	}
+	if dir == "." {
+		return ""
+	}
+	return dir
+}
+
 // recordNativeRulePlacement notes the package each native target should land in
 // (merged into Package.SubPackages later). The recognizer names the rule + sets
 // srcs by basename, so the rule must land in the package owning the .proto for
@@ -240,11 +327,8 @@ func recordNativeRulePlacement(cc *codegenContext, res CodegenResult, cmd Codege
 	if cc.NativeRuleSubPackage == nil {
 		return
 	}
-	dir := res.SubPackage
-	if dir == "" && len(cmd.Outs) > 0 {
-		dir = path.Dir(cmd.Outs[0])
-	}
-	if dir == "" || dir == "." {
+	dir := nativeRuleSubPkg(res, cmd)
+	if dir == "" {
 		return
 	}
 	for _, t := range res.Targets {

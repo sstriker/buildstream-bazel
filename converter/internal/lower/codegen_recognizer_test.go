@@ -27,6 +27,7 @@ func (discoveredSubsetRecognizer) Lower(cmd CodegenCommand) (CodegenResult, erro
 	}
 	return CodegenResult{
 		DerivedOutputs: outs,
+		ConsumerDeps:   []string{":mygen_rule"},
 		Targets:        []ir.Target{{Name: "mygen_rule", Kind: ir.KindGenrule, GenruleOuts: outs}},
 	}, nil
 }
@@ -80,6 +81,110 @@ func TestLiftRecognizedExecuteProcess_FeedsDiscoveredOutputs(t *testing.T) {
 	}
 	if len(cc.Genrules) != 1 || cc.Genrules[0].Name != "mygen_rule" {
 		t.Fatalf("recognizer's native rule should be emitted; got %+v", cc.Genrules)
+	}
+}
+
+// TestRecognizeOrGenrule_DedupsSameInputAcrossOutDirs: the SAME input run into
+// two output dirs is ONE canonical native rule — the second invocation reuses it
+// (no duplicate target) and wires its outputs to the existing consumer dep.
+func TestRecognizeOrGenrule_DedupsSameInputAcrossOutDirs(t *testing.T) {
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	cc.ExtraRecognizers = []CodegenRecognizer{discoveredSubsetRecognizer{}}
+
+	fb1 := ir.Target{Name: "g1", Kind: ir.KindGenrule, GenruleOuts: []string{"gen1/a.h", "gen1/a.cc"}}
+	cmd1 := CodegenCommand{Driver: "mygen", Srcs: []string{"in.x"}, Outs: []string{"gen1/a.h"}}
+	t1, ok1 := recognizeOrGenrule(cc, cmd1, fb1)
+	if !ok1 || len(t1) != 1 || t1[0].Name != "mygen_rule" {
+		t.Fatalf("first invocation should emit the native rule; ok=%v t=%+v", ok1, t1)
+	}
+
+	fb2 := ir.Target{Name: "g2", Kind: ir.KindGenrule, GenruleOuts: []string{"gen2/a.h", "gen2/a.cc"}}
+	cmd2 := CodegenCommand{Driver: "mygen", Srcs: []string{"in.x"}, Outs: []string{"gen2/a.h"}}
+	t2, ok2 := recognizeOrGenrule(cc, cmd2, fb2)
+	if !ok2 {
+		t.Fatal("second (same input) is still recognized, not a genrule fallback")
+	}
+	if len(t2) != 0 {
+		t.Errorf("the SAME input in a second out dir must NOT re-emit a duplicate rule; got %+v", t2)
+	}
+	if cc.OutToNativeConsumerDep["gen2/a.h"] != "mygen_rule" {
+		t.Errorf("the deduped invocation's output should wire to the existing rule; got %q", cc.OutToNativeConsumerDep["gen2/a.h"])
+	}
+}
+
+// TestRecognizeOrGenrule_DifferentInputsDifferentPackagesBothEmit: distinct
+// inputs landing in distinct packages both emit (no false dedup, no collision).
+func TestRecognizeOrGenrule_DifferentInputsDifferentPackagesBothEmit(t *testing.T) {
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	cc.ExtraRecognizers = []CodegenRecognizer{discoveredSubsetRecognizer{}}
+
+	_, ok1 := recognizeOrGenrule(cc,
+		CodegenCommand{Driver: "mygen", Srcs: []string{"a.x"}, Outs: []string{"gen1/a.h"}},
+		ir.Target{Name: "g1", Kind: ir.KindGenrule, GenruleOuts: []string{"gen1/a.h"}})
+	t2, ok2 := recognizeOrGenrule(cc,
+		CodegenCommand{Driver: "mygen", Srcs: []string{"b.x"}, Outs: []string{"gen2/b.h"}},
+		ir.Target{Name: "g2", Kind: ir.KindGenrule, GenruleOuts: []string{"gen2/b.h"}})
+	if !ok1 || !ok2 || len(t2) != 1 {
+		t.Fatalf("distinct inputs in distinct packages both emit; ok1=%v ok2=%v t2=%+v", ok1, ok2, t2)
+	}
+}
+
+// TestRecognizeOrGenrule_DifferentInputsCollidingNameFallBack: two DIFFERENT
+// inputs that would emit the same rule name in the same package (a recognizer
+// naming bug) — the second falls back to the generic genrule rather than emit a
+// load-breaking duplicate.
+func TestRecognizeOrGenrule_DifferentInputsCollidingNameFallBack(t *testing.T) {
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	cc.ExtraRecognizers = []CodegenRecognizer{discoveredSubsetRecognizer{}}
+
+	_, ok1 := recognizeOrGenrule(cc,
+		CodegenCommand{Driver: "mygen", Srcs: []string{"a.x"}, Outs: []string{"gen/a.h"}},
+		ir.Target{Name: "g1", Kind: ir.KindGenrule, GenruleOuts: []string{"gen/a.h"}})
+	if !ok1 {
+		t.Fatal("first invocation emits")
+	}
+	fb2 := ir.Target{Name: "g2", Kind: ir.KindGenrule, GenruleOuts: []string{"gen/b.h"}}
+	t2, ok2 := recognizeOrGenrule(cc,
+		CodegenCommand{Driver: "mygen", Srcs: []string{"b.x"}, Outs: []string{"gen/b.h"}}, fb2)
+	if ok2 {
+		t.Fatalf("a different input colliding on rule name must fall back; got ok=%v", ok2)
+	}
+	if len(t2) != 1 || t2[0].Name != "g2" {
+		t.Errorf("fallback should be the generic genrule; got %+v", t2)
+	}
+}
+
+// TestLiftRecognizedExecuteProcess_GeneratedInputsNotDeduped: when the tool's
+// inputs are themselves GENERATED (build-dir, absent from source-tree Srcs), two
+// calls on DISTINCT generated inputs must NOT collapse to one rule — the input
+// identity includes the build-dir input operands.
+func TestLiftRecognizedExecuteProcess_GeneratedInputsNotDeduped(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	writeTree(t, hostBuild, "genA/a.h", "A")
+	writeTree(t, hostBuild, "genB/b.h", "B")
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	cc.ExtraRecognizers = []CodegenRecognizer{discoveredSubsetRecognizer{}}
+	// Same tool, no source srcs; the inputs (in/a.in, in/b.in) are build-dir
+	// generated files; outputs in distinct dirs (distinct sub-packages).
+	callA := argvCall(hostSrc, "mygen", "--mygen_out="+filepath.Join(hostBuild, "genA"), filepath.Join(hostBuild, "in/a.in"))
+	callB := argvCall(hostSrc, "mygen", "--mygen_out="+filepath.Join(hostBuild, "genB"), filepath.Join(hostBuild, "in/b.in"))
+	callB.Line = 9
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{callA, callB}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("refusals: %+v", refusals)
+	}
+	n := 0
+	for _, g := range cc.Genrules {
+		if g.Name == "mygen_rule" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("distinct generated inputs must emit 2 rules (not silently dedup to 1); got %d: %+v", n, cc.Genrules)
 	}
 }
 

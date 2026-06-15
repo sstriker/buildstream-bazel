@@ -185,7 +185,13 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 	// convention, so it returns this set (or a subset/transform) as DerivedOutputs.
 	outDir := argvCodegenOutDir(argv, anc)
 	discovered := discoverCodegenOutDirFiles(outDir, anc, cc)
-	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: recArgs, Srcs: srcs, Pkg: cc.BazelPackagePath, ProtoDeps: protoDeps, DiscoveredOutputs: discovered})
+	// Complete input identity for dedup: source inputs PLUS build-dir input
+	// operands (a generated input — produced by another rule — that this tool
+	// consumes), excluding the call's own output-dir subtree. Without this, two
+	// calls on DISTINCT generated inputs (no source srcs) would share a key.
+	inputFiles := append(append([]string(nil), srcs...), buildDirInputOperands(recArgs, anc, outDir)...)
+	cmd := CodegenCommand{Driver: driver, Args: recArgs, Srcs: srcs, InputFiles: inputFiles, Pkg: cc.BazelPackagePath, ProtoDeps: protoDeps, DiscoveredOutputs: discovered}
+	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, cmd)
 	if !matched || err != nil || len(res.DerivedOutputs) == 0 {
 		return nil, false
 	}
@@ -216,23 +222,69 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 	if claimed > 0 {
 		return nil, false
 	}
-	cc.Genrules = append(cc.Genrules, res.Targets...)
-	if len(res.ConsumerDeps) > 0 {
-		consumer := strings.TrimPrefix(res.ConsumerDeps[0], ":")
+	// Sub-package placement (mirrors recognizeOrGenrule): land the native rules
+	// in the package owning the generated outputs.
+	subPkg := ""
+	if len(rels) > 0 {
+		if dir := path.Dir(rels[0]); dir != "." {
+			subPkg = dir
+		}
+	}
+	emit, consumer, ok := cc.dedupRecognizedRule(cmd, res, subPkg)
+	if !ok {
+		// A DIFFERENT input already owns one of these names here; let the generic
+		// argv / unspecified-output lift emit an output-path-named genrule instead.
+		return nil, false
+	}
+	if consumer != "" {
 		for _, rel := range rels {
 			cc.OutToNativeConsumerDep[rel] = consumer
 		}
 	}
-	// Sub-package placement (mirrors recognizeOrGenrule): land the native rules
-	// in the package owning the generated outputs.
-	if cc.NativeRuleSubPackage != nil && len(rels) > 0 {
-		if dir := path.Dir(rels[0]); dir != "" && dir != "." {
-			for _, t := range res.Targets {
-				cc.NativeRuleSubPackage[t.Name] = dir
-			}
+	if len(emit) == 0 {
+		// Deduped against the same input's earlier invocation (a different output
+		// dir): the rule's emitted; this dir's outputs are wired to it above.
+		return rels, true
+	}
+	cc.Genrules = append(cc.Genrules, emit...)
+	if cc.NativeRuleSubPackage != nil && subPkg != "" {
+		for _, t := range emit {
+			cc.NativeRuleSubPackage[t.Name] = subPkg
 		}
 	}
 	return rels, true
+}
+
+// buildDirInputOperands returns the build-relative argv operands that anchor
+// UNDER the build dir but OUTSIDE the call's output directory (outDir) — i.e.
+// the tool's generated INPUTS (files another rule produced that this call
+// consumes), as distinct from its own outputs under outDir. Used to complete the
+// dedup input identity on the execute_process path, where source-anchored Srcs
+// miss generated inputs. Deduped + sorted. When outDir is empty (build root)
+// every build path is "under" it, so nothing is classified as an input — the
+// recognizer's discovery wouldn't have fired there anyway.
+func buildDirInputOperands(args []string, anc execAnchors, outDir string) []string {
+	if outDir == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var ins []string
+	prefix := outDir + "/"
+	for _, a := range args {
+		rel, ok := executeProcessAnchorOutput(stripArgvPathPrefix(a), anc)
+		if !ok || rel == "" || rel == "." {
+			continue
+		}
+		if rel == outDir || strings.HasPrefix(rel, prefix) {
+			continue // under the output dir — an output, not an input
+		}
+		if !seen[rel] {
+			seen[rel] = true
+			ins = append(ins, rel)
+		}
+	}
+	sort.Strings(ins)
+	return ins
 }
 
 // discoverCodegenOutDirFiles enumerates the on-disk files under the tool's
