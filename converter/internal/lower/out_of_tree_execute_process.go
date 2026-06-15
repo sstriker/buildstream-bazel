@@ -187,11 +187,13 @@ func outOfTreeExecRecognized(c shadow.ExecuteProcessCall, cc *codegenContext) bo
 	if len(argv) == 0 {
 		return false
 	}
-	driver := executeProcessDriverBasename(argv[0])
+	// Interpreter-led generators (python gen.py, perl xxd.pl) key the recognizer
+	// on the SCRIPT, not the interpreter — see codegenRecognitionDriver.
+	driver, recArgs := codegenRecognitionDriver(argv)
 	if driver == "" {
 		return false
 	}
-	return codegenRecognizerMatches(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: argv[1:]})
+	return codegenRecognizerMatches(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: recArgs})
 }
 
 // outOfTreeExecTouchesProjectIO reports whether an out-of-tree call reads an

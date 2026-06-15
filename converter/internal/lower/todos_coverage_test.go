@@ -81,6 +81,33 @@ func TestEmitBakeTodos_DefaultImprovementAndOverride(t *testing.T) {
 	}
 }
 
+// Invariant: a bake ALWAYS gets a note. Every tag the converter classifies as a
+// convert-time bake (convertTimeBakedShapes) must produce a "bake" todo — so a
+// future bake shape can't be added without surfacing it. Guards the "if it is a
+// bake there should always be a note" contract independent of --bake-in (which
+// only governs the stderr/exit policy, not the structured todo).
+func TestEmitBakeTodos_EveryBakeShapeNoted(t *testing.T) {
+	var targets []ir.Target
+	for tag := range convertTimeBakedShapes {
+		targets = append(targets, ir.Target{Name: "t_" + tag, Kind: ir.KindGenrule, Tags: []string{tag}})
+	}
+	pkg := &ir.Package{Targets: targets}
+	c := todos.New()
+	emitBakeTodos(c, pkg, nil)
+	rep := c.Report(todos.Preamble{}, "")
+	noted := map[string]bool{}
+	for i := range rep.Todos {
+		if rep.Todos[i].Kind == "bake" {
+			noted[rep.Todos[i].GroupKey] = true
+		}
+	}
+	for tag := range convertTimeBakedShapes {
+		if !noted["t_"+tag] {
+			t.Errorf("bake shape %q produced no bake todo — a bake must always be noted", tag)
+		}
+	}
+}
+
 func TestEmitBakeTodos_NoBakes(t *testing.T) {
 	pkg := &ir.Package{Targets: []ir.Target{{Name: "plain", Kind: ir.KindCCLibrary}}}
 	c := todos.New()

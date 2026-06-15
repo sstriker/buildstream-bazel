@@ -657,6 +657,39 @@ func TestClassify_DriverBasenameNormalisation(t *testing.T) {
 // feature blocking the lift, not a black-box refusal — that's
 // what tells them whether to rework the CMakeLists.txt or accept
 // the round-2 fallback for the call.
+// codegenRecognitionDriver peels a script interpreter so the recognizer keys on
+// the SCRIPT, not the interpreter; a non-interpreter argv[0] is returned
+// verbatim; inline code / stdin invocations have no script and return "".
+func TestCodegenRecognitionDriver(t *testing.T) {
+	cases := []struct {
+		name       string
+		argv       []string
+		wantDriver string
+		wantArgs   []string
+	}{
+		{"protoc verbatim", []string{"protoc", "--cpp_out=.", "x.proto"}, "protoc", []string{"--cpp_out=.", "x.proto"}},
+		{"python script", []string{"python3", "/src/gen.py", "--emit", "out.h"}, "gen.py", []string{"--emit", "out.h"}},
+		{"perl script", []string{"perl", "/s/xxd.pl", "in"}, "xxd.pl", []string{"in"}},
+		{"interpreter flag skipped", []string{"python3", "-B", "/s/gen.py", "a"}, "gen.py", []string{"a"}},
+		{"absolute interpreter path", []string{"/usr/bin/python3", "/s/gen.py"}, "gen.py", nil},
+		{"inline code -c", []string{"python3", "-c", "import x"}, "", nil},
+		{"perl inline -e", []string{"perl", "-e", "print 1"}, "", nil},
+		{"stdin dash", []string{"python3", "-"}, "", nil},
+		{"interpreter only", []string{"python3"}, "", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d, args := codegenRecognitionDriver(c.argv)
+			if d != c.wantDriver {
+				t.Errorf("driver = %q, want %q", d, c.wantDriver)
+			}
+			if strings.Join(args, "\x00") != strings.Join(c.wantArgs, "\x00") {
+				t.Errorf("args = %v, want %v", args, c.wantArgs)
+			}
+		})
+	}
+}
+
 func TestClassify_RefuseReasonsAreSpecific(t *testing.T) {
 	cases := []struct {
 		name            string
