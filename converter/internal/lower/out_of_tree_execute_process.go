@@ -51,21 +51,33 @@ import (
 //   - everything else uncertain (build-dir without codemodel sources, a
 //     find_package prefix-tree probe) → NOTED as a conversion-todo.
 //
-// The RECOGNIZER signal (a registered codegen recognizer claiming the call's
-// tool, e.g. protoc --cpp_out) is location-independent and refines the last
-// bucket — the codemodel-source check isn't the only way to know a call is real
-// codegen (the codemodel often doesn't attribute an out-of-tree tool's outputs
-// as sources, dropping good signal). A build-dir-without-codemodel-sources call
-// a recognizer claims is the project's OWN under-attributed codegen and is
+// Two location-INDEPENDENT signals refine the last bucket — the codemodel-source
+// check isn't the only way to know a call is real codegen:
+//
+//   - The RECOGNIZER signal: a registered codegen recognizer claiming the call's
+//     tool (e.g. protoc --cpp_out). The codemodel often doesn't attribute an
+//     out-of-tree tool's outputs as sources, dropping good signal.
+//   - The PROJECT-I/O signal: the call reads an in-tree source (an argv path
+//     under the source root) or touches a build-dir path (an argv path under
+//     the build dir — an OUTPUT it writes, or an INPUT it reads from an upstream
+//     step, e.g. a chained genrule consuming an earlier tool's build-dir
+//     artifact). Whose DATA a call processes is project intent even when the
+//     helper that ISSUED it lives out of tree — a find_package prefix-tree
+//     config file driving a tool on the project's OWN .proto, or feeding off the
+//     project's OWN build dir, is the consumer's codegen, not the dependency's.
+//
+// A build-dir-without-codemodel-sources call, OR any out-of-tree call carrying
+// one of these signals, is the project's OWN under-attributed codegen and is
 // LIFTED like a subproject (the lift corroborates the derived outputs on disk
 // before emitting, so a mis-match still declines safely). The --fidelity dial
-// extends this: under BEST-EFFORT such a build-dir call is lifted even WITHOUT a
-// recognizer match (recoverExecuteProcess gives a genrule/probe fallback —
-// recover something runnable); under STRICT it lifts only on a recognizer match,
-// else stays a note (faithful-or-fail — don't silently genrule an unattributed
-// call). A prefix-tree call is the DEPENDENCY's codegen, so it's never
-// genrule-lifted (that would re-emit the dependency's rules) — it stays a NOTE,
-// sharpened to name the tool + native-rule shape when recognized.
+// gates it: under BEST-EFFORT such a call is lifted even WITHOUT a recognizer
+// match (recoverExecuteProcess gives a genrule/probe fallback — recover
+// something runnable); under STRICT it lifts only on a recognizer match, else
+// stays a note (faithful-or-fail — don't silently genrule an unattributed
+// call). A prefix-tree call with NO project-I/O and no recognizer hit is the
+// DEPENDENCY's codegen, so it's never genrule-lifted (that would re-emit the
+// dependency's rules) — it stays a NOTE, sharpened to name the tool +
+// native-rule shape when recognized.
 
 // outOfTreeExecSignal records WHY an out-of-tree execute_process call was
 // surfaced — the signal feeds the todo's grouping and prompt so an author
@@ -110,10 +122,11 @@ type outOfTreeExecNote struct {
 // beneath it, or a find_package prefix-tree probe). The confident noise
 // (cmake's try_compile scratch under <build>/CMakeFiles and bundled-module
 // probes that issue from neither the build dir nor the prefix tree) is dropped
-// silently — neither returned. recordedBuildDir / prefixDir are in the SAME
-// path space as call.File (the trace's recorded paths); consumedBuildRel is
-// the codemodel's build-relative source set (cc.ConsumedBuildRel).
-func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedBuildDir, prefixDir string, consumedBuildRel map[string]bool, cc *codegenContext) (lift []shadow.ExecuteProcessCall, note []outOfTreeExecNote) {
+// silently — neither returned. recordedSrcDir / recordedBuildDir / prefixDir
+// are in the SAME path space as call.File (the trace's recorded paths);
+// consumedBuildRel is the codemodel's build-relative source set
+// (cc.ConsumedBuildRel).
+func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedSrcDir, recordedBuildDir, prefixDir string, consumedBuildRel map[string]bool, cc *codegenContext) (lift []shadow.ExecuteProcessCall, note []outOfTreeExecNote) {
 	for _, c := range calls {
 		if len(c.Commands) == 0 {
 			continue
@@ -128,11 +141,15 @@ func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedBuildDir,
 			lift = append(lift, c)
 			continue
 		}
-		// Recognizer signal (location-independent): a registered recognizer
-		// claiming the tool (protoc --cpp_out, …) means this is real codegen.
+		// Two location-independent signals mark a call as the project's OWN
+		// codegen, whatever out-of-tree helper issued it: a registered recognizer
+		// claiming the tool (protoc --cpp_out, …), or the call reading an in-tree
+		// source / writing a build-dir output (projectIO).
 		recognized := outOfTreeExecRecognized(c, cc)
-		if sig == signalBuildDirOther && (recognized || outOfTreeBestEffort(cc)) {
-			// A build-dir codegen call the codemodel didn't attribute sources to.
+		projectIO := outOfTreeExecTouchesProjectIO(c, recordedSrcDir, recordedBuildDir)
+		if (sig == signalBuildDirOther || projectIO) && (recognized || outOfTreeBestEffort(cc)) {
+			// A build-dir codegen call the codemodel didn't attribute sources to,
+			// or any out-of-tree call operating on the project's own I/O.
 			// RECOGNIZED → recoverExecuteProcess lifts it via the recognizer (the
 			// native rule), in BOTH fidelity modes. UNRECOGNIZED under BEST-EFFORT
 			// → lift it anyway so recoverExecuteProcess gives a genrule/probe
@@ -143,9 +160,9 @@ func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedBuildDir,
 			lift = append(lift, c)
 			continue
 		}
-		// prefix-tree (a dependency's codegen) stays a note even when recognized —
-		// the dependency emits it; we just sharpen the todo. A strict unrecognized
-		// build-dir call, and any unrecognized prefix call, stay the generic note.
+		// What reaches here is the dependency's own codegen (a prefix-tree call
+		// touching only the dependency's files) or a strict unrecognized call with
+		// no project I/O — a note, sharpened to name the tool when recognized.
 		note = append(note, outOfTreeExecNote{File: c.File, Line: c.Line, Argv: c.Commands[0], Signal: sig, Recognized: recognized})
 	}
 	return lift, note
@@ -175,6 +192,55 @@ func outOfTreeExecRecognized(c shadow.ExecuteProcessCall, cc *codegenContext) bo
 		return false
 	}
 	return codegenRecognizerMatches(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: argv[1:]})
+}
+
+// outOfTreeExecTouchesProjectIO reports whether an out-of-tree call reads an
+// in-tree source (an argv path under the recorded source root) or touches a
+// build-dir path (an argv path under the recorded build dir — an output it
+// writes, or an input it reads from an upstream step, e.g. a chained genrule
+// consuming an earlier tool's build-dir artifact). Position isn't distinguished:
+// any src/build path in the argv is the signal. Either is location-independent
+// evidence that the call is the PROJECT's own codegen — a tool the project
+// drives on its OWN files — even when the issuing helper (a find_package
+// prefix-tree config file, say) lives out of tree. The issuing site says where
+// the call was written; the I/O says whose data it processes.
+func outOfTreeExecTouchesProjectIO(c shadow.ExecuteProcessCall, recordedSrcDir, recordedBuildDir string) bool {
+	for _, argv := range c.Commands {
+		for _, tok := range argv {
+			p := outOfTreeExecPathToken(tok)
+			if p == "" {
+				continue
+			}
+			if recordedSrcDir != "" {
+				if _, ok := buildRelAbs(recordedSrcDir, p); ok {
+					return true
+				}
+			}
+			if recordedBuildDir != "" {
+				if _, ok := buildRelAbs(recordedBuildDir, p); ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// outOfTreeExecPathToken extracts the path-like value of one argv token for the
+// project-I/O check: the part after the first '=' for a KEY=VALUE / -DKEY=path /
+// --out=path token, else the token itself — but only when ABSOLUTE. A relative
+// path can't be tied to the source/build tree without resolving the call's
+// working directory, and buildRelAbs (which the check uses) guards on absolute
+// paths anyway; returning "" here keeps the intent explicit.
+func outOfTreeExecPathToken(tok string) string {
+	cand := tok
+	if _, val, hasEq := strings.Cut(tok, "="); hasEq {
+		cand = val
+	}
+	if !filepath.IsAbs(cand) {
+		return ""
+	}
+	return cand
 }
 
 // classifyOneOutOfTreeExec maps one out-of-tree call to a surfacing signal, or
