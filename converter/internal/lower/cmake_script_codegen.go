@@ -85,25 +85,28 @@ func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptA
 	// along refuses harmlessly (discarded). liftEnabled mirrors the main
 	// configure trace so a script's configure_file output lifts when opted in.
 	outs, _ := recoverExecuteProcess(calls, cmakeSrc, cmakeSrc, buildDir, buildDir, cc.LiftConfigureFile, nil, nil, cc)
-	recovered := false
 	for _, o := range outs {
 		if o.RelOutput == relOut {
-			recovered = true
-			break
+			// Same contract as recoverGenrule's recognized branch: register
+			// SeenBuilds so a sibling consumer of this edge reuses, and return the
+			// (unemitted) genrule identity. The consumer's reference to relOut is
+			// stripped + rewired to the producing rule by the package-wide passes
+			// (rewriteNativeRuleConsumers via OutToNativeConsumerDep, or the
+			// OutToGenrule generated-source resolution); the returned name is
+			// otherwise ignored by recoverGenrule's caller.
+			name := genruleNameFor(b, buildDir)
+			cc.SeenBuilds[b] = name
+			return name, true
 		}
 	}
-	if !recovered {
-		return "", false
+	// The recognizer + the shared lifts didn't claim relOut, but the wrapping
+	// custom command DECLARES its outputs — enough data to lift even an
+	// unrecognized tool into a direct-tool genrule (no cmake runner). Try that
+	// before falling through to bake/runner/refuse.
+	if name, ok := cc.liftTracedToolDeclaredOutputs(b, calls, cmakeSrc, buildDir, relOut); ok {
+		return name, true
 	}
-	// Same contract as recoverGenrule's recognized branch: register SeenBuilds so
-	// a sibling consumer of this edge reuses, and return the (unemitted) genrule
-	// identity. The consumer's reference to relOut is stripped + rewired to the
-	// producing rule by the package-wide passes (rewriteNativeRuleConsumers via
-	// OutToNativeConsumerDep, or the OutToGenrule generated-source resolution);
-	// the returned name is otherwise ignored by recoverGenrule's caller.
-	name := genruleNameFor(b, buildDir)
-	cc.SeenBuilds[b] = name
-	return name, true
+	return "", false
 }
 
 // expandCommandSources re-traces a `cmake -P <script>` and returns its
