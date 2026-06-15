@@ -288,6 +288,20 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			continue
 		}
 
+		// A standalone `cmake -P <script>` whose effect is a nested
+		// `cmake -S … -B …` configure (the superbuild-at-configure idiom hidden
+		// behind a build-time wrapper) is recovered by the nested-build lift, not
+		// a genrule: re-trace the script, record the nested configure into
+		// NestedConfigureSink for the warm-pass/pass-2 lowerNestedBuilds, and SKIP
+		// emitting a (broken, runner-dependent) `cmake -P` genrule — its outputs
+		// are produced by the lifted nested build, and the outer's link/include
+		// consumers wire to it the same way a configure-time nested build's do.
+		// Gated on the trace opt-in (+ RecognizeCodegen, the codegen-recovery
+		// umbrella) since it re-runs the script at convert time.
+		if cc.standaloneScriptDrivesNestedConfigure(cmd, cmakeSrc, buildDir) {
+			continue
+		}
+
 		// A standalone `cmake -P <script>` custom command can't run under Bazel
 		// (no cmake on the executor), so emitting it as a raw genrule produces
 		// an unrunnable rule (LLVM's VCSRevision.h: `cmake -P

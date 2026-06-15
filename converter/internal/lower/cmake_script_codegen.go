@@ -110,6 +110,58 @@ func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptA
 	return "", false
 }
 
+// standaloneScriptDrivesNestedConfigure reports whether a standalone custom
+// command's `cmd` is a `cmake -P <script>` whose re-trace reveals a nested
+// `cmake -S … -B …` configure — recording it into NestedConfigureSink as a side
+// effect so the warm-pass/pass-2 lift handles it. The standalone path then skips
+// emitting a (broken) `cmake -P` genrule for the edge. Gated on RecognizeCodegen
+// + CMakeScriptTrace + a usable cmake (the script re-trace's opt-in). nil-safe.
+func (cc *codegenContext) standaloneScriptDrivesNestedConfigure(cmd, cmakeSrc, buildDir string) bool {
+	if cc == nil || !cc.RecognizeCodegen || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || !usesCmakeScriptMode(cmd) {
+		return false
+	}
+	return cc.recordNestedConfiguresFromScript(extractCmakeScriptPath(cmd), extractCmakePDashArgs(cmd), cmakeSrc, buildDir)
+}
+
+// recordNestedConfiguresFromScript re-traces a `cmake -P <script>` and records
+// any nested `cmake -S … -B …` configure it runs into NestedConfigureSink, so
+// the orchestrator's warm second pass stages File API queries there and the
+// pass-2 lowerNestedBuilds lifts the nested build (merging its targets, baking
+// its configure-generated headers). This is the cmake -P counterpart of the
+// configure-time nested-cmake detection (recoverExecuteProcess's BucketNestedCMake
+// branch): a build-time `cmake -P` wrapper hides the nested configure from the
+// MAIN configure trace, so only re-tracing the script surfaces it. Returns
+// whether a nested configure was recorded — the caller then SKIPS emitting a
+// (broken, runner-dependent) `cmake -P` genrule for the edge, since the nested
+// lift produces its artifacts. Gated by the caller on RecognizeCodegen +
+// CMakeScriptTrace + a usable cmake (the same opt-in the script re-trace needs).
+func (cc *codegenContext) recordNestedConfiguresFromScript(scriptArg string, dArgs []string, cmakeSrc, buildDir string) bool {
+	if cc == nil || cc.NestedConfigureSink == nil || cc.CMakeBinary == "" || scriptArg == "" {
+		return false
+	}
+	calls := cc.expandCommandSources(scriptArg, dArgs, cmakeSrc, buildDir)
+	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir}
+	recorded := false
+	for _, c := range calls {
+		c = normalizeCMakeECall(clearDeadCaptures(c, cc.DeadCaptureVars))
+		if len(c.Commands) == 0 || len(c.Commands[0]) == 0 {
+			continue
+		}
+		// recoverNestedCMakeCall records (buildRel → srcDir) into the sink and
+		// returns nil when the nested build anchors under the outer build dir
+		// (recorded or a benign --build/--install companion); a non-nil refusal
+		// means it can't anchor (a nested build OUTSIDE our tree), which we don't
+		// claim. Key the skip on "the script drives a liftable nested configure",
+		// NOT on the sink GROWING — the sink is shared across passes, so on the
+		// re-lower (pass 2) the entry is already present and a growth check would
+		// wrongly fall through to the broken `cmake -P` genrule.
+		if Classify(c).Bucket == BucketNestedCMake && recoverNestedCMakeCall(c, anc, cc) == nil {
+			recorded = true
+		}
+	}
+	return recorded
+}
+
 // expandCommandSources re-traces a `cmake -P <script>` and returns its
 // execute_process calls with nested `cmake -P` wrappers FLATTENED to their leaf
 // tool calls — the P3 recursion driver. When a harvested call is itself a

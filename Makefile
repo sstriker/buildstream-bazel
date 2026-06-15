@@ -408,6 +408,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-protoc-cmake-script-wrapper.sh \
 	scripts/meta-cmake-protoc-cmake-script-wrapper-nested.sh \
 	scripts/meta-cmake-traced-tool-declared-outs.sh \
+	scripts/meta-cmake-nested-cmake-in-script.sh \
 	scripts/meta-cmake-standalone-custom-command.sh \
 	scripts/meta-cmake-workspace-root.sh
 
