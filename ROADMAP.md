@@ -262,6 +262,38 @@ transition cleanly.
           survey-corpus byte-sweep that can't run in a web container. The
           staging-dependent lifts (`--lift-configure-file`/`-download`/`-cc-embed`/
           `-cc-hash`, `--cmake-script-*`) stay explicit (they need tool staging).
+        - **Drive the STAGING-DEPENDENT lifts from a manifest `staged_lifts`
+          declaration (so `--fidelity` + `--imports-manifest` is the whole
+          operator surface).** The master dial covers the staging-FREE lifts;
+          the staging-dependent ones can't be auto-enabled by fidelity alone — a
+          converted BUILD referencing an un-staged `//tools:*` fails at analysis
+          (`cc_embed`/`cc_hash`'s rule `tool` attr is `mandatory`). The
+          authoritative "what the envelope provides" record is the imports
+          manifest, so extend it (append-only, v1-compatible) with a
+          `staged_lifts` declaration — capability names mapping to the fixed
+          converter tool labels for `configure-file` (`//tools:cmake-configure-file`),
+          `cc-embed` (`//tools:cc-embed`), `cc-hash` (`//tools:cc-hash`),
+          `download`, plus a label for `cmake-script-runner`. The convert derives
+          the matching `--lift-*` at finalize (explicit flag wins; no entry =
+          byte-identical), and `write-a` populates `staged_lifts` from what it
+          actually stages (dropping the per-element `--lift-*` threading). Net:
+          the residue shrinks to `--recognizers` (inherently a path) + the
+          shared/export emission dials, which aren't staging-gated. Fixture +
+          gate; doc + the fidelity table updated.
+        - **`cc_embed` / `cc_hash` self-provided tool → best-effort by default
+          (no staging).** These are the faithful native end-state for the
+          embed-file / hash-file-into-a-header idioms (recompute-on-change,
+          symbol/digest preserved), but their rule's `tool` attr is `mandatory`
+          (the consumer stages `//tools:cc-embed`), so best-effort can't blanket-
+          enable them. If `rules_buildstream_bazel` SELF-PROVIDED the tool —
+          default the `tool` attr to a module-internal target that builds
+          `cmd/cc-embed` / `cmd/cc-hash` from source (via `rules_go`) or ships
+          per-platform prebuilts — no staging would be needed and best-effort
+          could enable `--lift-cc-embed`/`-cc-hash` unconditionally. Tradeoff: a
+          `rules_go` dep on the rules module (or platform-specific prebuilts).
+          The heavier lifts (`configure-file` needs cmake, `download` needs
+          http_file repos, `cmake-script-runner` is operator-specific) can't
+          self-provide, so they stay on the `staged_lifts` manifest path above.
         - **Rebased `--proto_path` on the execute_process path.** The
           custom-command paths now handle a non-source-root `--proto_path` (the
           recognizer recovers the proto_path root from the proto src vs its
