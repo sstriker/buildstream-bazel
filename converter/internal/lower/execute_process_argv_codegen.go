@@ -247,21 +247,27 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 		return rels, true
 	}
 	cc.Genrules = append(cc.Genrules, emit...)
-	if subPkg != "" {
-		for _, t := range emit {
-			// Per-target placement (the split's authoritative source for native
-			// rules); mirror it into the legacy name-keyed map for the common
-			// unique-name case. The NativeRule pointer is shared with the appended
-			// cc.Genrules entry, so the field reaches the split.
-			if t.NativeRule != nil {
-				t.NativeRule.SubPackage = subPkg
-			}
-			if cc.NativeRuleSubPackage != nil {
-				cc.NativeRuleSubPackage[t.Name] = subPkg
-			}
+	recordExecProcNativePlacement(cc, emit, subPkg)
+	return rels, true
+}
+
+// recordExecProcNativePlacement records the sub-package for the native rules a
+// recognized execute_process call emitted: per-target on NativeRuleSpec.SubPackage
+// (the split's authoritative source — the pointer is shared with the appended
+// cc.Genrules entry, so it reaches the split) and, for the common unique-name
+// case, the legacy name-keyed cc.NativeRuleSubPackage map. No-op at the root.
+func recordExecProcNativePlacement(cc *codegenContext, emit []ir.Target, subPkg string) {
+	if subPkg == "" {
+		return
+	}
+	for _, t := range emit {
+		if t.NativeRule != nil {
+			t.NativeRule.SubPackage = subPkg
+		}
+		if cc.NativeRuleSubPackage != nil {
+			cc.NativeRuleSubPackage[t.Name] = subPkg
 		}
 	}
-	return rels, true
 }
 
 // buildDirInputOperands returns the build-relative argv operands that anchor
