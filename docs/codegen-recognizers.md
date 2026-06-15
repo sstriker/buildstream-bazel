@@ -220,7 +220,7 @@ A recognizer script defines two top-level functions and uses two builtins
 (`native_rule(...)`, `result(...)`) — that's the whole API:
 
 ```python
-def match(cmd):            # cmd.driver, cmd.args, cmd.srcs, cmd.outs, cmd.pkg, cmd.proto_deps
+def match(cmd):            # cmd.driver, cmd.args, cmd.srcs, cmd.outs, cmd.pkg, cmd.proto_deps, cmd.discovered_outputs
     return cmd.driver.startswith("protoc") and \
            any([a.startswith("--cpp_out") for a in cmd.args])
 
@@ -254,6 +254,14 @@ Starlark path safe by construction:
   the Go host cross-checks them against cmake's recorded outputs and falls back
   to the genrule (best-effort) / refuses (strict) on a mismatch — the soundness
   gate is *not* in the script.
+- **`cmd.discovered_outputs` for content-derived tools.** When a tool's output
+  set can't be predicted from a naming convention (it derives the outputs from
+  the input *contents*), `match`/`lower` read `cmd.discovered_outputs` — the
+  output set the generic genrule would otherwise declare (cmake's recorded set
+  on the custom-command path; the on-disk enumeration under the tool's output
+  dir on the execute_process path). A script can return it verbatim, a subset,
+  or a transform as its `derived_outputs`. The built-in protoc/grpc recognizers
+  derive from convention and ignore it, so it's purely additive.
 - **Sandboxed + deterministic.** Starlark has no filesystem, clock, or network,
   so a recognizer can't break hermeticity; a buggy script can only decline (its
   command falls through to the next recognizer / the genrule), never corrupt the

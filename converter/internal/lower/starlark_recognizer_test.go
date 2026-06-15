@@ -86,6 +86,40 @@ func TestStarlarkRecognizer_MatchAndLower(t *testing.T) {
 	}
 }
 
+// A content-derived-output recognizer reads cmd.discovered_outputs (the set the
+// generic genrule would declare) and returns the ".h" subset — the use case
+// CodegenCommand.DiscoveredOutputs exists for, exercised end-to-end through the
+// Starlark bridge.
+func TestStarlarkRecognizer_ReadsDiscoveredOutputs(t *testing.T) {
+	const star = `
+def match(cmd):
+    return cmd.driver == "mygen"
+
+def lower(cmd):
+    hdrs = [o for o in cmd.discovered_outputs if o.endswith(".h")]
+    return result(
+        targets = [native_rule("mygen_lib", "mygen_rule", attrs = {"srcs": hdrs})],
+        derived_outputs = hdrs,
+    )
+`
+	r := loadStarFromString(t, "mygen.star", star)
+	cmd := CodegenCommand{
+		Driver:            "mygen",
+		Srcs:              []string{"in.x"},
+		DiscoveredOutputs: []string{"a.h", "a.cc", "b.h"},
+	}
+	if !r.Match(cmd) {
+		t.Fatal("mygen recognizer should match")
+	}
+	res, err := r.Lower(cmd)
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	if got := res.DerivedOutputs; len(got) != 2 || got[0] != "a.h" || got[1] != "b.h" {
+		t.Errorf("derived_outputs from discovered_outputs = %v, want [a.h b.h]", got)
+	}
+}
+
 // A non-matching driver: Match declines.
 func TestStarlarkRecognizer_MatchDeclines(t *testing.T) {
 	r := loadStarFromString(t, "protoc.star", protocStar)
