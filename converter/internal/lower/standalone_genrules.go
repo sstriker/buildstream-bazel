@@ -1148,7 +1148,81 @@ func anchorGenruleOutputsToRuledir(cmd string, outs []string) string {
 	return cmd
 }
 
-// recordCodegenIncludeClosure appends the transitive `include "..."`
+// anchorGenruleOutputDirFlags rewrites a known OUTPUT-DIR flag whose value is a
+// declared output's PARENT directory to point at $(RULEDIR), for codegen tools
+// that take an output DIRECTORY and DERIVE the filenames (protoc --cpp_out=DIR,
+// `gen --out-dir=DIR`). anchorGenruleOutputsToRuledir only anchors output FILES
+// named literally in the cmd; a dir-writing tool names none of its outputs, so
+// without this the post-strip `--out=.` / `--out=<subdir>` makes the tool write
+// into the exec-root cwd rather than $(RULEDIR), and the build fails on the
+// missing declared output.
+//
+// Two guards keep this safe on the SHARED genrule path (it runs for every
+// recovered custom command, not just the cmake -P script case): the flag NAME
+// must be a known output-dir spelling (isOutputDirFlag — a `*_out` protoc form
+// or `--out`/`--out-dir`/`--output`/…), AND its value must EXACTLY equal a
+// declared output's parent dir at a token boundary. So a coincidental non-output
+// `-DSOMEDIR=.` is left alone (not an output-dir flag name), and an output-dir
+// flag pointing elsewhere is left alone (value mismatch). A cmd with no such
+// operand is untouched — the recognized and literal-output cases are no-ops.
+func anchorGenruleOutputDirFlags(cmd string, outs []string) string {
+	if cmd == "" || len(outs) == 0 {
+		return cmd
+	}
+	dirRepl := map[string]string{}
+	for _, o := range outs {
+		if o == "" || path.IsAbs(o) {
+			continue
+		}
+		dir := path.Dir(o)
+		if _, ok := dirRepl[dir]; ok {
+			continue
+		}
+		repl := "$(RULEDIR)"
+		if dir != "." {
+			repl += "/" + dir
+		}
+		dirRepl[dir] = repl
+	}
+	// Match `<flag>=<value>` at a token boundary, capturing the flag name so an
+	// unknown flag (a coincidental `-DSOMEDIR=.`) is left unchanged. The value is
+	// `[^\s"']*` — the WHOLE operand up to the next whitespace/quote, which it
+	// does NOT consume (so adjacent flag tokens both match, and `--out=./keep` /
+	// `--out=.foo` don't match `.`).
+	re := regexp.MustCompile(`(^|\s)(-{1,2}[^\s=]*)=([^\s"']*)`)
+	return re.ReplaceAllStringFunc(cmd, func(m string) string {
+		g := re.FindStringSubmatch(m)
+		repl, ok := dirRepl[g[3]]
+		if !ok || !isOutputDirFlag(g[2]) {
+			return m
+		}
+		return g[1] + g[2] + "=" + repl
+	})
+}
+
+// isOutputDirFlag reports whether a flag token (e.g. `--cpp_out`, `--out-dir`,
+// `-o`) names a codegen tool's OUTPUT DIRECTORY — the conventions whose value is
+// a directory the tool derives filenames under. Covers the protoc `*_out`
+// family (`--cpp_out`/`--grpc_out`/`--python_out`/…) plus the common
+// `--out`/`--out-dir`/`--output`/`--output-dir`/`-o` spellings.
+func isOutputDirFlag(flag string) bool {
+	name := strings.TrimLeft(flag, "-")
+	if strings.HasSuffix(name, "_out") {
+		return true
+	}
+	var norm strings.Builder
+	for _, r := range strings.ToLower(name) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			norm.WriteRune(r)
+		}
+	}
+	switch norm.String() {
+	case "o", "out", "outdir", "output", "outputdir", "outdirectory", "outputdirectory":
+		return true
+	}
+	return false
+}
+
 // closure of each include-resolving codegen genrule's primary input to
 // its srcs — the tablegen shape: a tool that reads `-I <dir>` roots and
 // resolves `include "x.td"` directives against them.
