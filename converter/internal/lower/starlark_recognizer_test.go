@@ -150,6 +150,37 @@ def lower(cmd):
 	}
 }
 
+// A bool attr (grpc_only = True) renders as a bare identifier (NativeAttr.Ident),
+// which cc_grpc_library needs.
+func TestStarlarkRecognizer_BoolAttrIsIdent(t *testing.T) {
+	const star = `
+def match(cmd):
+    return cmd.driver == "protoc"
+
+def lower(cmd):
+    return result(
+        targets = [native_rule("cc_grpc_library", "g_cc_grpc",
+                               load_from = "@grpc//bazel:cc_grpc_library.bzl",
+                               attrs = {"grpc_only": True, "deps": [":g_cc_proto"]})],
+        derived_outputs = ["g.grpc.pb.cc"],
+    )
+`
+	r := loadStarFromString(t, "g.star", star)
+	res, err := r.Lower(CodegenCommand{Driver: "protoc", Srcs: []string{"g.proto"}})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	var ident string
+	for _, a := range res.Targets[0].NativeRule.Attrs {
+		if a.Name == "grpc_only" {
+			ident = a.Ident
+		}
+	}
+	if ident != "True" {
+		t.Errorf("grpc_only should render as bare identifier True; got Ident=%q", ident)
+	}
+}
+
 // A non-matching driver: Match declines.
 func TestStarlarkRecognizer_MatchDeclines(t *testing.T) {
 	r := loadStarFromString(t, "protoc.star", protocStar)

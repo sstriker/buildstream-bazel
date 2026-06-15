@@ -298,13 +298,23 @@ func attrsFromStarlark(v starlark.Value) ([]ir.NativeAttr, error) {
 		if !ok {
 			return nil, fmt.Errorf("attr name must be a string, got %s", item[0].Type())
 		}
+		if bv, ok := item[1].(starlark.Bool); ok {
+			// A bare-identifier attr (grpc_only = True) → NativeAttr.Ident, which
+			// the emitter renders unquoted. cc_grpc_library needs this.
+			ident := "False"
+			if bool(bv) {
+				ident = "True"
+			}
+			out = append(out, ir.NativeAttr{Name: key, Ident: ident})
+			continue
+		}
 		if s, ok := stringValue(item[1]); ok {
 			out = append(out, ir.NativeAttr{Name: key, Str: s})
 			continue
 		}
 		list, err := goStringList(item[1])
 		if err != nil {
-			return nil, fmt.Errorf("attr %q must be a string or list of strings: %w", key, err)
+			return nil, fmt.Errorf("attr %q must be a bool, string, or list of strings: %w", key, err)
 		}
 		out = append(out, ir.NativeAttr{Name: key, List: list})
 	}
