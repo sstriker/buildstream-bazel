@@ -71,6 +71,11 @@ grep -qF '"gen.sh"' "$b" || fail "gen.sh should be a genrule src" "$b"
 grep -E '^[[:space:]]*cmd = ' "$b" | grep -qF 'cmake' && fail "the genrule cmd should run the tool directly, not cmake" "$b"
 echo "ok  meta-cmake-traced-tool-declared-outs: unrecognized tool recovered to a runner-free direct-tool genrule (reusing the shared emission)"
 
+# --- Widening: a build-SUBDIR output dir anchors to $(RULEDIR)/<subdir>. ---
+grep -qF '"gen/greeting.cpp"' "$b" || fail "expected the subdir codegen out gen/greeting.cpp" "$b"
+grep -qF -- '--out-dir=$(RULEDIR)/gen' "$b" || fail "the subdir output dir should anchor to \$(RULEDIR)/gen" "$b"
+echo "ok  meta-cmake-traced-tool-declared-outs: build-subdir output dir recovered (--out-dir=\$(RULEDIR)/gen)"
+
 # --- Bazel-build half ---
 if command -v bazel >/dev/null 2>&1; then BZL=bazel
 elif command -v bazelisk >/dev/null 2>&1; then BZL=bazelisk
@@ -80,7 +85,8 @@ case "$bzlmajor" in [0-9]*) ;; *) bzlmajor=0 ;; esac
 if [ "$bzlmajor" -lt 7 ]; then echo "ok  meta-cmake-traced-tool-declared-outs: bazel < 7, skipping build half"; exit 0; fi
 
 ws="$work_dir/ws"; mkdir -p "$ws"
-cp "$fixture/gen.sh" "$fixture/greeting.def" "$fixture/gen_wrap.cmake" "$fixture/use_greeting.cc" "$ws/"
+cp "$fixture/gen.sh" "$fixture/greeting.def" "$fixture/gen_wrap.cmake" "$fixture/gen_wrap_sub.cmake" \
+   "$fixture/use_greeting.cc" "$fixture/use_greeting_sub.cc" "$ws/"
 cp "$b" "$ws/BUILD.bazel"
 cat > "$ws/MODULE.bazel" <<EOF
 module(name = "tracedtooldeclaredouts", version = "0.0.0")
@@ -89,7 +95,7 @@ EOF
 bzlcache="$work_dir/.bzcache"
 # shellcheck disable=SC2086
 if ! ( cd "$ws" && "$BZL" --output_user_root="$bzlcache" ${META_BAZEL_STARTUP_ARGS:-} \
-        build ${META_BAZEL_BUILD_ARGS:-} //:use_greeting ) >"$work_dir/bazel.log" 2>&1; then
-    echo "FAIL: building //:use_greeting failed"; sed 's/^/   /' "$work_dir/bazel.log"; exit 1
+        build ${META_BAZEL_BUILD_ARGS:-} //:use_greeting //:use_greeting_sub ) >"$work_dir/bazel.log" 2>&1; then
+    echo "FAIL: building the recovered libs failed"; sed 's/^/   /' "$work_dir/bazel.log"; exit 1
 fi
-echo "ok  meta-cmake-traced-tool-declared-outs: //:use_greeting builds from the runner-free direct-tool genrule"
+echo "ok  meta-cmake-traced-tool-declared-outs: //:use_greeting + //:use_greeting_sub build from the runner-free direct-tool genrules (build-root + subdir)"

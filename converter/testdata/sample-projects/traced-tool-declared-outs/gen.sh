@@ -12,5 +12,6 @@ for a in "$@"; do
     esac
 done
 [ -n "$out_dir" ] && [ -n "$in_file" ] || { echo "usage: gen.sh --out-dir=DIR INPUT" >&2; exit 2; }
+mkdir -p "$out_dir"
 msg="$(cat "$in_file")"
 printf 'const char *greeting() { return "%s"; }\n' "$msg" > "$out_dir/greeting.cpp"
