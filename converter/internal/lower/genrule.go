@@ -14,6 +14,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
@@ -213,7 +214,7 @@ type codegenContext struct {
 	// non-faithful recovery is handled (Options.Fidelity). Today it gates the
 	// recognizer cross-check mismatch: strict refuses (loud stub), best-effort
 	// (or "") falls back to the generic genrule.
-	Fidelity string
+	Fidelity convmode.Fidelity
 
 	// FileWriterTemplates maps a build-dir-relative path to the
 	// NON-EXPANDED composed content of its file(WRITE/APPEND) chain —

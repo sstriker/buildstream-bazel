@@ -155,7 +155,7 @@ func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedBuildDir,
 // — where an out-of-tree codegen call worth recovering is lifted (genrule
 // fallback) even without a recognizer match; strict only lifts on a match.
 func outOfTreeBestEffort(cc *codegenContext) bool {
-	return cc != nil && cc.Fidelity == string(convmode.FidelityBestEffort)
+	return cc != nil && cc.Fidelity == convmode.FidelityBestEffort
 }
 
 // outOfTreeExecRecognized reports whether a codegen recognizer claims an

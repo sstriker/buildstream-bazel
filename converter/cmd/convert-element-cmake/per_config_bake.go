@@ -14,6 +14,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/convmode"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -46,10 +47,13 @@ func runPerConfigBakes(ctx context.Context, a cli.Args, hostBuildDir string, tra
 	if abs, absErr := filepath.Abs(srcRoot); absErr == nil {
 		srcRoot = abs
 	}
-	switch strings.ToLower(a.PerConfigBake) {
-	case "off", "false", "0", "no":
+	// a.PerConfigBake is canonicalized by cli.Args.Finalize; re-parse here so a
+	// direct caller that bypassed Finalize still gets the alias handling.
+	perConfigBake, _ := convmode.ParsePerConfigBake(a.PerConfigBake)
+	switch perConfigBake {
+	case convmode.PerConfigBakeOff:
 		return
-	case "on", "force":
+	case convmode.PerConfigBakeOn:
 	default: // auto
 		if len(traceRaw) == 0 || !shadow.ReadsBuildType(traceRaw, srcRoot) {
 			return

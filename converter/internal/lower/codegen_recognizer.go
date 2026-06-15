@@ -173,7 +173,7 @@ func recognizeOrGenrule(cc *codegenContext, cmd CodegenCommand, fallback ir.Targ
 		// FALLS BACK to the genrule. The CLI's product default is strict (it
 		// canonicalizes "" → strict before threading); the lower-package zero
 		// value "" here is the best-effort fall-back for a direct caller.
-		if cc.Fidelity == string(convmode.FidelityStrict) {
+		if cc.Fidelity == convmode.FidelityStrict {
 			return []ir.Target{recognizerRefusalStub(fallback, cmd, err)}, false
 		}
 		noteHostCodegenTool(cc, fallback)
