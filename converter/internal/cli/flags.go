@@ -639,18 +639,25 @@ type Args struct {
 	// default.
 	LiftCCHash bool
 
-	// CMakeScriptTrace asks the cmake -P lift to actually run
+	// CMakeScriptTrace asks the cmake -P paths to actually run
 	// the script under `cmake --trace --trace-format=json-v1
-	// -P <script>` at convert time. The trace's read paths
-	// drive auto-augmentation of the genrule's srcs and a
-	// structured refusal diagnostic when the script touches
-	// paths Bazel's sandbox can't reproduce. Off by default —
-	// the trace step is convert-time execution of arbitrary
-	// cmake-script-language; operators opt in by passing
+	// -P <script>` at convert time, using the converter's OWN
+	// cmake (the same binary the configure step uses) — no
+	// build-time runner is involved in the trace itself. It
+	// serves two consumers: (1) the trace-based codegen recovery
+	// (--recognize-codegen) re-traces the script, recognizes the
+	// real tool (protoc, …) and lowers it to a NATIVE rule, which
+	// needs no runner; and (2) the runner-genrule fallback uses
+	// the trace's read paths to auto-augment the genrule's srcs
+	// and to refuse with a structured diagnostic when the script
+	// touches paths Bazel's sandbox can't reproduce. Off by
+	// default — the trace step is convert-time execution of
+	// arbitrary cmake-script-language; operators opt in by passing
 	// --cmake-script-trace after acknowledging the side-effect
-	// risk. Requires --cmake-script-runner (no trace without a
-	// runner — the operator's already opted into the lift
-	// flow).
+	// risk. It does NOT require --cmake-script-runner: that label
+	// is only needed for the build-time genrule fallback (which
+	// re-runs `cmake -P` under Bazel's sandbox, where there is no
+	// ambient cmake).
 	CMakeScriptTrace bool
 
 	// IgnoreRejectionsForDiagnostics switches the converter from
@@ -863,7 +870,7 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.BoolVar(&a.Verify, "verify", false, "after lowering, cross-check the IR against compile_commands.json; surface -D/-I drops and adds as stderr warnings (does not fail the run)")
 	fs.StringVar(&a.VerifyReport, "verify-report", "", "write the structured verify Report (JSON) here; implies --verify")
 	fs.StringVar(&a.CMakeScriptRunner, "cmake-script-runner", "", "Bazel label of a target that behaves like cmake (supports `<runner> -P <script.cmake> [-D ...]`). When set, add_custom_command(... cmake -P <script> ...) shapes lift to a genrule invoking the runner at build time. Off by default; only operators who stage the tool opt in. Soundness caveats apply: scripts with hardcoded absolute paths (configure_file-derived) won't resolve under Bazel's sandbox; parameter-driven scripts work cleanly.")
-	fs.BoolVar(&a.CMakeScriptTrace, "cmake-script-trace", false, "actually run the cmake -P script under `cmake --trace --trace-format=json-v1 -P <script>` at convert time. The trace's read paths drive auto-augmentation of the genrule's srcs and a structured refusal diagnostic when the script touches paths Bazel's sandbox can't reproduce. Off by default — convert-time execution carries side-effect risk; opt in after reading docs/design/conversion-architecture.md's convert-time platform coupling note. Requires --cmake-script-runner.")
+	fs.BoolVar(&a.CMakeScriptTrace, "cmake-script-trace", false, "actually run the cmake -P script under `cmake --trace --trace-format=json-v1 -P <script>` at convert time, using the converter's own cmake (the configure binary) — no build-time runner is involved. Drives two paths: the trace-based codegen recovery (with --recognize-codegen, re-traces the script, recognizes the real tool like protoc, and lowers it to a native rule — no runner), and the runner-genrule fallback (auto-augments the genrule's srcs from the trace's read paths and refuses with a structured diagnostic when the script touches paths Bazel's sandbox can't reproduce). Off by default — convert-time execution carries side-effect risk; opt in after reading docs/design/conversion-architecture.md's convert-time platform coupling note. Does NOT require --cmake-script-runner; that label is only needed for the build-time genrule fallback.")
 	fs.BoolVar(&a.CMakeScriptBake, "cmake-script-bake", false, "run the cmake -P script at convert time, capture the declared output bytes, and emit genrules that materialize them via base64-decode. Closes the script-hardcoded-absolute-paths gap by resolving paths at convert time. Trade-off: outputs are convert-time-baked and don't auto-refresh on upstream input change — operator re-runs convert. Same warning shape as the legacy configure_file capture (warnConvertTimeBaking post-pass picks up the cmake-codegen-cmake-script-bake tag). Off by default.")
 	fs.BoolVar(&a.LiftCCEmbed, "lift-cc-embed", false, "recognize a custom command running a known file-embedding cmake -P encoder (VTK's vtkEncodeString) and lower it to the native cc_embed rule (//tools:cc-embed) — the converted project needs no cmake at build time. Faithful (the symbol name + runtime value are preserved). Off by default; requires the consuming project to stage //tools:cc-embed (like the runner). The Bazel-native end-state for the embed-file-as-C-array codegen idiom (docs/research/codegen-idiom-coverage.md).")
 	fs.BoolVar(&a.LiftCCHash, "lift-cc-hash", false, "recognize a custom command running a known file-hashing cmake -P script (VTK's vtkHashSource) and lower it to the native cc_hash rule (//tools:cc-hash) — the converted project needs no cmake at build time, and the digest recomputes on input change (unlike --cmake-script-bake). Faithful (the #define name + digest are preserved). Off by default; requires the consuming project to stage //tools:cc-hash. The Bazel-native end-state for the hash-a-file-into-a-header codegen idiom (docs/research/codegen-idiom-coverage.md).")
