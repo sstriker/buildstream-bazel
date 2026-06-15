@@ -49,6 +49,17 @@ import (
 //     prefix tree (a find_package config file driving a real sub-build);
 //   - everything else uncertain (build-dir without codemodel sources, a
 //     find_package prefix-tree probe) → NOTED as a conversion-todo.
+//
+// The RECOGNIZER signal (a registered codegen recognizer claiming the call's
+// tool, e.g. protoc --cpp_out) is location-independent and refines the last
+// bucket — the codemodel-source check isn't the only way to know a call is real
+// codegen (the codemodel often doesn't attribute an out-of-tree tool's outputs
+// as sources, dropping good signal). So when --recognize-codegen is on: a
+// build-dir-without-codemodel-sources call a recognizer claims is the project's
+// OWN under-attributed codegen and is LIFTED like a subproject (the lift
+// corroborates the derived outputs on disk before emitting, so a mis-match still
+// declines safely); a prefix-tree call a recognizer claims stays a NOTE (the
+// dependency emits it) but the todo names the tool + the native-rule shape.
 
 // outOfTreeExecSignal records WHY an out-of-tree execute_process call was
 // surfaced — the signal feeds the todo's grouping and prompt so an author
@@ -78,6 +89,12 @@ type outOfTreeExecNote struct {
 	Line   int
 	Argv   []string // the first COMMAND clause's argv (for the anchor)
 	Signal outOfTreeExecSignal
+	// Recognized is true when a codegen recognizer claims the call's tool (e.g.
+	// protoc --cpp_out). The classification is location-based, but the recognizer
+	// signal is location-independent — so a prefix-tree call that's recognized
+	// gets a sharper todo (name the tool + native-rule shape) even though it
+	// stays a note (it's the dependency's codegen, not the consumer's to emit).
+	Recognized bool
 }
 
 // partitionOutOfTreeExec splits shadow's out-of-tree execute_process calls
@@ -90,7 +107,7 @@ type outOfTreeExecNote struct {
 // silently — neither returned. recordedBuildDir / prefixDir are in the SAME
 // path space as call.File (the trace's recorded paths); consumedBuildRel is
 // the codemodel's build-relative source set (cc.ConsumedBuildRel).
-func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedBuildDir, prefixDir string, consumedBuildRel map[string]bool) (lift []shadow.ExecuteProcessCall, note []outOfTreeExecNote) {
+func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedBuildDir, prefixDir string, consumedBuildRel map[string]bool, cc *codegenContext) (lift []shadow.ExecuteProcessCall, note []outOfTreeExecNote) {
 	for _, c := range calls {
 		if len(c.Commands) == 0 {
 			continue
@@ -105,9 +122,44 @@ func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedBuildDir,
 			lift = append(lift, c)
 			continue
 		}
-		note = append(note, outOfTreeExecNote{File: c.File, Line: c.Line, Argv: c.Commands[0], Signal: sig})
+		// Recognizer signal (location-independent): a registered recognizer
+		// claiming the tool (protoc --cpp_out, …) means this is real codegen, not
+		// a vague probe — high-confidence regardless of where it was issued.
+		recognized := outOfTreeExecRecognized(c, cc)
+		if recognized && sig == signalBuildDirOther {
+			// A build-dir codegen call the codemodel didn't attribute sources to,
+			// but a recognizer claims — the project's OWN codegen, under-attributed.
+			// Lift it through the recognizer like a subproject; the lift
+			// corroborates the derived outputs against the configure's on-disk
+			// files before emitting, so a mis-match declines safely.
+			lift = append(lift, c)
+			continue
+		}
+		// prefix-tree (a dependency's codegen) stays a note even when recognized —
+		// the dependency emits it; we just sharpen the todo. An unrecognized
+		// build-dir/prefix call stays the generic note.
+		note = append(note, outOfTreeExecNote{File: c.File, Line: c.Line, Argv: c.Commands[0], Signal: sig, Recognized: recognized})
 	}
 	return lift, note
+}
+
+// outOfTreeExecRecognized reports whether a codegen recognizer claims an
+// out-of-tree call's tool. Gated on cc.RecognizeCodegen (off → unchanged
+// behavior). Keys on the same driver basename + argv the lift path uses, so the
+// partition and the lift agree on what's recognizable.
+func outOfTreeExecRecognized(c shadow.ExecuteProcessCall, cc *codegenContext) bool {
+	if cc == nil || !cc.RecognizeCodegen || len(c.Commands) == 0 {
+		return false
+	}
+	argv := c.Commands[0]
+	if len(argv) == 0 {
+		return false
+	}
+	driver := executeProcessDriverBasename(argv[0])
+	if driver == "" {
+		return false
+	}
+	return codegenRecognizerMatches(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: argv[1:]})
 }
 
 // classifyOneOutOfTreeExec maps one out-of-tree call to a surfacing signal, or
@@ -284,20 +336,48 @@ func emitOutOfTreeExecuteProcessTodos(c *todos.Collector, notes []outOfTreeExecN
 			})
 		}
 		sort.Strings(invocations)
+		// Recognizer signal: surface the known codegen tool(s) in this group so
+		// the author gets the native-rule shape, not the generic "author a Bazel
+		// equivalent" prose. (Recognized build-dir codegen was already lifted, so
+		// what reaches a note recognized is the dependency's prefix-tree codegen.)
+		var recognizedTools []string
+		seenTool := map[string]bool{}
+		for _, n := range ns {
+			if !n.Recognized || len(n.Argv) == 0 {
+				continue
+			}
+			if t := executeProcessDriverBasename(n.Argv[0]); t != "" && !seenTool[t] {
+				seenTool[t] = true
+				recognizedTools = append(recognizedTools, t)
+			}
+		}
+		sort.Strings(recognizedTools)
+		ev := map[string]any{"signal": string(sig), "invocations": invocations}
+		shape := outOfTreeExecShape(sig)
+		prompt := "The converter found " + plural(len(anchors), "execute_process call") +
+			" issued from outside the source tree (" + outOfTreeExecReason(sig) +
+			"). These aren't lifted. Confirm each is configure-only and needs no Bazel form, " +
+			"or author the idiomatic Bazel equivalent."
+		if len(recognizedTools) > 0 {
+			ev["recognized_tools"] = recognizedTools
+			tools := strings.Join(recognizedTools, ", ")
+			shape = "recognized codegen tool(s) " + tools + " — the idiomatic Bazel form is the native " +
+				"rule (e.g. protoc → proto_library + cc_proto_library). If this is a DEPENDENCY's codegen " +
+				"(a find_package prefix tree), the dependency emits it — no action; convert that dependency " +
+				"as its own element. If it's your project's, run it in-tree so the recognizer lifts it."
+			prompt = "The converter recognized the codegen tool(s) " + tools + " in " +
+				plural(len(anchors), "execute_process call") + " issued from outside the source tree (" +
+				outOfTreeExecReason(sig) + "). A recognizer could lower these to native rules, but they're " +
+				"out-of-tree (a dependency's, or unattributed) so they're surfaced not emitted — see suggested_shape."
+		}
 		c.Add(todos.Todo{
-			Kind:        "out-of-tree-execute-process",
-			Disposition: todos.Actionable,
-			GroupKey:    string(sig),
-			Anchors:     anchors,
-			Evidence: map[string]any{
-				"signal":      string(sig),
-				"invocations": invocations,
-			},
-			SuggestedShape: outOfTreeExecShape(sig),
-			Prompt: "The converter found " + plural(len(anchors), "execute_process call") +
-				" issued from outside the source tree (" + outOfTreeExecReason(sig) +
-				"). These aren't lifted. Confirm each is configure-only and needs no Bazel form, " +
-				"or author the idiomatic Bazel equivalent.",
+			Kind:           "out-of-tree-execute-process",
+			Disposition:    todos.Actionable,
+			GroupKey:       string(sig),
+			Anchors:        anchors,
+			Evidence:       ev,
+			SuggestedShape: shape,
+			Prompt:         prompt,
 		})
 	}
 }

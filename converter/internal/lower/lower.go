@@ -1684,7 +1684,7 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 	// lift, or a loud per-call refusal — not a vague note), set the uncertain
 	// ones aside for warnOutOfTreeExecuteProcess, and drop cmake's own probe
 	// noise silently. See out_of_tree_execute_process.go.
-	liftOOT, noteOOT := partitionOutOfTreeExec(decodedOutOfTreeExecProcs, cmakeBuild, opts.HostPrefixDir, cc.ConsumedBuildRel)
+	liftOOT, noteOOT := partitionOutOfTreeExec(decodedOutOfTreeExecProcs, cmakeBuild, opts.HostPrefixDir, cc.ConsumedBuildRel, cc)
 	cc.OutOfTreeExecNotes = noteOOT
 	if len(liftOOT) > 0 {
 		decodedExecuteProcesses = append(append([]shadow.ExecuteProcessCall(nil), decodedExecuteProcesses...), liftOOT...)

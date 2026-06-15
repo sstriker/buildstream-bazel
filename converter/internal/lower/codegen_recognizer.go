@@ -125,6 +125,25 @@ func recognizeCodegenWith(extra []CodegenRecognizer, cmd CodegenCommand) (Codege
 	return CodegenResult{}, false, nil
 }
 
+// codegenRecognizerMatches reports whether any registered (or operator-extra)
+// recognizer CLAIMS the command's tool — the location-independent "is this a
+// known codegen tool?" signal, without running Lower. Used by the out-of-tree
+// execute_process partition to route a recognized codegen call to the lift
+// (native-rule) path instead of a vague note.
+func codegenRecognizerMatches(extra []CodegenRecognizer, cmd CodegenCommand) bool {
+	for _, r := range codegenRegistry {
+		if r.Match(cmd) {
+			return true
+		}
+	}
+	for _, r := range extra {
+		if r.Match(cmd) {
+			return true
+		}
+	}
+	return false
+}
+
 // recognizeOrGenrule is the single emit chokepoint every codegen recovery
 // front-end routes its final emit through: given the recovered command and the
 // genrule the site would otherwise emit, it returns either the recognizer's

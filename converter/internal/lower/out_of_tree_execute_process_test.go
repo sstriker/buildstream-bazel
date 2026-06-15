@@ -33,7 +33,7 @@ func TestPartitionOutOfTreeExec_Buckets(t *testing.T) {
 		// Note: prefix-tree probe.
 		ootCall("/synth/lib/cmake/Foo/FooConfig.cmake", 5, "foo-config", "--cflags"),
 	}
-	lift, note := partitionOutOfTreeExec(calls, build, prefix, consumed)
+	lift, note := partitionOutOfTreeExec(calls, build, prefix, consumed, nil)
 	if len(lift) != 1 || lift[0].File != "/build/_deps/sub-src/CMakeLists.txt" {
 		t.Fatalf("lift: want the codemodel-backed subproject call; got %+v", lift)
 	}
@@ -65,7 +65,7 @@ func TestPartitionOutOfTreeExec_WorkingDirCodemodelPrecedence(t *testing.T) {
 	driveSubBuild.WorkingDirectory = "/build/subbuild" // operates on build dir w/ codemodel srcs
 	pureProbe := ootCall("/synth/lib/cmake/Foo/FooConfig.cmake", 2, "foo-config", "--cflags")
 	pureProbe.WorkingDirectory = "/synth/lib/cmake/Foo" // stays in the prefix tree
-	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{driveSubBuild, pureProbe}, build, prefix, consumed)
+	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{driveSubBuild, pureProbe}, build, prefix, consumed, nil)
 	if len(lift) != 1 || lift[0].Line != 1 {
 		t.Fatalf("lift: want the prefix-issued sub-build (line 1); got %+v", lift)
 	}
@@ -81,7 +81,7 @@ func TestPartitionOutOfTreeExec_WorkingDirSiblingNotOverMatched(t *testing.T) {
 	consumed := map[string]bool{"_deps/other-src/x.c": true} // sibling, not under sub-build
 	c := ootCall("/synth/lib/cmake/Foo/FooConfig.cmake", 1, "cmake", "--build", ".")
 	c.WorkingDirectory = "/build/_deps/sub-build" // its own subtree has no consumed sources
-	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{c}, "/build", "/synth", consumed)
+	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{c}, "/build", "/synth", consumed, nil)
 	if len(lift) != 0 {
 		t.Fatalf("sibling sources under the shared parent must NOT lift; got %+v", lift)
 	}
@@ -97,7 +97,7 @@ func TestPartitionOutOfTreeExec_RelativeWorkingDirNotBuildRel(t *testing.T) {
 	c := ootCall("/synth/lib/cmake/Foo/FooConfig.cmake", 1, "foo", "--x")
 	c.WorkingDirectory = "_deps/sub-build" // relative — not an absolute build-dir path
 	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{c},
-		"/build", "/synth", map[string]bool{"_deps/sub-build/foo.c": true})
+		"/build", "/synth", map[string]bool{"_deps/sub-build/foo.c": true}, nil)
 	if len(lift) != 0 || len(note) != 1 || note[0].Signal != signalPrefixTree {
 		t.Errorf("relative WD must not trigger the codemodel lift; got lift=%+v note=%+v", lift, note)
 	}
@@ -109,7 +109,7 @@ func TestPartitionOutOfTreeExec_RelativeWorkingDirNotBuildRel(t *testing.T) {
 func TestPartitionOutOfTreeExec_CMakeFilesSegment(t *testing.T) {
 	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{
 		ootCall("/build/_deps/sub-build/CMakeFiles/foo.dir/probe.cmake", 1, "cc", "-x"),
-	}, "/build", "", map[string]bool{"_deps/sub-build/foo.c": true})
+	}, "/build", "", map[string]bool{"_deps/sub-build/foo.c": true}, nil)
 	if len(lift) != 0 || len(note) != 0 {
 		t.Errorf("CMakeFiles scratch must stay silent; got lift=%+v note=%+v", lift, note)
 	}
@@ -121,7 +121,7 @@ func TestPartitionOutOfTreeExec_CMakeFilesSegment(t *testing.T) {
 func TestPartitionOutOfTreeExec_NoAnchors(t *testing.T) {
 	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{
 		ootCall("/build/_deps/sub-src/CMakeLists.txt", 1, "python3", "gen.py"),
-	}, "", "", nil)
+	}, "", "", nil, nil)
 	if len(lift) != 0 || len(note) != 0 {
 		t.Errorf("no anchors => nothing surfaced; got lift=%+v note=%+v", lift, note)
 	}
@@ -211,5 +211,47 @@ func TestEmitOutOfTreeExecuteProcessTodos_PrefixNormalized(t *testing.T) {
 	}
 	if !strings.Contains(a.Construct, "<PREFIX>/bin/foo-config") {
 		t.Errorf("argv not prefix-normalized: %q", a.Construct)
+	}
+}
+
+// TestPartitionOutOfTreeExec_RecognizerSignal: the recognizer's tool signal is
+// location-independent. A build-dir codegen call the codemodel didn't attribute
+// (signalBuildDirOther) that a recognizer CLAIMS (protoc --cpp_out) is the
+// project's own codegen → routed to the LIFT (so the native rule is recovered),
+// not dumped to a vague note. A prefix-tree recognized call stays a NOTE (the
+// dependency emits it) but is marked Recognized for a sharper todo. With the
+// recognizer OFF, behavior is unchanged (note, not lift).
+func TestPartitionOutOfTreeExec_RecognizerSignal(t *testing.T) {
+	on := newCodegenContext()
+	on.RecognizeCodegen = true
+
+	// build-dir protoc, no codemodel sources beneath → signalBuildDirOther.
+	bdo := ootCall("/build/gen/CMakeLists.txt", 1, "protoc", "--cpp_out=.", "foo.proto")
+	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{bdo}, "/build", "/synth", nil, on)
+	if len(lift) != 1 || len(note) != 0 {
+		t.Fatalf("recognized build-dir codegen should LIFT; got lift=%d note=%d", len(lift), len(note))
+	}
+
+	// Recognizer OFF: the same call stays a note (unchanged behavior).
+	lift, note = partitionOutOfTreeExec([]shadow.ExecuteProcessCall{bdo}, "/build", "/synth", nil, nil)
+	if len(lift) != 0 || len(note) != 1 || note[0].Recognized {
+		t.Fatalf("recognizer off must keep the note (not lift, not recognized); got lift=%d note=%+v", len(lift), note)
+	}
+
+	// prefix-tree protoc → stays a NOTE but Recognized=true (dependency's codegen).
+	pt := ootCall("/synth/lib/cmake/Foo/FooConfig.cmake", 1, "protoc", "--cpp_out=.", "x.proto")
+	lift, note = partitionOutOfTreeExec([]shadow.ExecuteProcessCall{pt}, "/build", "/synth", nil, on)
+	if len(lift) != 0 || len(note) != 1 {
+		t.Fatalf("prefix-tree codegen should stay a NOTE (dependency's); got lift=%d note=%d", len(lift), len(note))
+	}
+	if note[0].Signal != signalPrefixTree || !note[0].Recognized {
+		t.Errorf("prefix-tree note should be Recognized=true; got %+v", note[0])
+	}
+
+	// A non-codegen build-dir call (no recognizer match) stays a note.
+	nc := ootCall("/build/gen/CMakeLists.txt", 1, "python3", "gen.py")
+	lift, note = partitionOutOfTreeExec([]shadow.ExecuteProcessCall{nc}, "/build", "/synth", nil, on)
+	if len(lift) != 0 || len(note) != 1 || note[0].Recognized {
+		t.Errorf("unrecognized build-dir call should stay an un-recognized note; got lift=%d note=%+v", len(lift), note)
 	}
 }
