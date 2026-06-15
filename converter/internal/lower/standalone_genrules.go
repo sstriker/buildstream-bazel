@@ -466,11 +466,13 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// When the edge is a cmake-generated `cmake -P`/`cmake -E` wrapper that
 		// hides the real tool, recognize on the trace's real command (the edge's
 		// declared outs stay the cross-check); else use the edge command as before.
-		var codegenCmd CodegenCommand
+		// Substituting only when the real command recognizes CLEANLY keeps the
+		// "degrades to today" guarantee: see wrapperRealCodegenCmd.
+		codegenCmd := codegenCommandFrom(preToolSwapCmd, srcs, outs, bazelPackagePath)
 		if realArgv := traceWrapperRealArgv(preToolSwapCmd, outs, outputToCustomCommand); realArgv != nil {
-			codegenCmd = codegenCommandFromArgv(realArgv, srcs, outs, bazelPackagePath)
-		} else {
-			codegenCmd = codegenCommandFrom(preToolSwapCmd, srcs, outs, bazelPackagePath)
+			if real, ok := wrapperRealCodegenCmd(cc, realArgv, srcs, outs, bazelPackagePath, cmakeSrc, cppProtoBases); ok {
+				codegenCmd = real
+			}
 		}
 		codegenCmd.ProtoDeps = protoImportLabels(codegenCmd.Srcs, codegenCmd.Outs, cmakeSrc, bazelPackagePath)
 		if p := soleProtoInput(codegenCmd.Srcs); p != "" && cppProtoBases[strings.TrimSuffix(filepath.Base(p), ".proto")] {
@@ -512,6 +514,42 @@ func codegenCommandFromArgv(argv, srcs, outs []string, pkg string) CodegenComman
 		Outs:   outs,
 		Pkg:    pkg,
 	}
+}
+
+// wrapperRealCodegenCmd builds the recognizer command from a cmake-wrapper edge's
+// real (trace-recovered) argv and returns (cmd, true) ONLY when that command
+// recognizes CLEANLY — a recognizer matches the tool AND derives outputs without
+// error. It returns (_, false) otherwise, so the caller keeps the edge-command
+// genrule and never regresses below today's behavior.
+//
+// The guard matters because the substitution feeds the recognizer the real argv
+// (driver + flags) but the EDGE's recovered srcs. A recognizer can `Match` on the
+// driver + flags alone (protoc keys on `--cpp_out`) yet fail `Lower` when the
+// wrapper edge's srcs don't surface the tool's input (no `.proto` in srcs) — a
+// `matched && err` outcome that, under --fidelity=strict, emits a loud refusal
+// stub instead of the generic genrule the wrapper edge produces today. Probing
+// the (side-effect-free) recognizer here turns that case back into the genrule
+// fallback. nil cc / recognition-off also return false: with no recognizer the
+// edge path is the only behavior, so there is nothing to gain from substituting.
+func wrapperRealCodegenCmd(cc *codegenContext, argv, srcs, outs []string, pkg, cmakeSrc string, cppProtoBases map[string]bool) (CodegenCommand, bool) {
+	cmd := codegenCommandFromArgv(argv, srcs, outs, pkg)
+	if cc == nil || !cc.RecognizeCodegen {
+		return CodegenCommand{}, false
+	}
+	// Probe a fully-populated copy (ProtoDeps / SiblingCppProto / DiscoveredOutputs)
+	// so the prediction matches what recognizeOrGenrule will actually see.
+	probe := cmd
+	probe.ProtoDeps = protoImportLabels(probe.Srcs, probe.Outs, cmakeSrc, pkg)
+	if p := soleProtoInput(probe.Srcs); p != "" && cppProtoBases[strings.TrimSuffix(filepath.Base(p), ".proto")] {
+		probe.SiblingCppProto = true
+	}
+	if probe.DiscoveredOutputs == nil {
+		probe.DiscoveredOutputs = outs
+	}
+	if _, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, probe); !matched || err != nil {
+		return CodegenCommand{}, false
+	}
+	return cmd, true
 }
 
 // buildOutputToCustomCommand indexes each add_custom_command trace record by its

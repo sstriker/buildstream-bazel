@@ -624,6 +624,35 @@ func TestTraceWrapperRealArgv(t *testing.T) {
 	}
 }
 
+// TestWrapperRealCodegenCmd_GuardsCleanRecognition: the substitution only fires
+// when the wrapper's real argv recognizes CLEANLY. A wrapped protoc whose edge
+// srcs surface the .proto substitutes; one whose srcs DON'T (Match succeeds on
+// --cpp_out but Lower fails on the missing input) must NOT substitute, so the
+// caller keeps the generic genrule instead of a strict refusal stub — the
+// "degrades to today" guarantee. Recognition-off never substitutes.
+func TestWrapperRealCodegenCmd_GuardsCleanRecognition(t *testing.T) {
+	argv := []string{"protoc", "--cpp_out=.", "foo.proto"}
+	outs := []string{"foo.pb.cc", "foo.pb.h"}
+
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	// srcs surface the .proto → clean recognition → substitute.
+	if cmd, ok := wrapperRealCodegenCmd(cc, argv, []string{"foo.proto"}, outs, "pkg", "", nil); !ok || cmd.Driver != "protoc" {
+		t.Errorf("clean recognition should substitute the real protoc argv; got ok=%v driver=%q", ok, cmd.Driver)
+	}
+	// srcs DON'T surface the .proto → Match-but-Lower-fails → keep the genrule.
+	if _, ok := wrapperRealCodegenCmd(cc, argv, nil, outs, "pkg", "", nil); ok {
+		t.Errorf("a real argv that matches but cannot Lower must NOT substitute (no regression to a strict refusal stub)")
+	}
+
+	// Recognition off: nothing to gain from substituting; keep the edge path.
+	off := newCodegenContext()
+	off.RecognizeCodegen = false
+	if _, ok := wrapperRealCodegenCmd(off, argv, []string{"foo.proto"}, outs, "pkg", "", nil); ok {
+		t.Errorf("recognition-off must not substitute")
+	}
+}
+
 // TestRecognizeViaTraceWrapperArgv: the real argv recovered from a wrapper edge
 // recognizes to the native rule (the point of P1) — a wrapped protoc lowers to
 // proto_library + cc_proto_library instead of a generic genrule.
