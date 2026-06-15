@@ -214,7 +214,7 @@ else
   log "bazel egress: egress CAs absent; leaving bazel at defaults (direct bcr.bazel.build assumed)"
 fi
 
-# --- bazel disk cache (gate / survey build reuse) ------------------------
+# --- bazel disk cache (gate build reuse) ---------------------------------
 # Every gate stages bazel in a FRESH mktemp workspace, so the per-workspace
 # output_base (under --output_user_root) is unique per run: the analysis +
 # action cache never carry over and each run recompiles heavy deps from
@@ -227,6 +227,15 @@ fi
 # depend on the egress CA) so the home rc applies it to every `bazel` — gates
 # (including their --noworkspace_rc runs) and survey alike. Override the
 # location with BSB_BAZEL_DISK_CACHE.
+#
+# Tradeoff — great for gates, OPT OUT for large surveys: a disk cache stores
+# action OUTPUTS, so it ~doubles peak disk (artifacts live in both bazel-out and
+# the cache). For the gates that's a rounding error and the cross-workspace reuse
+# is the whole point. But a survey marathon builds //... for HUNDREDS of members;
+# there the doubling is real, so scripts/run-survey.sh explicitly disables it
+# (an empty `--disk_cache=` on its build line overrides this common; re-enable
+# with SURVEY_BAZEL_DISK_CACHE=<dir>). New large-build survey paths should opt
+# out the same way rather than inherit this gate-tuned default.
 bsb_disk_cache="${BSB_BAZEL_DISK_CACHE:-$HOME/.cache/bazel-disk}"
 mkdir -p "$bsb_disk_cache" 2>/dev/null || true
 bsb_cache_rc="$HOME/.bazelrc"

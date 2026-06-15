@@ -583,8 +583,18 @@ EOF
         echo "skip"
         return
     fi
+    # Disk cache: explicitly OPT OUT (override the gate default). ~/.bazelrc
+    # carries a `common --disk_cache` that's great for the gates — small, and the
+    # action reuse is shared across their per-mktemp staged workspaces. But this
+    # marathon builds //... for HUNDREDS of members; a disk cache would accumulate
+    # every member's action OUTPUTS, ~doubling peak disk (the same artifacts live
+    # in both the per-member bazel-out AND the cache) on top of the per-member
+    # --output_user_root the driver already rm -rf's to reclaim space. `--noworkspace_rc`
+    # disables only the WORKSPACE rc, not the home rc, so the survey must override
+    # the common explicitly: an empty `--disk_cache=` (last value wins) disables it.
+    # Re-enable with SURVEY_BAZEL_DISK_CACHE=<dir> if you have the headroom.
     if ( cd "$_bb_ws" && $_bb_to "$bzl_bin" --output_user_root="$_bb_po/.bzcache" \
-            --noworkspace_rc ${META_BAZEL_STARTUP_ARGS:-} build --repository_cache="$_bb_repocache" ${META_BAZEL_BUILD_ARGS:-} $_bb_bzlflags //... ) >> "$_bb_po/build.log" 2>&1; then
+            --noworkspace_rc ${META_BAZEL_STARTUP_ARGS:-} build --repository_cache="$_bb_repocache" "--disk_cache=${SURVEY_BAZEL_DISK_CACHE:-}" ${META_BAZEL_BUILD_ARGS:-} $_bb_bzlflags //... ) >> "$_bb_po/build.log" 2>&1; then
         echo "ok"
     else
         echo "FAIL"
@@ -872,8 +882,11 @@ for entry in $projects; do
                 # sources confs only in subshells, so read it here.
                 _sf_bzlflags="$(BAZEL_FLAGS=""; [ -f "$repo_root/scripts/build-lens/$name.conf" ] && . "$repo_root/scripts/build-lens/$name.conf" >/dev/null 2>&1 || true; printf '%s' "$BAZEL_FLAGS")"
                 # shellcheck disable=SC2086
+                # Same disk-cache opt-out as the build lens above (the marathon
+                # doubles disk under a disk cache; SURVEY_BAZEL_DISK_CACHE re-enables).
                 ( cd "$proj_out/build-ws" && $bzl_bin --output_user_root="$proj_out/.bzcache" \
                     --noworkspace_rc ${META_BAZEL_STARTUP_ARGS:-} build --repository_cache="$_sf_rc" \
+                    "--disk_cache=${SURVEY_BAZEL_DISK_CACHE:-}" \
                     $_sf_bzlflags --//config:build_type=release //... ) >>"$_sf_log" 2>&1 || true
                 _sf_bzlart="$(find -L "$proj_out/build-ws/bazel-bin" -name "$_sf_bzl" -type f 2>/dev/null | head -1)"
 
