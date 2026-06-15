@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
@@ -78,6 +79,61 @@ func TestEmitBakeTodos_DefaultImprovementAndOverride(t *testing.T) {
 		if tt.Kind != "bake" {
 			t.Errorf("bake todo kind = %q, want bake", tt.Kind)
 		}
+	}
+}
+
+// Invariant: a bake ALWAYS gets a note. Every tag the converter classifies as a
+// convert-time bake (convertTimeBakedShapes) must produce a "bake" todo — so a
+// future bake shape can't be added without surfacing it. Guards the "if it is a
+// bake there should always be a note" contract independent of --bake-in (which
+// only governs the stderr/exit policy, not the structured todo).
+func TestEmitBakeTodos_EveryBakeShapeNoted(t *testing.T) {
+	var targets []ir.Target
+	for tag := range convertTimeBakedShapes {
+		targets = append(targets, ir.Target{Name: "t_" + tag, Kind: ir.KindGenrule, Tags: []string{tag}})
+	}
+	pkg := &ir.Package{Targets: targets}
+	c := todos.New()
+	emitBakeTodos(c, pkg, nil)
+	rep := c.Report(todos.Preamble{}, "")
+	noted := map[string]bool{}
+	for i := range rep.Todos {
+		if rep.Todos[i].Kind == "bake" {
+			noted[rep.Todos[i].GroupKey] = true
+		}
+	}
+	for tag := range convertTimeBakedShapes {
+		if !noted["t_"+tag] {
+			t.Errorf("bake shape %q produced no bake todo — a bake must always be noted", tag)
+		}
+	}
+}
+
+// A CODEGEN bake (a tool output frozen on disk) gets a recognizer-/
+// --lift-derived-codegen-aware hint, not the generic value-bake advice; a value
+// bake keeps the select/flag hint.
+func TestEmitBakeTodos_CodegenBakeHint(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "baked_gen_h", Kind: ir.KindGenrule, Tags: []string{"cmake-codegen-execute-process-derived-bake"}},
+		{Name: "value_gen", Kind: ir.KindGenrule, Tags: []string{"cmake-codegen-execute-process"}},
+	}}
+	c := todos.New()
+	emitBakeTodos(c, pkg, nil)
+	rep := c.Report(todos.Preamble{}, "")
+	var codegen, value *todos.Todo
+	for i := range rep.Todos {
+		switch rep.Todos[i].GroupKey {
+		case "baked_gen_h":
+			codegen = &rep.Todos[i]
+		case "value_gen":
+			value = &rep.Todos[i]
+		}
+	}
+	if codegen == nil || !strings.Contains(codegen.SuggestedShape, "--lift-derived-codegen") || !strings.Contains(codegen.SuggestedShape, "recognizer") {
+		t.Errorf("codegen bake should hint at the recognizer / --lift-derived-codegen levers; got %+v", codegen)
+	}
+	if value == nil || strings.Contains(value.SuggestedShape, "--lift-derived-codegen") {
+		t.Errorf("value bake should keep the generic select/flag hint; got %+v", value)
 	}
 }
 

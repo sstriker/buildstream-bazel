@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -142,7 +143,7 @@ func collectUnspecClaims(calls []shadow.ExecuteProcessCall, anc execAnchors, cc 
 	cl := unspecClaims{stemClaims: map[string][]int{}, stemClaimSites: map[string]map[string]bool{}}
 	dirClaimIdx := map[string]int{} // site+"\x00"+rel -> dirClaims index
 	for ci, call := range calls {
-		if !argvCodegenEligible(call) || Classify(call).Bucket != BucketRefuse {
+		if !argvCodegenEligibleRelaxed(call) || !isCodegenCandidateBucket(Classify(call).Bucket) {
 			continue
 		}
 		site := fmt.Sprintf("%s:%d", call.File, call.Line)
@@ -472,9 +473,6 @@ func liftDerivedOutputsRerun(call shadow.ExecuteProcessCall, orphans []string, a
 	sort.Strings(rels)
 	registered := 0
 	for _, rel := range rels {
-		if strings.Contains(rel, "/") {
-			return nil, false // not at the build root: cwd-relative placement unproven
-		}
 		if cc.outputClaimed(rel) {
 			registered++
 		}
@@ -502,7 +500,26 @@ func liftDerivedOutputsRerun(call shadow.ExecuteProcessCall, orphans []string, a
 			return nil, false // in-place: an orphan that's also a staged (read-only) src
 		}
 	}
-	cmd := `ROOT="$$(pwd)" && cd "$(RULEDIR)" && ` + strings.Join(rewritten, " ")
+	// Outputs in a SUBDIR (gen/foo.pb.h) re-run fine: after cd $(RULEDIR) the
+	// tool writes cwd-relative just as the configure did under the build dir, so
+	// the same relative path reproduces — we only have to pre-create the dir the
+	// tool won't (mkdir -p, mirroring liftDirOperandOutputs). A build-root output
+	// has no parent to create. The mkdirs run RELATIVE to the post-cd cwd.
+	var mkdirs []string
+	seenDir := map[string]bool{}
+	for _, rel := range rels {
+		d := path.Dir(rel)
+		if d == "." || d == "" || seenDir[d] {
+			continue
+		}
+		seenDir[d] = true
+		mkdirs = append(mkdirs, fmt.Sprintf(`mkdir -p %s`, shellQuoteArg(d)))
+	}
+	prologue := `ROOT="$$(pwd)" && cd "$(RULEDIR)"`
+	if len(mkdirs) > 0 {
+		prologue += " && " + strings.Join(mkdirs, " && ")
+	}
+	cmd := prologue + " && " + strings.Join(rewritten, " ")
 	driver := executeProcessDriverBasename(argv[0])
 	if driver == "" {
 		driver = "unknown"

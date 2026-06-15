@@ -879,6 +879,64 @@ func isCMakeDriver(arg0 string) bool {
 	return base == "cmake"
 }
 
+// isCodegenCandidateBucket reports whether a Classify bucket is one the codegen
+// recovery (recognizer + File-API-corroborated unspecified-output lift) may
+// claim. BucketRefuse is the canonical "we don't know" case; Probe and Stamp
+// are included so a dual-use generator with a side capture — bucketed by the
+// driver-name gate before its file outputs are considered — can still be
+// recovered. The lifts self-gate on real evidence, so a pure probe declines.
+func isCodegenCandidateBucket(b Bucket) bool {
+	return b == BucketRefuse || b == BucketProbe || b == BucketStamp
+}
+
+// interpreterDrivers names argv[0] basenames that are script INTERPRETERS,
+// not the generator themselves — `python gen.py …`, `perl xxd.pl …`. For
+// codegen recognition the meaningful "driver" is the SCRIPT (the first non-flag
+// token after the interpreter), not the interpreter, so a recognizer / tool-
+// convention keyed on the script name can match. Kept separate from
+// dualUseProbeDrivers (which includes compilers) — only true scripting
+// interpreters peel.
+var interpreterDrivers = map[string]bool{
+	"python":  true,
+	"python3": true,
+	"python2": true,
+	"perl":    true,
+	"ruby":    true,
+	"node":    true,
+}
+
+// codegenRecognitionDriver returns the (driver, args) a codegen recognizer
+// should key on for an execute_process argv. Normally that's the argv[0]
+// basename and the remaining args. When argv[0] is a script interpreter
+// (python/perl/…), it peels the interpreter so the SCRIPT becomes the driver:
+// `python codegen.py --foo bar` is recognized by `codegen.py` with args
+// `--foo bar`. Interpreter flags before the script (`python -B gen.py`) are
+// skipped; an inline-code / stdin invocation (`python -c …`, `perl -e …`,
+// `node -e …`, `… -`) has no script to recognize and returns ("", nil). A
+// non-interpreter argv[0] is returned verbatim, so protoc-style tools are
+// unaffected.
+func codegenRecognitionDriver(argv []string) (string, []string) {
+	if len(argv) == 0 {
+		return "", nil
+	}
+	d0 := executeProcessDriverBasename(argv[0])
+	if !interpreterDrivers[d0] {
+		return d0, argv[1:]
+	}
+	for i := 1; i < len(argv); i++ {
+		a := argv[i]
+		switch {
+		case a == "-c" || a == "-e" || a == "--eval" || a == "-":
+			return "", nil // inline code / stdin — no script file to key on
+		case strings.HasPrefix(a, "-"):
+			continue // interpreter flag (python -B, perl -w)
+		default:
+			return executeProcessDriverBasename(a), argv[i+1:]
+		}
+	}
+	return "", nil
+}
+
 // executeProcessDriverBasename returns the canonical basename
 // of an argv[0] for driver-pattern matching, normalised so
 // the stamp / probe / cmake-driver maps don't have to carry

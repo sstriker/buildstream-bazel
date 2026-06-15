@@ -116,6 +116,18 @@ func emitBakeTodos(c *todos.Collector, pkg *ir.Package, overrides map[string]tod
 	if len(entries) == 0 {
 		return
 	}
+	// Which targets carry a CODEGEN bake — a tool's output frozen on disk
+	// because the converter couldn't re-run its producer — vs a value bake. The
+	// two get different hints: a codegen bake points at the live-re-run /
+	// recognizer levers, a value bake at select/flag.
+	codegenBaked := map[string]bool{}
+	for _, t := range pkg.Targets {
+		for _, tag := range t.Tags {
+			if codegenRecoverableBakeTags[tag] {
+				codegenBaked[t.Name] = true
+			}
+		}
+	}
 	byName := map[string][]string{}
 	var order []string
 	for _, e := range entries {
@@ -134,17 +146,40 @@ func emitBakeTodos(c *todos.Collector, pkg *ir.Package, overrides map[string]tod
 		if o, ok := overrides[name]; ok {
 			disp = o
 		}
+		shape := "replace the frozen convert-time value with a dynamic Bazel form (e.g. a select()/config_setting, a live cmake_configure_file, or a genrule)"
+		prompt := "This target baked a convert-time value instead of a faithful, dynamic Bazel form. " +
+			"Check whether the value correlates with a platform/sysroot/toolchain and could lift to a select/flag."
+		if codegenBaked[name] {
+			// A codegen bake is recoverable to a live producer — point at the
+			// levers in preference order (native rule, live genrule, dir operand)
+			// rather than the generic value-bake advice.
+			shape = "this is a generated file the converter froze because it couldn't re-run the producer. To recover a live producer: " +
+				"(1) register a codegen recognizer / --tool-conventions entry for the tool so it lowers to a NATIVE rule; " +
+				"(2) re-run --lift-derived-codegen, which re-runs the tool as a live genrule; " +
+				"(3) if the tool names its output directory, expose it as a `--out=DIR` argv operand so the converter genrules it without flags. " +
+				"For an interpreter-led generator (python gen.py), a recognizer keys on the SCRIPT name."
+			prompt = "This target baked a tool's generated output at convert time because the converter couldn't re-run the producer. " +
+				"It won't refresh when inputs change. Recover a live producer (recognizer/native rule, --lift-derived-codegen genrule, or a --out=DIR operand) — see suggested_shape."
+		}
 		c.Add(todos.Todo{
 			Kind:           "bake",
 			Disposition:    disp,
 			GroupKey:       name,
 			Anchors:        anchors,
 			Evidence:       map[string]any{"target": name},
-			SuggestedShape: "replace the frozen convert-time value with a dynamic Bazel form (e.g. a select()/config_setting, a live cmake_configure_file, or a genrule)",
-			Prompt: "This target baked a convert-time value instead of a faithful, dynamic Bazel form. " +
-				"Check whether the value correlates with a platform/sysroot/toolchain and could lift to a select/flag.",
+			SuggestedShape: shape,
+			Prompt:         prompt,
 		})
 	}
+}
+
+// codegenRecoverableBakeTags names the bake facets that froze a TOOL's generated
+// output (not a captured value) — bakes a recognizer or a live re-run could
+// replace. Their bake todo gets the recognizer/--lift-derived-codegen hint
+// instead of the generic select/flag advice.
+var codegenRecoverableBakeTags = map[string]bool{
+	"cmake-codegen-execute-process-derived-bake": true,
+	"cmake-codegen-build-dir-bake":               true,
 }
 
 // unresolvedGenexTags are audit tags marking a genex the converter couldn't

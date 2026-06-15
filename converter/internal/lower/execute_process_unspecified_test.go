@@ -9,6 +9,59 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
+// A generator run with RESULT_VARIABLE (an error check) and no OUTPUT_FILE on a
+// dual-use driver (python3) is classified BucketProbe — but it still produces
+// files. The probe→codegen override recovers them via the File-API-corroborated
+// unspecified-output lift instead of skipping the call. This is the common
+// shape: `execute_process(COMMAND python3 gen.py in RESULT_VARIABLE rc)`.
+func TestRecoverExecuteProcess_ProbeWithResultVarRecoversCodegen(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	writeTree(t, hostSrc, "gen.py", "# generator\n")
+	writeTree(t, hostSrc, "data.txt", "payload\n")
+	writeTree(t, hostBuild, "data.txt.gz", "gzbytes")
+	call := shadow.ExecuteProcessCall{
+		File:           filepath.Join(hostSrc, "CMakeLists.txt"),
+		Line:           5,
+		Commands:       [][]string{{"python3", filepath.Join(hostSrc, "gen.py"), filepath.Join(hostSrc, "data.txt")}},
+		ResultVariable: "rc", // error check — keeps the call BucketProbe
+	}
+	if got := Classify(call).Bucket; got != BucketProbe {
+		t.Fatalf("precondition: want BucketProbe (dual-use + RESULT_VARIABLE), got %v", got)
+	}
+	cc := newCodegenContext()
+	cc.LiftDerivedCodegen = true
+	cc.ConsumedBuildRel = map[string]bool{"data.txt.gz": true}
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("refusals: %+v", refusals)
+	}
+	if len(outs) != 1 || outs[0].RelOutput != "data.txt.gz" {
+		t.Fatalf("probe-classified generator should be recovered, not skipped; outs=%+v", outs)
+	}
+	if cc.OutToGenrule["data.txt.gz"] == "" || len(cc.Genrules) != 1 {
+		t.Fatalf("expected a producer for the recovered output; genrules=%+v outToGenrule=%+v", cc.Genrules, cc.OutToGenrule)
+	}
+}
+
+// A genuine probe with no file output stays skipped — the override self-gates on
+// real evidence, so `uname -m OUTPUT_VARIABLE m` recovers nothing and emits no
+// genrule/refusal (its value reaches configure_file via dump-vars).
+func TestRecoverExecuteProcess_PureProbeStillSkipped(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	call := shadow.ExecuteProcessCall{
+		File:           filepath.Join(hostSrc, "CMakeLists.txt"),
+		Line:           5,
+		Commands:       [][]string{{"uname", "-m"}},
+		OutputVariable: "m",
+	}
+	cc := newCodegenContext()
+	cc.ConsumedBuildRel = map[string]bool{"unrelated.h": true}
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	if len(outs) != 0 || len(refusals) != 0 || len(cc.Genrules) != 0 {
+		t.Fatalf("pure probe must stay skipped; outs=%+v refusals=%+v genrules=%+v", outs, refusals, cc.Genrules)
+	}
+}
+
 // Dir-operand class: `mygen --out <builddir>/gen <src>/in.proto` — outputs
 // are the on-disk files under the argv directory operand; the re-run
 // genrule rewrites the operand to $(RULEDIR)/gen.
@@ -114,6 +167,45 @@ func TestLiftUnspecifiedOutputs_StemBake(t *testing.T) {
 	}
 	if !sawFacet {
 		t.Errorf("missing -derived-bake facet: %v", cc.Genrules[0].Tags)
+	}
+}
+
+// With --lift-derived-codegen, a stem-matched orphan in a SUBDIR re-runs as a
+// live genrule (cd $(RULEDIR) + mkdir -p the parent) rather than freezing the
+// configure-written bytes — the subdir no longer forces the bake fallback.
+func TestLiftUnspecifiedOutputs_StemRerunSubdir(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	writeTree(t, hostSrc, "data.txt", "payload\n")
+	writeTree(t, hostBuild, "gen/data.txt.gz", "gzbytes")
+	call := argvCall(hostSrc, "compressor", filepath.Join(hostSrc, "data.txt"))
+	cc := newCodegenContext()
+	cc.LiftDerivedCodegen = true
+	cc.ConsumedBuildRel = map[string]bool{"gen/data.txt.gz": true}
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("refusals: %+v", refusals)
+	}
+	if len(outs) != 1 || outs[0].RelOutput != "gen/data.txt.gz" || len(cc.Genrules) != 1 {
+		t.Fatalf("outs=%+v genrules=%+v", outs, cc.Genrules)
+	}
+	g := cc.Genrules[0]
+	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "gen/data.txt.gz" {
+		t.Fatalf("subdir out: %v", g.GenruleOuts)
+	}
+	if !strings.Contains(g.GenruleCmd, `cd "$(RULEDIR)"`) || !strings.Contains(g.GenruleCmd, `mkdir -p gen`) {
+		t.Errorf("subdir rerun must cd $(RULEDIR) and pre-create the dir: %q", g.GenruleCmd)
+	}
+	var sawRerun, sawBake bool
+	for _, tg := range g.Tags {
+		switch tg {
+		case "cmake-codegen-execute-process-derived-rerun":
+			sawRerun = true
+		case "cmake-codegen-execute-process-derived-bake":
+			sawBake = true
+		}
+	}
+	if !sawRerun || sawBake {
+		t.Errorf("want -derived-rerun (live genrule), not -derived-bake: %v", g.Tags)
 	}
 }
 

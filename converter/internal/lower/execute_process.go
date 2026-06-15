@@ -249,33 +249,45 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 				recordCaptureRefusal(orig, cc)
 			}
 		default:
-			// Argv-declared codegen rescue before the probe/stamp/refusal
-			// dispatch: `tool <in…> <out…>` with the files in the argv lifts
-			// to a multi-output genrule (see liftArgvFileProducing) — the
-			// add_custom_command-equivalent contract recovered from the
-			// configure's own on-disk evidence, no convert-time execution.
+			// Codegen recovery can OVERRIDE a probe/stamp classification: a call
+			// the driver-name gate bucketed as a probe — a dual-use python/perl/
+			// compiler carrying a side OUTPUT_VARIABLE/RESULT_VARIABLE capture
+			// (a log, a version, an exit-status check) — may still be real
+			// codegen whose files we can recover. Two signals are robust enough
+			// to override the bucket and are tried for ANY default bucket:
+			//   - the recognizer (a registered tool, incl. an interpreter's
+			//     script via codegenRecognitionDriver), which corroborates its
+			//     derived outputs on disk before emitting a native rule; and
+			//   - the unspecified-output lift, keyed on File-API demand + ninja
+			//     exclusion (a codemodel-consumed orphan), not bare existence.
+			// The bare on-disk-existence heuristic (liftArgvFileProducing) is
+			// reserved for BucketRefuse: it would mis-claim a probe's INPUT
+			// (`cc -E foo.c`) as an output. A pure probe (uname, gcc -dumpversion)
+			// has no such outputs, so every lift declines and the call falls
+			// through to the probe/stamp handling unchanged; the captured value
+			// still reaches configure_file via dump-vars.
+			if rels, lifted := liftRecognizedExecuteProcessCodegen(call, anc, cc); lifted {
+				collect(rels)
+				continue
+			}
 			if v.Bucket == BucketRefuse {
-				// Recognizer-first (opt-in): a codegen tool whose outputs are
-				// DERIVED from a flag dir (protoc --cpp_out=DIR), so they're not
-				// in the argv for liftArgvFileProducing to find. The recognizer
-				// supplies + on-disk-corroborates them and emits the native rule.
-				if rels, lifted := liftRecognizedExecuteProcessCodegen(call, anc, cc); lifted {
-					collect(rels)
-					continue
-				}
+				// Argv-declared codegen rescue: `tool <in…> <out…>` with the
+				// files named in the argv lifts to a multi-output genrule —
+				// the add_custom_command-equivalent contract recovered from the
+				// configure's own on-disk evidence, no convert-time execution.
 				if rels, lifted := liftArgvFileProducing(call, anc, cc); lifted {
 					collect(rels)
 					continue
 				}
-				// Unspecified-output rescue: outputs absent from the argv,
-				// recovered declaratively from File-API demand + ninja
-				// exclusion + argv linkage (dir-operand containment or
-				// derived-name correlation) — see
-				// execute_process_unspecified.go.
-				if rels, lifted := liftUnspecifiedOutputs(ci, call, anc, cc, unspec); lifted {
-					collect(rels)
-					continue
-				}
+			}
+			// Unspecified-output rescue: outputs absent from the argv, recovered
+			// declaratively from File-API demand + ninja exclusion + argv linkage
+			// (dir-operand containment or derived-name correlation) — robust
+			// enough to override a probe/stamp bucket. See
+			// execute_process_unspecified.go.
+			if rels, lifted := liftUnspecifiedOutputs(ci, call, anc, cc, unspec); lifted {
+				collect(rels)
+				continue
 			}
 			if ref := recoverProbeOrStampCall(call, v, callCaptureCleared(orig, call), cc, cmakeVars, forwardedStampVars, seenProbeFlags); ref != nil {
 				unsupported = append(unsupported, *ref)

@@ -156,16 +156,18 @@ func liftArgvFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *
 // Consumer wiring (a target that lists a generated output as a source) is
 // handled package-wide by rewriteNativeRuleConsumers via OutToNativeConsumerDep.
 func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc execAnchors, cc *codegenContext) ([]string, bool) {
-	if cc == nil || !cc.RecognizeCodegen || !argvCodegenEligible(call) || anc.hostBuildDir == "" {
+	if cc == nil || !cc.RecognizeCodegen || !argvCodegenEligibleRelaxed(call) || anc.hostBuildDir == "" {
 		return nil, false
 	}
 	argv := call.Commands[0]
-	driver := executeProcessDriverBasename(argv[0])
+	// Key the recognizer on the SCRIPT when argv[0] is an interpreter (python
+	// gen.py), and scan only the post-driver args for source inputs.
+	driver, recArgs := codegenRecognitionDriver(argv)
 	if driver == "" {
 		return nil, false
 	}
 	var srcs []string
-	for _, a := range argv[1:] {
+	for _, a := range recArgs {
 		if rel, ok := executeProcessAnchorSource(stripArgvPathPrefix(a), anc); ok && rel != "" && rel != "." {
 			srcs = append(srcs, rel)
 		}
@@ -176,7 +178,7 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 	// --proto_path via execute_process declines earlier / falls back; the
 	// custom-command paths carry the full proto_path handling.
 	protoDeps := protoImportLabels(srcs, nil, anc.hostSrcDir, cc.BazelPackagePath)
-	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: argv[1:], Srcs: srcs, Pkg: cc.BazelPackagePath, ProtoDeps: protoDeps})
+	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: recArgs, Srcs: srcs, Pkg: cc.BazelPackagePath, ProtoDeps: protoDeps})
 	if !matched || err != nil || len(res.DerivedOutputs) == 0 {
 		return nil, false
 	}
@@ -282,6 +284,25 @@ func argvCodegenEligible(call shadow.ExecuteProcessCall) bool {
 		call.Timeout == "" && call.InputFile == "" && call.ErrorFile == "" &&
 		call.OutputFile == "" && call.OutputVariable == "" &&
 		call.ErrorVariable == "" && call.ResultVariable == ""
+}
+
+// argvCodegenEligibleRelaxed is argvCodegenEligible but TOLERANT of a side
+// OUTPUT_VARIABLE / RESULT_VARIABLE / RESULTS_VARIABLE capture — a log line, a
+// version string, or an exit-status check that a generator emits ALONGSIDE its
+// files. Used only by the recognizer and the File-API-corroborated unspecified-
+// output lift, both of which key on robust evidence (a recognizer claim, a
+// codemodel-demanded orphan) rather than the bare on-disk-existence heuristic —
+// so a captured side value no longer blocks recovering the FILE outputs. The
+// captured value still reaches a consuming configure_file independently: a
+// probe's OUTPUT_VARIABLE is in dump-vars' cmakeVars, and the genrule's failure
+// faithfully stands in for a RESULT_VARIABLE error check. ErrorVariable /
+// ErrorFile stay blocking (a live stderr consumer / declared artifact), as do
+// WorkingDirectory / Environment / Timeout / InputFile / OutputFile.
+func argvCodegenEligibleRelaxed(call shadow.ExecuteProcessCall) bool {
+	return len(call.Commands) == 1 && len(call.Commands[0]) > 1 &&
+		call.WorkingDirectory == "" && len(call.Environment) == 0 &&
+		call.Timeout == "" && call.InputFile == "" && call.ErrorFile == "" &&
+		call.OutputFile == "" && call.ErrorVariable == ""
 }
 
 // classifyArgvOutputs walks argv (past the tool) and partitions the
