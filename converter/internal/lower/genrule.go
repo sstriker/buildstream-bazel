@@ -577,6 +577,15 @@ func (cc *codegenContext) recoverCmakeScriptGenrule(b *ninja.Build, cmd, cmakeSr
 	if name, ok := recognizeCcHash(cc, b, cmd, script, cmakeSrc, buildDir); ok {
 		return relOut, name, nil
 	}
+	// Trace-recurse codegen recovery (opt-in --recognize-codegen +
+	// --cmake-script-trace): the real tool may live in an execute_process INSIDE
+	// the script. Re-trace, recognize it, and lower to the native rule — higher
+	// fidelity than the bake/runner genrule, so it runs first. Declines (offline /
+	// flags off / output not recovered) fall through to bake/runner/refuse. See
+	// recoverCmakeScriptCodegen (P2 of the wrapper-codegen coverage).
+	if name, ok := cc.recoverCmakeScriptCodegen(b, cmd, script, cmakeSrc, buildDir, relOut); ok {
+		return relOut, name, nil
+	}
 	var liftReason string
 	// Bake mode (convert-time execution + bytes capture)
 	// runs first when opted in: it solves the
