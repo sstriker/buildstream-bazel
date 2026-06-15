@@ -25,6 +25,14 @@ type CodegenCommand struct {
 	Args []string
 	// Srcs are the recovered input sources (package-relative), e.g. the .proto.
 	Srcs []string
+	// InputFiles, when set, is the COMPLETE recovered input set — source-tree AND
+	// generated/build-dir inputs (a tool whose input is itself produced by another
+	// rule) — used to identify the invocation for dedup. Srcs alone is
+	// source-tree-only on the execute_process path, so two calls on DISTINCT
+	// generated inputs would otherwise share an (empty) source-src set and collapse.
+	// Empty on paths where Srcs already lists every input (the custom-command
+	// genrule srcs include generated inputs), where the key falls back to Srcs.
+	InputFiles []string
 	// Outs are cmake's RECORDED outputs (package-relative) — the cross-check
 	// the recognizer validates its derived output set against.
 	Outs []string
@@ -246,9 +254,13 @@ func recognizerRefusalStub(fallback ir.Target, cmd CodegenCommand, err error) ir
 // at a single location, so the cmake out-dir duplication collapses), while
 // DIFFERENT inputs get distinct keys and stay separate rules.
 func codegenInputKey(cmd CodegenCommand) string {
-	srcs := append([]string(nil), cmd.Srcs...)
-	sort.Strings(srcs)
-	return cmd.Driver + "\x00" + strings.Join(srcs, "\x00")
+	ins := cmd.InputFiles
+	if len(ins) == 0 {
+		ins = cmd.Srcs
+	}
+	keyed := append([]string(nil), ins...)
+	sort.Strings(keyed)
+	return cmd.Driver + "\x00" + strings.Join(keyed, "\x00")
 }
 
 // dedupRecognizedRule decides whether a matched recognizer's targets should be

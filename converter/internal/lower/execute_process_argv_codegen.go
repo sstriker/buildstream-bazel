@@ -185,7 +185,12 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 	// convention, so it returns this set (or a subset/transform) as DerivedOutputs.
 	outDir := argvCodegenOutDir(argv, anc)
 	discovered := discoverCodegenOutDirFiles(outDir, anc, cc)
-	cmd := CodegenCommand{Driver: driver, Args: recArgs, Srcs: srcs, Pkg: cc.BazelPackagePath, ProtoDeps: protoDeps, DiscoveredOutputs: discovered}
+	// Complete input identity for dedup: source inputs PLUS build-dir input
+	// operands (a generated input — produced by another rule — that this tool
+	// consumes), excluding the call's own output-dir subtree. Without this, two
+	// calls on DISTINCT generated inputs (no source srcs) would share a key.
+	inputFiles := append(append([]string(nil), srcs...), buildDirInputOperands(recArgs, anc, outDir)...)
+	cmd := CodegenCommand{Driver: driver, Args: recArgs, Srcs: srcs, InputFiles: inputFiles, Pkg: cc.BazelPackagePath, ProtoDeps: protoDeps, DiscoveredOutputs: discovered}
 	res, matched, err := recognizeCodegenWith(cc.ExtraRecognizers, cmd)
 	if !matched || err != nil || len(res.DerivedOutputs) == 0 {
 		return nil, false
@@ -248,6 +253,38 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 		}
 	}
 	return rels, true
+}
+
+// buildDirInputOperands returns the build-relative argv operands that anchor
+// UNDER the build dir but OUTSIDE the call's output directory (outDir) — i.e.
+// the tool's generated INPUTS (files another rule produced that this call
+// consumes), as distinct from its own outputs under outDir. Used to complete the
+// dedup input identity on the execute_process path, where source-anchored Srcs
+// miss generated inputs. Deduped + sorted. When outDir is empty (build root)
+// every build path is "under" it, so nothing is classified as an input — the
+// recognizer's discovery wouldn't have fired there anyway.
+func buildDirInputOperands(args []string, anc execAnchors, outDir string) []string {
+	if outDir == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var ins []string
+	prefix := outDir + "/"
+	for _, a := range args {
+		rel, ok := executeProcessAnchorOutput(stripArgvPathPrefix(a), anc)
+		if !ok || rel == "" || rel == "." {
+			continue
+		}
+		if rel == outDir || strings.HasPrefix(rel, prefix) {
+			continue // under the output dir — an output, not an input
+		}
+		if !seen[rel] {
+			seen[rel] = true
+			ins = append(ins, rel)
+		}
+	}
+	sort.Strings(ins)
+	return ins
 }
 
 // discoverCodegenOutDirFiles enumerates the on-disk files under the tool's

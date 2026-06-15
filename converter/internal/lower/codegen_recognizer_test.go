@@ -157,6 +157,37 @@ func TestRecognizeOrGenrule_DifferentInputsCollidingNameFallBack(t *testing.T) {
 	}
 }
 
+// TestLiftRecognizedExecuteProcess_GeneratedInputsNotDeduped: when the tool's
+// inputs are themselves GENERATED (build-dir, absent from source-tree Srcs), two
+// calls on DISTINCT generated inputs must NOT collapse to one rule — the input
+// identity includes the build-dir input operands.
+func TestLiftRecognizedExecuteProcess_GeneratedInputsNotDeduped(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	writeTree(t, hostBuild, "genA/a.h", "A")
+	writeTree(t, hostBuild, "genB/b.h", "B")
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	cc.ExtraRecognizers = []CodegenRecognizer{discoveredSubsetRecognizer{}}
+	// Same tool, no source srcs; the inputs (in/a.in, in/b.in) are build-dir
+	// generated files; outputs in distinct dirs (distinct sub-packages).
+	callA := argvCall(hostSrc, "mygen", "--mygen_out="+filepath.Join(hostBuild, "genA"), filepath.Join(hostBuild, "in/a.in"))
+	callB := argvCall(hostSrc, "mygen", "--mygen_out="+filepath.Join(hostBuild, "genB"), filepath.Join(hostBuild, "in/b.in"))
+	callB.Line = 9
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{callA, callB}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("refusals: %+v", refusals)
+	}
+	n := 0
+	for _, g := range cc.Genrules {
+		if g.Name == "mygen_rule" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("distinct generated inputs must emit 2 rules (not silently dedup to 1); got %d: %+v", n, cc.Genrules)
+	}
+}
+
 // TestRecognizeOrGenrule_FidelityMismatch: a recognizer that MATCHES the tool
 // but whose derived outputs disagree with cmake's recorded ones refuses (a loud
 // build-time stub) under --fidelity=strict, and falls back to the genrule under
