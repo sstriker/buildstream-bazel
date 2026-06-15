@@ -214,6 +214,48 @@ else
   log "bazel egress: egress CAs absent; leaving bazel at defaults (direct bcr.bazel.build assumed)"
 fi
 
+# --- bazel disk cache (gate / survey build reuse) ------------------------
+# Every gate stages bazel in a FRESH mktemp workspace, so the per-workspace
+# output_base (under --output_user_root) is unique per run: the analysis +
+# action cache never carry over and each run recompiles heavy deps from
+# scratch — e.g. a `cc_proto_library` gate rebuilds protobuf's protoc (~780
+# actions, 3-4 min) on every invocation. A --disk_cache is content-addressed
+# and workspace-path-independent, so it IS shared across those staged
+# workspaces (and across re-runs): the first gate to need protoc compiles it,
+# every later gate gets disk-cache hits and finishes in seconds. Its own
+# managed block, written UNCONDITIONALLY (unlike the egress block it doesn't
+# depend on the egress CA) so the home rc applies it to every `bazel` — gates
+# (including their --noworkspace_rc runs) and survey alike. Override the
+# location with BSB_BAZEL_DISK_CACHE.
+bsb_disk_cache="${BSB_BAZEL_DISK_CACHE:-$HOME/.cache/bazel-disk}"
+mkdir -p "$bsb_disk_cache" 2>/dev/null || true
+bsb_cache_rc="$HOME/.bazelrc"
+# Same atomic update idiom as the egress block: rebuild in a temp file (drop
+# any prior managed block, ensure a trailing newline, append a fresh block)
+# and mv into place only on success, so a failure leaves the working rc intact.
+bsb_cache_rc_tmp="$(mktemp "$HOME/.bazelrc.XXXXXX" 2>/dev/null || true)"
+bsb_cache_rc_ok=0
+if [ -n "$bsb_cache_rc_tmp" ]; then
+  bsb_cache_rc_ok=1
+  if [ -f "$bsb_cache_rc" ]; then
+    sed '/# >>> bsb-cache >>>/,/# <<< bsb-cache <<</d' "$bsb_cache_rc" > "$bsb_cache_rc_tmp" 2>/dev/null || bsb_cache_rc_ok=0
+  fi
+  if [ "$bsb_cache_rc_ok" = 1 ]; then
+    { [ -s "$bsb_cache_rc_tmp" ] && [ -n "$(tail -c1 "$bsb_cache_rc_tmp" 2>/dev/null)" ] && printf '\n' >> "$bsb_cache_rc_tmp"; } || true
+    cat >> "$bsb_cache_rc_tmp" <<RC && mv -f "$bsb_cache_rc_tmp" "$bsb_cache_rc" || bsb_cache_rc_ok=0
+# >>> bsb-cache >>>
+common --disk_cache=$bsb_disk_cache
+# <<< bsb-cache <<<
+RC
+  fi
+fi
+if [ "$bsb_cache_rc_ok" = 1 ]; then
+  log "bazel disk cache configured: $bsb_disk_cache (shared across gate workspaces)"
+else
+  rm -f "$bsb_cache_rc_tmp" 2>/dev/null || true
+  log "bazel disk cache: could not update $bsb_cache_rc; left it unchanged"
+fi
+
 # --- buildifier (default) ------------------------------------------------
 if command -v buildifier >/dev/null 2>&1; then
   log "buildifier already present; skipping"
