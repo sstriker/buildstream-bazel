@@ -9,20 +9,24 @@ legible, gives Bazel the real dependency graph, and is what a `gazelle`
 maintenance pass already understands.
 
 A **codegen recognizer** maps one such generator invocation to its native
-rule(s). Recognizers live in a registry; adding one for a new tool is a
-self-contained change — no new `ir.Kind`, no bespoke emit path. There are two
-ways to add one, both feeding the same registry:
+rule(s). Recognizers are **Starlark** (`*.star`): adding one for a new tool is a
+self-contained file — no new `ir.Kind`, no bespoke emit path, no recompile.
+There is one recognizer model with two homes, both feeding the same registry:
 
-- **In Go (first-party):** implement the `CodegenRecognizer` interface and
-  register it in-tree. Covered first, below — it's also the substrate the
-  Starlark path rides.
-- **In Starlark (operator, no recompile):** drop a `*.star` file next to your
-  project and point `--recognizers` at it. Covered in
+- **Built-in recognizers** ship embedded in the binary
+  (`converter/internal/lower/builtinrecognizers/*.star`: `protoc`, `grpc_cpp`,
+  `grpc_only`). They're loaded first.
+- **Operator recognizers** are `*.star` files you point `--recognizers` at —
+  for a generator the built-ins don't cover, or to **override a built-in**: an
+  operator recognizer whose name matches a built-in (e.g. `protoc.star`)
+  *replaces* it in place. See
   [Operator recognizers in Starlark](#operator-recognizers-in-starlark-no-recompile).
-  This is the path for adding a generator your converter binary doesn't ship
-  support for, without rebuilding it.
 
-This doc is the how-to for both.
+Under the hood both compile to the Go `CodegenRecognizer` interface — the
+internal substrate (`starlarkRecognizer`) and the soundness gate (output-
+authority cross-check) live in Go; the recognizers themselves are data.
+
+This doc is the how-to.
 
 Behaviour today is gated behind the opt-in `--recognize-codegen` flag (off by
 default; see [`ROADMAP.md`](../ROADMAP.md) for the rollout to default-on +
@@ -129,6 +133,12 @@ idiomatic target a `gazelle` pass resolves the `#include` to on its own.
 > corpus/production path), as the existing tablegen-consumer wiring does.
 
 ## Worked example: a `flatc` recognizer (sketch)
+
+You add a recognizer by writing a `*.star` (see
+[Operator recognizers in Starlark](#operator-recognizers-in-starlark-no-recompile)
+for the runnable form, and `builtinrecognizers/protoc.star` for a full built-in).
+The Go shape below shows the same logic in the underlying `CodegenRecognizer`
+substrate — useful for understanding the contract, not the way you'd ship one:
 
 ```go
 // flatcCppRecognizer maps `flatc --cpp … schema.fbs` to ... the idiomatic
