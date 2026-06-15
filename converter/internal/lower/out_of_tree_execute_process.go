@@ -141,22 +141,43 @@ func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedSrcDir, r
 			lift = append(lift, c)
 			continue
 		}
-		// Two location-independent signals mark a call as the project's OWN
-		// codegen, whatever out-of-tree helper issued it: a registered recognizer
-		// claiming the tool (protoc --cpp_out, …), or the call reading an in-tree
-		// source / writing a build-dir output (projectIO).
+		// Location-independent signals that a call is the project's OWN codegen,
+		// whatever out-of-tree helper issued it: a registered recognizer claiming
+		// the tool (protoc --cpp_out, …), the call reading an in-tree source /
+		// writing a build-dir output (projectIO), or the tool resolving to an
+		// imports executable (a hermetic Bazel target — see below).
 		recognized := outOfTreeExecRecognized(c, cc)
 		projectIO := outOfTreeExecTouchesProjectIO(c, recordedSrcDir, recordedBuildDir)
-		if (sig == signalBuildDirOther || projectIO) && (recognized || outOfTreeBestEffort(cc)) {
+		toolFromImports := outOfTreeToolFromImports(c, cc)
+		if (sig == signalBuildDirOther || projectIO) && (recognized || toolFromImports || outOfTreeBestEffort(cc)) {
 			// A build-dir codegen call the codemodel didn't attribute sources to,
 			// or any out-of-tree call operating on the project's own I/O.
 			// RECOGNIZED → recoverExecuteProcess lifts it via the recognizer (the
-			// native rule), in BOTH fidelity modes. UNRECOGNIZED under BEST-EFFORT
-			// → lift it anyway so recoverExecuteProcess gives a genrule/probe
-			// fallback (best-effort = recover something runnable). UNRECOGNIZED
-			// under STRICT falls through to a note: faithful-or-fail, don't
-			// silently genrule an unattributed out-of-tree call. The lift
-			// corroborates outputs on disk before emitting, so it declines safely.
+			// native rule), in BOTH fidelity modes. TOOL-FROM-IMPORTS → the tool is
+			// a build-time-available, hermetic Bazel target (the lift swaps it to
+			// $(execpath …)), which is a "we can faithfully run this" proof as strong
+			// as a recognizer match, so it lifts under STRICT too. UNRECOGNIZED under
+			// BEST-EFFORT → lift anyway so recoverExecuteProcess gives a genrule/probe
+			// fallback (best-effort = recover something runnable). Otherwise (strict,
+			// unrecognized, tool not in imports) → a note: faithful-or-fail, don't
+			// silently genrule an unattributed out-of-tree call. The lift corroborates
+			// outputs on disk before emitting, so it declines safely.
+			//
+			// Inputs still gate this: the build-dir / projectIO operands are
+			// build-time-present, so the lifted rule doesn't dangle. A pure
+			// prefix-tree call on the dependency's own staged files (no projectIO)
+			// stays a note even with an imports tool — its inputs are convert-time
+			// staging, absent at the consumer's build.
+			//
+			// Note: a tool-from-imports lift (unlike a recognizer lift, which SUPPLIES
+			// + on-disk-corroborates its derived outputs) still relies on
+			// recoverExecuteProcess's GENERIC output lifts (argv-declared /
+			// unspecified-output). It proves the tool is runnable, not that the
+			// outputs are recoverable — so a build-dir call whose outputs aren't
+			// argv-declared or codemodel-demanded surfaces via the
+			// execute-process-refusal todo (loud, faithful-or-fail) rather than this
+			// out-of-tree note. The operator mapping the tool into the manifest is
+			// the explicit signal to prefer that louder accounting.
 			lift = append(lift, c)
 			continue
 		}
@@ -194,6 +215,27 @@ func outOfTreeExecRecognized(c shadow.ExecuteProcessCall, cc *codegenContext) bo
 		return false
 	}
 	return codegenRecognizerMatches(cc.ExtraRecognizers, CodegenCommand{Driver: driver, Args: recArgs})
+}
+
+// outOfTreeToolFromImports reports whether the call's tool (argv[0]) resolves to
+// an imports executable — a Bazel label via the imports manifest's tools map /
+// --tool-conventions (cc.Imports.LookupTool). That proves the tool is
+// build-time-available and hermetic (the lift swaps it to $(execpath label) via
+// rewriteToolFromTarget), a "we can faithfully run this" signal as strong as a
+// recognizer match — so an out-of-tree codegen call on build-time-present inputs
+// lifts even under strict. No-op without an imports manifest (cc.Imports nil).
+func outOfTreeToolFromImports(c shadow.ExecuteProcessCall, cc *codegenContext) bool {
+	if cc == nil || cc.Imports == nil || len(c.Commands) == 0 {
+		return false
+	}
+	argv := c.Commands[0]
+	if len(argv) == 0 {
+		return false
+	}
+	// Pass argv[0] raw: LookupTool matches an exact byToolPath entry and falls
+	// back to the basename for a bare driver / absolute host path.
+	_, ok := cc.Imports.LookupTool(argv[0])
+	return ok
 }
 
 // outOfTreeExecTouchesProjectIO reports whether an out-of-tree call reads an

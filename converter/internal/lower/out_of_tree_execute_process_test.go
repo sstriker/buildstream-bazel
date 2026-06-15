@@ -6,6 +6,7 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/internal/convmode"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -345,5 +346,45 @@ func TestPartitionOutOfTreeExec_ProjectIOSignal(t *testing.T) {
 	lift, note = partitionOutOfTreeExec([]shadow.ExecuteProcessCall{dep}, src, build, prefix, nil, be)
 	if len(lift) != 0 || len(note) != 1 || note[0].Signal != signalPrefixTree {
 		t.Fatalf("a prefix call on only the dependency's files stays a note; got lift=%d note=%+v", len(lift), note)
+	}
+}
+
+// TestPartitionOutOfTreeExec_ToolFromImportsLiftsUnderStrict: a build-dir-issued
+// codegen call whose tool isn't recognizer-matched stays a note under strict —
+// UNLESS the tool resolves to an imports executable (a hermetic Bazel target),
+// which proves it's faithfully runnable and lifts it even under strict.
+func TestPartitionOutOfTreeExec_ToolFromImportsLiftsUnderStrict(t *testing.T) {
+	// Issued from the build dir (signalBuildDirOther), no recognizer, no project
+	// I/O — so strict's lift gate is purely the imports-tool signal.
+	call := ootCall("/build/gen/CMakeLists.txt", 1, "mygen", "--verbose")
+
+	st := newCodegenContext() // strict, recognizer off, no imports
+	if lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{call}, "/src", "/build", "/synth", nil, st); len(lift) != 0 || len(note) != 1 {
+		t.Fatalf("strict + no imports tool → note; got lift=%d note=%+v", len(lift), note)
+	}
+
+	withTool := newCodegenContext()
+	r := manifest.NewResolver()
+	if err := r.AddToolConventions([]manifest.Tool{{Match: "mygen", Label: "@dep//:mygen"}}); err != nil {
+		t.Fatal(err)
+	}
+	withTool.Imports = r
+	if lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{call}, "/src", "/build", "/synth", nil, withTool); len(lift) != 1 || len(note) != 0 {
+		t.Fatalf("strict + imports tool (mygen → @dep//:mygen) should LIFT; got lift=%d note=%+v", len(lift), note)
+	}
+}
+
+// A PURE prefix-tree call on the dependency's own staged files (no project I/O)
+// stays a note even with an imports tool — its inputs are convert-time staging,
+// absent at the consumer's build, so a lift would dangle.
+func TestPartitionOutOfTreeExec_ImportsToolDoesNotLiftPurePrefix(t *testing.T) {
+	call := ootCall("/synth/lib/cmake/Foo/FooConfig.cmake", 1, "mygen", "/synth/dep/in.x", "/synth/dep/out.h")
+	cc := newCodegenContext()
+	r := manifest.NewResolver()
+	_ = r.AddToolConventions([]manifest.Tool{{Match: "mygen", Label: "@dep//:mygen"}})
+	cc.Imports = r
+	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{call}, "/src", "/build", "/synth", nil, cc)
+	if len(lift) != 0 || len(note) != 1 || note[0].Signal != signalPrefixTree {
+		t.Fatalf("a pure prefix-tree call (dep's staged files) must stay a note even with an imports tool; got lift=%d note=%+v", len(lift), note)
 	}
 }
