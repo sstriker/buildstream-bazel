@@ -519,3 +519,50 @@ func TestApplyNestedProducerReHome_ConfigureFileLift(t *testing.T) {
 		t.Errorf("consumer hdrs = %v, want the re-homed rel", consumer.Hdrs)
 	}
 }
+
+// TestNestedBuildFullyRecovered: a NOT-lifted nested build is "fully recovered"
+// (todo redundant) only when it's header-only AND every header was claimed; a
+// compiled artifact or an unclaimed header keeps it not-recovered (todo stands).
+func TestNestedBuildFullyRecovered(t *testing.T) {
+	build := t.TempDir()
+	writeTree(t, build, "sub/config.h", "#define X 1\n")
+	cc := newCodegenContext()
+	if nestedBuildFullyRecovered("sub", build, cc) {
+		t.Error("an unclaimed header must NOT count as fully recovered")
+	}
+	cc.OutToGenrule["sub/config.h"] = "baked_sub_config_h" // the outer build-dir bake claimed it
+	if !nestedBuildFullyRecovered("sub", build, cc) {
+		t.Error("header-only + every header claimed → fully recovered")
+	}
+	writeTree(t, build, "sub/libfoo.a", "ar")
+	if nestedBuildFullyRecovered("sub", build, cc) {
+		t.Error("a library artifact means real targets are missing → not fully recovered")
+	}
+	if nestedBuildFullyRecovered("sub", "", cc) {
+		t.Error("no live build dir → cannot be recovered")
+	}
+}
+
+// TestWarnUnliftedNestedBuilds_SuppressesFullyRecovered: the not-lifted todo is
+// suppressed for a header-only fully-recovered nested build, but still fires
+// when the build produces a library (real targets missing).
+func TestWarnUnliftedNestedBuilds_SuppressesFullyRecovered(t *testing.T) {
+	build := t.TempDir()
+	writeTree(t, build, "sub/config.h", "x")
+	cc := newCodegenContext()
+	cc.NestedConfigureSink["sub"] = "/src/sub" // detected, not lifted
+	cc.OutToGenrule["sub/config.h"] = "baked"  // recovered via the outer bake
+
+	c := todos.New()
+	warnUnliftedNestedBuilds(Options{Todos: c, BuildDir: build}, cc)
+	if c.Len() != 0 {
+		t.Errorf("fully-recovered header-only nested build should emit no todo; got %d", c.Len())
+	}
+
+	writeTree(t, build, "sub/libfoo.a", "ar") // now it produces a library
+	c2 := todos.New()
+	warnUnliftedNestedBuilds(Options{Todos: c2, BuildDir: build}, cc)
+	if c2.Len() != 1 {
+		t.Errorf("a library-producing nested build should still emit the not-lifted todo; got %d", c2.Len())
+	}
+}
