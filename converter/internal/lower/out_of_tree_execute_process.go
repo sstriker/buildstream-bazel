@@ -58,11 +58,13 @@ import (
 //     tool (e.g. protoc --cpp_out). The codemodel often doesn't attribute an
 //     out-of-tree tool's outputs as sources, dropping good signal.
 //   - The PROJECT-I/O signal: the call reads an in-tree source (an argv path
-//     under the source root) or writes a build-dir output (an argv path under
-//     the build dir). Whose DATA a call processes is project intent even when
-//     the helper that ISSUED it lives out of tree — a find_package prefix-tree
-//     config file driving a tool on the project's OWN .proto into the project's
-//     OWN build dir is the consumer's codegen, not the dependency's.
+//     under the source root) or touches a build-dir path (an argv path under
+//     the build dir — an OUTPUT it writes, or an INPUT it reads from an upstream
+//     step, e.g. a chained genrule consuming an earlier tool's build-dir
+//     artifact). Whose DATA a call processes is project intent even when the
+//     helper that ISSUED it lives out of tree — a find_package prefix-tree
+//     config file driving a tool on the project's OWN .proto, or feeding off the
+//     project's OWN build dir, is the consumer's codegen, not the dependency's.
 //
 // A build-dir-without-codemodel-sources call, OR any out-of-tree call carrying
 // one of these signals, is the project's OWN under-attributed codegen and is
@@ -193,12 +195,15 @@ func outOfTreeExecRecognized(c shadow.ExecuteProcessCall, cc *codegenContext) bo
 }
 
 // outOfTreeExecTouchesProjectIO reports whether an out-of-tree call reads an
-// in-tree source (an argv path under the recorded source root) or writes a
-// build-dir output (an argv path under the recorded build dir). Either is a
-// location-independent signal that the call is the PROJECT's own codegen — a
-// tool the project drives on its OWN files — even when the issuing helper (a
-// find_package prefix-tree config file, say) lives out of tree. The issuing
-// site says where the call was written; the I/O says whose data it processes.
+// in-tree source (an argv path under the recorded source root) or touches a
+// build-dir path (an argv path under the recorded build dir — an output it
+// writes, or an input it reads from an upstream step, e.g. a chained genrule
+// consuming an earlier tool's build-dir artifact). Position isn't distinguished:
+// any src/build path in the argv is the signal. Either is location-independent
+// evidence that the call is the PROJECT's own codegen — a tool the project
+// drives on its OWN files — even when the issuing helper (a find_package
+// prefix-tree config file, say) lives out of tree. The issuing site says where
+// the call was written; the I/O says whose data it processes.
 func outOfTreeExecTouchesProjectIO(c shadow.ExecuteProcessCall, recordedSrcDir, recordedBuildDir string) bool {
 	for _, argv := range c.Commands {
 		for _, tok := range argv {

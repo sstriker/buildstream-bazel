@@ -289,8 +289,9 @@ func TestPartitionOutOfTreeExec_FidelityLift(t *testing.T) {
 
 // TestPartitionOutOfTreeExec_ProjectIOSignal: the project-I/O signal is
 // location-independent. A prefix-tree-issued call (a find_package config file's
-// tool) that operates on the PROJECT's own I/O — reads an in-tree source or
-// writes a build-dir output — is the consumer's codegen, not the dependency's.
+// tool) that operates on the PROJECT's own I/O — reads an in-tree source,
+// writes a build-dir output, or reads a build-dir input from an upstream step
+// (a chained genrule) — is the consumer's codegen, not the dependency's.
 // Best-effort LIFTS it; strict lifts only when a recognizer also claims the
 // tool; a prefix call touching only the dependency's files stays a note.
 func TestPartitionOutOfTreeExec_ProjectIOSignal(t *testing.T) {
@@ -325,6 +326,16 @@ func TestPartitionOutOfTreeExec_ProjectIOSignal(t *testing.T) {
 	lift, note = partitionOutOfTreeExec([]shadow.ExecuteProcessCall{rec}, src, build, prefix, nil, stRec)
 	if len(lift) != 1 || len(note) != 0 {
 		t.Fatalf("strict recognized should LIFT a prefix call on project I/O; got lift=%d note=%d", len(lift), len(note))
+	}
+
+	// A build-dir INPUT counts too: a chained step that reads an upstream tool's
+	// build-dir artifact (and writes a relative, non-anchored output) is the
+	// project's own codegen pipeline. Best-effort lifts it.
+	chained := ootCall("/synth/lib/cmake/Foo/FooConfig.cmake", 1,
+		"postprocess", "/build/gen/step1.out", "-o", "step2.out")
+	lift, note = partitionOutOfTreeExec([]shadow.ExecuteProcessCall{chained}, src, build, prefix, nil, be)
+	if len(lift) != 1 || len(note) != 0 {
+		t.Fatalf("best-effort should LIFT a chained call reading a build-dir input; got lift=%d note=%d", len(lift), len(note))
 	}
 
 	// A prefix call touching NEITHER the source tree nor the build dir is the
