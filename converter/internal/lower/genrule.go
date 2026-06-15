@@ -77,6 +77,17 @@ type codegenContext struct {
 	// codegen-recognizer dispatch (--recognize-codegen).
 	OutToNativeConsumerDep map[string]string
 
+	// OutToNativeConsumerPkg maps the same generated output to the element-
+	// relative PACKAGE its producing native rule lands in (e.g. a/msg.pb.cc ->
+	// "a"). Recorded alongside OutToNativeConsumerDep so rewriteNativeRuleConsumers
+	// can PACKAGE-QUALIFY the consumer dep when the rule NAME is ambiguous — two
+	// same-basename protos (a/msg.proto, b/msg.proto) both yield a "msg_cc_proto",
+	// so a bare ":msg_cc_proto" relabels via the name-keyed map (clobbered) to the
+	// wrong package. With the producer package known, the ambiguous case emits
+	// //<base>/<pkg>:msg_cc_proto. The unambiguous (single-package) case keeps the
+	// bare relative label, byte-identical.
+	OutToNativeConsumerPkg map[string]string
+
 	// GendirMarkedOuts records baked file(GENERATE) outputs whose
 	// content embeds the @BSB_GENDIR@ marker (build-dir paths
 	// re-anchored by reanchorResponseContent). A consuming genrule
@@ -510,6 +521,7 @@ func newCodegenContext() *codegenContext {
 	return &codegenContext{
 		OutToGenrule:               map[string]string{},
 		OutToNativeConsumerDep:     map[string]string{},
+		OutToNativeConsumerPkg:     map[string]string{},
 		NativeRuleSubPackage:       map[string]string{},
 		recognizedConsumerByInput:  map[string]string{},
 		recognizedNameOwner:        map[string]string{},
