@@ -168,6 +168,16 @@ func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedSrcDir, r
 			// prefix-tree call on the dependency's own staged files (no projectIO)
 			// stays a note even with an imports tool — its inputs are convert-time
 			// staging, absent at the consumer's build.
+			//
+			// Note: a tool-from-imports lift (unlike a recognizer lift, which SUPPLIES
+			// + on-disk-corroborates its derived outputs) still relies on
+			// recoverExecuteProcess's GENERIC output lifts (argv-declared /
+			// unspecified-output). It proves the tool is runnable, not that the
+			// outputs are recoverable — so a build-dir call whose outputs aren't
+			// argv-declared or codemodel-demanded surfaces via the
+			// execute-process-refusal todo (loud, faithful-or-fail) rather than this
+			// out-of-tree note. The operator mapping the tool into the manifest is
+			// the explicit signal to prefer that louder accounting.
 			lift = append(lift, c)
 			continue
 		}
