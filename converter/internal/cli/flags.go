@@ -935,16 +935,22 @@ func parseValidate(a Args, fs *flag.FlagSet, stderr io.Writer) (Args, int) {
 	case a.CMakeBuildDir != "":
 		a.ReplyDir = filepath.Join(a.CMakeBuildDir, ".cmake", "api", "v1", "reply")
 	}
-	// Operator-facing dials: validate the enums, then map to the
-	// existing per-kind switches. Explicit per-kind flags
-	// (--unsupported-execute-process-fallback,
-	// --ignore-rejections-for-diagnostics) stay as escape hatches —
-	// when set true they override the dial-derived default; an
-	// explicit "false" still wins because Go's flag.BoolVar
-	// short-circuits the derivation only when an explicit value
-	// matches the derived one. Pragmatic: best-effort + explicit
-	// --unsupported-...=false is a contradiction the operator
-	// should not write, and we don't try to detect it here.
+	return applyOperatorDials(a, fs, stderr)
+}
+
+// applyOperatorDials validates the operator-facing enum dials
+// (--fidelity / --bake-in / --per-config-bake), canonicalizes them, and
+// maps the master --fidelity dial onto the per-kind switches it drives.
+// Split out of parseValidate to keep each under the complexity gate.
+//
+// Explicit per-kind flags (--unsupported-execute-process-fallback,
+// --ignore-rejections-for-diagnostics) stay as escape hatches — when set
+// true they override the dial-derived default; an explicit "false" still
+// wins because Go's flag.BoolVar short-circuits the derivation only when
+// an explicit value matches the derived one. Pragmatic: best-effort +
+// explicit --unsupported-...=false is a contradiction the operator should
+// not write, and we don't try to detect it here.
+func applyOperatorDials(a Args, fs *flag.FlagSet, stderr io.Writer) (Args, int) {
 	fidelity, err := convmode.ParseFidelity(a.Fidelity)
 	if err != nil {
 		fmt.Fprintln(stderr, "convert-element-cmake: "+err.Error())
@@ -1002,6 +1008,12 @@ func parseValidate(a Args, fs *flag.FlagSet, stderr io.Writer) (Args, int) {
 		fmt.Fprintln(stderr, "convert-element-cmake: "+err.Error())
 		return a, ExitUsage
 	}
+	perConfigBake, err := convmode.ParsePerConfigBake(a.PerConfigBake)
+	if err != nil {
+		fmt.Fprintln(stderr, "convert-element-cmake: "+err.Error())
+		return a, ExitUsage
+	}
+	a.PerConfigBake = string(perConfigBake)
 	if a.Diagnostics {
 		// --diagnostics is "I'm surveying this codebase; surface
 		// everything you know how to surface, and don't abort on

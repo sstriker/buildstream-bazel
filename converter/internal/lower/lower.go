@@ -280,7 +280,7 @@ type Options struct {
 	// PRODUCT default is strict — the CLI canonicalizes "" → strict
 	// (ParseFidelity, flags.go) before threading it here. See
 	// docs/design/codegen-fidelity-ladder.md.
-	Fidelity string
+	Fidelity convmode.Fidelity
 
 	// CMakeVars is the full cmake variable namespace captured
 	// at end of configure (cmakerun.Reply.Vars). Used by the

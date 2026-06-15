@@ -524,6 +524,31 @@ func TestParse_CmakeDefineLeadingDashRejected(t *testing.T) {
 	}
 }
 
+// TestParse_PerConfigBakeValidated pins that --per-config-bake is validated:
+// a canonical value / alias is canonicalized in place, and a typo is a clean
+// usage error rather than silently resolving to "auto".
+func TestParse_PerConfigBakeValidated(t *testing.T) {
+	// Alias canonicalizes to the canonical value on the Args.
+	var ok bytes.Buffer
+	args, code := Parse([]string{"--source-root", "/proj", "--per-config-bake", "force"}, &ok)
+	if code != ExitSuccess {
+		t.Fatalf("code = %d, stderr=%q", code, ok.String())
+	}
+	if args.PerConfigBake != "on" {
+		t.Errorf("--per-config-bake=force should canonicalize to \"on\", got %q", args.PerConfigBake)
+	}
+
+	// A typo fails loudly.
+	var stderr bytes.Buffer
+	_, code = Parse([]string{"--source-root", "/proj", "--per-config-bake", "atuo"}, &stderr)
+	if code != ExitUsage {
+		t.Fatalf("code = %d; want ExitUsage (%d)", code, ExitUsage)
+	}
+	if !strings.Contains(stderr.String(), "--per-config-bake") {
+		t.Errorf("stderr should name the offending flag, got %q", stderr.String())
+	}
+}
+
 // TestParse_FidelityMasterDial pins the consolidated dial: an EXPLICIT
 // --fidelity drives the staging-free lifts + --bake-in; the unset default stays
 // conservative (byte-identical); explicit individual flags override the dial.

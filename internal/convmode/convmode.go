@@ -23,7 +23,10 @@
 // any per-converter behavior. It stays write-a-local.
 package convmode
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Fidelity decides what happens when a per-kind native converter
 // refuses to lower an element:
@@ -86,5 +89,39 @@ func ParseBakeIn(s string) (BakeIn, error) {
 	default:
 		return BakeInWarn, fmt.Errorf("--bake-in must be one of %q, %q, or %q (got %q)",
 			BakeInWarn, BakeInAllow, BakeInReject, s)
+	}
+}
+
+// PerConfigBake decides whether the multi-config converter runs the
+// per-build-type configure_file bake passes:
+//
+//	Auto   run them only when the trace shows project files reading
+//	       CMAKE_BUILD_TYPE (zero overhead otherwise)
+//	On     always run them
+//	Off    never run them
+type PerConfigBake string
+
+const (
+	PerConfigBakeAuto PerConfigBake = "auto"
+	PerConfigBakeOn   PerConfigBake = "on"
+	PerConfigBakeOff  PerConfigBake = "off"
+)
+
+// ParsePerConfigBake validates the --per-config-bake CLI string and
+// canonicalizes its aliases. Empty resolves to Auto (the flag default).
+// Accepts the forgiving aliases the consumer historically honored —
+// on/force, off/false/0/no — and REJECTS anything else (so a typo fails
+// loudly rather than silently falling through to auto). Case-insensitive.
+func ParsePerConfigBake(s string) (PerConfigBake, error) {
+	switch strings.ToLower(s) {
+	case "", string(PerConfigBakeAuto):
+		return PerConfigBakeAuto, nil
+	case string(PerConfigBakeOn), "force":
+		return PerConfigBakeOn, nil
+	case string(PerConfigBakeOff), "false", "0", "no":
+		return PerConfigBakeOff, nil
+	default:
+		return PerConfigBakeAuto, fmt.Errorf("--per-config-bake must be one of %q, %q, or %q (got %q)",
+			PerConfigBakeAuto, PerConfigBakeOn, PerConfigBakeOff, s)
 	}
 }

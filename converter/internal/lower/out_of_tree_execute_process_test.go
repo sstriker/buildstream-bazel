@@ -263,7 +263,7 @@ func TestPartitionOutOfTreeExec_RecognizerSignal(t *testing.T) {
 // genrule-lifted regardless of fidelity.
 func TestPartitionOutOfTreeExec_FidelityLift(t *testing.T) {
 	be := newCodegenContext()
-	be.Fidelity = string(convmode.FidelityBestEffort)
+	be.Fidelity = convmode.FidelityBestEffort
 	st := newCodegenContext() // Fidelity "" == strict
 
 	// Unrecognized build-dir codegen call.
