@@ -203,6 +203,10 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 	// were lifted to $(location) labels. nil when the trace has no
 	// genex-bearing commands (the audit tag is then never added).
 	genexIndex := buildOutputToCustomCommandGenex(traceCtx.CustomCommands)
+	// output → add_custom_command record, for recovering the REAL command when a
+	// ninja edge is a cmake-generated `cmake -P`/`cmake -E` wrapper (P1 of the
+	// wrapper-codegen coverage; see ROADMAP).
+	outputToCustomCommand := buildOutputToCustomCommand(traceCtx.CustomCommands)
 	// add_custom_target name → ALL flag. A custom target declared
 	// WITHOUT `ALL` is not part of cmake's default build (you invoke it
 	// explicitly, `make <name>`); the faithful Bazel analog is a
@@ -459,7 +463,15 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			Visibility:   visibility,
 			Tags:         tags,
 		}
-		codegenCmd := codegenCommandFrom(preToolSwapCmd, srcs, outs, bazelPackagePath)
+		// When the edge is a cmake-generated `cmake -P`/`cmake -E` wrapper that
+		// hides the real tool, recognize on the trace's real command (the edge's
+		// declared outs stay the cross-check); else use the edge command as before.
+		var codegenCmd CodegenCommand
+		if realArgv := traceWrapperRealArgv(preToolSwapCmd, outs, outputToCustomCommand); realArgv != nil {
+			codegenCmd = codegenCommandFromArgv(realArgv, srcs, outs, bazelPackagePath)
+		} else {
+			codegenCmd = codegenCommandFrom(preToolSwapCmd, srcs, outs, bazelPackagePath)
+		}
 		codegenCmd.ProtoDeps = protoImportLabels(codegenCmd.Srcs, codegenCmd.Outs, cmakeSrc, bazelPackagePath)
 		if p := soleProtoInput(codegenCmd.Srcs); p != "" && cppProtoBases[strings.TrimSuffix(filepath.Base(p), ".proto")] {
 			codegenCmd.SiblingCppProto = true
@@ -479,12 +491,19 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 // the recovered srcs, cmake's recorded outs (the recognizer's output
 // cross-check), and the Bazel package.
 func codegenCommandFrom(cmd string, srcs, outs []string, pkg string) CodegenCommand {
-	fields := strings.Fields(cmd)
+	return codegenCommandFromArgv(strings.Fields(cmd), srcs, outs, pkg)
+}
+
+// codegenCommandFromArgv is codegenCommandFrom over an already-tokenized argv —
+// used when the real command comes from a TRACE record (shadow.AddCustomCommand
+// Call.Commands) rather than a build-line string, so we skip the lossy
+// re-tokenization (args with spaces survive).
+func codegenCommandFromArgv(argv, srcs, outs []string, pkg string) CodegenCommand {
 	var driver string
 	var args []string
-	if len(fields) > 0 {
-		driver = filepath.Base(fields[0])
-		args = fields[1:]
+	if len(argv) > 0 {
+		driver = filepath.Base(argv[0])
+		args = argv[1:]
 	}
 	return CodegenCommand{
 		Driver: driver,
@@ -493,6 +512,56 @@ func codegenCommandFrom(cmd string, srcs, outs []string, pkg string) CodegenComm
 		Outs:   outs,
 		Pkg:    pkg,
 	}
+}
+
+// buildOutputToCustomCommand indexes each add_custom_command trace record by its
+// declared OUTPUT (and BYPRODUCT) paths, so a ninja edge can be cross-referenced
+// back to the source-level call — to recover the REAL command when the edge is a
+// cmake-generated `cmake -P`/`cmake -E` wrapper that hides the actual tool.
+func buildOutputToCustomCommand(cmds []shadow.AddCustomCommandCall) map[string]*shadow.AddCustomCommandCall {
+	if len(cmds) == 0 {
+		return nil
+	}
+	m := map[string]*shadow.AddCustomCommandCall{}
+	for i := range cmds {
+		c := &cmds[i]
+		for _, o := range c.Outputs {
+			m[o] = c
+		}
+		for _, o := range c.ByProducts {
+			m[o] = c
+		}
+	}
+	return m
+}
+
+// traceWrapperRealArgv returns the real command argv for recognition when a
+// ninja edge is a cmake-generated wrapper hiding the actual tool: the edge's
+// driver is `cmake` (a `cmake -P <script>` / `cmake -E …` build line), but the
+// matching add_custom_command trace record is a SINGLE-COMMAND whose real driver
+// is NOT cmake (e.g. protoc). Multi-COMMAND records are skipped — recognizing one
+// command of a bundle would drop the others; the genrule fallback handles them.
+// A user's own `cmake -P script` (trace driver also cmake) is left to today's
+// cmake-script path. nil when no substitution applies.
+func traceWrapperRealArgv(edgeCmd string, outs []string, idx map[string]*shadow.AddCustomCommandCall) []string {
+	if len(idx) == 0 {
+		return nil
+	}
+	fields := strings.Fields(edgeCmd)
+	if len(fields) == 0 || filepath.Base(fields[0]) != "cmake" {
+		return nil // not a cmake-driven wrapper edge
+	}
+	for _, o := range outs {
+		c, ok := idx[o]
+		if !ok || len(c.Commands) != 1 || len(c.Commands[0]) == 0 {
+			continue
+		}
+		if filepath.Base(c.Commands[0][0]) == "cmake" {
+			continue // user's own cmake -P/-E — not a generated wrapper
+		}
+		return c.Commands[0]
+	}
+	return nil
 }
 
 // protocCppOutputBases scans the edges for `protoc --cpp_out` commands and

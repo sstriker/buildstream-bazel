@@ -596,3 +596,45 @@ func TestCustomTargetStampIsNonAll(t *testing.T) {
 		})
 	}
 }
+
+// TestTraceWrapperRealArgv: a cmake-generated `cmake -P`/`cmake -E` wrapper edge
+// recovers the real command from the matching single-COMMAND add_custom_command
+// trace record; multi-COMMAND, a user's own cmake -P, and non-cmake edges don't
+// substitute.
+func TestTraceWrapperRealArgv(t *testing.T) {
+	idx := buildOutputToCustomCommand([]shadow.AddCustomCommandCall{
+		{Outputs: []string{"foo.pb.cc", "foo.pb.h"}, Commands: [][]string{{"protoc", "--cpp_out=.", "foo.proto"}}},
+		{Outputs: []string{"multi.out"}, Commands: [][]string{{"protoc", "--cpp_out=.", "m.proto"}, {"cp", "a", "b"}}},
+		{Outputs: []string{"userp.out"}, Commands: [][]string{{"cmake", "-P", "user.cmake"}}},
+	})
+	if got := traceWrapperRealArgv("cmake -P CMakeFiles/x.dir/foo.cmake", []string{"foo.pb.cc", "foo.pb.h"}, idx); len(got) != 3 || got[0] != "protoc" {
+		t.Errorf("a cmake -P wrapper over foo.pb.* should yield the real protoc argv; got %v", got)
+	}
+	if got := traceWrapperRealArgv("cmake -P x.cmake", []string{"multi.out"}, idx); got != nil {
+		t.Errorf("a multi-COMMAND record must not substitute (would drop bundled steps); got %v", got)
+	}
+	if got := traceWrapperRealArgv("cmake -P x.cmake", []string{"userp.out"}, idx); got != nil {
+		t.Errorf("a user's own cmake -P must stay on the script path; got %v", got)
+	}
+	if got := traceWrapperRealArgv("protoc --cpp_out=. foo.proto", []string{"foo.pb.cc"}, idx); got != nil {
+		t.Errorf("a non-cmake (real-tool) edge must not substitute; got %v", got)
+	}
+	if got := traceWrapperRealArgv("cmake -P x.cmake", []string{"foo.pb.cc"}, nil); got != nil {
+		t.Errorf("no trace index → no substitution; got %v", got)
+	}
+}
+
+// TestRecognizeViaTraceWrapperArgv: the real argv recovered from a wrapper edge
+// recognizes to the native rule (the point of P1) — a wrapped protoc lowers to
+// proto_library + cc_proto_library instead of a generic genrule.
+func TestRecognizeViaTraceWrapperArgv(t *testing.T) {
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	cmd := codegenCommandFromArgv([]string{"protoc", "--cpp_out=.", "foo.proto"},
+		[]string{"foo.proto"}, []string{"foo.pb.cc", "foo.pb.h"}, "pkg")
+	fallback := ir.Target{Name: "exec_foo", Kind: ir.KindGenrule, GenruleOuts: []string{"foo.pb.cc", "foo.pb.h"}}
+	tgts, ok := recognizeOrGenrule(cc, cmd, fallback)
+	if !ok || len(tgts) != 2 || tgts[0].NativeRule == nil || tgts[0].NativeRule.Kind != "proto_library" {
+		t.Fatalf("a wrapped protoc should recognize to proto_library + cc_proto_library; got ok=%v %+v", ok, tgts)
+	}
+}
