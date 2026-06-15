@@ -322,23 +322,30 @@ func nativeRuleSubPkg(res CodegenResult, cmd CodegenCommand) string {
 	return dir
 }
 
-// recordNativeRulePlacement notes the package each native target should land in
-// (merged into Package.SubPackages later). The recognizer names the rule + sets
-// srcs by basename, so the rule must land in the package owning the .proto for
-// the basename to resolve and cross-package imports to line up. Prefers the
-// recognizer's SubPackage (the .proto's own dir — correct even under a rebased
-// --proto_path); falls back to the output's dir for recognizers that don't set
-// it.
+// recordNativeRulePlacement records the package each native target lands in. The
+// recognizer names the rule + sets srcs by basename, so the rule must land in
+// the package owning the .proto for the basename to resolve and cross-package
+// imports to line up. Prefers the recognizer's SubPackage (the .proto's own dir
+// — correct even under a rebased --proto_path); falls back to the output's dir.
+//
+// Placement is carried PER-TARGET on NativeRuleSpec.SubPackage, not (only) in
+// the name-keyed cc.NativeRuleSubPackage map: two distinct same-basename inputs
+// (a/msg.proto, b/msg.proto) both emit a "msg_proto" rule, in packages a and b —
+// the flat map can hold only one, but the per-target field keeps both. The map
+// is still populated (it seeds Package.SubPackages + the split's package set for
+// the common unique-name case); the split partition prefers the per-target field.
 func recordNativeRulePlacement(cc *codegenContext, res CodegenResult, cmd CodegenCommand) {
-	if cc.NativeRuleSubPackage == nil {
-		return
-	}
 	dir := nativeRuleSubPkg(res, cmd)
 	if dir == "" {
 		return
 	}
 	for _, t := range res.Targets {
-		cc.NativeRuleSubPackage[t.Name] = dir
+		if t.NativeRule != nil {
+			t.NativeRule.SubPackage = dir
+		}
+		if cc.NativeRuleSubPackage != nil {
+			cc.NativeRuleSubPackage[t.Name] = dir
+		}
 	}
 }
 

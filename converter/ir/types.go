@@ -1048,6 +1048,12 @@ type NativeRuleSpec struct {
 	// in the order the recognizer supplies; the emitter re-sorts to buildifier's
 	// canonical attribute order, so order here is not significant.
 	Attrs []NativeAttr
+	// SubPackage is the element-relative package this rule lands in (the .proto's
+	// own dir for protoc). Carried PER-TARGET — unlike the name-keyed
+	// Package.SubPackages map, which can't represent two same-named rules in
+	// different packages (a/msg.proto and b/msg.proto → two //…:msg_proto). The
+	// split partition prefers this when set. "" = the element root.
+	SubPackage string
 }
 
 // NativeAttr is one attribute of a NativeRuleSpec. Exactly one of List / Str is
