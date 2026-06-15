@@ -9,20 +9,24 @@ legible, gives Bazel the real dependency graph, and is what a `gazelle`
 maintenance pass already understands.
 
 A **codegen recognizer** maps one such generator invocation to its native
-rule(s). Recognizers live in a registry; adding one for a new tool is a
-self-contained change — no new `ir.Kind`, no bespoke emit path. There are two
-ways to add one, both feeding the same registry:
+rule(s). Recognizers are **Starlark** (`*.star`): adding one for a new tool is a
+self-contained file — no new `ir.Kind`, no bespoke emit path, no recompile.
+There is one recognizer model with two homes, both feeding the same registry:
 
-- **In Go (first-party):** implement the `CodegenRecognizer` interface and
-  register it in-tree. Covered first, below — it's also the substrate the
-  Starlark path rides.
-- **In Starlark (operator, no recompile):** drop a `*.star` file next to your
-  project and point `--recognizers` at it. Covered in
+- **Built-in recognizers** ship embedded in the binary
+  (`converter/internal/lower/builtinrecognizers/*.star`: `protoc`, `grpc_cpp`,
+  `grpc_only`). They're loaded first.
+- **Operator recognizers** are `*.star` files you point `--recognizers` at —
+  for a generator the built-ins don't cover, or to **override a built-in**: an
+  operator recognizer whose name matches a built-in (e.g. `protoc.star`)
+  *replaces* it in place. See
   [Operator recognizers in Starlark](#operator-recognizers-in-starlark-no-recompile).
-  This is the path for adding a generator your converter binary doesn't ship
-  support for, without rebuilding it.
 
-This doc is the how-to for both.
+Under the hood both compile to the Go `CodegenRecognizer` interface — the
+internal substrate (`starlarkRecognizer`) and the soundness gate (output-
+authority cross-check) live in Go; the recognizers themselves are data.
+
+This doc is the how-to.
 
 Behaviour today is gated behind the opt-in `--recognize-codegen` flag (off by
 default; see [`ROADMAP.md`](../ROADMAP.md) for the rollout to default-on +
@@ -130,6 +134,12 @@ idiomatic target a `gazelle` pass resolves the `#include` to on its own.
 
 ## Worked example: a `flatc` recognizer (sketch)
 
+You add a recognizer by writing a `*.star` (see
+[Operator recognizers in Starlark](#operator-recognizers-in-starlark-no-recompile)
+for the runnable form, and `builtinrecognizers/protoc.star` for a full built-in).
+The Go shape below shows the same logic in the underlying `CodegenRecognizer`
+substrate — useful for understanding the contract, not the way you'd ship one:
+
 ```go
 // flatcCppRecognizer maps `flatc --cpp … schema.fbs` to ... the idiomatic
 // FlatBuffers rule(s) for your environment. (Shown as a shape, not a drop-in:
@@ -220,7 +230,7 @@ A recognizer script defines two top-level functions and uses two builtins
 (`native_rule(...)`, `result(...)`) — that's the whole API:
 
 ```python
-def match(cmd):            # cmd.driver, cmd.args, cmd.srcs, cmd.outs, cmd.pkg, cmd.proto_deps, cmd.discovered_outputs
+def match(cmd):            # cmd.driver, cmd.args, cmd.srcs, cmd.outs, cmd.pkg, cmd.proto_deps, cmd.discovered_outputs, cmd.sibling_cpp_proto
     return cmd.driver.startswith("protoc") and \
            any([a.startswith("--cpp_out") for a in cmd.args])
 
@@ -250,6 +260,14 @@ Starlark path safe by construction:
 - **`native_rule(kind, name, load_from=, load_symbol=, attrs={})`** maps 1:1 to
   the `NativeRuleSpec` substrate; the `load()` is auto-emitted. `attrs` is a
   dict of attr-name → string *or* list-of-strings, emitted in insertion order.
+- **`result(…, sub_package="dir")`** places the rule(s) in `dir` (element-
+  relative) instead of the output's dir — e.g. the `.proto`'s own directory, so
+  basename `srcs` resolve and cross-package proto imports line up. Empty = the
+  output's dir (the default).
+- **`cmd.sibling_cpp_proto`** is the host's pre-scan signal that a sibling
+  `--cpp_out` call already produces this proto's `proto_library`/
+  `cc_proto_library` — a grpc-only recognizer references them rather than
+  re-emitting (double-producing) them.
 - **Output authority stays first-party.** The script declares `derived_outputs`;
   the Go host cross-checks them against cmake's recorded outputs and falls back
   to the genrule (best-effort) / refuses (strict) on a mismatch — the soundness

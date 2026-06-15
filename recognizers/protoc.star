@@ -17,6 +17,12 @@
 #                   naming convention to predict them); return it / a subset as
 #                   derived_outputs. Convention-based recognizers (this one)
 #                   ignore it.
+#   cmd.sibling_cpp_proto  True when a sibling --cpp_out call already produces
+#                   this proto's proto_library/cc_proto_library (a grpc-only
+#                   call references them instead of re-emitting).
+#
+# result(...) takes an optional sub_package="dir" to place the rule(s) in dir
+# (element-relative) — e.g. the .proto's own directory.
 
 def _basename(p):
     return p.rsplit("/", 1)[-1]

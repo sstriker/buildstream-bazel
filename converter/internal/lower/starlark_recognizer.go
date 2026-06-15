@@ -17,7 +17,7 @@ import (
 // converter: a recognizer is a Starlark file (`*.star`) defining two
 // functions, loaded at startup via --recognizers and appended to the registry.
 //
-//	def match(cmd):  # cmd.driver, cmd.args, cmd.srcs, cmd.outs, cmd.pkg, cmd.proto_deps, cmd.discovered_outputs
+//	def match(cmd):  # cmd.driver, cmd.args, cmd.srcs, cmd.outs, cmd.pkg, cmd.proto_deps, cmd.discovered_outputs, cmd.sibling_cpp_proto
 //	    return cmd.driver.startswith("protoc") and \
 //	           any([a.startswith("--cpp_out") for a in cmd.args])
 //
@@ -130,6 +130,7 @@ func commandToStarlark(cmd CodegenCommand) starlark.Value {
 		"pkg":                starlark.String(cmd.Pkg),
 		"proto_deps":         stringsToStarlark(cmd.ProtoDeps),
 		"discovered_outputs": stringsToStarlark(cmd.DiscoveredOutputs),
+		"sibling_cpp_proto":  starlark.Bool(cmd.SiblingCppProto),
 	})
 }
 
@@ -168,8 +169,10 @@ func starlarkNativeRule(_ *starlark.Thread, b *starlark.Builtin, args starlark.T
 // builtin returning the struct a recognizer's lower() must return.
 func starlarkResult(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var targets, consumerDeps, derivedOutputs starlark.Value
+	var subPackage string
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs,
-		"targets", &targets, "consumer_deps?", &consumerDeps, "derived_outputs?", &derivedOutputs); err != nil {
+		"targets", &targets, "consumer_deps?", &consumerDeps, "derived_outputs?", &derivedOutputs,
+		"sub_package?", &subPackage); err != nil {
 		return nil, err
 	}
 	norm := func(v starlark.Value) starlark.Value {
@@ -182,6 +185,7 @@ func starlarkResult(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple
 		"targets":         norm(targets),
 		"consumer_deps":   norm(consumerDeps),
 		"derived_outputs": norm(derivedOutputs),
+		"sub_package":     starlark.String(subPackage),
 	}), nil
 }
 
@@ -227,7 +231,11 @@ func resultFromStarlark(cmd CodegenCommand, v starlark.Value) (CodegenResult, er
 			return CodegenResult{}, err
 		}
 	}
-	return CodegenResult{Targets: targets, ConsumerDeps: consumer, DerivedOutputs: derived}, nil
+	// sub_package (optional): the element-relative dir the rule(s) should land in
+	// — the .proto's own dir for protoc (so basename srcs resolve and cross-package
+	// imports line up). Empty leaves placement to the output's dir, as before.
+	subPkg, _ := starlark.AsString(attrOrNone(st, "sub_package"))
+	return CodegenResult{Targets: targets, ConsumerDeps: consumer, DerivedOutputs: derived, SubPackage: subPkg}, nil
 }
 
 func starlarkTargets(v starlark.Value) ([]ir.Target, error) {
@@ -290,13 +298,23 @@ func attrsFromStarlark(v starlark.Value) ([]ir.NativeAttr, error) {
 		if !ok {
 			return nil, fmt.Errorf("attr name must be a string, got %s", item[0].Type())
 		}
+		if bv, ok := item[1].(starlark.Bool); ok {
+			// A bare-identifier attr (grpc_only = True) → NativeAttr.Ident, which
+			// the emitter renders unquoted. cc_grpc_library needs this.
+			ident := "False"
+			if bool(bv) {
+				ident = "True"
+			}
+			out = append(out, ir.NativeAttr{Name: key, Ident: ident})
+			continue
+		}
 		if s, ok := stringValue(item[1]); ok {
 			out = append(out, ir.NativeAttr{Name: key, Str: s})
 			continue
 		}
 		list, err := goStringList(item[1])
 		if err != nil {
-			return nil, fmt.Errorf("attr %q must be a string or list of strings: %w", key, err)
+			return nil, fmt.Errorf("attr %q must be a bool, string, or list of strings: %w", key, err)
 		}
 		out = append(out, ir.NativeAttr{Name: key, List: list})
 	}

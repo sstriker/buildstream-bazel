@@ -204,15 +204,14 @@ type codegenContext struct {
 	// after the native targets are emitted.
 	NativeRuleSubPackage map[string]string
 
-	// recognizedConsumerByInput dedups recognized native rules by INPUT identity
-	// (codegenInputKey: driver + sorted source set). The SAME input run into
-	// different output dirs is ONE canonical native rule — a proto_library /
-	// cc_proto_library produces its output at a single Bazel location, so the
-	// cmake out-dir duplication collapses; a second emit would be a duplicate
-	// target. Keyed input -> the rule's consumer-dep label, so a repeat
-	// invocation wires its outputs to the already-emitted rule instead of
-	// re-emitting it. DIFFERENT inputs get distinct keys (and distinct
-	// names/packages) and stay separate rules.
+	// recognizedConsumerByInput dedups recognized native rules by EMISSION
+	// identity (codegenRuleKey: driver + sorted input set + the produced rule
+	// names). The SAME input run into different output dirs yields the same rule
+	// names → ONE canonical native rule (the out-dir duplication collapses); a
+	// repeat wires its outputs to the already-emitted rule via the keyed
+	// consumer-dep label. The same input through DIFFERENT, complementary
+	// recognizers (protoc --cpp_out vs a sibling --grpc_out) produces DIFFERENT
+	// names → distinct keys → both emit. DIFFERENT inputs get distinct keys too.
 	recognizedConsumerByInput map[string]string
 	// recognizedNameOwner maps a placed native-rule identity (subpackage + name)
 	// to the input key that owns it, so a DIFFERENT input that would emit a

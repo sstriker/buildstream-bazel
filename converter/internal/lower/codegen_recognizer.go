@@ -103,19 +103,28 @@ type CodegenRecognizer interface {
 	Lower(cmd CodegenCommand) (CodegenResult, error)
 }
 
-// codegenRegistry is the ordered recognizer list; the first Match wins, and no
-// match means the command stays on the generic (hermetic) genrule path.
-var codegenRegistry = []CodegenRecognizer{
-	// grpc first: a combined --cpp_out+--grpc_out command must lower to the full
-	// proto+cc_proto+cc_grpc set, not just the cpp pair the cpp recognizer would
-	// claim on the --cpp_out flag alone.
-	grpcCppRecognizer{},
-	// grpc-only call (services in a separate invocation): emits cc_grpc_library
-	// referencing the sibling cpp call's proto_library/cc_proto_library. Fires
-	// only with a confirmed sibling (cmd.SiblingCppProto); mutually exclusive
-	// with the two above (needs --grpc_out, no --cpp_out).
-	grpcOnlyRecognizer{},
-	protocCppRecognizer{},
+// codegenRegistry returns the ordered recognizer list for a dispatch: the
+// embedded built-in .star recognizers (protoc / grpc), with operator-supplied
+// `extra` recognizers (loaded from --recognizers) applied as OVERRIDES — an
+// operator recognizer with the same Name() REPLACES the built-in in place,
+// otherwise it appends after. First Match wins; no match → the generic
+// (hermetic) genrule path. (The built-in matches are mutually exclusive, so
+// their relative order is immaterial.)
+func codegenRegistry(extra []CodegenRecognizer) []CodegenRecognizer {
+	out := append([]CodegenRecognizer(nil), builtinRecognizers()...)
+	byName := map[string]int{}
+	for i, r := range out {
+		byName[r.Name()] = i
+	}
+	for _, e := range extra {
+		if i, ok := byName[e.Name()]; ok {
+			out[i] = e // operator shadows the built-in of the same name
+		} else {
+			byName[e.Name()] = len(out)
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // recognizeCodegen tries each registered recognizer in order. Returns
@@ -126,18 +135,10 @@ func recognizeCodegen(cmd CodegenCommand) (CodegenResult, bool, error) {
 	return recognizeCodegenWith(nil, cmd)
 }
 
-// recognizeCodegenWith is recognizeCodegen with operator-supplied recognizers
-// (loaded from --recognizers Starlark files) appended after the built-ins:
-// first-party recognizers win, operator ones extend. Same (result, matched,
-// err) contract.
+// recognizeCodegenWith is recognizeCodegen over the built-ins plus operator
+// overrides (see codegenRegistry). Same (result, matched, err) contract.
 func recognizeCodegenWith(extra []CodegenRecognizer, cmd CodegenCommand) (CodegenResult, bool, error) {
-	for _, r := range codegenRegistry {
-		if r.Match(cmd) {
-			res, err := r.Lower(cmd)
-			return res, true, err
-		}
-	}
-	for _, r := range extra {
+	for _, r := range codegenRegistry(extra) {
 		if r.Match(cmd) {
 			res, err := r.Lower(cmd)
 			return res, true, err
@@ -152,12 +153,7 @@ func recognizeCodegenWith(extra []CodegenRecognizer, cmd CodegenCommand) (Codege
 // execute_process partition to route a recognized codegen call to the lift
 // (native-rule) path instead of a vague note.
 func codegenRecognizerMatches(extra []CodegenRecognizer, cmd CodegenCommand) bool {
-	for _, r := range codegenRegistry {
-		if r.Match(cmd) {
-			return true
-		}
-	}
-	for _, r := range extra {
+	for _, r := range codegenRegistry(extra) {
 		if r.Match(cmd) {
 			return true
 		}
@@ -248,19 +244,28 @@ func recognizerRefusalStub(fallback ir.Target, cmd CodegenCommand, err error) ir
 	return stub
 }
 
-// codegenInputKey identifies a recognizer invocation by its INPUTS — the driver
-// plus the sorted source set. It's the dedup unit: the SAME input run into
-// different output dirs is one canonical native rule (Bazel produces the output
-// at a single location, so the cmake out-dir duplication collapses), while
-// DIFFERENT inputs get distinct keys and stay separate rules.
-func codegenInputKey(cmd CodegenCommand) string {
+// codegenRuleKey identifies a recognizer EMISSION for dedup: the driver + sorted
+// input set + the sorted set of rule names the recognizer produced. The SAME
+// input run into different output dirs yields the SAME rule names (names derive
+// from the input, not the out dir), so it collapses to one canonical native rule
+// (Bazel produces the output at a single location). But the SAME input through
+// DIFFERENT, complementary recognizers — `protoc --cpp_out` (→ foo_proto/
+// foo_cc_proto) and a sibling `protoc --grpc_out` (→ foo_cc_grpc) — produces
+// DIFFERENT names, so they DON'T collapse: messages and services are distinct
+// outputs, both needed. DIFFERENT inputs get distinct keys regardless.
+func codegenRuleKey(cmd CodegenCommand, res CodegenResult) string {
 	ins := cmd.InputFiles
 	if len(ins) == 0 {
 		ins = cmd.Srcs
 	}
-	keyed := append([]string(nil), ins...)
-	sort.Strings(keyed)
-	return cmd.Driver + "\x00" + strings.Join(keyed, "\x00")
+	inSorted := append([]string(nil), ins...)
+	sort.Strings(inSorted)
+	names := make([]string, 0, len(res.Targets))
+	for _, t := range res.Targets {
+		names = append(names, t.Name)
+	}
+	sort.Strings(names)
+	return cmd.Driver + "\x00" + strings.Join(inSorted, "\x00") + "\x00#\x00" + strings.Join(names, "\x00")
 }
 
 // dedupRecognizedRule decides whether a matched recognizer's targets should be
@@ -282,13 +287,14 @@ func (cc *codegenContext) dedupRecognizedRule(cmd CodegenCommand, res CodegenRes
 	if len(res.ConsumerDeps) > 0 {
 		consumer = strings.TrimPrefix(res.ConsumerDeps[0], ":")
 	}
-	key := codegenInputKey(cmd)
+	key := codegenRuleKey(cmd, res)
 	if prevConsumer, dup := cc.recognizedConsumerByInput[key]; dup {
-		// Same input as an earlier invocation — reuse that rule; wire this call's
+		// Same input AND same produced rule(s) as an earlier invocation (e.g. the
+		// same proto into a second out dir) — reuse that rule; wire this call's
 		// outputs to it (consumer) instead of re-emitting a duplicate target.
 		return nil, prevConsumer, true
 	}
-	// New input: a different input must not already own one of our names here.
+	// New emission: a different input must not already own one of our names here.
 	for _, t := range res.Targets {
 		if owner, taken := cc.recognizedNameOwner[subPkg+"\x00"+t.Name]; taken && owner != key {
 			return nil, "", false
@@ -489,206 +495,6 @@ func rewriteNativeRuleConsumers(pkg *ir.Package, cc *codegenContext) {
 		}
 		sort.Strings(t.Deps)
 	}
-}
-
-// protocCppRecognizer maps a `protoc … --cpp_out …` custom-command (WITHOUT
-// --grpc_out — a combined call is claimed first by grpcCppRecognizer) to a
-// proto_library + cc_proto_library pair.
-type protocCppRecognizer struct{}
-
-func (protocCppRecognizer) Name() string { return "protoc-cpp" }
-
-func (protocCppRecognizer) Match(cmd CodegenCommand) bool {
-	if !strings.HasPrefix(filepath.Base(cmd.Driver), "protoc") {
-		return false
-	}
-	return hasFlagPrefix(cmd.Args, "--cpp_out")
-}
-
-func (r protocCppRecognizer) Lower(cmd CodegenCommand) (CodegenResult, error) {
-	proto := soleProtoInput(cmd.Srcs)
-	if proto == "" {
-		return CodegenResult{}, fmt.Errorf("protoc-cpp: no single .proto input in srcs %v", cmd.Srcs)
-	}
-	base := strings.TrimSuffix(filepath.Base(proto), ".proto")
-	// Output AUTHORITY: protoc --cpp_out's convention is foo.proto -> foo.pb.{h,cc}.
-	// When cmake RECORDED the outputs (the custom-command paths), cross-check the
-	// derivation against them — a mismatch is a non-standard invocation this
-	// recognizer must not claim. When the outputs WEREN'T recorded (the
-	// execute_process `--cpp_out=DIR` shape passes empty Outs), the recognizer
-	// SUPPLIES the derived set and the caller corroborates it against on-disk +
-	// codemodel evidence (it can't be validated here).
-	derived := []string{base + ".pb.cc", base + ".pb.h"}
-	if len(cmd.Outs) > 0 {
-		if err := derivedOutputsConsistent(cmd.Outs, derived); err != nil {
-			return CodegenResult{}, fmt.Errorf("protoc-cpp: %w", err)
-		}
-	}
-	protoName := base + "_proto"
-	ccName := base + "_cc_proto"
-	return CodegenResult{
-		Targets:        []ir.Target{protoLibraryFor(proto, protoName, cmd), ccProtoLibraryFor(ccName, protoName)},
-		ConsumerDeps:   []string{":" + ccName},
-		DerivedOutputs: derived,
-		SubPackage:     path.Dir(proto),
-	}, nil
-}
-
-// protoLibraryFor builds the proto_library target a protoc recognizer emits for
-// `proto`. Shared by the cpp and grpc recognizers: srcs = the .proto basename,
-// strip_import_prefix for a rebased --proto_path (the .proto under a sub-dir but
-// imported by its proto_path-relative name), resolved import deps, public
-// visibility.
-func protoLibraryFor(proto, protoName string, cmd CodegenCommand) ir.Target {
-	attrs := []ir.NativeAttr{{Name: "srcs", List: []string{filepath.Base(proto)}}}
-	if root := protoPathRoot(proto, cmd.Outs); root != "" {
-		attrs = append(attrs, ir.NativeAttr{Name: "strip_import_prefix", Str: "/" + path.Join(cmd.Pkg, root)})
-	}
-	if len(cmd.ProtoDeps) > 0 {
-		deps := append([]string(nil), cmd.ProtoDeps...)
-		sort.Strings(deps)
-		attrs = append(attrs, ir.NativeAttr{Name: "deps", List: deps})
-	}
-	attrs = append(attrs, ir.NativeAttr{Name: "visibility", List: []string{"//visibility:public"}})
-	return ir.Target{
-		Name: protoName, Kind: ir.KindNativeRule,
-		NativeRule: &ir.NativeRuleSpec{Kind: "proto_library", LoadFrom: "@protobuf//bazel:proto_library.bzl", Attrs: attrs},
-	}
-}
-
-// ccProtoLibraryFor builds the cc_proto_library wrapping a proto_library.
-func ccProtoLibraryFor(ccName, protoName string) ir.Target {
-	return ir.Target{
-		Name: ccName, Kind: ir.KindNativeRule,
-		NativeRule: &ir.NativeRuleSpec{Kind: "cc_proto_library", LoadFrom: "@protobuf//bazel:cc_proto_library.bzl", Attrs: []ir.NativeAttr{
-			{Name: "deps", List: []string{":" + protoName}},
-			{Name: "visibility", List: []string{"//visibility:public"}},
-		}},
-	}
-}
-
-// grpcCppRecognizer maps a COMBINED `protoc … --cpp_out … --grpc_out …`
-// custom-command (one invocation generating both the message classes and the
-// C++ service stubs — the common `protobuf_generate(... PLUGIN grpc)` shape) to
-// proto_library + cc_proto_library + cc_grpc_library(grpc_only=True). It
-// requires BOTH flags so it owns the whole self-contained set: a grpc-ONLY call
-// (services compiled in a separate invocation from the messages) would
-// duplicate the sibling cpp call's proto_library/cc_proto_library, so it's left
-// on the genrule path for now (a cross-command-coordination follow-up).
-type grpcCppRecognizer struct{}
-
-func (grpcCppRecognizer) Name() string { return "protoc-grpc-cpp" }
-
-func (grpcCppRecognizer) Match(cmd CodegenCommand) bool {
-	if !strings.HasPrefix(filepath.Base(cmd.Driver), "protoc") {
-		return false
-	}
-	return hasFlagPrefix(cmd.Args, "--grpc_out") && hasFlagPrefix(cmd.Args, "--cpp_out")
-}
-
-func (grpcCppRecognizer) Lower(cmd CodegenCommand) (CodegenResult, error) {
-	proto := soleProtoInput(cmd.Srcs)
-	if proto == "" {
-		return CodegenResult{}, fmt.Errorf("protoc-grpc-cpp: no single .proto input in srcs %v", cmd.Srcs)
-	}
-	base := strings.TrimSuffix(filepath.Base(proto), ".proto")
-	// Output AUTHORITY: --cpp_out → foo.pb.{cc,h}, --grpc_out → foo.grpc.pb.{cc,h}.
-	// Same cross-check/supply contract as the cpp recognizer.
-	derived := []string{base + ".pb.cc", base + ".pb.h", base + ".grpc.pb.cc", base + ".grpc.pb.h"}
-	if len(cmd.Outs) > 0 {
-		if err := derivedOutputsConsistent(cmd.Outs, derived); err != nil {
-			return CodegenResult{}, fmt.Errorf("protoc-grpc-cpp: %w", err)
-		}
-	}
-	protoName := base + "_proto"
-	ccName := base + "_cc_proto"
-	grpcName := base + "_cc_grpc"
-	// cc_grpc_library(grpc_only=True): generate ONLY the service stubs, taking
-	// the message library (cc_proto_library) via deps. It re-exports that
-	// cc_proto_library to its own consumers (deps headers propagate), so a single
-	// consumer dep on the cc_grpc_library covers both the foo.pb.h messages and
-	// the foo.grpc.pb.h service includes.
-	grpcLib := ir.Target{
-		Name: grpcName, Kind: ir.KindNativeRule,
-		NativeRule: &ir.NativeRuleSpec{Kind: "cc_grpc_library", LoadFrom: "@grpc//bazel:cc_grpc_library.bzl", Attrs: []ir.NativeAttr{
-			{Name: "srcs", List: []string{":" + protoName}},
-			{Name: "deps", List: []string{":" + ccName}},
-			{Name: "grpc_only", Ident: "True"},
-			{Name: "visibility", List: []string{"//visibility:public"}},
-		}},
-	}
-	return CodegenResult{
-		Targets:        []ir.Target{protoLibraryFor(proto, protoName, cmd), ccProtoLibraryFor(ccName, protoName), grpcLib},
-		ConsumerDeps:   []string{":" + grpcName},
-		DerivedOutputs: derived,
-		SubPackage:     path.Dir(proto),
-	}, nil
-}
-
-// grpcOnlyRecognizer maps a grpc-ONLY `protoc … --grpc_out …` custom-command (no
-// --cpp_out — the C++ service stubs compiled in a SEPARATE invocation from the
-// messages) to a cc_grpc_library that REFERENCES the proto_library +
-// cc_proto_library a sibling `protoc --cpp_out` call emits in the same package,
-// rather than re-emitting them (which would collide on the names and
-// double-produce foo.pb.*). It fires only when the dispatch confirms that
-// sibling exists (cmd.SiblingCppProto); without one the referenced
-// :foo_proto/:foo_cc_proto would dangle, so it declines and the call stays a
-// genrule. grpc_only=True is correct here: cc_grpc_library generates only the
-// service stubs, taking the messages via the referenced cc_proto_library.
-type grpcOnlyRecognizer struct{}
-
-func (grpcOnlyRecognizer) Name() string { return "protoc-grpc-only" }
-
-func (grpcOnlyRecognizer) Match(cmd CodegenCommand) bool {
-	if !strings.HasPrefix(filepath.Base(cmd.Driver), "protoc") {
-		return false
-	}
-	return cmd.SiblingCppProto &&
-		hasFlagPrefix(cmd.Args, "--grpc_out") && !hasFlagPrefix(cmd.Args, "--cpp_out")
-}
-
-func (grpcOnlyRecognizer) Lower(cmd CodegenCommand) (CodegenResult, error) {
-	proto := soleProtoInput(cmd.Srcs)
-	if proto == "" {
-		return CodegenResult{}, fmt.Errorf("protoc-grpc-only: no single .proto input in srcs %v", cmd.Srcs)
-	}
-	base := strings.TrimSuffix(filepath.Base(proto), ".proto")
-	// Output AUTHORITY: this call produces ONLY the service stubs.
-	derived := []string{base + ".grpc.pb.cc", base + ".grpc.pb.h"}
-	if len(cmd.Outs) > 0 {
-		if err := derivedOutputsConsistent(cmd.Outs, derived); err != nil {
-			return CodegenResult{}, fmt.Errorf("protoc-grpc-only: %w", err)
-		}
-	}
-	protoName := base + "_proto"
-	ccName := base + "_cc_proto"
-	grpcName := base + "_cc_grpc"
-	grpcLib := ir.Target{
-		Name: grpcName, Kind: ir.KindNativeRule,
-		NativeRule: &ir.NativeRuleSpec{Kind: "cc_grpc_library", LoadFrom: "@grpc//bazel:cc_grpc_library.bzl", Attrs: []ir.NativeAttr{
-			{Name: "srcs", List: []string{":" + protoName}},
-			{Name: "deps", List: []string{":" + ccName}},
-			{Name: "grpc_only", Ident: "True"},
-			{Name: "visibility", List: []string{"//visibility:public"}},
-		}},
-	}
-	return CodegenResult{
-		Targets:        []ir.Target{grpcLib},
-		ConsumerDeps:   []string{":" + grpcName},
-		DerivedOutputs: derived,
-		SubPackage:     path.Dir(proto),
-	}, nil
-}
-
-// hasFlagPrefix reports whether any arg begins with the given flag (covering
-// both `--cpp_out=dir` and a bare `--cpp_out` followed by its value).
-func hasFlagPrefix(args []string, flag string) bool {
-	for _, a := range args {
-		if a == flag || strings.HasPrefix(a, flag+"=") {
-			return true
-		}
-	}
-	return false
 }
 
 // soleProtoInput returns the single `.proto` entry in srcs, or "" when there

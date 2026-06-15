@@ -120,6 +120,67 @@ def lower(cmd):
 	}
 }
 
+// Parity with the Go built-ins: a recognizer can place its rule via
+// result(sub_package=…) and branch on cmd.sibling_cpp_proto — the two fields
+// protoc/grpc built-ins use that the bridge previously didn't expose.
+func TestStarlarkRecognizer_SubPackageAndSiblingProto(t *testing.T) {
+	const star = `
+def match(cmd):
+    return cmd.driver == "protoc"
+
+def lower(cmd):
+    base = cmd.srcs[0].rsplit("/", 1)[-1][:-len(".proto")]
+    dir = cmd.srcs[0].rsplit("/", 1)[0] if "/" in cmd.srcs[0] else ""
+    tgts = [native_rule("proto_library", base + "_proto", attrs = {"srcs": [base + ".proto"]})]
+    # Only emit cc_proto when a sibling cpp call isn't already producing it.
+    if not cmd.sibling_cpp_proto:
+        tgts.append(native_rule("cc_proto_library", base + "_cc_proto", attrs = {"deps": [":" + base + "_proto"]}))
+    return result(targets = tgts, derived_outputs = [base + ".pb.cc", base + ".pb.h"], sub_package = dir)
+`
+	r := loadStarFromString(t, "p.star", star)
+	res, err := r.Lower(CodegenCommand{Driver: "protoc", Srcs: []string{"sub/a.proto"}, SiblingCppProto: true})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	if res.SubPackage != "sub" {
+		t.Errorf("sub_package = %q, want sub", res.SubPackage)
+	}
+	if len(res.Targets) != 1 || res.Targets[0].Name != "a_proto" {
+		t.Errorf("sibling_cpp_proto=true should suppress the cc_proto target; got %+v", res.Targets)
+	}
+}
+
+// A bool attr (grpc_only = True) renders as a bare identifier (NativeAttr.Ident),
+// which cc_grpc_library needs.
+func TestStarlarkRecognizer_BoolAttrIsIdent(t *testing.T) {
+	const star = `
+def match(cmd):
+    return cmd.driver == "protoc"
+
+def lower(cmd):
+    return result(
+        targets = [native_rule("cc_grpc_library", "g_cc_grpc",
+                               load_from = "@grpc//bazel:cc_grpc_library.bzl",
+                               attrs = {"grpc_only": True, "deps": [":g_cc_proto"]})],
+        derived_outputs = ["g.grpc.pb.cc"],
+    )
+`
+	r := loadStarFromString(t, "g.star", star)
+	res, err := r.Lower(CodegenCommand{Driver: "protoc", Srcs: []string{"g.proto"}})
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	var ident string
+	for _, a := range res.Targets[0].NativeRule.Attrs {
+		if a.Name == "grpc_only" {
+			ident = a.Ident
+		}
+	}
+	if ident != "True" {
+		t.Errorf("grpc_only should render as bare identifier True; got Ident=%q", ident)
+	}
+}
+
 // A non-matching driver: Match declines.
 func TestStarlarkRecognizer_MatchDeclines(t *testing.T) {
 	r := loadStarFromString(t, "protoc.star", protocStar)

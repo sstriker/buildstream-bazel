@@ -498,8 +498,8 @@ func codegenCommandFrom(cmd string, srcs, outs []string, pkg string) CodegenComm
 // protocCppOutputBases scans the edges for `protoc --cpp_out` commands and
 // returns the set of their sole .proto basenames — the protos a cpp/combined
 // recognition turns into proto_library + cc_proto_library, so a sibling
-// grpc-ONLY call (grpcOnlyRecognizer) can reference those targets instead of
-// re-emitting them. Order-independent (a pre-pass over all edges).
+// grpc-ONLY call (the grpc_only built-in recognizer) can reference those targets
+// instead of re-emitting them. Order-independent (a pre-pass over all edges).
 func protocCppOutputBases(edges []*ninja.Build, g *ninja.Graph) map[string]bool {
 	bases := map[string]bool{}
 	for _, b := range edges {
