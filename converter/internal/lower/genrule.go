@@ -78,6 +78,14 @@ type codegenContext struct {
 	// from the add_custom_command records. See tracedCmakeScriptForEdge.
 	OutToTracedCmakeScript map[string]tracedScript
 
+	// OutputToCustomCommand indexes the add_custom_command trace records by their
+	// OUTPUT/BYPRODUCT paths (raw trace form), for recovering the REAL command
+	// when a ninja edge is a cmake-GENERATED dispatch wrapper hiding a NON-cmake
+	// tool (e.g. protoc). The per-target recoverGenrule path consults it via
+	// traceWrapperRealArgv to unwrap to the native tool for recognition — the same
+	// the standalone path does. Empty on the offline-replay-no-trace path.
+	OutputToCustomCommand map[string]*shadow.AddCustomCommandCall
+
 	// OutToNativeConsumerDep maps a package-relative generated output to the
 	// NAME of the native rule's CONSUMER target a #include of it should depend
 	// on (e.g. foo.pb.h -> "foo_cc_proto"). Distinct from OutToGenrule: the
@@ -570,6 +578,11 @@ func newCodegenContext() *codegenContext {
 // apply it returns a typed Tier-1 UnsupportedCustomCommandScript failure naming
 // the script + every opt-in path.
 func (cc *codegenContext) recoverCmakeScriptGenrule(b *ninja.Build, cmd, cmakeSrc, buildDir, relOut string, g *ninja.Graph) (string, string, error) {
+	// Unwrap a cmake-GENERATED dispatch wrapper to the real `cmake -P <script>`
+	// from the add_custom_command trace, so every sub-path below (cc_embed/cc_hash
+	// recognizers, codegen re-trace, bake, runner, refusal diagnostic) acts on the
+	// real script, not the dispatch. No-op when the edge already carries it.
+	cmd = cc.realCmakeCommandForEdge(b, cmd, buildDir)
 	script := extractCmakeScriptPath(cmd)
 	// Native cc_embed recognizer (opt-in via --lift-cc-embed): a known
 	// file-embedding encoder (vtkEncodeString) lowers to the cc_embed
@@ -733,6 +746,17 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	// the rule's command is just `$COMMAND`. CommandFor handles that
 	// transparently via scope chain. The literal "cd <dir> &&" prefix
 	// gets handled at command translation time.
+	//
+	// Unwrap a cmake-GENERATED dispatch wrapper over a NON-cmake tool to the real
+	// command from the add_custom_command trace, so a target consuming the output
+	// as a SOURCE gets the same recognizer unwrap the standalone path does (via
+	// traceWrapperRealArgv) — no re-trace, no --cmake-script-trace needed. A
+	// dispatch over a `cmake -P` real command is left for recoverCmakeScriptGenrule
+	// (which unwraps it via realCmakeCommandForEdge); traceWrapperRealArgv returns
+	// nil for those. No-op when the edge already carries the real command.
+	if realArgv := traceWrapperRealArgv(cmd, append(append([]string(nil), b.Outputs...), b.ImplicitOuts...), cc.OutputToCustomCommand); realArgv != nil {
+		cmd = strings.Join(realArgv, " ")
+	}
 	if usesCmakeScriptMode(cmd) {
 		return cc.recoverCmakeScriptGenrule(b, cmd, cmakeSrc, buildDir, relOut, g)
 	}

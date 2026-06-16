@@ -139,6 +139,9 @@ func prewarmScriptBakes(cc *codegenContext, g *ninja.Graph, buildDir string) {
 		if !ok || cmd == "" {
 			continue
 		}
+		// Unwrap a cmake-GENERATED dispatch wrapper to the real `cmake -P` so the
+		// prewarm bakes the real script, not the dispatch (no-op otherwise).
+		cmd = cc.realCmakeCommandForEdge(b, cmd, buildDir)
 		script := extractCmakeScriptPath(cmd)
 		if script == "" {
 			continue

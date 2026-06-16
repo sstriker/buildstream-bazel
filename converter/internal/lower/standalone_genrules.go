@@ -239,6 +239,10 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			// stamp shape (just declares a phony output). Skip.
 			continue
 		}
+		// Unwrap a cmake-GENERATED `cmake -P` dispatch wrapper to the real script
+		// from the add_custom_command trace (no-op for every other edge), so the
+		// nested-configure check, bake, and refusal all act on the real script.
+		cmd = cc.realCmakeCommandForEdge(b, cmd, buildDir)
 		// All outputs reference relative to the build dir's
 		// per-target convention; emit them as-is. Stripping
 		// buildDir isn't safe because the outputs are already
@@ -298,7 +302,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// consumers wire to it the same way a configure-time nested build's do.
 		// Gated on the trace opt-in (+ RecognizeCodegen, the codegen-recovery
 		// umbrella) since it re-runs the script at convert time.
-		if cc.standaloneScriptDrivesNestedConfigure(b, cmd, cmakeSrc, buildDir) {
+		if cc.standaloneScriptDrivesNestedConfigure(cmd, cmakeSrc, buildDir) {
 			continue
 		}
 
