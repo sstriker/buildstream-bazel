@@ -154,6 +154,17 @@ type Options struct {
 	// worth running (non-empty => the project has VCS-stamp vars).
 	StampVarSink map[string]string
 
+	// WorkspaceStatusSink, when non-nil, receives the workspace-status key
+	// -> producing shell command map for every stamp key an emitted
+	// configure_file / file(WRITE) actually reads at build time (status key
+	// -> e.g. `git rev-parse HEAD`). The CLI serializes it to the
+	// --out-workspace-status helper script so an operator gets a ready
+	// --workspace_status_command emitting exactly the keys this project's
+	// stamped templates need under --stamp, instead of reverse-engineering
+	// them. Reset + repopulated each pass like StampVarSink. Empty when no
+	// stamped template was emitted.
+	WorkspaceStatusSink map[string]string
+
 	// NestedConfigureSink, when non-nil, receives the nested cmake
 	// builds pass 1 detected (outer-build-relative nested build dir →
 	// trace-recorded nested source dir). The driver reads it after
@@ -1717,7 +1728,7 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 	// `set(${_var} "${out}" PARENT_SCOPE)`) to the caller-scope variable
 	// before propagating verbatim copies, so the marked consumer (GIT_SHA)
 	// also seeds any further `set(VERSION ${GIT_SHA})` copy of it.
-	applyParentScopeForwards(cc.StampVars, opts.ParentScopeForwards)
+	applyParentScopeForwards(cc.StampVars, cc.StampCommands, opts.ParentScopeForwards)
 	propagateStampVars(cc.StampVars, opts.SetAssignments)
 	if opts.StampVarSink != nil {
 		// Reset first: the driver reuses one sink across passes, and a
@@ -2416,6 +2427,7 @@ func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts
 	if opts.DownloadRepos != nil {
 		*opts.DownloadRepos = append(*opts.DownloadRepos, downloadRepoSpecs(opts.BazelPackagePath, cc.DownloadLifts)...)
 	}
+	populateWorkspaceStatusSink(opts.WorkspaceStatusSink, pkg, cc.StampCommands)
 	// Same unconverted add_test registrations, as structured
 	// conversion-todos (one per COMMAND runner). No-op on a nil
 	// collector; independent of the stderr breadcrumb above.

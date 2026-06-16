@@ -618,6 +618,7 @@ var nestedOptionsClass = map[string]string{
 	"SetAssignments":         "drop",
 	"ParentScopeForwards":    "drop",
 	"StampVarSink":           "drop",
+	"WorkspaceStatusSink":    "drop",
 	"NestedConfigureSink":    "drop",
 	"CaptureRefusalSink":     "drop",
 	"DeadCaptureVars":        "drop",

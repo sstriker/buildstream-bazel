@@ -3,6 +3,7 @@ package lower
 import (
 	"testing"
 
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -62,7 +63,7 @@ func TestApplyParentScopeForwards_ReKeysToConsumer(t *testing.T) {
 	// The forward resolves the caller arg GIT_SHA; it must be RE-KEYED to its
 	// own name (STABLE_GIT_SHA), not inherit the meaningless local's STABLE_OUT.
 	stampVars := map[string]string{"out": "STABLE_OUT"}
-	applyParentScopeForwards(stampVars, []shadow.ParentScopeForward{{Dst: "GIT_SHA", SrcVar: "out"}})
+	applyParentScopeForwards(stampVars, nil, []shadow.ParentScopeForward{{Dst: "GIT_SHA", SrcVar: "out"}})
 	if stampVars["GIT_SHA"] != "STABLE_GIT_SHA" {
 		t.Errorf("forwarded consumer = %q, want re-keyed STABLE_GIT_SHA", stampVars["GIT_SHA"])
 	}
@@ -72,7 +73,7 @@ func TestApplyParentScopeForwards_PreservesVolatilePrefix(t *testing.T) {
 	// A forwarded `date` stamp (VOLATILE_ source key) stays volatile so it
 	// doesn't bust the action cache, but restems to the consumer's name.
 	stampVars := map[string]string{"out": "VOLATILE_OUT"}
-	applyParentScopeForwards(stampVars, []shadow.ParentScopeForward{{Dst: "BUILD_DATE", SrcVar: "out"}})
+	applyParentScopeForwards(stampVars, nil, []shadow.ParentScopeForward{{Dst: "BUILD_DATE", SrcVar: "out"}})
 	if stampVars["BUILD_DATE"] != "VOLATILE_BUILD_DATE" {
 		t.Errorf("forwarded volatile consumer = %q, want VOLATILE_BUILD_DATE", stampVars["BUILD_DATE"])
 	}
@@ -82,7 +83,7 @@ func TestApplyParentScopeForwards_SeedsFurtherCopies(t *testing.T) {
 	// The resolved consumer must be marked BEFORE propagateStampVars so a
 	// further verbatim copy of it (`set(VERSION ${GIT_SHA})`) propagates too.
 	stampVars := map[string]string{"out": "STABLE_OUT"}
-	applyParentScopeForwards(stampVars, []shadow.ParentScopeForward{{Dst: "GIT_SHA", SrcVar: "out"}})
+	applyParentScopeForwards(stampVars, nil, []shadow.ParentScopeForward{{Dst: "GIT_SHA", SrcVar: "out"}})
 	propagateStampVars(stampVars, setAssignments("VERSION", "GIT_SHA"))
 	if stampVars["VERSION"] != "STABLE_GIT_SHA" {
 		t.Errorf("VERSION = %q, want inherited STABLE_GIT_SHA from the forwarded consumer", stampVars["VERSION"])
@@ -92,7 +93,7 @@ func TestApplyParentScopeForwards_SeedsFurtherCopies(t *testing.T) {
 func TestApplyParentScopeForwards_NonStampSrcIgnored(t *testing.T) {
 	// A forward whose source var was never a stamp leaves stampVars untouched.
 	stampVars := map[string]string{"out": "STABLE_OUT"}
-	applyParentScopeForwards(stampVars, []shadow.ParentScopeForward{{Dst: "X", SrcVar: "not_a_stamp"}})
+	applyParentScopeForwards(stampVars, nil, []shadow.ParentScopeForward{{Dst: "X", SrcVar: "not_a_stamp"}})
 	if _, ok := stampVars["X"]; ok {
 		t.Errorf("X forwards a non-stamp var; must not become a stamp var: %v", stampVars)
 	}
@@ -101,8 +102,50 @@ func TestApplyParentScopeForwards_NonStampSrcIgnored(t *testing.T) {
 func TestApplyParentScopeForwards_DirectKeyWins(t *testing.T) {
 	// A consumer that already carries a direct key keeps it (not overwritten).
 	stampVars := map[string]string{"out": "STABLE_OUT", "GIT_SHA": "STABLE_GIT_SHA"}
-	applyParentScopeForwards(stampVars, []shadow.ParentScopeForward{{Dst: "GIT_SHA", SrcVar: "out"}})
+	applyParentScopeForwards(stampVars, nil, []shadow.ParentScopeForward{{Dst: "GIT_SHA", SrcVar: "out"}})
 	if stampVars["GIT_SHA"] != "STABLE_GIT_SHA" {
 		t.Errorf("GIT_SHA = %q, want its existing STABLE_GIT_SHA", stampVars["GIT_SHA"])
+	}
+}
+
+func TestApplyParentScopeForwards_ReKeysCommand(t *testing.T) {
+	// The producing command follows the re-key: the forwarded consumer's NEW
+	// key (STABLE_GIT_SHA) inherits the source key's command (the helper's
+	// `git describe`), and the generic function-local source key is dropped so
+	// the emitted status script names only the consumer key.
+	stampVars := map[string]string{"out": "STABLE_OUT"}
+	stampCommands := map[string]string{"STABLE_OUT": "git describe --tags"}
+	applyParentScopeForwards(stampVars, stampCommands, []shadow.ParentScopeForward{{Dst: "GIT_SHA", SrcVar: "out"}})
+	if stampCommands["STABLE_GIT_SHA"] != "git describe --tags" {
+		t.Errorf("re-keyed command = %q, want the source command under STABLE_GIT_SHA", stampCommands["STABLE_GIT_SHA"])
+	}
+	if _, ok := stampCommands["STABLE_OUT"]; ok {
+		t.Errorf("the function-local source key should be dropped; got %v", stampCommands)
+	}
+}
+
+func TestPopulateWorkspaceStatusSink(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "plain", Kind: ir.KindCCLibrary}, // no spec
+		{Name: "gen_version_h", Kind: ir.KindCMakeConfigureFile, CMakeConfigureFile: &ir.CMakeConfigureFileSpec{
+			StampValues: map[string]string{"GIT_SHA": "STABLE_GIT_SHA", "BUILD_DATE": "VOLATILE_BUILD_DATE"},
+		}},
+	}}
+	stampCommands := map[string]string{
+		"STABLE_GIT_SHA":      "git rev-parse HEAD",
+		"VOLATILE_BUILD_DATE": "date -u +%Y-%m-%d",
+		"STABLE_UNUSED":       "git describe", // recorded but no template reads it
+	}
+	sink := map[string]string{"STALE": "x"} // must be reset
+	populateWorkspaceStatusSink(sink, pkg, stampCommands)
+
+	if _, stale := sink["STALE"]; stale {
+		t.Error("sink not reset before population")
+	}
+	if sink["STABLE_GIT_SHA"] != "git rev-parse HEAD" || sink["VOLATILE_BUILD_DATE"] != "date -u +%Y-%m-%d" {
+		t.Errorf("referenced keys not populated: %v", sink)
+	}
+	if _, ok := sink["STABLE_UNUSED"]; ok {
+		t.Errorf("a recorded-but-unreferenced key must not enter the status script: %v", sink)
 	}
 }

@@ -3,8 +3,39 @@ package lower
 import (
 	"strings"
 
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
+
+// populateWorkspaceStatusSink fills sink (status key -> producing shell
+// command) with one entry per workspace-status key an EMITTED configure_file /
+// file(WRITE) actually reads via its stamp_values — intersected with the
+// recovered stampCommands so only keys with a known producer are emitted. This
+// is the data the CLI turns into the --workspace_status_command helper script.
+// No-op on a nil sink. Reset first so a reused sink (the driver runs ToIR more
+// than once) reflects only the final pass.
+func populateWorkspaceStatusSink(sink map[string]string, pkg *ir.Package, stampCommands map[string]string) {
+	if sink == nil {
+		return
+	}
+	for k := range sink {
+		delete(sink, k)
+	}
+	if pkg == nil || len(stampCommands) == 0 {
+		return
+	}
+	for i := range pkg.Targets {
+		spec := pkg.Targets[i].CMakeConfigureFile
+		if spec == nil {
+			continue
+		}
+		for _, statusKey := range spec.StampValues {
+			if cmd, ok := stampCommands[statusKey]; ok {
+				sink[statusKey] = cmd
+			}
+		}
+	}
+}
 
 // propagateStampVars expands the stamp-variable set transitively through
 // verbatim `set(X ${Y})` copies recovered from the non-expanded trace.
@@ -66,7 +97,15 @@ func propagateStampVars(stampVars map[string]string, assignments []shadow.SetAss
 // verbatim copy of the now-marked consumer (`set(VERSION ${GIT_SHA})`)
 // propagates from it. A variable already carrying a (direct) key is never
 // overwritten.
-func applyParentScopeForwards(stampVars map[string]string, forwards []shadow.ParentScopeForward) {
+//
+// stampCommands (status key -> producing shell command) is re-keyed in step:
+// the forwarded consumer's NEW key inherits the source key's command, since
+// the same execute_process (the helper's `git describe`) produces the value
+// the operator's --workspace_status_command must emit under the consumer key.
+// The generic function-local source key is dropped — no configure_file reads
+// it — so the emitted status script names only the consumer key. nil is
+// tolerated (callers without a command map).
+func applyParentScopeForwards(stampVars, stampCommands map[string]string, forwards []shadow.ParentScopeForward) {
 	if len(stampVars) == 0 || len(forwards) == 0 {
 		return
 	}
@@ -82,6 +121,13 @@ func applyParentScopeForwards(stampVars map[string]string, forwards []shadow.Par
 		if strings.HasPrefix(srcKey, "VOLATILE_") {
 			prefix = "VOLATILE_"
 		}
-		stampVars[f.Dst] = statusKeyWithPrefix(prefix, f.Dst)
+		dstKey := statusKeyWithPrefix(prefix, f.Dst)
+		stampVars[f.Dst] = dstKey
+		if stampCommands != nil {
+			if cmd, ok := stampCommands[srcKey]; ok && dstKey != srcKey {
+				stampCommands[dstKey] = cmd
+				delete(stampCommands, srcKey)
+			}
+		}
 	}
 }
