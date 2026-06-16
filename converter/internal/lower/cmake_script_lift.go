@@ -138,15 +138,25 @@ func liftCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	return name, "", true
 }
 
-// extractCmakePDashArgs walks the recovered command and returns
-// the `-D <var>=<value>` arguments cmake -P scripts often take.
-// Order is preserved; everything except `cmake`, `-P`, the
-// script path, and the -D args is dropped (no place to land
-// shell redirects, env-vars, etc. — those make the lift unsafe).
-// Returns nil for argless invocations.
-func extractCmakePDashArgs(cmd string) []string {
-	tokens := splitShellTokens(cmd)
-	// Strip a leading `cd <dir> &&` the same way usesCmakeScriptMode does.
+// cmakeScriptPathFromTokens returns the `-P <script>` argument from an already-
+// tokenized cmake command (the token after `-P`), or "<unknown-script>" when
+// there's no `-P`. The token-level core shared by extractCmakeScriptPath (string
+// form) and nestedCmakeScriptCall (argv form, which must NOT be re-tokenized — a
+// Windows backslash path would be mangled by shell tokenization).
+func cmakeScriptPathFromTokens(tokens []string) string {
+	for i, tok := range tokens {
+		if tok == "-P" && i+1 < len(tokens) {
+			return tokens[i+1]
+		}
+	}
+	return "<unknown-script>"
+}
+
+// cmakePDashArgsFromTokens returns the `-D <var>=<value>` cache args (both the
+// `-D val` and `-Dval` forms) from an already-tokenized cmake command, after
+// stripping a leading `cd <dir> &&`. The token-level core shared by
+// extractCmakePDashArgs (string form) and nestedCmakeScriptCall (argv form).
+func cmakePDashArgsFromTokens(tokens []string) []string {
 	for i, tok := range tokens {
 		if tok == "&&" {
 			tokens = tokens[i+1:]
@@ -163,10 +173,19 @@ func extractCmakePDashArgs(cmd string) []string {
 		}
 		if strings.HasPrefix(tok, "-D") {
 			out = append(out, tok)
-			continue
 		}
 	}
 	return out
+}
+
+// extractCmakePDashArgs walks the recovered command and returns
+// the `-D <var>=<value>` arguments cmake -P scripts often take.
+// Order is preserved; everything except `cmake`, `-P`, the
+// script path, and the -D args is dropped (no place to land
+// shell redirects, env-vars, etc. — those make the lift unsafe).
+// Returns nil for argless invocations.
+func extractCmakePDashArgs(cmd string) []string {
+	return cmakePDashArgsFromTokens(splitShellTokens(cmd))
 }
 
 // extractCmakePScriptPositionalArgs walks the recovered command

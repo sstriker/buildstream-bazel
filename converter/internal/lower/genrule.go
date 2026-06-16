@@ -1200,13 +1200,7 @@ func usesCmakeScriptMode(cmd string) bool {
 // UnsupportedCustomCommandScript failure (#207) so operators see
 // which script to rewrite — not just the consuming target.
 func extractCmakeScriptPath(cmd string) string {
-	tokens := splitShellTokens(cmd)
-	for i, tok := range tokens {
-		if tok == "-P" && i+1 < len(tokens) {
-			return tokens[i+1]
-		}
-	}
-	return "<unknown-script>"
+	return cmakeScriptPathFromTokens(splitShellTokens(cmd))
 }
 
 // hasCmakeE returns true if the command invokes a cmake -E sub-tool that we
