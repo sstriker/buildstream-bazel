@@ -26,29 +26,47 @@ func TestTracedCmakeScriptForEdge(t *testing.T) {
 		// Multi-COMMAND — skipped (genrule fallback owns it).
 		{Outputs: []string{"/abs/build/multi.out"}, Commands: [][]string{{"cmake", "-P", "a.cmake"}, {"cp", "a", "b"}}},
 	}
+	// A user cmake -P with a positional switch arg (libpng gensrc shape), wrapped
+	// by a generated dispatch.
+	cmds = append(cmds, shadow.AddCustomCommandCall{
+		Outputs:  []string{"/abs/build/pnglibconf.h"},
+		Commands: [][]string{{"cmake", "-DPNG=1", "-P", "/abs/src/gensrc.cmake", "pnglibconf.h"}},
+	})
 	cc := newCodegenContext()
 	cc.OutToTracedCmakeScript = buildOutToTracedCmakeScript(cmds, buildDir)
 
 	// Build-relative edge output matches the absolute trace output → real script.
 	edge := &ninja.Build{Outputs: []string{"gen/foo.h"}}
-	script, dArgs, ok := cc.tracedCmakeScriptForEdge(edge, buildDir)
-	if !ok || script != "/abs/src/user.cmake" {
-		t.Fatalf("expected the real user.cmake script; got (%q, %v, %v)", script, dArgs, ok)
+	ts, ok := cc.tracedCmakeScriptForEdge(edge, buildDir)
+	if !ok || ts.script != "/abs/src/user.cmake" {
+		t.Fatalf("expected the real user.cmake script; got (%+v, %v)", ts, ok)
 	}
-	if !reflect.DeepEqual(dArgs, []string{"-DBIN=/abs/build"}) {
-		t.Errorf("expected the real command's -D args; got %v", dArgs)
+	if !reflect.DeepEqual(ts.dArgs, []string{"-DBIN=/abs/build"}) {
+		t.Errorf("expected the real command's -D args; got %v", ts.dArgs)
+	}
+	// realCmakeCommandForEdge rebuilds the full real command for the edge.
+	if got := cc.realCmakeCommandForEdge(edge, "cmake -P CMakeFiles/x.dir/d.cmake", buildDir); got != "cmake -DBIN=/abs/build -P /abs/src/user.cmake" {
+		t.Errorf("realCmakeCommandForEdge = %q", got)
+	}
+	// Positional args are carried (libpng switch-arg shape).
+	pngEdge := &ninja.Build{Outputs: []string{"pnglibconf.h"}}
+	if got := cc.realCmakeCommandForEdge(pngEdge, "cmake -P CMakeFiles/x.dir/d.cmake", buildDir); got != "cmake -DPNG=1 -P /abs/src/gensrc.cmake pnglibconf.h" {
+		t.Errorf("positional arg not carried: %q", got)
 	}
 	// A non-cmake real command isn't indexed (recognizer unwrap handles it).
-	if _, _, ok := cc.tracedCmakeScriptForEdge(&ninja.Build{Outputs: []string{"foo.pb.cc"}}, buildDir); ok {
+	if _, ok := cc.tracedCmakeScriptForEdge(&ninja.Build{Outputs: []string{"foo.pb.cc"}}, buildDir); ok {
 		t.Errorf("a non-cmake real command must not resolve to a cmake -P script")
 	}
 	// Multi-COMMAND records are skipped.
-	if _, _, ok := cc.tracedCmakeScriptForEdge(&ninja.Build{Outputs: []string{"multi.out"}}, buildDir); ok {
+	if _, ok := cc.tracedCmakeScriptForEdge(&ninja.Build{Outputs: []string{"multi.out"}}, buildDir); ok {
 		t.Errorf("multi-COMMAND records must not resolve")
 	}
-	// No matching output → no resolution (the common case: edge carries the real script).
-	if _, _, ok := cc.tracedCmakeScriptForEdge(&ninja.Build{Outputs: []string{"unrelated.h"}}, buildDir); ok {
+	// No matching output → no resolution; realCmakeCommandForEdge is a no-op.
+	if _, ok := cc.tracedCmakeScriptForEdge(&ninja.Build{Outputs: []string{"unrelated.h"}}, buildDir); ok {
 		t.Errorf("an unindexed output must not resolve")
+	}
+	if got := cc.realCmakeCommandForEdge(&ninja.Build{Outputs: []string{"unrelated.h"}}, "edge cmd", buildDir); got != "edge cmd" {
+		t.Errorf("realCmakeCommandForEdge should be a no-op for an unindexed edge; got %q", got)
 	}
 }
 

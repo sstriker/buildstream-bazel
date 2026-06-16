@@ -2590,7 +2590,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	cc.LiftCCEmbed = opts.LiftCCEmbed
 	cc.LiftCCHash = opts.LiftCCHash
 	cc.CMakeBinary, cc.Warnings = lookupCmakeBinary(), opts.Warnings
-	cc.OutToTracedCmakeScript = buildOutToTracedCmakeScript(tf.decodedAddCustomCommands, opts.BuildDir)
+	cc.indexTraceCommands(tf.decodedAddCustomCommands, opts.BuildDir)
 	cc.LiteralProbeSink = opts.LiteralProbeSink
 	cc.LiteralResolutions = opts.LiteralResolutions
 	// Parallel pre-warm of the cmake -P script bakes: with the bake opted
