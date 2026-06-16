@@ -530,6 +530,7 @@ func nestedOptionsFor(nb NestedBuildInput, opts Options, elementRoot string) Opt
 	n.SetAssignments = nil
 	n.ParentScopeForwards = nil
 	n.StampVarSink = nil
+	n.WorkspaceStatusSink = nil
 	n.NestedConfigureSink = nil
 	n.CaptureRefusalSink = nil
 	n.DeadCaptureVars = nil

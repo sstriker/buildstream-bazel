@@ -388,7 +388,9 @@ func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, c
 	// stamp call itself still skips (captured) or refuses (not) here.
 	if v.Bucket == BucketStamp && call.OutputVariable != "" {
 		driver := executeProcessDriverBasename(call.Commands[0][0])
-		cc.StampVars[call.OutputVariable] = stampStatusKey(call.OutputVariable, driver)
+		key := stampStatusKey(call.OutputVariable, driver)
+		cc.StampVars[call.OutputVariable] = key
+		recordStampCommand(cc, key, call)
 	}
 	// Stamp / probe capture gate. A stamp's value (a VCS revision)
 	// WOULD bake into the srckey of any configure_file that consumed
@@ -466,7 +468,9 @@ func prescanStampVars(calls []shadow.ExecuteProcessCall, cc *codegenContext) {
 		v := Classify(call)
 		if v.Bucket == BucketStamp && call.OutputVariable != "" && len(call.Commands) > 0 && len(call.Commands[0]) > 0 {
 			driver := executeProcessDriverBasename(call.Commands[0][0])
-			cc.StampVars[call.OutputVariable] = stampStatusKey(call.OutputVariable, driver)
+			key := stampStatusKey(call.OutputVariable, driver)
+			cc.StampVars[call.OutputVariable] = key
+			recordStampCommand(cc, key, call)
 		}
 	}
 }
@@ -493,6 +497,39 @@ func stampStatusKey(varName, driver string) string {
 		prefix = "VOLATILE_"
 	}
 	return statusKeyWithPrefix(prefix, varName)
+}
+
+// recordStampCommand records the shell command that produces a stamp's
+// workspace-status value, keyed by the status key (e.g. STABLE_GIT_SHA ->
+// `git rev-parse HEAD`). First-write-wins so the idempotent prescan + in-loop
+// recording agree, and so a re-keyed forward (applyParentScopeForwards) keeps
+// the origin command. The CLI emits these into the --workspace_status_command
+// helper script.
+func recordStampCommand(cc *codegenContext, key string, call shadow.ExecuteProcessCall) {
+	if key == "" {
+		return
+	}
+	if _, ok := cc.StampCommands[key]; ok {
+		return
+	}
+	if cmd := stampCommandLine(call); cmd != "" {
+		cc.StampCommands[key] = cmd
+	}
+}
+
+// stampCommandLine renders a stamp execute_process's argv as one shell command
+// line, shell-quoting tokens with shell-significant characters. A value-
+// capturing stamp always has exactly one command (Commands[0]).
+func stampCommandLine(call shadow.ExecuteProcessCall) string {
+	if len(call.Commands) == 0 || len(call.Commands[0]) == 0 {
+		return ""
+	}
+	argv := call.Commands[0]
+	parts := make([]string, 0, len(argv))
+	for _, tok := range argv {
+		parts = append(parts, shellQuoteArg(tok))
+	}
+	return strings.Join(parts, " ")
 }
 
 // statusKeyWithPrefix builds a workspace-status key from a given prefix and a

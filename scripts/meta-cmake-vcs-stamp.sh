@@ -62,6 +62,7 @@ CGO_ENABLED=0 go build -o "$bin_dir/cmake-configure-file" ./cmd/cmake-configure-
   --source-root "$ws" \
   --lift-configure-file \
   --out-build "$ws/BUILD.bazel" \
+  --out-workspace-status "$ws/workspace_status.sh" \
   >"$work_dir/convert.stdout" 2>"$work_dir/convert.stderr" || {
   echo "FAIL: convert-element-cmake exited non-zero"
   sed 's/^/   stderr: /' "$work_dir/convert.stderr"
@@ -77,6 +78,21 @@ for marker in 'stamp_values = {' '"GIT_SHA": "STABLE_GIT_SHA"'; do
   fi
 done
 echo "ok  meta-cmake-vcs-stamp: convert lifts the git stamp to stamp_values = {GIT_SHA: STABLE_GIT_SHA}"
+
+# (1b) The --out-workspace-status helper: an executable script emitting the
+# STABLE_GIT_SHA key via the recovered `git rev-parse HEAD` command, so the
+# operator gets a ready --workspace_status_command instead of hand-writing one.
+if [ ! -x "$ws/workspace_status.sh" ]; then
+  echo "FAIL: --out-workspace-status did not write an executable script"
+  ls -l "$ws/workspace_status.sh" 2>&1 | sed 's/^/   /'
+  exit 1
+fi
+if ! grep -qE 'echo "STABLE_GIT_SHA \$\(.*rev-parse HEAD\)"' "$ws/workspace_status.sh"; then
+  echo "FAIL: generated status script missing the STABLE_GIT_SHA / rev-parse HEAD line"
+  sed 's/^/   /' "$ws/workspace_status.sh"
+  exit 1
+fi
+echo "ok  meta-cmake-vcs-stamp: --out-workspace-status emits a ready STABLE_GIT_SHA status command"
 
 # --- bazel-build half (bazel >= 9) ---------------------------------------
 # Prefer bazel, fall back to bazelisk (the launcher the repo's gates expect),
@@ -156,6 +172,27 @@ if ! grep -q "$live_sha" "$rendered"; then
   exit 1
 fi
 echo "ok  meta-cmake-vcs-stamp: --stamp re-reads the live revision into version.h"
+
+# (2b) Drive --stamp with the CONVERTER-GENERATED status script (not a
+# hand-written one), proving the --out-workspace-status helper is correct
+# end to end. Make a fresh commit so the live HEAD differs from both the
+# baked sha and the step-2 sentinel; the generated `git rev-parse HEAD`
+# (run by bazel from the workspace root) must re-read exactly that.
+( cd "$ws" && git -c commit.gpgsign=false -c user.email=ci@example.com -c user.name=ci \
+    commit --no-gpg-sign --allow-empty -qm bump )
+gen_head="$(cd "$ws" && git rev-parse HEAD)"
+if ! build_version_h --stamp "--workspace_status_command=$ws/workspace_status.sh"; then
+  echo "FAIL: bazel build //:version.h with the generated status script failed"
+  sed 's/^/   /' "$work_dir/bazel.log"
+  exit 1
+fi
+if ! grep -q "$gen_head" "$rendered"; then
+  echo "FAIL: generated status script did not re-read the live HEAD into version.h"
+  echo "   wanted $gen_head; got:"
+  sed 's/^/   /' "$rendered"
+  exit 1
+fi
+echo "ok  meta-cmake-vcs-stamp: the generated --workspace_status_command re-reads the live HEAD"
 
 # (3) WITHOUT --stamp: STABLE_GIT_SHA isn't in the status file, so the tool
 # keeps the convert-time baked value — the header still builds.

@@ -133,6 +133,17 @@ type codegenContext struct {
 	// has no VCS-stamp probe.
 	StampVars map[string]string
 
+	// StampCommands maps a workspace-status key (the value side of
+	// StampVars, e.g. STABLE_GIT_SHA) to the shell command that produces
+	// its value — the stamp execute_process's argv (`git rev-parse HEAD`).
+	// Recorded alongside StampVars at the stamp recovery sites. The CLI
+	// serializes it to the --out-workspace-status helper script so an
+	// operator gets a ready-to-use --workspace_status_command emitting
+	// exactly the keys this project's stamped configure_files read, rather
+	// than reverse-engineering them. Empty when the project has no VCS-stamp
+	// probe.
+	StampCommands map[string]string
+
 	// bakeTodoDisposition lets a lift site override the conversion-todos
 	// disposition for a baked target (keyed by target name), so two targets
 	// carrying the same bake tag can differ — e.g. a hoisted VCS/identity/date
@@ -539,6 +550,7 @@ func newCodegenContext() *codegenContext {
 		RespfileHdrGroups:          map[string]string{},
 		CcEmbedSourceToHeader:      map[string]string{},
 		StampVars:                  map[string]string{},
+		StampCommands:              map[string]string{},
 		bakeTodoDisposition:        map[string]todos.Disposition{},
 		SeenBuilds:                 map[*ninja.Build]string{},
 		HeaderWalkCache:            map[string][]string{},

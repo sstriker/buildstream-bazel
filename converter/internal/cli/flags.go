@@ -249,6 +249,18 @@ type Args struct {
 	// producer shape.
 	OutDownloadRepos string
 
+	// OutWorkspaceStatus, when set, writes a ready-to-use
+	// --workspace_status_command helper script to this path (executable
+	// `/bin/sh`): one `echo "<KEY> <value>"` line per workspace-status key a
+	// stamped configure_file / file(WRITE) in this project reads under
+	// --stamp, where <value> is produced by the recovered stamp command
+	// (`git rev-parse HEAD`, etc.). It closes the stamping ergonomics gap: the
+	// converter already knows both the status keys and the commands that fill
+	// them, so the operator can `bazel build --stamp
+	// --workspace_status_command=<this script>` instead of reverse-engineering
+	// the keys. Empty when the project emits no stamped template.
+	OutWorkspaceStatus string
+
 	// RecognizeCodegen opts into the codegen-recognizer registry: a recovered
 	// codegen custom-command a recognizer claims (protoc --cpp_out → proto_library
 	// + cc_proto_library today) lowers to the idiomatic native rule instead of a
@@ -834,6 +846,7 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.BoolVar(&a.LiftConfigureFile, "lift-configure-file", false, "emit configure_file recovery in the lifted shape (.h.in as a real srcs + //tools:cmake-configure-file invocation at Bazel build time). Requires the caller to stage //tools:cmake-configure-file. Off by default to preserve compatibility with downstream Bazel envelopes that don't yet stage the tool.")
 	fs.BoolVar(&a.LiftDownload, "lift-download", false, "emit file(DOWNLOAD) recovery in the lifted shape: a genrule copying @<repo>//file from an http_file repository rule (declared via the download-repos.json lockfile + a staged module extension) instead of byte-baking the fetched bytes. Off by default; the hermetic byte-bake stays the default. Opt in only when the downstream envelope declares the repos.")
 	fs.StringVar(&a.OutDownloadRepos, "out-download-repos", "", "write the file(DOWNLOAD) lockfile (http_file repo specs: name, url, SRI integrity, downloaded_file_path) to this path as JSON. The authoritative artifact the download_repos.bzl module extension reads and write-a's use_repo enumerates. Independent of --lift-download.")
+	fs.StringVar(&a.OutWorkspaceStatus, "out-workspace-status", "", "write a ready --workspace_status_command helper script to this path (executable /bin/sh): one `echo \"<KEY> <value>\"` line per workspace-status key a stamped configure_file/file(WRITE) reads, the value produced by the recovered stamp command (git rev-parse, etc.). Pass it as `bazel build --stamp --workspace_status_command=<path>`. Empty output when the project emits no stamped template.")
 	fs.BoolVar(&a.RecognizeCodegen, "recognize-codegen", false, "route recovered codegen custom-commands a registered recognizer claims (protoc --cpp_out → proto_library + cc_proto_library) to the idiomatic native rule instead of a generic genrule. Off by default; non-standard invocations fall back to the genrule.")
 	fs.StringVar(&a.Recognizers, "recognizers", "", "glob of operator-supplied Starlark recognizer files (e.g. 'recognizers/*.star'), each defining match(cmd)/lower(cmd), added to the registry without recompiling. Loaded after the built-in recognizers; requires --recognize-codegen to take effect.")
 	fs.BoolVar(&a.LiftDerivedCodegen, "lift-derived-codegen", false, "re-run a derived-name codegen execute_process (output not in argv, e.g. tool foo.in -> foo.gen.h) as a live genrule (cd $(RULEDIR)) instead of baking the configure-written bytes, when output placement is sound. Off by default; non-liftable shapes fall back to the bake.")
