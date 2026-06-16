@@ -56,6 +56,14 @@ def _impl(ctx):
     # STABLE_* keys; otherwise it holds only the defaults and the tool keeps
     # the `values` fallback (a key the tool doesn't find is left alone). One
     # --stamp-value flag per (template var, status key) entry.
+    #
+    # Granularity caveat: the action depends on the WHOLE stable-status file,
+    # not the individual key, because Bazel exposes no per-key dependency. So
+    # ANY change to ANY STABLE_* key the workspace_status_command emits
+    # re-renders every stamped template, even one reading an unrelated key.
+    # That's a rebuild-cost-only (never-incorrect) over-invalidation we
+    # accept; the alternative — splitting keys into per-key files — would
+    # change the operator's --workspace_status_command contract.
     if ctx.attr.stamp_values:
         inputs.append(ctx.info_file)
         args.add("--status-file", ctx.info_file.path)

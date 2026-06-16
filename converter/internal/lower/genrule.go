@@ -144,6 +144,15 @@ type codegenContext struct {
 	// probe.
 	StampCommands map[string]string
 
+	// StampKeyCollisions records workspace-status keys that two DISTINCT
+	// stamp commands both resolved to — e.g. cmake variables `Git_Sha` and
+	// `GIT_SHA` both sanitizing to STABLE_GIT_SHA while running different
+	// commands (`git rev-parse` vs `git describe`). The flat status-key
+	// namespace can't represent both, so recordStampCommand keeps the first
+	// and flags the key here; end-of-lowering warns so the dropped command
+	// isn't a silent loss. Empty in the common (no-collision) case.
+	StampKeyCollisions map[string]bool
+
 	// bakeTodoDisposition lets a lift site override the conversion-todos
 	// disposition for a baked target (keyed by target name), so two targets
 	// carrying the same bake tag can differ — e.g. a hoisted VCS/identity/date
@@ -551,6 +560,7 @@ func newCodegenContext() *codegenContext {
 		CcEmbedSourceToHeader:      map[string]string{},
 		StampVars:                  map[string]string{},
 		StampCommands:              map[string]string{},
+		StampKeyCollisions:         map[string]bool{},
 		bakeTodoDisposition:        map[string]todos.Disposition{},
 		SeenBuilds:                 map[*ninja.Build]string{},
 		HeaderWalkCache:            map[string][]string{},
