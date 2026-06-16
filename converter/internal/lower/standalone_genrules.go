@@ -320,15 +320,9 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// captured-bytes write_file(s) to cc.Genrules + cc.OutToGenrule; move
 		// those into this pass's return slice (cc.Genrules was already merged
 		// into pkg.Targets before this pass runs) and skip the raw emit.
-		if cc != nil && cc.CMakeScriptBake && usesCmakeScriptMode(cmd) {
-			n := len(cc.Genrules)
-			if _, _, ok := bakeCmakeScriptGenrule(cc, b, cmd, extractCmakeScriptPath(cmd), buildDir, g); ok {
-				out = append(out, cc.Genrules[n:]...)
-				cc.Genrules = cc.Genrules[:n]
-				continue
-			}
-			// Bake declined (e.g. no cmake on PATH, script produced no output):
-			// fall through to the existing raw-genrule emit / refusal path.
+		if baked, ok := cc.tryStandaloneCmakeScriptBake(b, cmd, cmakeSrc, buildDir, bazelPackagePath, srcs, outs, outputToCustomCommand, cppProtoBases, g); ok {
+			out = append(out, baked...)
+			continue
 		}
 
 		// In-place rewrite remediation: a custom command that reads a
@@ -549,6 +543,60 @@ func codegenCommandFromArgv(argv, srcs, outs []string, pkg string) CodegenComman
 		Outs:   outs,
 		Pkg:    pkg,
 	}
+}
+
+// tryStandaloneCmakeScriptBake bakes a standalone `cmake -P` script edge at
+// convert time (capturing its declared-output bytes) when --cmake-script-bake
+// is on AND the wrapper is NOT a recognizable tool dispatch — a recognizable
+// one (a dispatch over protoc) must defer to the recognizer chokepoint so it
+// lowers to a native rule, keeping the recognizer → bake ladder order the
+// per-target path already follows. Returns the baked targets + true on success;
+// (nil,false) falls through to the recognizer / raw-genrule emit. A standalone
+// `cmake -P` can't run under Bazel (no cmake on the executor), which is why the
+// raw genrule it would otherwise produce is unrunnable — hence the bake.
+func (cc *codegenContext) tryStandaloneCmakeScriptBake(b *ninja.Build, cmd, cmakeSrc, buildDir, pkg string, srcs, outs []string, outputToCustomCommand map[string]*shadow.AddCustomCommandCall, cppProtoBases map[string]bool, g *ninja.Graph) ([]ir.Target, bool) {
+	if cc == nil || !cc.CMakeScriptBake || !usesCmakeScriptMode(cmd) {
+		return nil, false
+	}
+	if cc.standaloneWrapperRecognizes(cmd, srcs, outs, cmakeSrc, pkg, outputToCustomCommand, cppProtoBases) {
+		return nil, false
+	}
+	// bakeCmakeScriptGenrule appends the captured-bytes write_file(s) to
+	// cc.Genrules; move them into this pass's return slice (cc.Genrules was
+	// already merged into pkg.Targets before this pass runs). Bake declining
+	// (no cmake on PATH, no output) falls through to the raw emit / refusal.
+	n := len(cc.Genrules)
+	if _, _, ok := bakeCmakeScriptGenrule(cc, b, cmd, extractCmakeScriptPath(cmd), buildDir, g); !ok {
+		return nil, false
+	}
+	baked := append([]ir.Target(nil), cc.Genrules[n:]...)
+	cc.Genrules = cc.Genrules[:n]
+	return baked, true
+}
+
+// standaloneWrapperRecognizes reports whether a cmake-generated dispatch
+// wrapper edge's REAL (trace-recovered) command is one a codegen recognizer
+// claims CLEANLY. It gates the `--cmake-script-bake` fallback so the bake
+// doesn't pre-empt the recognizer: without this, a dispatch-wrapped `protoc`
+// (usesCmakeScriptMode is true for the `cmake -P CMakeFiles/<t>.dir/<n>.cmake`
+// dispatch) baked at convert time instead of lowering to proto_library, since
+// the bake `continue`s before the recognizer chokepoint below. The per-target
+// path already unwraps + recognizes (traceWrapperRealArgv) BEFORE its script
+// bake; this restores the same recognizer → bake order on the standalone path.
+// Returns false (bake as before) when there's no dispatch wrapper or the real
+// command doesn't recognize cleanly — preserving the "degrades to today"
+// guarantee. Mirrors the dispatch-unwrap + clean-recognition probe the
+// recognizer emit performs.
+func (cc *codegenContext) standaloneWrapperRecognizes(cmd string, srcs, outs []string, cmakeSrc, pkg string, outputToCustomCommand map[string]*shadow.AddCustomCommandCall, cppProtoBases map[string]bool) bool {
+	if cc == nil || !cc.RecognizeCodegen {
+		return false
+	}
+	realArgv := traceWrapperRealArgv(cmd, outs, outputToCustomCommand)
+	if realArgv == nil {
+		return false
+	}
+	_, ok := wrapperRealCodegenCmd(cc, realArgv, srcs, outs, pkg, cmakeSrc, cppProtoBases)
+	return ok
 }
 
 // wrapperRealCodegenCmd builds the recognizer command from a cmake-wrapper edge's
