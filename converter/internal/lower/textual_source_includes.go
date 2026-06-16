@@ -22,6 +22,17 @@ import (
 // converter's include handling — not a full preprocessor.
 var quoteIncludeRe = regexp.MustCompile(`(?m)^[ \t]*#[ \t]*include[ \t]*"([^"]+)"`)
 
+// textualFileScan is the cached result of scanning ONE includer file for
+// quote-includes of other sources: the resolved element-root-relative includes
+// it pulls (may repeat across files; the caller dedups) and whether the file's
+// bytes yielded ≥1 kept include (a "reader"). Keyed by includer path so a file
+// shared across many targets (a widely-#included public header, the dominant
+// cost) is read + regex-scanned at most ONCE per pass.
+type textualFileScan struct {
+	includes []string
+	reader   bool
+}
+
 // findTextualSourceIncludes scans a target's compiled source files for
 // quote-includes of OTHER source files — `#include "x.cc"`. Two project
 // shapes produce this: the "textually include a .cc to intercept its
@@ -55,6 +66,15 @@ var quoteIncludeRe = regexp.MustCompile(`(?m)^[ \t]*#[ \t]*include[ \t]*"([^"]+)
 // source-byte-read set this scan contributes (see ir.Package.SourceByteReads):
 // the source-narrowing lens keeps these real so the detection stays stable.
 func findTextualSourceIncludes(hostSrc string, srcs []string) (includes, readers []string) {
+	return findTextualSourceIncludesCached(hostSrc, srcs, map[string]textualFileScan{})
+}
+
+// findTextualSourceIncludesCached is findTextualSourceIncludes backed by a
+// caller-owned per-file scan cache, so a file shared across targets is read
+// once. synthesizeTextualSourceIncludeLibs threads ONE cache across every
+// target in the pass — the fix for re-reading a widely-#included header per
+// target (a header in N targets' Hdrs was previously os.ReadFile'd N times).
+func findTextualSourceIncludesCached(hostSrc string, srcs []string, cache map[string]textualFileScan) (includes, readers []string) {
 	if hostSrc == "" || len(srcs) == 0 {
 		return nil, nil
 	}
@@ -62,51 +82,73 @@ func findTextualSourceIncludes(hostSrc string, srcs []string) (includes, readers
 	var out []string
 	var read []string
 	for _, s := range srcs {
-		data, err := os.ReadFile(filepath.Join(hostSrc, filepath.FromSlash(s)))
-		if err != nil {
-			// Missing/unreadable (e.g. a generated source absent at convert
-			// time) — nothing to scan; skip rather than fail.
-			continue
+		fs := scanTextualFile(hostSrc, s, cache)
+		if fs.reader {
+			read = append(read, filepath.ToSlash(filepath.Clean(s)))
 		}
-		dir := filepath.Dir(s)
-		hit := false
-		for _, m := range quoteIncludeRe.FindAllSubmatch(data, -1) {
-			inc := string(m[1])
-			// Follow a quote-include of an implementation file: a compiled
-			// source the includer textually pastes (fmt/gtest/lz4 fused-source),
-			// OR a non-self-contained impl header (.inl/.tcc/.ipp/.txx/.def/.inc)
-			// the genclass idiom pulls in (glm's `#include "func_common.inl"`,
-			// VTK's `.txx`). A plain self-contained header (.h/.hpp) is NOT an
-			// implementation include and is left alone.
-			if !cclang.IsCompiledSource(inc) && !cclang.IsTextualImplHeader(inc) {
-				continue
-			}
-			// An absolute include ("/usr/...", "C:\\...") is non-portable and
-			// never a stageable in-tree textual source — reject it before
-			// resolving. (filepath.Join folds an absolute element under dir
-			// rather than honoring it, so it could otherwise coincidentally
-			// match a same-named in-tree file and stage the wrong thing.)
-			if strings.HasPrefix(inc, "/") || filepath.IsAbs(inc) {
-				continue
-			}
-			rel := resolveTextualInclude(hostSrc, dir, inc, s)
-			if rel == "" {
-				continue
-			}
-			hit = true
+		for _, rel := range fs.includes {
 			if seen[rel] {
 				continue
 			}
 			seen[rel] = true
 			out = append(out, rel)
 		}
-		if hit {
-			read = append(read, filepath.ToSlash(filepath.Clean(s)))
-		}
 	}
 	sort.Strings(out)
 	sort.Strings(read)
 	return out, read
+}
+
+// scanTextualFile reads + scans one includer file for textual source includes,
+// memoizing the result in cache so the same file is read at most once per pass
+// (the per-target re-read of shared headers was the performance hit). The
+// result is target-INDEPENDENT — it depends only on the file's path, bytes, and
+// on-disk siblings — so caching by includer path is sound.
+func scanTextualFile(hostSrc, s string, cache map[string]textualFileScan) textualFileScan {
+	if r, ok := cache[s]; ok {
+		return r
+	}
+	r := computeTextualFileScan(hostSrc, s)
+	cache[s] = r
+	return r
+}
+
+// computeTextualFileScan is the actual read + regex + resolve of one includer.
+func computeTextualFileScan(hostSrc, s string) textualFileScan {
+	data, err := os.ReadFile(filepath.Join(hostSrc, filepath.FromSlash(s)))
+	if err != nil {
+		// Missing/unreadable (e.g. a generated source absent at convert
+		// time) — nothing to scan; skip rather than fail.
+		return textualFileScan{}
+	}
+	dir := filepath.Dir(s)
+	var includes []string
+	for _, m := range quoteIncludeRe.FindAllSubmatch(data, -1) {
+		inc := string(m[1])
+		// Follow a quote-include of an implementation file: a compiled
+		// source the includer textually pastes (fmt/gtest/lz4 fused-source),
+		// OR a non-self-contained impl header (.inl/.tcc/.ipp/.txx/.def/.inc)
+		// the genclass idiom pulls in (glm's `#include "func_common.inl"`,
+		// VTK's `.txx`). A plain self-contained header (.h/.hpp) is NOT an
+		// implementation include and is left alone.
+		if !cclang.IsCompiledSource(inc) && !cclang.IsTextualImplHeader(inc) {
+			continue
+		}
+		// An absolute include ("/usr/...", "C:\\...") is non-portable and
+		// never a stageable in-tree textual source — reject it before
+		// resolving. (filepath.Join folds an absolute element under dir
+		// rather than honoring it, so it could otherwise coincidentally
+		// match a same-named in-tree file and stage the wrong thing.)
+		if strings.HasPrefix(inc, "/") || filepath.IsAbs(inc) {
+			continue
+		}
+		rel := resolveTextualInclude(hostSrc, dir, inc, s)
+		if rel == "" {
+			continue
+		}
+		includes = append(includes, rel)
+	}
+	return textualFileScan{includes: includes, reader: len(includes) > 0}
 }
 
 // resolveTextualInclude resolves a quote-include `inc` (a compiled-source path)
@@ -176,6 +218,11 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 	var recs []rec       // synth-lib wirings (cc_binary / cc_test)
 	var inlineRecs []rec // direct textual_hdrs wirings (cc_library / cc_interface)
 	var synth []ir.Target
+	// ONE per-file scan cache for the whole pass: a header shared across many
+	// targets' Hdrs (or a source across targets) is read + regex-scanned once,
+	// not once per target — the fix for the per-target re-read blowup on large,
+	// shared-header projects.
+	scanCache := map[string]textualFileScan{}
 	for i := range pkg.Targets {
 		t := &pkg.Targets[i]
 		switch t.Kind {
@@ -190,7 +237,7 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 		// definition). A header-only library carries the includer entirely in
 		// hdrs, so scanning srcs alone never saw it.
 		includers := append(append([]string(nil), t.Srcs...), t.Hdrs...)
-		incs, readers := findTextualSourceIncludes(hostSrc, includers)
+		incs, readers := findTextualSourceIncludesCached(hostSrc, includers, scanCache)
 		if len(incs) == 0 {
 			continue
 		}
