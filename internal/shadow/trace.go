@@ -83,22 +83,24 @@ func parseTraceUncached(traceRaw []byte) []TraceEvent {
 	// (distinct ranges → no shared state); the in-order gather below keeps the
 	// output byte-identical to the serial parse (same drop rule for non-`{` /
 	// unmarshal-failure lines, same order).
-	type parsed struct {
-		ev TraceEvent
-		ok bool
-	}
-	results := make([]parsed, len(rawLines))
+	//
+	// Unmarshal IN PLACE into events[i] and flag ok[i], rather than through an
+	// intermediate {ev, ok} struct: TraceEvent carries an Args slice header, and
+	// copying it twice (into a temp, then into the gathered output) made
+	// runtime.duffcopy ~20% of a C++ convert's trace parse. One decode + one
+	// gather copy avoids that.
+	events := make([]TraceEvent, len(rawLines))
+	ok := make([]bool, len(rawLines))
 	parseRange := func(start, end int) {
 		for i := start; i < end; i++ {
 			line := bytes.TrimSpace(rawLines[i])
 			if len(line) == 0 || line[0] != '{' {
 				continue
 			}
-			var ev TraceEvent
-			if json.Unmarshal(line, &ev) != nil {
+			if json.Unmarshal(line, &events[i]) != nil {
 				continue
 			}
-			results[i] = parsed{ev: ev, ok: true}
+			ok[i] = true
 		}
 	}
 	// Small traces aren't worth the goroutine fan-out; parse inline.
@@ -126,9 +128,9 @@ func parseTraceUncached(traceRaw []byte) []TraceEvent {
 		wg.Wait()
 	}
 	out := make([]TraceEvent, 0, len(rawLines))
-	for i := range results {
-		if results[i].ok {
-			out = append(out, results[i].ev)
+	for i := range events {
+		if ok[i] {
+			out = append(out, events[i])
 		}
 	}
 	return out

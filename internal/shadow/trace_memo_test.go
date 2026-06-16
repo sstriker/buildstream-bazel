@@ -1,6 +1,8 @@
 package shadow
 
 import (
+	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -51,5 +53,54 @@ func TestParseTrace_LargeFingerprintMiddleSensitive(t *testing.T) {
 	}
 	if r1[1].Args[0] != "m" || r2[1].Args[0] != "n" {
 		t.Fatalf("mis-parse: r1=%q r2=%q", r1[1].Args[0], r2[1].Args[0])
+	}
+}
+
+// TestParseTrace_ParallelMatchesSerial crosses the parallelLineThreshold so the
+// concurrent decode path runs, and asserts it yields exactly what a serial
+// reference parse would: same events, same order, same drop of non-JSON lines.
+// Locks the byte-identity of the parallel path in regression form (the inline
+// path is covered by the small-fixture tests above).
+func TestParseTrace_ParallelMatchesSerial(t *testing.T) {
+	var b strings.Builder
+	const n = 5000 // > parallelLineThreshold (2048) → exercises the worker pool
+	for i := 0; i < n; i++ {
+		switch i % 4 {
+		case 0:
+			fmt.Fprintf(&b, `{"args":["t%d","PUBLIC","inc%d"],"cmd":"target_include_directories","file":"/src/CMakeLists.txt","line":%d}`, i, i, i)
+		case 1:
+			fmt.Fprintf(&b, `{"args":["L%d","NDEBUG"],"cmd":"add_definitions","file":"/src/CMakeLists.txt","line":%d,"frame":2}`, i, i)
+		case 2:
+			// A non-JSON / banner-style line that must be dropped (same as cmake's
+			// leading banner) — verifies the drop rule under parallelism.
+			b.WriteString("not-a-json-line " + strings.Repeat("x", i%17))
+		case 3:
+			b.WriteString(`{"args":["s"],"cmd":"set","file":"/src/CMakeLists.txt","line":1,"defer":"__0"}`)
+		}
+		b.WriteByte('\n')
+	}
+	raw := []byte(b.String())
+
+	// Serial reference: replicate parseTraceUncached's drop + order without the
+	// worker pool, independent of the production code path.
+	var want []TraceEvent
+	for _, line := range strings.Split(b.String(), "\n") {
+		tl := strings.TrimSpace(line)
+		if len(tl) == 0 || tl[0] != '{' {
+			continue
+		}
+		var ev TraceEvent
+		if json.Unmarshal([]byte(tl), &ev) != nil {
+			continue
+		}
+		want = append(want, ev)
+	}
+
+	got := parseTraceUncached(raw)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parallel parse != serial reference: got %d events, want %d", len(got), len(want))
+	}
+	if len(got) != n*3/4 {
+		t.Errorf("expected %d kept events (3 of every 4 lines), got %d", n*3/4, len(got))
 	}
 }
