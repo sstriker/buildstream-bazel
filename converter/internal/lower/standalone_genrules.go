@@ -205,8 +205,10 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 	genexIndex := buildOutputToCustomCommandGenex(traceCtx.CustomCommands)
 	// output → add_custom_command record, for recovering the REAL command when a
 	// ninja edge is a cmake-generated `cmake -P`/`cmake -E` wrapper (P1 of the
-	// wrapper-codegen coverage; see ROADMAP).
-	outputToCustomCommand := buildOutputToCustomCommand(traceCtx.CustomCommands)
+	// wrapper-codegen coverage; see ROADMAP). Same shared builder ToIR uses for
+	// cc.OutputToCustomCommand (self-contained here so the direct unit test needs
+	// no cc).
+	outputToCustomCommand := buildOutputToCustomCommand(traceCtx.CustomCommands, buildDir)
 	// add_custom_target name → ALL flag. A custom target declared
 	// WITHOUT `ALL` is not part of cmake's default build (you invoke it
 	// explicitly, `make <name>`); the faithful Bazel analog is a
@@ -577,19 +579,24 @@ func wrapperRealCodegenCmd(cc *codegenContext, argv, srcs, outs []string, pkg, c
 // buildOutputToCustomCommand indexes each add_custom_command trace record by its
 // declared OUTPUT (and BYPRODUCT) paths, so a ninja edge can be cross-referenced
 // back to the source-level call — to recover the REAL command when the edge is a
-// cmake-generated `cmake -P`/`cmake -E` wrapper that hides the actual tool.
-func buildOutputToCustomCommand(cmds []shadow.AddCustomCommandCall) map[string]*shadow.AddCustomCommandCall {
+// cmake-generated `cmake -P`/`cmake -E` wrapper that hides the actual tool. The
+// SINGLE record index both unwrap channels consult: traceWrapperRealArgv (a
+// dispatch over a non-cmake tool) and tracedCmakeScriptForEdge (a dispatch over a
+// `cmake -P` script). Keyed via outputKeyForms (raw trace form + build-relative)
+// so a build-rel ninja edge output matches an absolute --trace-expand output.
+func buildOutputToCustomCommand(cmds []shadow.AddCustomCommandCall, buildDir string) map[string]*shadow.AddCustomCommandCall {
 	if len(cmds) == 0 {
 		return nil
 	}
 	m := map[string]*shadow.AddCustomCommandCall{}
 	for i := range cmds {
 		c := &cmds[i]
-		for _, o := range c.Outputs {
-			m[o] = c
-		}
-		for _, o := range c.ByProducts {
-			m[o] = c
+		for _, o := range append(append([]string(nil), c.Outputs...), c.ByProducts...) {
+			for _, key := range outputKeyForms(o, buildDir) {
+				if _, exists := m[key]; !exists {
+					m[key] = c
+				}
+			}
 		}
 	}
 	return m

@@ -136,39 +136,23 @@ type tracedScript struct {
 	posArgs []string
 }
 
-// buildOutToTracedCmakeScript indexes each add_custom_command whose REAL command
-// (the trace's single-COMMAND argv) is a `cmake [-D…] -P <script> [pos…]` by its
-// OUTPUT paths — in both the raw trace form and the build-relative form — so a
-// ninja edge can recover the real script when the edge itself is a cmake-
-// GENERATED dispatch wrapper. Multi-COMMAND records are skipped (the genrule
-// fallback owns them, mirroring traceWrapperRealArgv). nil-safe; empty map when
-// nothing qualifies (the common case where edges carry the real `-P` script
-// directly).
-func buildOutToTracedCmakeScript(cmds []shadow.AddCustomCommandCall, buildDir string) map[string]tracedScript {
-	m := map[string]tracedScript{}
-	for i := range cmds {
-		c := &cmds[i]
-		if len(c.Commands) != 1 || len(c.Commands[0]) == 0 {
-			continue
-		}
-		cmd := strings.Join(c.Commands[0], " ")
-		if !usesCmakeScriptMode(cmd) {
-			continue
-		}
-		script := extractCmakeScriptPath(cmd)
-		if script == "" || script == "<unknown-script>" {
-			continue
-		}
-		ts := tracedScript{script: script, dArgs: extractCmakePDashArgs(cmd), posArgs: extractCmakePScriptPositionalArgs(cmd)}
-		for _, o := range append(append([]string(nil), c.Outputs...), c.ByProducts...) {
-			for _, key := range outputKeyForms(o, buildDir) {
-				if _, exists := m[key]; !exists {
-					m[key] = ts
-				}
-			}
-		}
+// tracedScriptFromRecord returns the USER `cmake -P <script>` (+ -D / positional
+// args) of an add_custom_command record whose single REAL command is a cmake -P
+// invocation; ok=false for a multi-COMMAND record or a non-cmake real tool (the
+// latter is the recognizer-unwrap path's, via traceWrapperRealArgv).
+func tracedScriptFromRecord(c *shadow.AddCustomCommandCall) (tracedScript, bool) {
+	if c == nil || len(c.Commands) != 1 || len(c.Commands[0]) == 0 {
+		return tracedScript{}, false
 	}
-	return m
+	cmd := strings.Join(c.Commands[0], " ")
+	if !usesCmakeScriptMode(cmd) {
+		return tracedScript{}, false
+	}
+	script := extractCmakeScriptPath(cmd)
+	if script == "" || script == "<unknown-script>" {
+		return tracedScript{}, false
+	}
+	return tracedScript{script: script, dArgs: extractCmakePDashArgs(cmd), posArgs: extractCmakePScriptPositionalArgs(cmd)}, true
 }
 
 // outputKeyForms returns the lookup keys for a custom-command output: the raw
@@ -193,27 +177,20 @@ func outputKeyForms(o, buildDir string) []string {
 // edge already carries the real script, or the real command is a non-cmake tool
 // the recognizer unwrap handles).
 func (cc *codegenContext) tracedCmakeScriptForEdge(b *ninja.Build, buildDir string) (tracedScript, bool) {
-	if cc == nil || len(cc.OutToTracedCmakeScript) == 0 || b == nil {
+	if cc == nil || len(cc.OutputToCustomCommand) == 0 || b == nil {
 		return tracedScript{}, false
 	}
 	outs := append(append([]string(nil), b.Outputs...), b.ImplicitOuts...)
 	for _, o := range outs {
 		for _, key := range outputKeyForms(o, buildDir) {
-			if ts, ok := cc.OutToTracedCmakeScript[key]; ok {
-				return ts, true
+			if c, ok := cc.OutputToCustomCommand[key]; ok {
+				if ts, ok := tracedScriptFromRecord(c); ok {
+					return ts, true
+				}
 			}
 		}
 	}
 	return tracedScript{}, false
-}
-
-// indexTraceCommands builds the add_custom_command output indexes the dispatch-
-// unwrap paths consult: OutToTracedCmakeScript (output → real `cmake -P` script)
-// and OutputToCustomCommand (output → full record, for the non-cmake real tool).
-// One call so ToIR sets both in a single statement.
-func (cc *codegenContext) indexTraceCommands(cmds []shadow.AddCustomCommandCall, buildDir string) {
-	cc.OutToTracedCmakeScript = buildOutToTracedCmakeScript(cmds, buildDir)
-	cc.OutputToCustomCommand = buildOutputToCustomCommand(cmds)
 }
 
 // realCmakeCommandForEdge rewrites a ninja edge command to the REAL
