@@ -812,3 +812,49 @@ func TestClassify_GitRepoLocationProbe(t *testing.T) {
 		t.Errorf("git describe: Bucket = %v, want BucketStamp", desc.Bucket)
 	}
 }
+
+// TestClassify_PeelsStampWrappers: a stamp/probe command behind a bare shell
+// wrapper (env / taskset / nice — not cmake -E, which normalizeCMakeECall
+// already peels) classifies by its REAL driver, symmetric with the codegen
+// recognizer's wrapper see-through.
+func TestClassify_PeelsStampWrappers(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		argv   []string
+		bucket Bucket
+	}{
+		{"env-wrapped git rev-parse → stamp", []string{"env", "GIT_DIR=/x/.git", "git", "rev-parse", "HEAD"}, BucketStamp},
+		{"env-wrapped date → stamp", []string{"env", "TZ=UTC", "date", "+%s"}, BucketStamp},
+		{"taskset -c flag-wrapped date → stamp", []string{"taskset", "-c", "0", "date", "+%s"}, BucketStamp},
+		{"env-wrapped uname → probe", []string{"env", "LC_ALL=C", "uname", "-m"}, BucketProbe},
+		// A wrapped git repo-LOCATION query stays a (skipped) probe, not a value
+		// stamp — the location check inspects the peeled git args, not env vars.
+		{"env-wrapped git --git-dir → probe (location, not stamp)", []string{"env", "X=1", "git", "rev-parse", "--git-dir"}, BucketProbe},
+		// sh -c keeps the shell (its quoted command isn't a clean argv): unchanged.
+		{"sh -c git → not a stamp (shell driver kept)", []string{"sh", "-c", "git rev-parse HEAD"}, BucketRefuse},
+	} {
+		got := Classify(shadow.ExecuteProcessCall{Commands: [][]string{tc.argv}, OutputVariable: "V"})
+		if got.Bucket != tc.bucket {
+			t.Errorf("%s: bucket = %q, want %q (reason: %s)", tc.name, got.Bucket, tc.bucket, got.Reason)
+		}
+	}
+}
+
+func TestRealExecuteProcessDriver(t *testing.T) {
+	cases := []struct {
+		argv []string
+		want string
+	}{
+		{[]string{"git", "rev-parse", "HEAD"}, "git"},              // unwrapped: no-op
+		{[]string{"env", "GIT_DIR=/x", "git", "rev-parse"}, "git"}, // env K=V peeled
+		{[]string{"taskset", "-c", "0", "date"}, "date"},           // taskset -c <mask> flag peeled
+		{[]string{"/usr/bin/git", "describe"}, "git"},              // path + basename
+		{[]string{"sh", "-c", "git rev-parse"}, "sh"},              // sh -c keeps shell
+		{nil, ""},
+	}
+	for _, tc := range cases {
+		if got := realExecuteProcessDriver(tc.argv); got != tc.want {
+			t.Errorf("realExecuteProcessDriver(%v) = %q, want %q", tc.argv, got, tc.want)
+		}
+	}
+}
