@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"hash/fnv"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -74,19 +75,61 @@ func ParseTrace(traceRaw []byte) []TraceEvent {
 }
 
 func parseTraceUncached(traceRaw []byte) []TraceEvent {
-	// Pre-size to roughly the line count to avoid repeated growth.
-	lines := bytes.Count(traceRaw, []byte{'\n'}) + 1
-	out := make([]TraceEvent, 0, lines)
-	for _, line := range bytes.Split(traceRaw, []byte{'\n'}) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 || line[0] != '{' {
-			continue
+	rawLines := bytes.Split(traceRaw, []byte{'\n'})
+	// Decode each line's JSON CONCURRENTLY: a json-v1 trace is one self-contained
+	// object per line, so the per-line json.Unmarshal is independent and was the
+	// dominant cost of the (uncached) first parse — ~27% of translation CPU on an
+	// OpenBLAS convert with a large trace. Workers fill a per-index result slice
+	// (distinct ranges → no shared state); the in-order gather below keeps the
+	// output byte-identical to the serial parse (same drop rule for non-`{` /
+	// unmarshal-failure lines, same order).
+	type parsed struct {
+		ev TraceEvent
+		ok bool
+	}
+	results := make([]parsed, len(rawLines))
+	parseRange := func(start, end int) {
+		for i := start; i < end; i++ {
+			line := bytes.TrimSpace(rawLines[i])
+			if len(line) == 0 || line[0] != '{' {
+				continue
+			}
+			var ev TraceEvent
+			if json.Unmarshal(line, &ev) != nil {
+				continue
+			}
+			results[i] = parsed{ev: ev, ok: true}
 		}
-		var ev TraceEvent
-		if err := json.Unmarshal(line, &ev); err != nil {
-			continue
+	}
+	// Small traces aren't worth the goroutine fan-out; parse inline.
+	const parallelLineThreshold = 2048
+	if len(rawLines) < parallelLineThreshold {
+		parseRange(0, len(rawLines))
+	} else {
+		workers := runtime.NumCPU()
+		if workers < 2 {
+			workers = 2
 		}
-		out = append(out, ev)
+		chunk := (len(rawLines) + workers - 1) / workers
+		var wg sync.WaitGroup
+		for start := 0; start < len(rawLines); start += chunk {
+			end := start + chunk
+			if end > len(rawLines) {
+				end = len(rawLines)
+			}
+			wg.Add(1)
+			go func(s, e int) {
+				defer wg.Done()
+				parseRange(s, e)
+			}(start, end)
+		}
+		wg.Wait()
+	}
+	out := make([]TraceEvent, 0, len(rawLines))
+	for i := range results {
+		if results[i].ok {
+			out = append(out, results[i].ev)
+		}
 	}
 	return out
 }
