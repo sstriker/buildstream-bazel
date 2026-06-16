@@ -669,6 +669,37 @@ func TestRecognizeViaTraceWrapperArgv(t *testing.T) {
 	}
 }
 
+// TestStandaloneWrapperRecognizes gates the --cmake-script-bake fallback: a
+// dispatch-wrapped protoc (real argv recovered from the trace) recognizes, so
+// the bake must defer to the recognizer; a user's own cmake -P script does not,
+// so the bake still applies; recognition-off never defers.
+func TestStandaloneWrapperRecognizes(t *testing.T) {
+	idx := buildOutputToCustomCommand([]shadow.AddCustomCommandCall{
+		{Outputs: []string{"foo.pb.cc", "foo.pb.h"}, Commands: [][]string{{"protoc", "--cpp_out=.", "foo.proto"}}},
+		{Outputs: []string{"userp.out"}, Commands: [][]string{{"cmake", "-P", "user.cmake"}}},
+	}, "")
+
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	// Dispatch wrapper over protoc, srcs surface the .proto → recognizes → defer bake.
+	if !cc.standaloneWrapperRecognizes("cmake -P CMakeFiles/x.dir/foo.cmake",
+		[]string{"foo.proto"}, []string{"foo.pb.cc", "foo.pb.h"}, "", "pkg", idx, nil) {
+		t.Error("a dispatch-wrapped protoc should be recognizable → bake must defer to the recognizer")
+	}
+	// A user's own cmake -P script (not a dispatch over a tool) → not recognizable → bake applies.
+	if cc.standaloneWrapperRecognizes("cmake -P user.cmake",
+		nil, []string{"userp.out"}, "", "pkg", idx, nil) {
+		t.Error("a user cmake -P script is not a recognizable tool wrapper; bake should still apply")
+	}
+	// Recognition off → never defer (bake as before).
+	off := newCodegenContext()
+	off.RecognizeCodegen = false
+	if off.standaloneWrapperRecognizes("cmake -P CMakeFiles/x.dir/foo.cmake",
+		[]string{"foo.proto"}, []string{"foo.pb.cc", "foo.pb.h"}, "", "pkg", idx, nil) {
+		t.Error("recognition-off must not defer the bake")
+	}
+}
+
 // TestDropLiftedToolSrcs pins the shared step that keeps a tool the swap lifted
 // to $(execpath <label>) + tools out of srcs (else it'd be both a src and a
 // tool). Now called by all three genrule-emission paths (emitRecoveredGenrule,
