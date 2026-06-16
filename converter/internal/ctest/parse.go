@@ -34,6 +34,12 @@ type Test struct {
 	// gtest_discover_tests placeholders since the binary itself runs
 	// gtest's case loop at test time.
 	Args []string
+	// Command is the full add_test COMMAND token list (COMMAND[0] plus
+	// every argument), captured verbatim before Target/Args are derived.
+	// ResolveWrappedCommands uses it to see through a launcher wrapper
+	// (e.g. `python3 <runner> <driver-exe>`) to the real test executable.
+	// Empty for synthesized gtest_discover_tests placeholders.
+	Command []string
 	// Timeout is set_tests_properties TIMEOUT, or 0 if unset.
 	Timeout time.Duration
 	// Env is set_tests_properties ENVIRONMENT, split on `;`.
@@ -82,6 +88,60 @@ func (r *Registry) All() []Test {
 	out := make([]Test, len(r.tests))
 	copy(out, r.tests)
 	return out
+}
+
+// ResolveWrappedCommands sees through a launcher-wrapped test command to the
+// real test executable. CTest projects often register a driver via a launcher
+// rather than as the bare binary — BlazingMQ/BDE register every test driver as
+//
+//	add_test(NAME <t> COMMAND python3 <bde-runner> <driver-exe> [args...])
+//
+// so COMMAND[0] is `python3`, Target resolves to "python3", and the driver
+// never matches its EXECUTABLE target — leaving hundreds of drivers as
+// cc_binary with no cc_test. isExec reports whether a basename names a built
+// EXECUTABLE target (the lower supplies the codemodel's executable set). For
+// each test whose current Target is NOT itself an executable, this scans the
+// COMMAND arguments (everything after COMMAND[0]) for the FIRST token that IS
+// one and re-points the test at it: Target becomes the driver, Args become the
+// tokens AFTER the driver (its own arguments — the launcher + runner prefix is
+// harness), and a `cmake-test-launcher=<launcher>` tag records what we saw
+// through so the unwrapping is auditable. Tests already naming an executable
+// directly, and tests where no argument resolves to one, are left untouched.
+// Call once, after parse and before any Lookup.
+func (r *Registry) ResolveWrappedCommands(isExec func(name string) bool) {
+	if r == nil || isExec == nil {
+		return
+	}
+	changed := false
+	for i := range r.tests {
+		t := &r.tests[i]
+		if isExec(t.Target) {
+			continue // already a direct executable registration
+		}
+		for j := 1; j < len(t.Command); j++ {
+			driver := targetBasename(t.Command[j])
+			if !isExec(driver) {
+				continue
+			}
+			t.Target = driver
+			t.Args = append([]string(nil), t.Command[j+1:]...)
+			t.Tags = appendUniq(t.Tags, "cmake-test-launcher="+targetBasename(t.Command[0]))
+			changed = true
+			break
+		}
+	}
+	if changed {
+		r.byTarget = map[string][]int{}
+		for i := range r.tests {
+			r.byTarget[r.tests[i].Target] = append(r.byTarget[r.tests[i].Target], i)
+		}
+	}
+}
+
+// targetBasename reduces a COMMAND token to the executable target name it
+// would match: the path basename with any platform .exe suffix stripped.
+func targetBasename(token string) string {
+	return strings.TrimSuffix(filepath.Base(token), ".exe")
 }
 
 // Parse walks <buildDir>/CTestTestfile.cmake and recursively follows
@@ -185,11 +245,12 @@ func (r *Registry) handleAddTest(args []string) {
 		}
 		return
 	}
-	target := strings.TrimSuffix(filepath.Base(cmd), ".exe")
+	target := targetBasename(cmd)
 	t := Test{
-		Name:   name,
-		Target: target,
-		Args:   newArgs,
+		Name:    name,
+		Target:  target,
+		Args:    newArgs,
+		Command: append([]string{cmd}, newArgs...),
 	}
 	r.byName[name] = len(r.tests)
 	r.byTarget[target] = append(r.byTarget[target], len(r.tests))

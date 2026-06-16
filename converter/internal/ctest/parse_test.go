@@ -70,6 +70,7 @@ func TestParse_FullFixture(t *testing.T) {
 		Name:    "slow",
 		Target:  "slow",
 		Args:    []string{"--slow"},
+		Command: []string{"/tmp/x/build/slow", "--slow"},
 		Timeout: 30 * time.Second,
 		Env:     []string{"FOO=1", "BAR=2"},
 		Tags:    []string{"slow", "flaky", "exclusive"},
@@ -445,4 +446,71 @@ func TestParse_TimeoutUnparsedSurfaced(t *testing.T) {
 	if contains(byName["ok"].Tags, "cmake-test-timeout-unparsed") {
 		t.Errorf("well-formed TIMEOUT wrongly tagged; tags=%v", byName["ok"].Tags)
 	}
+}
+
+func TestResolveWrappedCommands(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "CTestTestfile.cmake"),
+		// wrapped: a python launcher + runner script in front of the driver
+		// exe. The driver token basename ("bsl_foo.t") is matched against the
+		// EXECUTABLE target set the same way the direct path matches COMMAND[0].
+		`add_test([=[bsl_foo]=] "/usr/bin/python3" "/bde/runner.py" "/b/groups/bsl/bsl_foo.t" "--verbose")`+"\n"+
+			// direct: COMMAND[0] is the executable itself — must stay untouched
+			`add_test([=[plain]=] "/b/plain")`+"\n"+
+			// wrapped but no token names a known executable — left as-is
+			`add_test([=[orphan]=] "/usr/bin/python3" "/bde/runner.py" "missing.t")`+"\n",
+	)
+	r, err := Parse(dir)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	// Before resolution the wrapped driver is indexed under "python3".
+	if len(r.Lookup("bsl_foo.t")) != 0 {
+		t.Fatal("precondition: wrapped driver should not match before resolution")
+	}
+
+	exec := map[string]bool{"bsl_foo.t": true, "plain": true}
+	r.ResolveWrappedCommands(func(name string) bool { return exec[name] })
+
+	got := mustLookup(t, r, "bsl_foo.t")
+	if got.Name != "bsl_foo" || got.Target != "bsl_foo.t" {
+		t.Errorf("wrapped driver not re-pointed: %+v", got)
+	}
+	if !equalSlice(got.Args, []string{"--verbose"}) {
+		t.Errorf("driver Args should be the tokens after the driver, got %v", got.Args)
+	}
+	if !contains(got.Tags, "cmake-test-launcher=python3") {
+		t.Errorf("launcher tag missing: %v", got.Tags)
+	}
+	// The resolved driver is no longer indexed under the launcher: only the
+	// unresolved orphan remains under "python3".
+	py := r.Lookup("python3")
+	if len(py) != 1 || py[0].Name != "orphan" {
+		t.Errorf("python3 index should hold only the orphan after re-pointing, got %+v", py)
+	}
+
+	// The direct registration is unchanged.
+	plain := mustLookup(t, r, "plain")
+	if plain.Target != "plain" || contains(plain.Tags, "cmake-test-launcher=python3") {
+		t.Errorf("direct test wrongly rewritten: %+v", plain)
+	}
+
+	// The orphan (no resolvable driver) is left untouched — still its launcher
+	// basename, no unwrap tag, so it never becomes a runnable test target.
+	for _, te := range r.All() {
+		if te.Name != "orphan" {
+			continue
+		}
+		if te.Target != "python3" || contains(te.Tags, "cmake-test-launcher=python3") {
+			t.Errorf("orphan should be untouched (Target=python3, no tag), got %+v", te)
+		}
+	}
+}
+
+func TestResolveWrappedCommands_NilSafe(t *testing.T) {
+	var r *Registry
+	r.ResolveWrappedCommands(func(string) bool { return true }) // must not panic
+	r2 := &Registry{byTarget: map[string][]int{}, byName: map[string]int{}}
+	r2.ResolveWrappedCommands(nil) // nil predicate is a no-op
 }
