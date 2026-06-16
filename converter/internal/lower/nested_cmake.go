@@ -481,40 +481,65 @@ func lowerOneNestedBuild(nb NestedBuildInput, opts Options, hostSrc string) (*ir
 	// to the nested's OWN root for a build-dir-generated one (see
 	// nestedElementRoot).
 	elementRoot := nestedElementRoot(rootAbs, nb.SrcDir)
-	nestedOpts := Options{
-		// HostSourceRoot is where the nested cmake configured;
-		// ElementSourceRoot anchors the merged labels — at the OUTER root
-		// for an in-tree nested source (so srcs carry the
-		// <nested-src-rel>/ prefix the outer BUILD needs), or at the
-		// nested's OWN root when its source sits outside the outer tree
-		// (a build-dir-generated nested project; see the selector above).
-		HostSourceRoot:    nb.SrcDir,
-		ElementSourceRoot: elementRoot,
-		BuildDir:          nb.HostBuildDir,
-		TraceRaw:          nb.TraceRaw,
-		// The superbuild-chain recursion: this build's own nested
-		// builds (driver-harvested from its trace) lower inside the
-		// recursive ToIR exactly as this one lowers inside its
-		// parent. Lifted children mark the local sink's NestedLifted,
-		// so only genuinely-unlifted grandchildren warn.
-		NestedBuilds: nb.Children,
-		// The operator's lift opt-in applies inside the nested
-		// lowering too: with the nested trace in hand, a nested
-		// configure_file recovers as the dynamic values-dict LIFT
-		// tier (KindCMakeConfigureFile) instead of the convert-time
-		// byte bake — the same fidelity win the top-level tier gives.
-		// The merge re-homes the lift-tier out like any producer out
-		// (see producerOuts / applyNestedProducerReHome).
-		LiftConfigureFile: opts.LiftConfigureFile,
-		Imports:           opts.Imports,
-		BazelPackagePath:  opts.BazelPackagePath,
-		CMakeVars:         opts.CMakeVars,
-		Coverage:          opts.Coverage,
-		Todos:             opts.Todos,
-		Warnings:          opts.Warnings,
-		BakeIn:            opts.BakeIn,
-	}
-	return ToIR(nb.Reply, nb.Graph, nestedOpts)
+	return ToIR(nb.Reply, nb.Graph, nestedOptionsFor(nb, opts, elementRoot))
+}
+
+// nestedOptionsFor builds the Options the recursive ToIR runs the nested
+// build under. It is the single chokepoint deciding which of the outer
+// Options propagate into a nested lowering — split out (and unit-tested in
+// TestNestedOptionsFor) so the forward/drop policy is explicit and a newly
+// added Option field can't silently fail to flow. See the inline buckets
+// for which fields forward and why the rest are deliberately dropped.
+func nestedOptionsFor(nb NestedBuildInput, opts Options, elementRoot string) Options {
+	// Default-FORWARD: start from a copy of the outer options so every
+	// operator dial (the cmake -P lift family, codegen recognizers, download
+	// lift, standalone genrules, BackedFeatures, Fidelity, Rejections, …)
+	// reaches the nested lowering automatically. This is deliberately the
+	// inverse of hand-listing each forwarded field: a NEWLY added Option flows
+	// into nested builds with no change here, so a nested cmake -P script or
+	// protoc codegen can't silently get a lower-fidelity conversion than the
+	// same construct at the top level. The only maintenance burden is the
+	// explicit clears below — and forgetting one cross-contaminates loudly
+	// (a nested run writing into an outer sink) rather than failing invisibly.
+	n := opts
+
+	// (1) Per-nested CONTEXT — overrides the outer values.
+	// HostSourceRoot is where the nested cmake configured; ElementSourceRoot
+	// anchors the merged labels (OUTER root for an in-tree nested source so
+	// srcs carry the <nested-src-rel>/ prefix, or the nested's OWN root for a
+	// build-dir-generated project; see nestedElementRoot). NestedBuilds is the
+	// superbuild-chain recursion: this build's own driver-harvested children
+	// lower inside the recursive ToIR exactly as this one lowers in its parent.
+	n.HostSourceRoot = nb.SrcDir
+	n.ElementSourceRoot = elementRoot
+	n.BuildDir = nb.HostBuildDir
+	n.TraceRaw = nb.TraceRaw
+	n.NestedBuilds = nb.Children
+
+	// (2) Outer-SCOPED state — cleared so it can't cross-contaminate the
+	// nested run. Two kinds: pass-1 orchestration SINKS (the driver reads
+	// these after the outer pass 1 to drive its warm second pass) and
+	// OUTER-configure-derived DATA (captured from the outer project's own
+	// configure / trace). CTest is cleared too: its registry is parsed from
+	// the OUTER build dir's CTestTestfile.cmake, so forwarding it would
+	// mis-classify nested executables (a nested registry needs its own
+	// harvest). HostPrefixDir is the outer synth-prefix anchor. Keep this list
+	// in sync with the "drop" entries in nestedOptionsClass (the test guard).
+	n.HostPrefixDir = ""
+	n.CTest = nil
+	n.SetAssignments = nil
+	n.ParentScopeForwards = nil
+	n.StampVarSink = nil
+	n.NestedConfigureSink = nil
+	n.CaptureRefusalSink = nil
+	n.DeadCaptureVars = nil
+	n.NonExpandedFileWriters = nil
+	n.GenexProbes = nil
+	n.ConfigureLog = nil
+	n.LiteralProbeSink = nil
+	n.LiteralResolutions = nil
+
+	return n
 }
 
 // mergeNestedPackage folds the nested package's targets into the outer

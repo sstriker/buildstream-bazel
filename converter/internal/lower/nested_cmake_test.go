@@ -3,6 +3,7 @@ package lower
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -564,5 +565,143 @@ func TestWarnUnliftedNestedBuilds_SuppressesFullyRecovered(t *testing.T) {
 	warnUnliftedNestedBuilds(Options{Todos: c2, BuildDir: build}, cc)
 	if c2.Len() != 1 {
 		t.Errorf("a library-producing nested build should still emit the not-lifted todo; got %d", c2.Len())
+	}
+}
+
+// nestedOptionsClass classifies every Options field by how nestedOptionsFor
+// must treat it. The TestNestedOptionsForClassification guard asserts this
+// covers the live struct EXACTLY, so a newly added Options field fails the
+// build until its propagation policy is decided here on purpose:
+//
+//   - "perNested": set from the NestedBuildInput, NOT the outer opts.
+//   - "forward":   copied verbatim from the outer opts (operator dials +
+//     host-independent context that a nested build must honor too).
+//   - "drop":      deliberately NOT forwarded — pass-1 orchestration sinks and
+//     outer-configure-derived data that would cross-contaminate a nested run.
+var nestedOptionsClass = map[string]string{
+	"HostSourceRoot":    "perNested",
+	"ElementSourceRoot": "perNested",
+	"BuildDir":          "perNested",
+	"TraceRaw":          "perNested",
+	"NestedBuilds":      "perNested",
+
+	"LiftConfigureFile":                 "forward",
+	"Imports":                           "forward",
+	"BazelPackagePath":                  "forward",
+	"CMakeVars":                         "forward",
+	"Coverage":                          "forward",
+	"Todos":                             "forward",
+	"Warnings":                          "forward",
+	"BakeIn":                            "forward",
+	"CMakeScriptRunner":                 "forward",
+	"CMakeScriptBake":                   "forward",
+	"CMakeScriptTrace":                  "forward",
+	"LiftCCEmbed":                       "forward",
+	"LiftCCHash":                        "forward",
+	"RecognizeCodegen":                  "forward",
+	"ExtraCodegenRecognizers":           "forward",
+	"LiftDerivedCodegen":                "forward",
+	"EmitStandaloneCustomCommands":      "forward",
+	"LiftDownload":                      "forward",
+	"DownloadRepos":                     "forward",
+	"BackedFeatures":                    "forward",
+	"Fidelity":                          "forward",
+	"UnsupportedExecuteProcessFallback": "forward",
+	"FallbackInstallTarget":             "forward",
+	"Rejections":                        "forward",
+	"RecoverSourceComments":             "forward",
+	"EmitSharedLibraries":               "forward",
+	"EmitInstallExportConfig":           "forward",
+
+	"HostPrefixDir":          "drop",
+	"CTest":                  "drop",
+	"SetAssignments":         "drop",
+	"ParentScopeForwards":    "drop",
+	"StampVarSink":           "drop",
+	"NestedConfigureSink":    "drop",
+	"CaptureRefusalSink":     "drop",
+	"DeadCaptureVars":        "drop",
+	"NonExpandedFileWriters": "drop",
+	"GenexProbes":            "drop",
+	"ConfigureLog":           "drop",
+	"LiteralProbeSink":       "drop",
+	"LiteralResolutions":     "drop",
+}
+
+// TestNestedOptionsForClassification forces every Options field to carry an
+// explicit forward/drop/perNested decision: if a field is added to Options
+// without being classified above, this fails — the guard that caught the
+// pre-existing drift where most operator opt-in dials silently never reached
+// a nested lowering.
+func TestNestedOptionsForClassification(t *testing.T) {
+	ot := reflect.TypeOf(Options{})
+	live := map[string]bool{}
+	for i := 0; i < ot.NumField(); i++ {
+		name := ot.Field(i).Name
+		live[name] = true
+		if _, ok := nestedOptionsClass[name]; !ok {
+			t.Errorf("Options field %q is unclassified for nested lowering — add it to nestedOptionsClass (forward it in nestedOptionsFor, or document why it must be dropped)", name)
+		}
+	}
+	for name := range nestedOptionsClass {
+		if !live[name] {
+			t.Errorf("nestedOptionsClass names %q, which is not a live Options field — stale entry", name)
+		}
+	}
+}
+
+// setNonZeroField sets v to a recognizably non-zero value for the kinds the
+// Options struct uses, so TestNestedOptionsFor can assert which fields survive
+// nestedOptionsFor (forwarded) and which it clears (dropped).
+func setNonZeroField(v reflect.Value) {
+	switch v.Kind() {
+	case reflect.String:
+		v.SetString("x")
+	case reflect.Bool:
+		v.SetBool(true)
+	case reflect.Slice:
+		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
+	case reflect.Map:
+		v.Set(reflect.MakeMap(v.Type()))
+	case reflect.Ptr:
+		v.Set(reflect.New(v.Type().Elem()))
+	case reflect.Interface:
+		v.Set(reflect.ValueOf(os.Stderr)) // the only interface field is Warnings (io.Writer)
+	}
+}
+
+// TestNestedOptionsFor sets EVERY outer Options field non-zero, then asserts —
+// per nestedOptionsClass — that forwarded fields carry the outer value and
+// dropped fields are cleared. This ties the code's explicit clear-list in
+// nestedOptionsFor to the classification: forget to clear an outer-scoped
+// field (default-forward leaks it) and the drop assertion fires.
+func TestNestedOptionsFor(t *testing.T) {
+	var outer Options
+	ov := reflect.ValueOf(&outer).Elem()
+	ot := ov.Type()
+	for i := 0; i < ot.NumField(); i++ {
+		setNonZeroField(ov.Field(i))
+	}
+	nb := NestedBuildInput{SrcDir: "/src/sub", HostBuildDir: "/b/sub"}
+
+	got := nestedOptionsFor(nb, outer, "/element/root")
+	gv := reflect.ValueOf(got)
+
+	// per-nested context comes from the NestedBuildInput, not the outer opts.
+	if got.HostSourceRoot != nb.SrcDir || got.BuildDir != nb.HostBuildDir || got.ElementSourceRoot != "/element/root" {
+		t.Errorf("per-nested fields wrong: HostSourceRoot=%q BuildDir=%q ElementSourceRoot=%q", got.HostSourceRoot, got.BuildDir, got.ElementSourceRoot)
+	}
+	for i := 0; i < ot.NumField(); i++ {
+		name := ot.Field(i).Name
+		switch nestedOptionsClass[name] {
+		case "forward":
+			if !reflect.DeepEqual(gv.Field(i).Interface(), ov.Field(i).Interface()) {
+				t.Errorf("forward field %q did not propagate into nested lowering", name)
+			}
+		case "drop":
+			if !gv.Field(i).IsZero() {
+				t.Errorf("drop field %q must be cleared in nested lowering (default-forward leaked it)", name)
+			}
+		}
 	}
 }
