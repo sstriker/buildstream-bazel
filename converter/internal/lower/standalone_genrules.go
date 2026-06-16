@@ -534,6 +534,10 @@ func codegenCommandFromArgv(argv, srcs, outs []string, pkg string) CodegenComman
 	// execute_process path's normalizeCMakeECall so all recovery paths see the
 	// same driver. cmake -E first (peels its env/chdir), then shell wrappers
 	// (env/sh/taskset/…), so a doubly-wrapped `cmake -E env … env … tool` resolves.
+	// The handled nesting is cmake-OUTERMOST (`cmake -E env … <shell-wrapper?>
+	// tool`), which is what cmake emits; the reverse (`env … cmake -E env … tool`)
+	// strips the outer shell wrapper and then stops at the inner cmake driver —
+	// a no-op recognizer view that safely degrades to the generic genrule.
 	argv, _ = stripCMakeEWrappers(argv)
 	argv = stripWrapperPrefix(argv)
 	var driver string
