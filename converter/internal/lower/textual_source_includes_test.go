@@ -300,3 +300,51 @@ func TestSynthesizeTextualSourceIncludeLibs_CCLibraryInline(t *testing.T) {
 		t.Errorf("textual_hdrs = %v, want %v (ancestor-walk resolved against the include root gt/)", pkg.Targets[0].TextualHdrs, want)
 	}
 }
+
+// TestFindTextualSourceIncludesCached_ReadsEachFileOnce proves the per-pass
+// scan cache eliminates the per-target re-read of a shared includer: after the
+// first scan populates the cache, DELETING the file on disk must not change the
+// result of a second scan through the same cache (a re-read would now miss).
+// This is the performance fix — a header shared across N targets was os.ReadFile'd
+// N times; now it's read once.
+func TestFindTextualSourceIncludesCached_ReadsEachFileOnce(t *testing.T) {
+	hostSrc := t.TempDir()
+	write := func(rel, body string) {
+		p := filepath.Join(hostSrc, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// shared.hpp textually includes its impl (the genclass idiom); impl.inl exists.
+	write("inc/shared.hpp", "#include \"shared.inl\"\n")
+	write("inc/shared.inl", "template<class T> void f(){}\n")
+
+	cache := map[string]textualFileScan{}
+	first, readers := findTextualSourceIncludesCached(hostSrc, []string{"inc/shared.hpp"}, cache)
+	if len(first) != 1 || first[0] != "inc/shared.inl" {
+		t.Fatalf("first scan: includes = %v (readers %v), want [inc/shared.inl]", first, readers)
+	}
+	if _, cached := cache["inc/shared.hpp"]; !cached {
+		t.Fatal("includer not memoized in the cache after the first scan")
+	}
+
+	// Remove the includer from disk. A second scan through the SAME cache (a
+	// different target sharing this header) must return the cached result
+	// without re-reading — a re-read would now fail and yield nothing.
+	if err := os.Remove(filepath.Join(hostSrc, "inc", "shared.hpp")); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := findTextualSourceIncludesCached(hostSrc, []string{"inc/shared.hpp"}, cache)
+	if !reflect.DeepEqual(second, first) {
+		t.Errorf("cached re-scan differs (file was re-read instead of cached): got %v, want %v", second, first)
+	}
+
+	// A FRESH cache re-reads → now-missing file yields nothing (control:
+	// confirms the persistence above came from the cache, not a fluke).
+	if got, _ := findTextualSourceIncludesCached(hostSrc, []string{"inc/shared.hpp"}, map[string]textualFileScan{}); got != nil {
+		t.Errorf("fresh cache should re-read the (now-deleted) file and find nothing; got %v", got)
+	}
+}
