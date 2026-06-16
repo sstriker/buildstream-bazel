@@ -460,7 +460,7 @@ func TestLowerOneNestedBuild_ThreadsChildren(t *testing.T) {
 			HostBuildDir: grandBuild,
 		}},
 	}
-	pkg, err := lowerOneNestedBuild(nb, Options{}, root)
+	pkg, _, err := lowerOneNestedBuild(nb, Options{}, root)
 	if err != nil {
 		t.Fatalf("lowerOneNestedBuild: %v", err)
 	}
@@ -704,5 +704,28 @@ func TestNestedOptionsFor(t *testing.T) {
 				t.Errorf("drop field %q must be cleared in nested lowering (default-forward leaked it)", name)
 			}
 		}
+	}
+}
+
+// TestMergeNestedStampCommands: a nested build's workspace-status commands fold
+// into the outer cc.StampCommands first-write-wins, so a nested configure_file's
+// stamp key reaches the --out-workspace-status helper while an outer key keeps
+// its own producing command.
+func TestMergeNestedStampCommands(t *testing.T) {
+	cc := newCodegenContext()
+	cc.StampCommands["STABLE_GIT_SHA"] = "git rev-parse HEAD" // outer
+	cc.mergeNestedStampCommands(map[string]string{
+		"STABLE_GIT_SHA":   "git describe --always", // collides with outer → outer wins
+		"STABLE_SUB_GIT":   "git -C sub rev-parse HEAD",
+		"VOLATILE_SUB_NOW": "date -u +%s",
+	})
+	if got := cc.StampCommands["STABLE_GIT_SHA"]; got != "git rev-parse HEAD" {
+		t.Errorf("outer key must keep its own command (first-write-wins); got %q", got)
+	}
+	if got := cc.StampCommands["STABLE_SUB_GIT"]; got != "git -C sub rev-parse HEAD" {
+		t.Errorf("nested-only key not folded: %q", got)
+	}
+	if got := cc.StampCommands["VOLATILE_SUB_NOW"]; got != "date -u +%s" {
+		t.Errorf("nested volatile key not folded: %q", got)
 	}
 }
