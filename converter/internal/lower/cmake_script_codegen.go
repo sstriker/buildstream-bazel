@@ -339,33 +339,18 @@ func nestedCmakeScriptCall(call shadow.ExecuteProcessCall) (script string, dArgs
 		return "", nil, false
 	}
 	argv := call.Commands[0]
+	// Driver gate: the basename must be cmake. executeProcessDriverBasename (not
+	// usesCmakeScriptMode's filepath.Base) so a Windows `cmake.exe` / backslash
+	// path still matches; the unsubstituted ${CMAKE_COMMAND} literal too.
 	if executeProcessDriverBasename(argv[0]) != "cmake" && argv[0] != "${CMAKE_COMMAND}" {
 		return "", nil, false
 	}
-	pIdx := -1
-	for i := 1; i < len(argv); i++ {
-		if argv[i] == "-P" && i+1 < len(argv) {
-			pIdx = i + 1
-			break
-		}
+	// Reuse the token-level cores the string extractors use — but feed them the
+	// argv DIRECTLY (no splitShellTokens round-trip, which would mangle a Windows
+	// backslash script path).
+	script = cmakeScriptPathFromTokens(argv)
+	if script == "<unknown-script>" {
+		return "", nil, false // no `-P <script>` (e.g. a cmake -E call)
 	}
-	if pIdx < 0 {
-		return "", nil, false
-	}
-	script = argv[pIdx]
-	for i := 1; i < len(argv); i++ {
-		if i == pIdx || i == pIdx-1 { // the script path and its `-P`
-			continue
-		}
-		tok := argv[i]
-		if tok == "-D" && i+1 < len(argv) {
-			dArgs = append(dArgs, "-D", argv[i+1])
-			i++
-			continue
-		}
-		if strings.HasPrefix(tok, "-D") {
-			dArgs = append(dArgs, tok)
-		}
-	}
-	return script, dArgs, true
+	return script, cmakePDashArgsFromTokens(argv), true
 }
