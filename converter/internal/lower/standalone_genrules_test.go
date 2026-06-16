@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
@@ -752,5 +753,100 @@ func TestCodegenCommandFrom_UnwrapsWrappers(t *testing.T) {
 		if len(got.Args) == 0 || got.Args[0] != tc.wantArg0 {
 			t.Errorf("%s: Args[0] = %v, want %q", tc.name, got.Args, tc.wantArg0)
 		}
+	}
+}
+
+// TestTryStandaloneCmakeScriptCodegen_Gating: the recognize-through-script entry
+// declines (no convert-time cmake re-trace) unless RecognizeCodegen +
+// CMakeScriptTrace + a cmake binary are all present and the cmd is cmake -P.
+func TestTryStandaloneCmakeScriptCodegen_Gating(t *testing.T) {
+	base := func() *codegenContext {
+		cc := newCodegenContext()
+		cc.RecognizeCodegen = true
+		cc.CMakeScriptTrace = true
+		cc.CMakeBinary = "/usr/bin/cmake"
+		return cc
+	}
+	const scriptCmd = "cmake -P gen.cmake"
+	outs := []string{"foo.pb.cc"}
+
+	if base().tryStandaloneCmakeScriptCodegen("protoc --cpp_out=. foo.proto", "/s", "/b", outs) {
+		t.Error("non-cmake-script cmd must decline (handled by the recognizer chokepoint, not the script path)")
+	}
+	off := base()
+	off.CMakeScriptTrace = false
+	if off.tryStandaloneCmakeScriptCodegen(scriptCmd, "/s", "/b", outs) {
+		t.Error("CMakeScriptTrace off must decline")
+	}
+	norec := base()
+	norec.RecognizeCodegen = false
+	if norec.tryStandaloneCmakeScriptCodegen(scriptCmd, "/s", "/b", outs) {
+		t.Error("RecognizeCodegen off must decline")
+	}
+	nocmake := base()
+	nocmake.CMakeBinary = ""
+	if nocmake.tryStandaloneCmakeScriptCodegen(scriptCmd, "/s", "/b", outs) {
+		t.Error("no cmake binary must decline")
+	}
+	if base().tryStandaloneCmakeScriptCodegen(scriptCmd, "/s", "/b", nil) {
+		t.Error("no declared outs must decline")
+	}
+}
+
+// TestCodegenCheckpointRestore pins the all-or-nothing rollback: a checkpoint
+// captures the codegen consumer-wiring registries + Genrules length, and
+// restore undoes every mutation made after it (the contract a partial
+// recognize-through-script recovery relies on).
+func TestCodegenCheckpointRestore(t *testing.T) {
+	cc := newCodegenContext()
+	cc.OutToGenrule["pre.h"] = "pre_gen"
+	cc.Genrules = append(cc.Genrules, ir.Target{Name: "pre_gen", Kind: ir.KindGenrule})
+
+	cp := cc.checkpointCodegen()
+
+	// Mutate every checkpointed registry, as a recovery would.
+	cc.OutToGenrule["new.pb.cc"] = "new_gen"
+	cc.OutToNativeConsumerDep["new.pb.cc"] = ":new_proto"
+	cc.OutToNativeConsumerPkg["new.pb.cc"] = "a"
+	cc.NativeRuleSubPackage["new_proto"] = "sub"
+	cc.recognizedConsumerByInput["foo.proto"] = "new_proto"
+	cc.recognizedNameOwner["new_proto"] = "foo.proto"
+	// Stamp / bake state the shared recovery's prescan also writes — must roll
+	// back too, else a leaked StampVars entry mis-wires a later configure_file.
+	cc.StampVars["GIT_SHA"] = "STABLE_GIT_SHA"
+	cc.StampCommands["STABLE_GIT_SHA"] = "git rev-parse HEAD"
+	cc.StampKeyCollisions["STABLE_GIT_SHA"] = true
+	cc.bakeTodoDisposition["new_gen"] = todos.Actionable
+	cc.Genrules = append(cc.Genrules, ir.Target{Name: "new_gen", Kind: ir.KindGenrule})
+
+	cc.restoreCodegen(cp)
+
+	if len(cc.Genrules) != 1 || cc.Genrules[0].Name != "pre_gen" {
+		t.Errorf("Genrules not restored to the checkpoint: %+v", cc.Genrules)
+	}
+	if _, leaked := cc.OutToGenrule["new.pb.cc"]; leaked {
+		t.Error("OutToGenrule leaked a post-checkpoint entry after restore")
+	}
+	if cc.OutToGenrule["pre.h"] != "pre_gen" {
+		t.Error("restore dropped a pre-checkpoint entry")
+	}
+	for name, m := range map[string]map[string]string{
+		"OutToNativeConsumerDep":    cc.OutToNativeConsumerDep,
+		"OutToNativeConsumerPkg":    cc.OutToNativeConsumerPkg,
+		"NativeRuleSubPackage":      cc.NativeRuleSubPackage,
+		"recognizedConsumerByInput": cc.recognizedConsumerByInput,
+		"recognizedNameOwner":       cc.recognizedNameOwner,
+		"StampVars":                 cc.StampVars,
+		"StampCommands":             cc.StampCommands,
+	} {
+		if len(m) != 0 {
+			t.Errorf("%s not restored to empty: %v", name, m)
+		}
+	}
+	if len(cc.StampKeyCollisions) != 0 {
+		t.Errorf("StampKeyCollisions not restored to empty: %v", cc.StampKeyCollisions)
+	}
+	if len(cc.bakeTodoDisposition) != 0 {
+		t.Errorf("bakeTodoDisposition not restored to empty: %v", cc.bakeTodoDisposition)
 	}
 }

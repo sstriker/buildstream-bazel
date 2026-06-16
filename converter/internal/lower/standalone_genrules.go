@@ -2,6 +2,7 @@ package lower
 
 import (
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 
@@ -308,6 +310,19 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			continue
 		}
 
+		// Recognize-THROUGH-script on the standalone path: a standalone `cmake -P
+		// user.cmake` that wraps a codegen tool (protoc) re-traces to its leaf
+		// execute_process calls and lowers to the native rule / lifted genrule —
+		// the same recovery the per-target path runs (recoverCmakeScriptCodegen).
+		// Must precede the bake so the recognizer wins (the recognizer → bake
+		// ladder, matching the per-target order). The recovered producers land on
+		// cc.Genrules / cc.OutToGenrule / OutToNativeConsumerDep, which the caller
+		// harvests (cc.Genrules delta) and rewriteNativeRuleConsumers honors —
+		// both run after this pass.
+		if cc.tryStandaloneCmakeScriptCodegen(cmd, cmakeSrc, buildDir, outs) {
+			continue
+		}
+
 		// A standalone `cmake -P <script>` custom command can't run under Bazel
 		// (no cmake on the executor), so emitting it as a raw genrule produces
 		// an unrunnable rule (LLVM's VCSRevision.h: `cmake -P
@@ -547,6 +562,105 @@ func codegenCommandFromArgv(argv, srcs, outs []string, pkg string) CodegenComman
 		Outs:   outs,
 		Pkg:    pkg,
 	}
+}
+
+// tryStandaloneCmakeScriptCodegen recovers codegen hidden inside a standalone
+// user `cmake -P <script>` edge by re-tracing the script to its leaf tool calls
+// (recognize-through-script) — the same recovery the per-target path runs via
+// recoverCmakeScriptCodegen, ported here so the standalone path isn't limited to
+// dispatch-over-tool recognition. Returns true (claim the edge: skip the
+// unrunnable raw `cmake -P` genrule and let the caller harvest the recovered
+// producers off the cc.Genrules delta) ONLY when EVERY declared edge output was
+// recovered. A PARTIAL recovery is rolled back via a codegen checkpoint so it
+// leaves no dangling consumer-wiring registrations, and the edge falls through
+// to bake/raw as a unit. Gated like recoverCmakeScriptCodegen (RecognizeCodegen
+// + CMakeScriptTrace + a usable cmake); off → declines and the legacy bake/raw
+// paths handle the edge.
+func (cc *codegenContext) tryStandaloneCmakeScriptCodegen(cmd, cmakeSrc, buildDir string, outs []string) bool {
+	if cc == nil || !cc.RecognizeCodegen || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || buildDir == "" || !usesCmakeScriptMode(cmd) {
+		return false
+	}
+	script := extractCmakeScriptPath(cmd)
+	if script == "" || len(outs) == 0 {
+		return false
+	}
+	calls := cc.expandCommandSources(script, extractCmakePDashArgs(cmd), cmakeSrc, buildDir)
+	if len(calls) == 0 {
+		return false
+	}
+	cp := cc.checkpointCodegen()
+	// Same shared recovery the per-target script path uses; nil cmakeVars/
+	// forwards (the script's own -D args drove the trace expansion).
+	recovered, _ := recoverExecuteProcess(calls, cmakeSrc, cmakeSrc, buildDir, buildDir, cc.LiftConfigureFile, nil, nil, nil, nil, cc)
+	covered := make(map[string]bool, len(recovered))
+	for _, o := range recovered {
+		covered[o.RelOutput] = true
+	}
+	for _, o := range outs {
+		if !covered[o] {
+			// Partial recovery: roll back so the edge bakes/raws as one unit and
+			// no half-wired output is left behind.
+			cc.restoreCodegen(cp)
+			return false
+		}
+	}
+	return true
+}
+
+// codegenCheckpoint snapshots the cc state recoverExecuteProcess mutates, so a
+// standalone recognize-through-script attempt that recovers only SOME of an
+// edge's outputs rolls back cleanly. It covers BOTH the consumer-wiring
+// registries (recoverExecuteProcess + recognizeOrGenrule) AND the stamp / bake
+// state the shared recovery writes — its prescan populates StampVars at the top
+// of every call — so a partial rollback can't leak a STABLE_* workspace-status
+// key, a stamp-collision flag, or a bake-todo disposition. A leaked
+// StampVars[var] in particular could wrongly wire stamp_values onto a later
+// configure_file reading the same-named var. A new cc registry the recovery
+// writes must be added here too (the all-or-nothing rollback is the contract).
+// SeenBuilds is intentionally omitted: it's keyed by *ninja.Build and this
+// ExecuteProcessCall-based path never writes it.
+type codegenCheckpoint struct {
+	genrules                  int
+	outToGenrule              map[string]string
+	outToNativeDep            map[string]string
+	outToNativePkg            map[string]string
+	nativeRuleSubPackage      map[string]string
+	recognizedConsumerByInput map[string]string
+	recognizedNameOwner       map[string]string
+	stampVars                 map[string]string
+	stampCommands             map[string]string
+	stampKeyCollisions        map[string]bool
+	bakeTodoDisposition       map[string]todos.Disposition
+}
+
+func (cc *codegenContext) checkpointCodegen() codegenCheckpoint {
+	return codegenCheckpoint{
+		genrules:                  len(cc.Genrules),
+		outToGenrule:              maps.Clone(cc.OutToGenrule),
+		outToNativeDep:            maps.Clone(cc.OutToNativeConsumerDep),
+		outToNativePkg:            maps.Clone(cc.OutToNativeConsumerPkg),
+		nativeRuleSubPackage:      maps.Clone(cc.NativeRuleSubPackage),
+		recognizedConsumerByInput: maps.Clone(cc.recognizedConsumerByInput),
+		recognizedNameOwner:       maps.Clone(cc.recognizedNameOwner),
+		stampVars:                 maps.Clone(cc.StampVars),
+		stampCommands:             maps.Clone(cc.StampCommands),
+		stampKeyCollisions:        maps.Clone(cc.StampKeyCollisions),
+		bakeTodoDisposition:       maps.Clone(cc.bakeTodoDisposition),
+	}
+}
+
+func (cc *codegenContext) restoreCodegen(cp codegenCheckpoint) {
+	cc.Genrules = cc.Genrules[:cp.genrules]
+	cc.OutToGenrule = cp.outToGenrule
+	cc.OutToNativeConsumerDep = cp.outToNativeDep
+	cc.OutToNativeConsumerPkg = cp.outToNativePkg
+	cc.NativeRuleSubPackage = cp.nativeRuleSubPackage
+	cc.recognizedConsumerByInput = cp.recognizedConsumerByInput
+	cc.recognizedNameOwner = cp.recognizedNameOwner
+	cc.StampVars = cp.stampVars
+	cc.StampCommands = cp.stampCommands
+	cc.StampKeyCollisions = cp.stampKeyCollisions
+	cc.bakeTodoDisposition = cp.bakeTodoDisposition
 }
 
 // tryStandaloneCmakeScriptBake bakes a standalone `cmake -P` script edge at
