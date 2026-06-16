@@ -67,23 +67,14 @@ type codegenContext struct {
 	// has-cmake-codegen and to reference outputs by label.
 	OutToGenrule map[string]string
 
-	// OutToTracedCmakeScript maps a custom-command OUTPUT (keyed in both its
-	// raw trace form and its build-relative form) to the USER `cmake -P <script>`
-	// recovered from the add_custom_command trace, for the case where the ninja
-	// EDGE is a cmake-GENERATED dispatch wrapper hiding the real script (P1's
-	// `cmake -P CMakeFiles/<t>.dir/<n>.cmake` shape). The re-trace paths
-	// (recoverCmakeScriptCodegen, the standalone nested-configure check) prefer
-	// this real script over the edge's own `-P` arg, which would be the generated
-	// dispatch. Empty on the offline-replay-no-trace path; built once in ToIR
-	// from the add_custom_command records. See tracedCmakeScriptForEdge.
-	OutToTracedCmakeScript map[string]tracedScript
-
 	// OutputToCustomCommand indexes the add_custom_command trace records by their
-	// OUTPUT/BYPRODUCT paths (raw trace form), for recovering the REAL command
-	// when a ninja edge is a cmake-GENERATED dispatch wrapper hiding a NON-cmake
-	// tool (e.g. protoc). The per-target recoverGenrule path consults it via
-	// traceWrapperRealArgv to unwrap to the native tool for recognition — the same
-	// the standalone path does. Empty on the offline-replay-no-trace path.
+	// OUTPUT/BYPRODUCT paths (keyed in both raw trace and build-relative form via
+	// outputKeyForms), for recovering the REAL command when a ninja edge is a
+	// cmake-GENERATED dispatch wrapper hiding the actual tool. The single record
+	// index both unwrap channels consult: traceWrapperRealArgv (dispatch over a
+	// NON-cmake tool like protoc) and tracedCmakeScriptForEdge (dispatch over a
+	// `cmake -P` script). Empty on the offline-replay-no-trace path; built once in
+	// ToIR from the add_custom_command records.
 	OutputToCustomCommand map[string]*shadow.AddCustomCommandCall
 
 	// OutToNativeConsumerDep maps a package-relative generated output to the

@@ -33,7 +33,7 @@ func TestTracedCmakeScriptForEdge(t *testing.T) {
 		Commands: [][]string{{"cmake", "-DPNG=1", "-P", "/abs/src/gensrc.cmake", "pnglibconf.h"}},
 	})
 	cc := newCodegenContext()
-	cc.OutToTracedCmakeScript = buildOutToTracedCmakeScript(cmds, buildDir)
+	cc.OutputToCustomCommand = buildOutputToCustomCommand(cmds, buildDir)
 
 	// Build-relative edge output matches the absolute trace output → real script.
 	edge := &ninja.Build{Outputs: []string{"gen/foo.h"}}

@@ -606,7 +606,7 @@ func TestTraceWrapperRealArgv(t *testing.T) {
 		{Outputs: []string{"foo.pb.cc", "foo.pb.h"}, Commands: [][]string{{"protoc", "--cpp_out=.", "foo.proto"}}},
 		{Outputs: []string{"multi.out"}, Commands: [][]string{{"protoc", "--cpp_out=.", "m.proto"}, {"cp", "a", "b"}}},
 		{Outputs: []string{"userp.out"}, Commands: [][]string{{"cmake", "-P", "user.cmake"}}},
-	})
+	}, "")
 	if got := traceWrapperRealArgv("cmake -P CMakeFiles/x.dir/foo.cmake", []string{"foo.pb.cc", "foo.pb.h"}, idx); len(got) != 3 || got[0] != "protoc" {
 		t.Errorf("a cmake -P wrapper over foo.pb.* should yield the real protoc argv; got %v", got)
 	}
