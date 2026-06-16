@@ -9,11 +9,15 @@ import (
 )
 
 // minStampDefineValueLen is the shortest stamp value worth matching against a
-// compile define. A VCS revision (a git short sha is 7+ hex), a `git describe`
-// string, and an epoch/date timestamp are all comfortably longer; requiring a
-// distinctive length keeps a trivial stamp value ("", "0", "1.0") from
-// coincidentally matching an unrelated -D define and producing a noisy todo.
-const minStampDefineValueLen = 8
+// compile define. 7 is the default `git rev-parse --short HEAD` length — the
+// single most common VCS stamp this feature targets — so the floor must not
+// exceed it. Its only job is to keep a TRIVIAL stamp value ("", "0", "1.0",
+// all length <= 4) from coincidentally matching an unrelated -D define and
+// producing a noisy todo; since detection is EXACT value-equality against a
+// recovered stamp value (not a pattern), a 7-char match must be byte-identical
+// to the real commit sha, so 7 is safe. The full sha (40), `git describe`, and
+// epoch/date timestamps all clear it comfortably.
+const minStampDefineValueLen = 7
 
 // emitStampInDefineTodos surfaces a VCS/identity/date stamp value that was
 // baked into a compile -D define (target_compile_definitions / add_definitions

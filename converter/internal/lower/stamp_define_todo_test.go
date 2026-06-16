@@ -10,19 +10,23 @@ import (
 
 func TestEmitStampInDefineTodos(t *testing.T) {
 	stampVars := map[string]string{
-		"GIT_SHA": "STABLE_GIT_SHA",
-		"SHORT":   "STABLE_SHORT", // value too short to match (guards false positives)
+		"GIT_SHA":   "STABLE_GIT_SHA",
+		"SHORT_SHA": "STABLE_SHORT_SHA", // 7-char short sha: must be caught (the common case)
+		"TRIVIAL":   "STABLE_TRIVIAL",   // trivial value: must NOT match (false-positive guard)
 	}
 	cmakeVars := map[string]string{
-		"GIT_SHA": "abc1234def5678", // distinctive (>= 8)
-		"SHORT":   "1.0",            // < 8, must never match
+		"GIT_SHA":   "abc1234def5678", // full-ish sha
+		"SHORT_SHA": "abc1234",        // exactly 7 (git rev-parse --short default)
+		"TRIVIAL":   "1.0",            // length 3, below the floor
 	}
 	pkg := &ir.Package{Targets: []ir.Target{
 		// Stamp baked into a -D define (quoted) -> flagged.
 		{Name: "app", Kind: ir.KindCCBinary, Defines: []string{`GIT_SHA="abc1234def5678"`, "NDEBUG=1"}},
 		// Same value via local_defines -> flagged.
 		{Name: "lib", Kind: ir.KindCCLibrary, LocalDefines: []string{"REV=abc1234def5678"}},
-		// A short stamp value must not match even if equal.
+		// A 7-char short sha baked into a define -> flagged (floor is 7).
+		{Name: "shortapp", Kind: ir.KindCCBinary, Defines: []string{`REV="abc1234"`}},
+		// A trivial stamp value must not match even if equal.
 		{Name: "ver", Kind: ir.KindCCLibrary, Defines: []string{"VERSION=1.0"}},
 		// No stamp -> no todo.
 		{Name: "plain", Kind: ir.KindCCLibrary, Defines: []string{"FOO=bar"}},
@@ -38,8 +42,11 @@ func TestEmitStampInDefineTodos(t *testing.T) {
 			flagged[td.GroupKey] = td
 		}
 	}
-	if len(flagged) != 2 {
-		t.Fatalf("expected 2 stamp-baked-define todos (app, lib), got %d: %v", len(flagged), flagged)
+	if len(flagged) != 3 {
+		t.Fatalf("expected 3 stamp-baked-define todos (app, lib, shortapp), got %d: %v", len(flagged), flagged)
+	}
+	if _, ok := flagged["shortapp"]; !ok {
+		t.Error("a 7-char short sha baked into a define must be flagged (floor is 7)")
 	}
 	app, ok := flagged["app"]
 	if !ok {
