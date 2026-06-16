@@ -16,9 +16,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
 	"github.com/sstriker/buildstream-bazel/converter/internal/coverage"
@@ -6900,35 +6902,25 @@ func splitFortranModuleSrcs(srcs []string, srcRoot string) (moduleSrcs, rest []s
 	}
 	var defs []def
 	provider := map[string]int{} // module name -> index into defs
-	for _, s := range srcs {
-		body, err := os.ReadFile(filepath.Join(srcRoot, s))
-		if err != nil {
+	// Read + regex-scan the sources CONCURRENTLY: each file's
+	// (provides, uses) is independent, and on a Fortran-heavy project
+	// (OpenBLAS/LAPACK: thousands of .f/.f90) this read+FindAllSubmatch was
+	// ~40% of translation CPU in profiling. The scan fills a per-index result
+	// slice (distinct indices → no shared state); the deterministic assembly
+	// below stays SERIAL in input order, so output is byte-identical.
+	scans := scanFortranModuleSrcs(srcs, srcRoot)
+	for i, s := range srcs {
+		// Unreadable OR defines no module → not a definer (same as the old
+		// per-file `continue`s). Preserves input order for rest and defs, and
+		// last-writer-wins for provider, exactly as the serial loop did.
+		if len(scans[i].provides) == 0 {
 			rest = append(rest, s)
 			continue
 		}
-		var provides []string
-		for _, m := range fortranModuleDefRe.FindAllSubmatch(body, -1) {
-			name := strings.ToLower(string(m[1]))
-			// `module procedure` is excluded by the regex (it requires the
-			// module name to be the whole token); guard the reserved word
-			// anyway for fixed-form oddities.
-			if name == "procedure" || name == "function" || name == "subroutine" {
-				continue
-			}
-			provides = append(provides, name)
-		}
-		if len(provides) == 0 {
-			rest = append(rest, s)
-			continue
-		}
-		var uses []string
-		for _, m := range fortranUseRe.FindAllSubmatch(body, -1) {
-			uses = append(uses, strings.ToLower(string(m[1])))
-		}
-		for _, p := range provides {
+		for _, p := range scans[i].provides {
 			provider[p] = len(defs)
 		}
-		defs = append(defs, def{src: s, provides: provides, uses: uses})
+		defs = append(defs, def{src: s, provides: scans[i].provides, uses: scans[i].uses})
 	}
 	if len(defs) == 0 {
 		return nil, rest
@@ -6977,6 +6969,80 @@ func splitFortranModuleSrcs(srcs []string, srcRoot string) (moduleSrcs, rest []s
 		}
 	}
 	return moduleSrcs, rest
+}
+
+// fortranScan is the per-source result of the module/use scan: the lowercased
+// module names the file DEFINES and the ones it USEs. An unreadable file or one
+// defining no module has provides==nil (the caller routes it to `rest`).
+type fortranScan struct {
+	provides []string
+	uses     []string
+}
+
+// scanFortranModuleSrcs reads + regex-scans every source CONCURRENTLY, returning
+// one fortranScan per input index (order preserved). The read +
+// FindAllSubmatch per file is independent and was ~40% of translation CPU on
+// Fortran-heavy projects (thousands of files), so a NumCPU worker pool over the
+// files is a large win; the caller's assembly stays serial for determinism.
+func scanFortranModuleSrcs(srcs []string, srcRoot string) []fortranScan {
+	out := make([]fortranScan, len(srcs))
+	if len(srcs) == 0 {
+		return out
+	}
+	workers := runtime.NumCPU()
+	if workers < 2 {
+		workers = 2
+	}
+	if workers > len(srcs) {
+		workers = len(srcs)
+	}
+	idx := make(chan int, len(srcs))
+	for i := range srcs {
+		idx <- i
+	}
+	close(idx)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range idx {
+				out[i].provides, out[i].uses = scanFortranModuleSrc(filepath.Join(srcRoot, srcs[i]))
+			}
+		}()
+	}
+	wg.Wait()
+	return out
+}
+
+// scanFortranModuleSrc reads one Fortran source and extracts the modules it
+// provides (with the reserved-word guard) and, only if it provides any, the
+// modules it uses. Returns (nil, nil) for an unreadable file or a non-definer —
+// matching the serial path's "treat as non-definer" handling. *regexp.Regexp
+// methods are safe for concurrent use, so the shared package-level regexes need
+// no locking.
+func scanFortranModuleSrc(path string) (provides, uses []string) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil
+	}
+	for _, m := range fortranModuleDefRe.FindAllSubmatch(body, -1) {
+		name := strings.ToLower(string(m[1]))
+		// `module procedure` is excluded by the regex (it requires the module
+		// name to be the whole token); guard the reserved word anyway for
+		// fixed-form oddities.
+		if name == "procedure" || name == "function" || name == "subroutine" {
+			continue
+		}
+		provides = append(provides, name)
+	}
+	if len(provides) == 0 {
+		return nil, nil
+	}
+	for _, m := range fortranUseRe.FindAllSubmatch(body, -1) {
+		uses = append(uses, strings.ToLower(string(m[1])))
+	}
+	return provides, uses
 }
 
 // normalizeFortranTarget folds a (former) cc target's attributes onto the
