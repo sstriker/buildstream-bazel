@@ -813,14 +813,7 @@ func (cc *codegenContext) emitRecoveredGenrule(b *ninja.Build, cmd, cmakeSrc, bu
 	// now anchored too (was subdir-only), which the literal-occurrence scoping
 	// keeps churn-free for the stdout-redirect recovered genrules.
 	if len(outs) > 0 {
-		rewrittenCmd = anchorGenruleOutputsToRuledir(rewrittenCmd, outs)
-		// Anchor a tool's output-DIRECTORY operand (protoc --cpp_out=DIR,
-		// `gen --out-dir=DIR`) to $(RULEDIR): such a tool DERIVES its filenames
-		// and names no output literally, so anchorGenruleOutputsToRuledir is a
-		// no-op and the post-strip `--out=.`/`--out=<subdir>` would write to the
-		// exec-root cwd, not where Bazel expects the declared out. No-op unless a
-		// flag value exactly matches a declared output's parent dir.
-		rewrittenCmd = anchorGenruleOutputDirFlags(rewrittenCmd, outs)
+		rewrittenCmd = anchorGenruleOutputs(rewrittenCmd, outs)
 	}
 	// Build-dir staging-copy reanchor: when the raw command ran in a build-dir
 	// subdir of CONFIGURE-time-copied inputs (`cd <buildDir>/<sub> && tool -I .

@@ -426,7 +426,11 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// under bazel-out rather than to a bare relative path (which
 		// bazel rejects as a missing output). split.go re-relativizes
 		// the $(RULEDIR)-relative path if the genrule moves packages.
-		rewrittenCmd = anchorGenruleOutputsToRuledir(rewrittenCmd, outs)
+		// anchorGenruleOutputs also anchors an output-DIRECTORY flag
+		// (`--out=DIR`) — the shared step keeps this path consistent with
+		// emitRecoveredGenrule (a derived-output tool would otherwise write
+		// to the exec-root cwd here).
+		rewrittenCmd = anchorGenruleOutputs(rewrittenCmd, outs)
 		// Response-file family (the VTK wrap-hierarchy shape): strip
 		// ninja depfile plumbing, then route generated-src references
 		// through $(location) (and the @BSB_GENDIR@ sed preamble for
@@ -1239,6 +1243,20 @@ func isOutputDirFlag(flag string) bool {
 		return true
 	}
 	return false
+}
+
+// anchorGenruleOutputs anchors a recovered genrule's declared outputs to
+// $(RULEDIR): the literal output FILES named in the cmd (anchorGenruleOutputsTo
+// Ruledir) AND an output-DIRECTORY flag whose value is an output's parent dir
+// (anchorGenruleOutputDirFlags — for tools like protoc/`gen --out=DIR` that
+// DERIVE filenames and name no output literally). The single anchoring step
+// every genrule-emission path shares (emitRecoveredGenrule + the standalone
+// path), so the output-dir-flag anchoring can't drift onto only one of them.
+// Both sub-steps are no-ops when nothing matches.
+func anchorGenruleOutputs(cmd string, outs []string) string {
+	cmd = anchorGenruleOutputsToRuledir(cmd, outs)
+	cmd = anchorGenruleOutputDirFlags(cmd, outs)
+	return cmd
 }
 
 // closure of each include-resolving codegen genrule's primary input to
