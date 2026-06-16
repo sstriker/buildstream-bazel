@@ -352,6 +352,29 @@ type Options struct {
 	// regressing in-process consumers.
 	EmitStandaloneCustomCommands bool
 
+	// DetectFusedSources opts into the READ-BASED textual-source-include scan
+	// (synthesizeTextualSourceIncludeLibs): reading each compiled source / header
+	// to find a quote-include of another source it doesn't list — the fused-source
+	// idiom (fmt's posix-mock `#include "../src/os.cc"`, gtest's gtest-all.cc,
+	// VTK's lz4hc.c `#include "lz4.c"`, a glm header pulling an on-disk .cc). OFF
+	// by default so the common convert reads ZERO source files: the much more
+	// common impl-header idiom (a .inl/.txx/.tcc/.ipp/.def/.inc, or a
+	// HEADER_FILE_ONLY .cc, LISTED on the target so it lands in Hdrs) is routed to
+	// textual_hdrs by EXTENSION with no file read regardless of this flag. Opt in
+	// only for projects that textually include a source they don't list.
+	//
+	// SLOW when on: it reads + regex-scans EVERY compiled source and header on
+	// every cc target (each distinct file once per pass) — O(source tree), the
+	// dominant lowering cost on large projects, which is why it's opt-in.
+	DetectFusedSources bool
+
+	// TextualIncludeExts are extra file extensions (lowercase, leading dot —
+	// e.g. ".ii", ".def") the operator declares as non-self-contained textual
+	// includes, extending the built-in impl-header set for the zero-read
+	// extension routing: a Hdrs entry with one of these extensions moves to
+	// textual_hdrs without reading the file. Empty by default.
+	TextualIncludeExts []string
+
 	// ConfigureLog carries the parsed CMakeConfigureLog.yaml
 	// events from configureLog-v1 (cmake 3.26+). Empty for cmake
 	// < 3.26 or projects whose configure didn't fire any
@@ -2529,7 +2552,7 @@ func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts
 	// textual_hdrs slot, so synthesize a textual_hdrs cc_library carrying the
 	// file and dep the target on it — declaring the input without compiling it
 	// standalone. Runs last so the synthesized libs aren't reprocessed above.
-	synthesizeTextualSourceIncludeLibs(pkg, hostSrc, hostSrcOnDisk, opts.Warnings)
+	synthesizeTextualSourceIncludeLibs(pkg, hostSrc, hostSrcOnDisk, opts.DetectFusedSources, normalizeTextualIncludeExts(opts.TextualIncludeExts), opts.Warnings)
 
 	// The same idiom in GENERATED form: a convert-time-baked wrapper source
 	// (configure_file / file(WRITE) → write_file) textually `#include`s a real

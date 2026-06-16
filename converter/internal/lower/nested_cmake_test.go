@@ -602,6 +602,8 @@ var nestedOptionsClass = map[string]string{
 	"ExtraCodegenRecognizers":           "forward",
 	"LiftDerivedCodegen":                "forward",
 	"EmitStandaloneCustomCommands":      "forward",
+	"DetectFusedSources":                "forward",
+	"TextualIncludeExts":                "forward",
 	"LiftDownload":                      "forward",
 	"DownloadRepos":                     "forward",
 	"BackedFeatures":                    "forward",

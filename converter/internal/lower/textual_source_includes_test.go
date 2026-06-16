@@ -127,7 +127,7 @@ func TestSynthesizeTextualSourceIncludeLibs(t *testing.T) {
 
 	// hostSrcOnDisk=false → no-op.
 	noop := mk()
-	synthesizeTextualSourceIncludeLibs(noop, hostSrc, false, nil)
+	synthesizeTextualSourceIncludeLibs(noop, hostSrc, false, true, nil, nil)
 	if len(noop.Targets) != 1 {
 		t.Fatalf("hostSrcOnDisk=false should be a no-op; got %d targets", len(noop.Targets))
 	}
@@ -137,7 +137,7 @@ func TestSynthesizeTextualSourceIncludeLibs(t *testing.T) {
 
 	pkg := mk()
 	var warn bytes.Buffer
-	synthesizeTextualSourceIncludeLibs(pkg, hostSrc, true, &warn)
+	synthesizeTextualSourceIncludeLibs(pkg, hostSrc, true, true, nil, &warn)
 
 	if len(pkg.Targets) != 2 {
 		t.Fatalf("expected original test + 1 synth lib, got %d targets", len(pkg.Targets))
@@ -218,7 +218,7 @@ func TestSynthesizeTextualSourceIncludeLibs_GenclassHeaderInclude(t *testing.T) 
 		SubPackages: map[string]string{"glm": ""},
 	}
 	var warn bytes.Buffer
-	synthesizeTextualSourceIncludeLibs(pkg, hostSrc, true, &warn)
+	synthesizeTextualSourceIncludeLibs(pkg, hostSrc, true, true, nil, &warn)
 
 	lib := findTarget(pkg, "glm")
 	if lib == nil {
@@ -290,7 +290,7 @@ func TestSynthesizeTextualSourceIncludeLibs_CCLibraryInline(t *testing.T) {
 	pkg := &ir.Package{Targets: []ir.Target{
 		{Name: "gtest", Kind: ir.KindCCLibrary, Srcs: []string{"gt/src/all.cc"}},
 	}}
-	synthesizeTextualSourceIncludeLibs(pkg, hostSrc, true, nil)
+	synthesizeTextualSourceIncludeLibs(pkg, hostSrc, true, true, nil, nil)
 	// No synth lib for a cc_library — the includes go in its own textual_hdrs.
 	if len(pkg.Targets) != 1 {
 		t.Fatalf("expected no synth lib for cc_library; got %d targets: %+v", len(pkg.Targets), pkg.Targets)
@@ -346,5 +346,52 @@ func TestFindTextualSourceIncludesCached_ReadsEachFileOnce(t *testing.T) {
 	// confirms the persistence above came from the cache, not a fluke).
 	if got, _ := findTextualSourceIncludesCached(hostSrc, []string{"inc/shared.hpp"}, map[string]textualFileScan{}); got != nil {
 		t.Errorf("fresh cache should re-read the (now-deleted) file and find nothing; got %v", got)
+	}
+}
+
+// TestSynthesizeTextualSourceIncludeLibs_ExtensionRoutingZeroRead: the DEFAULT
+// path (detectFused=false) routes Hdrs entries to textual_hdrs purely by
+// extension — a built-in impl header (.inl), a HEADER_FILE_ONLY .cc that landed
+// in hdrs, and an operator --textual-include-exts extension (.ii) — with NO
+// file reads. Proven by hostSrcOnDisk=false (no source tree at all) yet the
+// routing still happens; a self-contained .hpp stays in hdrs.
+func TestSynthesizeTextualSourceIncludeLibs_ExtensionRoutingZeroRead(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{
+		Name: "lib",
+		Kind: ir.KindCCLibrary,
+		Srcs: []string{"lib.cc"},
+		// foo.hpp: self-contained header (stays). foo.inl: impl header (routes).
+		// bar.cc: HEADER_FILE_ONLY .cc reclassified into hdrs (routes). gen.ii:
+		// operator-declared textual extension (routes).
+		Hdrs: []string{"foo.hpp", "foo.inl", "bar.cc", "gen.ii"},
+	}}}
+	extra := normalizeTextualIncludeExts([]string{"ii"}) // no leading dot — normalized
+
+	// hostSrcOnDisk=false + detectFused=false: the read-based scan never runs,
+	// and there's no source tree — yet extension routing still fires.
+	synthesizeTextualSourceIncludeLibs(pkg, "/nonexistent", false, false, extra, nil)
+
+	lib := findTarget(pkg, "lib")
+	wantTextual := []string{"bar.cc", "foo.inl", "gen.ii"}
+	if !reflect.DeepEqual(lib.TextualHdrs, wantTextual) {
+		t.Errorf("TextualHdrs = %v, want %v", lib.TextualHdrs, wantTextual)
+	}
+	if !reflect.DeepEqual(lib.Hdrs, []string{"foo.hpp"}) {
+		t.Errorf("Hdrs = %v, want only the self-contained [foo.hpp]", lib.Hdrs)
+	}
+	if len(pkg.SourceByteReads) != 0 {
+		t.Errorf("extension routing must read no files; got SourceByteReads %v", pkg.SourceByteReads)
+	}
+}
+
+func TestNormalizeTextualIncludeExts(t *testing.T) {
+	got := normalizeTextualIncludeExts([]string{"ii", ".DEF", "  .hpp.inc ", ""})
+	for _, want := range []string{".ii", ".def", ".hpp.inc"} {
+		if !got[want] {
+			t.Errorf("missing normalized ext %q in %v", want, got)
+		}
+	}
+	if normalizeTextualIncludeExts(nil) != nil {
+		t.Error("nil input should yield nil")
 	}
 }

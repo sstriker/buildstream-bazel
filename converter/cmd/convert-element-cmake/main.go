@@ -596,6 +596,8 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 			GenexProbes:                       genexProbes,
 			ConfigureLog:                      configureLogEvents,
 			EmitStandaloneCustomCommands:      a.EmitStandaloneCustomCommands,
+			DetectFusedSources:                a.DetectFusedSources,
+			TextualIncludeExts:                splitCommaList(a.TextualIncludeExts),
 			UnsupportedExecuteProcessFallback: execFallback,
 			FallbackInstallTarget:             fallbackInstallTarget(a.BazelPackagePath),
 			BazelPackagePath:                  a.BazelPackagePath,
@@ -1183,6 +1185,18 @@ func writeDownloadReposLock(dst string, repos []lower.DownloadRepoSpec) error {
 // writeWorkspaceStatusScript writes an executable /bin/sh helper that emits
 // one `KEY VALUE` workspace-status line per recovered stamp key, the value
 // produced by running the recovered stamp command. Keys are sorted for a
+// splitCommaList splits a comma-separated flag value into trimmed, non-empty
+// elements (nil for an empty/blank value). Used for --textual-include-exts.
+func splitCommaList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // byte-stable artifact. An empty sink (no stamped template) still writes a
 // valid header-only script so the artifact is always present when the flag is
 // set, mirroring writeDownloadReposLock's empty-but-valid output.
