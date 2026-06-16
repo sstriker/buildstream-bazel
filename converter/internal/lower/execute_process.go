@@ -525,12 +525,23 @@ func recordStampCommand(cc *codegenContext, key string, call shadow.ExecuteProce
 	if key == "" {
 		return
 	}
-	if _, ok := cc.StampCommands[key]; ok {
+	cmd := stampCommandLine(call)
+	if cmd == "" {
 		return
 	}
-	if cmd := stampCommandLine(call); cmd != "" {
-		cc.StampCommands[key] = cmd
+	if existing, ok := cc.StampCommands[key]; ok {
+		// First-write-wins, but flag a genuine collision: two DISTINCT stamp
+		// commands sanitized to the same flat status key (e.g. `Git_Sha` and
+		// `GIT_SHA`). Keeping the first silently would drop the second's
+		// command from the emitted --workspace_status_command, so record the
+		// key for the end-of-lowering warning. An identical command repeating
+		// (the idempotent prescan + in-loop recording) is NOT a collision.
+		if existing != cmd {
+			cc.StampKeyCollisions[key] = true
+		}
+		return
 	}
+	cc.StampCommands[key] = cmd
 }
 
 // stampCommandLine renders a stamp execute_process's argv as one shell command

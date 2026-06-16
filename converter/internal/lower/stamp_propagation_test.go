@@ -1,11 +1,57 @@
 package lower
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
+
+func TestRecordStampCommand_Collision(t *testing.T) {
+	mk := func(argv ...string) shadow.ExecuteProcessCall {
+		return shadow.ExecuteProcessCall{Commands: [][]string{argv}}
+	}
+	cc := newCodegenContext()
+	// First write wins.
+	recordStampCommand(cc, "STABLE_GIT_SHA", mk("git", "rev-parse", "HEAD"))
+	// Identical command repeating (idempotent prescan + in-loop) is NOT a collision.
+	recordStampCommand(cc, "STABLE_GIT_SHA", mk("git", "rev-parse", "HEAD"))
+	if cc.StampKeyCollisions["STABLE_GIT_SHA"] {
+		t.Error("identical repeated command must not flag a collision")
+	}
+	if cc.StampCommands["STABLE_GIT_SHA"] != "git rev-parse HEAD" {
+		t.Errorf("first command lost: %q", cc.StampCommands["STABLE_GIT_SHA"])
+	}
+	// A DIFFERENT command on the same key is a collision; first is kept.
+	recordStampCommand(cc, "STABLE_GIT_SHA", mk("git", "describe", "--tags"))
+	if !cc.StampKeyCollisions["STABLE_GIT_SHA"] {
+		t.Error("distinct command on the same key must flag a collision")
+	}
+	if cc.StampCommands["STABLE_GIT_SHA"] != "git rev-parse HEAD" {
+		t.Errorf("collision must keep the first command, got %q", cc.StampCommands["STABLE_GIT_SHA"])
+	}
+}
+
+func TestWarnStampKeyCollisions(t *testing.T) {
+	// Nil writer / no collisions: silent no-op.
+	warnStampKeyCollisions(nil, map[string]bool{"STABLE_GIT_SHA": true}) // must not panic
+	var b strings.Builder
+	warnStampKeyCollisions(&b, nil)
+	if b.Len() != 0 {
+		t.Errorf("no collisions should be silent, got %q", b.String())
+	}
+	// A collision is named, sorted, in one aggregated line.
+	b.Reset()
+	warnStampKeyCollisions(&b, map[string]bool{"STABLE_GIT_SHA": true, "STABLE_BUILD_ID": true})
+	out := b.String()
+	if !strings.Contains(out, "STABLE_BUILD_ID, STABLE_GIT_SHA") {
+		t.Errorf("collision warning should name sorted keys, got %q", out)
+	}
+	if strings.Count(out, "\n") != 1 {
+		t.Errorf("collisions should aggregate into one line, got %q", out)
+	}
+}
 
 func TestPropagateStampVars(t *testing.T) {
 	// GIT_SHA is the direct stamp var. VERSION copies it; TAG copies

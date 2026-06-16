@@ -2428,6 +2428,7 @@ func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts
 		*opts.DownloadRepos = append(*opts.DownloadRepos, downloadRepoSpecs(opts.BazelPackagePath, cc.DownloadLifts)...)
 	}
 	populateWorkspaceStatusSink(opts.WorkspaceStatusSink, pkg, cc.StampCommands)
+	warnStampKeyCollisions(opts.Warnings, cc.StampKeyCollisions)
 	// Same unconverted add_test registrations, as structured
 	// conversion-todos (one per COMMAND runner). No-op on a nil
 	// collector; independent of the stderr breadcrumb above.

@@ -1,11 +1,33 @@
 package lower
 
 import (
+	"fmt"
+	"io"
+	"sort"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
+
+// warnStampKeyCollisions emits one aggregated warning naming every
+// workspace-status key two DISTINCT stamp commands collided on (the flat
+// status-key namespace kept the first; see codegenContext.StampKeyCollisions).
+// Surfacing it keeps the dropped command auditable rather than a silent loss.
+// No-op on a nil writer or no collisions.
+func warnStampKeyCollisions(w io.Writer, collisions map[string]bool) {
+	if w == nil || len(collisions) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(collisions))
+	for k := range collisions {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Fprintf(w, "lower: %d workspace-status key(s) had colliding stamp commands "+
+		"(distinct cmake stamp variables sanitized to the same key); kept the first per key: %s\n",
+		len(keys), strings.Join(keys, ", "))
+}
 
 // populateWorkspaceStatusSink fills sink (status key -> producing shell
 // command) with one entry per workspace-status key an EMITTED configure_file /
