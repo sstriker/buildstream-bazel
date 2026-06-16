@@ -1718,7 +1718,7 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 	if len(liftOOT) > 0 {
 		decodedExecuteProcesses = append(append([]shadow.ExecuteProcessCall(nil), decodedExecuteProcesses...), liftOOT...)
 	}
-	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, rescueVars, forwardedStampVars, cc)
+	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, rescueVars, forwardedStampVars, opts.SetAssignments, opts.ParentScopeForwards, cc)
 	// Expand the stamp-var set through verbatim set(X ${Y}) copies the
 	// driver recovered from a non-expanded trace (empty in the single-pass
 	// default), so a configure_file referencing a copy of a VCS-stamp var

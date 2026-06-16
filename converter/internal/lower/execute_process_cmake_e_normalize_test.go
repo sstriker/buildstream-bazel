@@ -75,7 +75,7 @@ func TestNormalizeCMakeECall(t *testing.T) {
 func TestRecoverExecuteProcess_CMakeEExpansion(t *testing.T) {
 	run := func(call shadow.ExecuteProcessCall) (*codegenContext, []executeProcessRefusal) {
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, cc)
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 		return cc, refusals
 	}
 
@@ -145,7 +145,7 @@ func TestRecoverExecuteProcess_CMakeEExpansion(t *testing.T) {
 func TestReviewFixes_CMakeEGates(t *testing.T) {
 	run := func(call shadow.ExecuteProcessCall) (*codegenContext, []executeProcessRefusal) {
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, cc)
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 		return cc, refusals
 	}
 

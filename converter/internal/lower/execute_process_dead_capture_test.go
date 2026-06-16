@@ -56,7 +56,7 @@ func TestRecoverExecuteProcess_DeadCaptureStampSkips(t *testing.T) {
 	// Live capture: refuses, sink records.
 	ccLive := newCodegenContext()
 	ccLive.CaptureRefusalSink = map[string]bool{}
-	_, refusals := recoverExecuteProcess(mkCall(), hostSrc, hostSrc, "", "/build", false, nil, nil, ccLive)
+	_, refusals := recoverExecuteProcess(mkCall(), hostSrc, hostSrc, "", "/build", false, nil, nil, nil, nil, ccLive)
 	if len(refusals) != 1 {
 		t.Fatalf("live capture must refuse: %+v", refusals)
 	}
@@ -67,7 +67,7 @@ func TestRecoverExecuteProcess_DeadCaptureStampSkips(t *testing.T) {
 	// Dead capture: skips silently.
 	ccDead := newCodegenContext()
 	ccDead.DeadCaptureVars = map[string]bool{"_sha": true}
-	_, refusals = recoverExecuteProcess(mkCall(), hostSrc, hostSrc, "", "/build", false, nil, nil, ccDead)
+	_, refusals = recoverExecuteProcess(mkCall(), hostSrc, hostSrc, "", "/build", false, nil, nil, nil, nil, ccDead)
 	if len(refusals) != 0 {
 		t.Fatalf("dead capture must skip, got refusals: %+v", refusals)
 	}
@@ -100,7 +100,7 @@ func TestRecoverExecuteProcess_FileProducingKeywords(t *testing.T) {
 		call.InputFile = filepath.Join(hostSrc, "in.txt")
 		call.ErrorFile = "/build/gen/out.err"
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, "", "/build", false, nil, nil, cc)
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, "", "/build", false, nil, nil, nil, nil, cc)
 		if len(refusals) != 0 {
 			t.Fatalf("expected lift: %+v", refusals)
 		}
@@ -129,7 +129,7 @@ func TestRecoverExecuteProcess_FileProducingKeywords(t *testing.T) {
 		call := base
 		call.ErrorFile = call.OutputFile
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, "", "/build", false, nil, nil, cc)
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, "", "/build", false, nil, nil, nil, nil, cc)
 		if len(refusals) != 0 {
 			t.Fatalf("expected lift: %+v", refusals)
 		}
@@ -143,7 +143,7 @@ func TestRecoverExecuteProcess_FileProducingKeywords(t *testing.T) {
 		call := base
 		call.InputFile = "/build/other/in.txt"
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, "", "/build", false, nil, nil, cc)
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, "", "/build", false, nil, nil, nil, nil, cc)
 		if len(refusals) != 1 || !strings.Contains(refusals[0].Reason, "INPUT_FILE") {
 			t.Fatalf("build-dir stdin must refuse with an INPUT_FILE reason: %+v", refusals)
 		}
@@ -153,7 +153,7 @@ func TestRecoverExecuteProcess_FileProducingKeywords(t *testing.T) {
 		call := base
 		call.ErrorFile = "/elsewhere/x.err"
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, "", "/build", false, nil, nil, cc)
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, "", "/build", false, nil, nil, nil, nil, cc)
 		if len(refusals) != 1 || !strings.Contains(refusals[0].Reason, "ERROR_FILE") {
 			t.Fatalf("out-of-tree stderr must refuse with an ERROR_FILE reason: %+v", refusals)
 		}
@@ -175,7 +175,7 @@ func TestRecoverExecuteProcess_DeadCaptureLiveErrorChannelStillRefuses(t *testin
 		OutputVariable: "_quiet",
 		ErrorVariable:  "GIT_ERR", // live: not in the dead set
 	}}
-	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, nil, nil, cc)
 	if len(refusals) != 1 {
 		t.Fatalf("a live ERROR_VARIABLE must keep the refusal: %+v", refusals)
 	}

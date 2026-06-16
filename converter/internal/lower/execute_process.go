@@ -172,7 +172,7 @@ type execAnchors struct {
 	recordedBuildDir string
 }
 
-func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, forwardedStampVars map[string]bool, cc *codegenContext) ([]executeProcessOut, []executeProcessRefusal) {
+func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, forwardedStampVars map[string]bool, setAssignments []shadow.SetAssignment, parentScopeForwards []shadow.ParentScopeForward, cc *codegenContext) ([]executeProcessOut, []executeProcessRefusal) {
 	if len(calls) == 0 {
 		return nil, nil
 	}
@@ -189,6 +189,19 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 		calls[i] = normalizeCMakeECall(clearDeadCaptures(c, cc.DeadCaptureVars))
 	}
 	prescanStampVars(calls, cc)
+	// Propagate set()-copy + PARENT_SCOPE-forwarded stamps onto cc.StampVars
+	// BEFORE the dispatch loop's `cmake -E configure_file` lifts (liftCMakeE),
+	// so a -E lift consuming a COPIED stamp — `set(VERSION ${GIT_SHA})` then
+	// `cmake -E configure_file` over a `@VERSION@` template — wires stamp_values
+	// too. Both inputs come from the warm non-expanded trace; in a single pass
+	// they're empty and this is a no-op, so the gap then degrades exactly as
+	// before. This closes the v1 trace-order limitation: prescan records only
+	// DIRECT stamps, and the post-recoverExecuteProcess propagation ran too
+	// late for the -E lift (which happens inside this loop). The repeat after
+	// this call is a fixpoint no-op that keeps the regular configure_file
+	// recovery (which runs later still) correct.
+	applyParentScopeForwards(cc.StampVars, cc.StampCommands, parentScopeForwards)
+	propagateStampVars(cc.StampVars, setAssignments)
 	// seenProbeFlags maps a lifted build-setting name to the cmake
 	// variable that produced it. The same feature probe can recur in the
 	// trace (configure re-evaluation) — the same variable lifts once.
@@ -455,10 +468,13 @@ func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, c
 // for free by running after the whole execute_process walk; the -E lift
 // runs inside it). The later in-loop write (recoverProbeOrStampCall) is
 // idempotent — same key, same value. Classify runs twice per call;
-// execute_process call counts are tiny. Known v1 limitation, shared with
-// the in-loop recording: stamps reached only through a recovered set()
-// copy (propagateStampVars, which runs after this recovery) don't wire
-// into -E configure_file lifts.
+// execute_process call counts are tiny. prescan records only DIRECT stamps;
+// stamps reached through a recovered set() copy or PARENT_SCOPE forward are
+// folded in by the propagation recoverExecuteProcess runs immediately after
+// this prescan (before the -E configure_file lifts), so a -E lift consuming a
+// copied stamp wires stamp_values too. That propagation is fed by the warm
+// non-expanded trace's assignments/forwards; in a single pass with neither,
+// only direct stamps wire — the documented degraded mode.
 func prescanStampVars(calls []shadow.ExecuteProcessCall, cc *codegenContext) {
 	for _, call := range calls {
 		// calls arrive PREPROCESSED (dead captures cleared, -E

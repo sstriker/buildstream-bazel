@@ -87,7 +87,7 @@ func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptA
 	// evidence, not on captured configure vars. A probe/stamp call that rides
 	// along refuses harmlessly (discarded). liftEnabled mirrors the main
 	// configure trace so a script's configure_file output lifts when opted in.
-	outs, _ := recoverExecuteProcess(calls, cmakeSrc, cmakeSrc, buildDir, buildDir, cc.LiftConfigureFile, nil, nil, cc)
+	outs, _ := recoverExecuteProcess(calls, cmakeSrc, cmakeSrc, buildDir, buildDir, cc.LiftConfigureFile, nil, nil, nil, nil, cc)
 	for _, o := range outs {
 		if o.RelOutput == relOut {
 			// Same contract as recoverGenrule's recognized branch: register
