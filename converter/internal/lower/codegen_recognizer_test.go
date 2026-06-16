@@ -68,7 +68,7 @@ func TestLiftRecognizedExecuteProcess_FeedsDiscoveredOutputs(t *testing.T) {
 	cc := newCodegenContext()
 	cc.RecognizeCodegen = true
 	cc.ExtraRecognizers = []CodegenRecognizer{discoveredSubsetRecognizer{}}
-	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("refusals: %+v", refusals)
 	}
@@ -173,7 +173,7 @@ func TestLiftRecognizedExecuteProcess_GeneratedInputsNotDeduped(t *testing.T) {
 	callA := argvCall(hostSrc, "mygen", "--mygen_out="+filepath.Join(hostBuild, "genA"), filepath.Join(hostBuild, "in/a.in"))
 	callB := argvCall(hostSrc, "mygen", "--mygen_out="+filepath.Join(hostBuild, "genB"), filepath.Join(hostBuild, "in/b.in"))
 	callB.Line = 9
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{callA, callB}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{callA, callB}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("refusals: %+v", refusals)
 	}
@@ -632,7 +632,7 @@ func TestLiftRecognizedExecuteProcess_PerTargetPlacement(t *testing.T) {
 	call := argvCall(hostSrc, "protoc", "--cpp_out="+filepath.Join(hostBuild, "a"), filepath.Join(hostSrc, "a/svc.proto"))
 	cc := newCodegenContext()
 	cc.RecognizeCodegen = true
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("refusals: %+v", refusals)
 	}
@@ -662,7 +662,7 @@ func TestLiftRecognizedExecuteProcess_PositionalOutDir(t *testing.T) {
 	cc := newCodegenContext()
 	cc.RecognizeCodegen = true
 	cc.ExtraRecognizers = []CodegenRecognizer{discoveredSubsetRecognizer{}}
-	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("refusals: %+v", refusals)
 	}

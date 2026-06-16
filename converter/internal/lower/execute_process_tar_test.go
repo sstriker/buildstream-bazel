@@ -44,7 +44,7 @@ func TestLiftCMakeETarCreate(t *testing.T) {
 		cc.OutToGenrule["gen/made.txt"] = "exec_made" // a recovered producer
 		_, refusals := recoverExecuteProcess(
 			[]shadow.ExecuteProcessCall{{File: "/src/CMakeLists.txt", Line: 3, Commands: [][]string{argv}}},
-			"/src", "/src", "", "/build", false, nil, nil, cc)
+			"/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 		return cc, refusals
 	}
 

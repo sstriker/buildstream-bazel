@@ -21,7 +21,7 @@ func TestRecoverExecuteProcess_WorkingDirectory(t *testing.T) {
 			WorkingDirectory: "/build/work",
 		}
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, cc)
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 		if len(refusals) != 0 {
 			t.Fatalf("expected lift: %+v", refusals)
 		}
@@ -45,7 +45,7 @@ func TestRecoverExecuteProcess_WorkingDirectory(t *testing.T) {
 			WorkingDirectory: "/src/scripts",
 		}
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, cc)
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 		if len(refusals) != 1 || !strings.Contains(refusals[0].Reason, "WORKING_DIRECTORY") {
 			t.Fatalf("source-tree WD must refuse: %+v", refusals)
 		}
@@ -63,7 +63,7 @@ func TestRecoverExecuteProcess_Environment(t *testing.T) {
 		Environment: []string{"LC_ALL=C", "GEN_MODE=fast"},
 	}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("expected lift: %+v", refusals)
 	}
@@ -87,7 +87,7 @@ func TestRecoverExecuteProcess_Pipeline(t *testing.T) {
 			OutputFile: "/build/sorted.h",
 		}
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, cc)
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 		if len(refusals) != 0 {
 			t.Fatalf("expected lift: %+v", refusals)
 		}
@@ -141,7 +141,7 @@ func TestRecoverExecuteProcess_ErrorFileEdgeCases(t *testing.T) {
 			ErrorFile:        "run.log", // relative spelling of the SAME file
 		}
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, cc)
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 		if len(refusals) != 0 {
 			t.Fatalf("expected lift: %+v", refusals)
 		}
@@ -160,7 +160,7 @@ func TestRecoverExecuteProcess_ErrorFileEdgeCases(t *testing.T) {
 			OutputFile: "/build/gen/out.h",
 			ErrorFile:  "/build/gen/x.log",
 		}
-		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, cc)
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 		if len(refusals) != 1 || !strings.Contains(refusals[0].Reason, "collides") {
 			t.Fatalf("colliding ERROR_FILE must refuse: %+v", refusals)
 		}
@@ -174,7 +174,7 @@ func TestRecoverExecuteProcess_ErrorFileEdgeCases(t *testing.T) {
 			Environment: []string{"LDFLAGS=-Wl,-rpath,$ORIGIN"},
 		}
 		cc := newCodegenContext()
-		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, cc)
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 		if len(refusals) != 0 {
 			t.Fatalf("expected lift: %+v", refusals)
 		}

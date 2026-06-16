@@ -38,7 +38,7 @@ func TestLiftArgvFileProducing_Positional(t *testing.T) {
 	writeTree(t, hostBuild, "gen/out.h", "#define X 1\n")
 	call := argvCall(hostSrc, "/opt/tools/mygen", filepath.Join(hostSrc, "in.txt"), filepath.Join(hostBuild, "gen/out.h"))
 	cc := newCodegenContext()
-	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("refusals: %+v", refusals)
 	}
@@ -80,7 +80,7 @@ func TestLiftArgvFileProducing_KeyedOperands(t *testing.T) {
 	writeTree(t, hostBuild, "out.bin", "data")
 	call := argvCall(hostSrc, "dd", "if="+filepath.Join(hostSrc, "in.bin"), "of="+filepath.Join(hostBuild, "out.bin"))
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 || len(cc.Genrules) != 1 {
 		t.Fatalf("refusals=%+v genrules=%+v", refusals, cc.Genrules)
 	}
@@ -98,7 +98,7 @@ func TestLiftArgvFileProducing_RelativeOperands(t *testing.T) {
 	writeTree(t, hostBuild, "rel/out.h", "#define X 1\n")
 	call := argvCall(hostSrc, "mygen", "--mode", "fast", filepath.Join(hostSrc, "in.txt"), "rel/out.h")
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 || len(cc.Genrules) != 1 {
 		t.Fatalf("refusals=%+v genrules=%+v", refusals, cc.Genrules)
 	}
@@ -119,7 +119,7 @@ func TestLiftArgvFileProducing_MultipleOutputs(t *testing.T) {
 	writeTree(t, hostBuild, "b.h", "B")
 	call := argvCall(hostSrc, "mygen", filepath.Join(hostSrc, "in.txt"), filepath.Join(hostBuild, "a.h"), filepath.Join(hostBuild, "b.h"))
 	cc := newCodegenContext()
-	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("refusals: %+v", refusals)
 	}
@@ -138,7 +138,7 @@ func TestLiftArgvFileProducing_ChainedGeneratedInput(t *testing.T) {
 	callA := argvCall(hostSrc, "genA", filepath.Join(hostSrc, "in.txt"), filepath.Join(hostBuild, "stage1.txt"))
 	callB := argvCall(hostSrc, "genB", filepath.Join(hostBuild, "stage1.txt"), filepath.Join(hostBuild, "stage2.h"))
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{callA, callB}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{callA, callB}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 || len(cc.Genrules) != 2 {
 		t.Fatalf("refusals=%+v genrules=%d", refusals, len(cc.Genrules))
 	}
@@ -166,7 +166,7 @@ func TestLiftArgvFileProducing_UnclassifiableBuildPathDeclines(t *testing.T) {
 	writeTree(t, hostSrc, "in.txt", "x\n")
 	call := argvCall(hostSrc, "mygen", filepath.Join(hostSrc, "in.txt"), filepath.Join(hostBuild, "never-written.h"))
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 1 {
 		t.Fatalf("want a loud refusal; got %+v (genrules %+v)", refusals, cc.Genrules)
 	}
@@ -181,7 +181,7 @@ func TestLiftArgvFileProducing_OutputDirDeclines(t *testing.T) {
 	}
 	call := argvCall(hostSrc, "mygen", filepath.Join(hostSrc, "in.txt"), filepath.Join(hostBuild, "gen"))
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 1 || len(cc.Genrules) != 0 {
 		t.Fatalf("dir operand must decline: refusals=%+v genrules=%+v", refusals, cc.Genrules)
 	}
@@ -197,7 +197,7 @@ func TestLiftArgvFileProducing_InPlaceDeclines(t *testing.T) {
 	cc := newCodegenContext()
 	cc.OutToGenrule["gen/x.h"] = "" // pretend an earlier recovery produced it... then it's an input only
 	call := argvCall(hostSrc, "fixup", filepath.Join(hostBuild, "gen/x.h"), filepath.Join(hostBuild, "gen/x.h"))
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(cc.Genrules) != 0 {
 		t.Fatalf("in-place shape must not emit: %+v", cc.Genrules)
 	}
@@ -218,7 +218,7 @@ func TestLiftArgvFileProducing_BuildDirToolDeclines(t *testing.T) {
 	} {
 		cc := newCodegenContext()
 		call := argvCall(hostSrc, tool, filepath.Join(hostSrc, "in.txt"), filepath.Join(hostBuild, "out.h"))
-		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 		if len(refusals) != 1 || len(cc.Genrules) != 0 {
 			t.Errorf("%s build-dir tool must decline: refusals=%+v genrules=%+v", name, refusals, cc.Genrules)
 		}
@@ -234,7 +234,7 @@ func TestLiftArgvFileProducing_SourceDirOperandDeclines(t *testing.T) {
 	writeTree(t, hostBuild, "out.h", "X")
 	call := argvCall(hostSrc, "mygen", filepath.Join(hostSrc, "proto"), filepath.Join(hostBuild, "out.h"))
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 1 || len(cc.Genrules) != 0 {
 		t.Fatalf("source dir operand must decline: refusals=%+v genrules=%+v", refusals, cc.Genrules)
 	}
@@ -251,7 +251,7 @@ func TestLiftArgvFileProducing_SharedOutputSingleProducer(t *testing.T) {
 	callA := argvCall(hostSrc, "genA", filepath.Join(hostSrc, "in.txt"), filepath.Join(hostBuild, "shared.h"))
 	callB := argvCall(hostSrc, "genB", filepath.Join(hostBuild, "shared.h"), filepath.Join(hostBuild, "second.h"))
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{callA, callB}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{callA, callB}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("refusals: %+v", refusals)
 	}
@@ -274,7 +274,7 @@ func TestLiftArgvFileProducing_KeywordsDecline(t *testing.T) {
 	call := argvCall(hostSrc, "mygen", filepath.Join(hostSrc, "in.txt"), filepath.Join(hostBuild, "out.h"))
 	call.WorkingDirectory = hostBuild
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 1 || len(cc.Genrules) != 0 {
 		t.Fatalf("WORKING_DIRECTORY must keep declining: refusals=%+v", refusals)
 	}

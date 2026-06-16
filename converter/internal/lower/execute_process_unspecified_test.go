@@ -31,7 +31,7 @@ func TestRecoverExecuteProcess_ProbeWithResultVarRecoversCodegen(t *testing.T) {
 	cc := newCodegenContext()
 	cc.LiftDerivedCodegen = true
 	cc.ConsumedBuildRel = map[string]bool{"data.txt.gz": true}
-	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("refusals: %+v", refusals)
 	}
@@ -56,7 +56,7 @@ func TestRecoverExecuteProcess_PureProbeStillSkipped(t *testing.T) {
 	}
 	cc := newCodegenContext()
 	cc.ConsumedBuildRel = map[string]bool{"unrelated.h": true}
-	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(outs) != 0 || len(refusals) != 0 || len(cc.Genrules) != 0 {
 		t.Fatalf("pure probe must stay skipped; outs=%+v refusals=%+v genrules=%+v", outs, refusals, cc.Genrules)
 	}
@@ -72,7 +72,7 @@ func TestLiftUnspecifiedOutputs_DirOperand(t *testing.T) {
 	writeTree(t, hostBuild, "gen/b.cc", "B")
 	call := argvCall(hostSrc, "mygen", "--out", filepath.Join(hostBuild, "gen"), filepath.Join(hostSrc, "in.proto"))
 	cc := newCodegenContext()
-	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("refusals: %+v", refusals)
 	}
@@ -112,7 +112,7 @@ func TestLiftUnspecifiedOutputs_DirOperandOverlapDeclines(t *testing.T) {
 	callB := argvCall(hostSrc, "genB", filepath.Join(hostBuild, "gen/sub"), filepath.Join(hostSrc, "b.in"))
 	callB.Line = 9 // distinct call site — same-site duplicates count as one claim
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{callA, callB}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{callA, callB}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 2 || len(cc.Genrules) != 0 {
 		t.Fatalf("overlapping dir operands must both decline: refusals=%+v genrules=%+v", refusals, cc.Genrules)
 	}
@@ -128,7 +128,7 @@ func TestLiftUnspecifiedOutputs_DirOperandExcludesNinjaOuts(t *testing.T) {
 	call := argvCall(hostSrc, "mygen", filepath.Join(hostBuild, "gen"), filepath.Join(hostSrc, "in.proto"))
 	cc := newCodegenContext()
 	cc.NinjaOuts = map[string]bool{"gen/built.o": true}
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 || len(cc.Genrules) != 1 {
 		t.Fatalf("refusals=%+v genrules=%+v", refusals, cc.Genrules)
 	}
@@ -146,7 +146,7 @@ func TestLiftUnspecifiedOutputs_StemBake(t *testing.T) {
 	call := argvCall(hostSrc, "compressor", filepath.Join(hostSrc, "data.txt"))
 	cc := newCodegenContext()
 	cc.ConsumedBuildRel = map[string]bool{"data.txt.gz": true}
-	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("refusals: %+v", refusals)
 	}
@@ -181,7 +181,7 @@ func TestLiftUnspecifiedOutputs_StemRerunSubdir(t *testing.T) {
 	cc := newCodegenContext()
 	cc.LiftDerivedCodegen = true
 	cc.ConsumedBuildRel = map[string]bool{"gen/data.txt.gz": true}
-	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 {
 		t.Fatalf("refusals: %+v", refusals)
 	}
@@ -219,7 +219,7 @@ func TestLiftUnspecifiedOutputs_MultiClaimDeclines(t *testing.T) {
 	callB.Line = 9 // distinct call site — same-site duplicates count as one claim
 	cc := newCodegenContext()
 	cc.ConsumedBuildRel = map[string]bool{"data.txt.gz": true}
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{callA, callB}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{callA, callB}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 2 || len(cc.Genrules) != 0 {
 		t.Fatalf("multi-claimed orphan must decline both: refusals=%+v genrules=%+v", refusals, cc.Genrules)
 	}
@@ -235,7 +235,7 @@ func TestLiftUnspecifiedOutputs_NinjaProducedNotClaimed(t *testing.T) {
 	cc := newCodegenContext()
 	cc.ConsumedBuildRel = map[string]bool{"data.txt.gz": true}
 	cc.NinjaOuts = map[string]bool{"data.txt.gz": true}
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 1 || len(cc.Genrules) != 0 {
 		t.Fatalf("ninja-produced orphan must not be claimed: refusals=%+v genrules=%+v", refusals, cc.Genrules)
 	}
@@ -250,7 +250,7 @@ func TestLiftUnspecifiedOutputs_BareWordStaysLiteral(t *testing.T) {
 	writeTree(t, hostBuild, "gen/a.h", "A")
 	call := argvCall(hostSrc, "tar", "xf", filepath.Join(hostSrc, "payload.tar"), filepath.Join(hostBuild, "gen"))
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 || len(cc.Genrules) != 1 {
 		t.Fatalf("old-style flag word must not decline the lift: refusals=%+v genrules=%+v", refusals, cc.Genrules)
 	}
@@ -272,7 +272,7 @@ func TestLiftUnspecifiedOutputs_DuplicateCallReuses(t *testing.T) {
 	writeTree(t, hostBuild, "gen/a.h", "A")
 	call := argvCall(hostSrc, "mygen", filepath.Join(hostBuild, "gen"), filepath.Join(hostSrc, "in.proto"))
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call, call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call, call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 0 || len(cc.Genrules) != 1 {
 		t.Fatalf("duplicate call must reuse, not decline or double-emit: refusals=%+v genrules=%d", refusals, len(cc.Genrules))
 	}
@@ -287,7 +287,7 @@ func TestLiftUnspecifiedOutputs_BuildDirToolDeclines(t *testing.T) {
 	writeTree(t, hostBuild, "gen/a.h", "A")
 	call := argvCall(hostSrc, filepath.Join(hostBuild, "bin/gen"), filepath.Join(hostBuild, "gen"), filepath.Join(hostSrc, "in.proto"))
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, cc)
+	_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
 	if len(refusals) != 1 || len(cc.Genrules) != 0 {
 		t.Fatalf("build-dir tool must decline: refusals=%+v genrules=%+v", refusals, cc.Genrules)
 	}

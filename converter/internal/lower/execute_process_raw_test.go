@@ -22,7 +22,7 @@ func TestRecoverExecuteProcess_LiftTouch_SingleFile(t *testing.T) {
 		Commands: [][]string{{"touch", "/build/marker.stamp"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -58,7 +58,7 @@ func TestRecoverExecuteProcess_LiftTouch_MultiplePaths(t *testing.T) {
 		Commands: [][]string{{"touch", "/build/a.stamp", "/build/sub/b.stamp"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 2 {
@@ -77,7 +77,7 @@ func TestRecoverExecuteProcess_LiftTouch_FlagRefuses(t *testing.T) {
 		Commands: [][]string{{"touch", "-c", "/build/marker.stamp"}},
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 	if len(refusals) != 1 {
 		t.Fatalf("want 1 refusal; got %+v", refusals)
 	}
@@ -98,7 +98,7 @@ func TestRecoverExecuteProcess_LiftTouch_OutsideBuildRefuses(t *testing.T) {
 		Commands: [][]string{{"touch", "/elsewhere/marker.stamp"}},
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 	if len(refusals) != 1 {
 		t.Fatalf("want 1 refusal; got %+v", refusals)
 	}
@@ -120,7 +120,7 @@ func TestRecoverExecuteProcess_LiftLn_SymlinkLiftsAsCopy(t *testing.T) {
 		Commands: [][]string{{"ln", "-s", "/src/bin/clang-18", "/build/bin/clang"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -156,7 +156,7 @@ func TestRecoverExecuteProcess_LiftLn_NoFlagHardlink(t *testing.T) {
 		Commands: [][]string{{"ln", "/src/data/real.bin", "/build/link.bin"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift; got refusals %+v", refusals)
 	}
 	g := cc.Genrules[0]
@@ -175,7 +175,7 @@ func TestRecoverExecuteProcess_LiftLn_OneOperandRefuses(t *testing.T) {
 		Commands: [][]string{{"ln", "-s", "/src/bin/clang-18"}},
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 	if len(refusals) != 1 {
 		t.Fatalf("want 1 refusal; got %+v", refusals)
 	}
@@ -198,7 +198,7 @@ func TestRecoverExecuteProcess_LiftLn_TargetOutsideTreeRefuses(t *testing.T) {
 		Commands: [][]string{{"ln", "-sf", "/build/lib/libfoo.so.1", "/build/lib/libfoo.so"}},
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 	if len(refusals) != 1 {
 		t.Fatalf("want 1 refusal; got %+v", refusals)
 	}
@@ -229,7 +229,7 @@ func TestRecoverExecuteProcess_LiftCMakeECopyDirectory(t *testing.T) {
 		Commands: [][]string{{"cmake", "-E", "copy_directory", filepath.Join(hostSrc, "data"), "/build/out"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -270,7 +270,7 @@ func TestRecoverExecuteProcess_LiftRename_File(t *testing.T) {
 		Commands: [][]string{{"cmake", "-E", "rename", filepath.Join(hostSrc, "old.h"), "/build/new.h"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift; got refusals %+v", refusals)
 	}
 	g := cc.Genrules[0]
@@ -304,7 +304,7 @@ func TestRecoverExecuteProcess_LiftMv_File(t *testing.T) {
 		Commands: [][]string{{"mv", "-f", filepath.Join(hostSrc, "a.txt"), "/build/b.txt"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift; got refusals %+v", refusals)
 	}
 	g := cc.Genrules[0]
@@ -334,7 +334,7 @@ func TestRecoverExecuteProcess_LiftMv_BuildTempRefuses(t *testing.T) {
 		Commands: [][]string{{"mv", "/build/x.tmp", "/build/x"}},
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, nil, nil, cc)
 	if len(refusals) != 1 {
 		t.Fatalf("want 1 refusal; got %+v", refusals)
 	}
@@ -366,7 +366,7 @@ func TestRecoverExecuteProcess_NoopOps(t *testing.T) {
 				Commands: [][]string{argv},
 			}}
 			cc := newCodegenContext()
-			outs, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
+			outs, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 			if len(refusals) != 0 {
 				t.Errorf("no-op should not refuse; got %+v", refusals)
 			}
@@ -403,7 +403,7 @@ func TestRecoverExecuteProcess_CreateSymlink_DirectoryTarget(t *testing.T) {
 		Commands: [][]string{{"cmake", "-E", "create_symlink", filepath.Join(hostSrc, "include"), "/build/staged_include"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -442,7 +442,7 @@ func TestRecoverExecuteProcess_CreateSymlink_FileTargetOffline(t *testing.T) {
 		Commands: [][]string{{"cmake", "-E", "create_symlink", "/src/bin/clang-18", "/build/bin/clang"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift; got refusals %+v", refusals)
 	}
 	if len(cc.Genrules) != 1 {
@@ -470,7 +470,7 @@ func TestRecoverExecuteProcess_LiftLn_DirectoryTarget(t *testing.T) {
 		Commands: [][]string{{"ln", "-s", filepath.Join(hostSrc, "data"), "/build/linked"}},
 	}}
 	cc := newCodegenContext()
-	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, cc); len(refusals) != 0 {
+	if _, refusals := recoverExecuteProcess(calls, hostSrc, hostSrc, "", "/build", false, nil, nil, nil, nil, cc); len(refusals) != 0 {
 		t.Fatalf("expected lift; got refusals %+v", refusals)
 	}
 	g := cc.Genrules[0]
@@ -510,7 +510,7 @@ func TestRecoverExecuteProcess_CreateSymlink_InstallCompatAliasSkips(t *testing.
 				Commands: [][]string{argv},
 			}}
 			cc := newCodegenContext()
-			outs, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
+			outs, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 			if len(refusals) != 0 {
 				t.Errorf("install-compat alias should skip, not refuse; got %+v", refusals)
 			}
@@ -536,7 +536,7 @@ func TestRecoverExecuteProcess_CreateSymlink_BuildDirLinkStillRefuses(t *testing
 		Commands: [][]string{{"cmake", "-E", "create_symlink", "/build/gen/real.h", "/build/gen/alias.h"}},
 	}}
 	cc := newCodegenContext()
-	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, cc)
+	_, refusals := recoverExecuteProcess(calls, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
 	if len(refusals) != 1 {
 		t.Fatalf("build-dir-anchored link with unrecoverable source should refuse; got %+v", refusals)
 	}
