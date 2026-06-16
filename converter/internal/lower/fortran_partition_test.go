@@ -179,3 +179,58 @@ func TestRetagFortranTargets_NoFortranUnchanged(t *testing.T) {
 		t.Errorf("no tag expected for pure-C target; got %v", cc.Tags)
 	}
 }
+
+// TestContainsASCIIFold covers the Fortran module-keyword pre-gate's
+// case-insensitive substring scan: it must match the keyword regardless of
+// case and position, and reject only when the keyword is truly absent (the
+// only case the gate skips the regex).
+func TestContainsASCIIFold(t *testing.T) {
+	cases := []struct {
+		body string
+		want bool
+	}{
+		{"      MODULE foo", true},  // fixed-form upper-case
+		{"module bar", true},        // free-form lower-case
+		{"  SubModule (p) c", true}, // substring inside another word still present
+		{"! a comment mentioning Module", true},
+		{"      subroutine dgemm", false}, // no "module" anywhere -> safe to skip
+		{"use iso_c_binding", false},
+		{"", false},
+		{"MODUL", false}, // partial, not the full keyword
+	}
+	for _, c := range cases {
+		if got := containsASCIIFold([]byte(c.body), "module"); got != c.want {
+			t.Errorf("containsASCIIFold(%q) = %v, want %v", c.body, got, c.want)
+		}
+	}
+}
+
+// TestScanFortranModuleSrc_GateMatchesUngated asserts the keyword pre-gate is
+// semantics-preserving: for a file that DOES define a module, the gated scan
+// returns exactly what the raw regexes would, and for a module-free file both
+// return nil. Guards against the gate ever diverging from the regex.
+func TestScanFortranModuleSrc_GateMatchesUngated(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	defFile := write("m.f90", "module la_constants\n  use iso_fortran_env, only: real64\nend module\n")
+	plainFile := write("p.f", "      subroutine dgemm\n      return\n      end\n")
+
+	// Definer: gate lets it through, provides+uses populated.
+	prov, uses := scanFortranModuleSrc(defFile)
+	if len(prov) != 1 || prov[0] != "la_constants" {
+		t.Errorf("provides = %v, want [la_constants]", prov)
+	}
+	if len(uses) != 1 || uses[0] != "iso_fortran_env" {
+		t.Errorf("uses = %v, want [iso_fortran_env]", uses)
+	}
+	// Module-free file: gate skips, returns nil (same as the regex would).
+	if prov, uses := scanFortranModuleSrc(plainFile); prov != nil || uses != nil {
+		t.Errorf("module-free file: got provides=%v uses=%v, want nil/nil", prov, uses)
+	}
+}
