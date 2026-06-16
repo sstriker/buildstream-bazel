@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
@@ -810,6 +811,12 @@ func TestCodegenCheckpointRestore(t *testing.T) {
 	cc.NativeRuleSubPackage["new_proto"] = "sub"
 	cc.recognizedConsumerByInput["foo.proto"] = "new_proto"
 	cc.recognizedNameOwner["new_proto"] = "foo.proto"
+	// Stamp / bake state the shared recovery's prescan also writes — must roll
+	// back too, else a leaked StampVars entry mis-wires a later configure_file.
+	cc.StampVars["GIT_SHA"] = "STABLE_GIT_SHA"
+	cc.StampCommands["STABLE_GIT_SHA"] = "git rev-parse HEAD"
+	cc.StampKeyCollisions["STABLE_GIT_SHA"] = true
+	cc.bakeTodoDisposition["new_gen"] = todos.Actionable
 	cc.Genrules = append(cc.Genrules, ir.Target{Name: "new_gen", Kind: ir.KindGenrule})
 
 	cc.restoreCodegen(cp)
@@ -829,9 +836,17 @@ func TestCodegenCheckpointRestore(t *testing.T) {
 		"NativeRuleSubPackage":      cc.NativeRuleSubPackage,
 		"recognizedConsumerByInput": cc.recognizedConsumerByInput,
 		"recognizedNameOwner":       cc.recognizedNameOwner,
+		"StampVars":                 cc.StampVars,
+		"StampCommands":             cc.StampCommands,
 	} {
 		if len(m) != 0 {
 			t.Errorf("%s not restored to empty: %v", name, m)
 		}
+	}
+	if len(cc.StampKeyCollisions) != 0 {
+		t.Errorf("StampKeyCollisions not restored to empty: %v", cc.StampKeyCollisions)
+	}
+	if len(cc.bakeTodoDisposition) != 0 {
+		t.Errorf("bakeTodoDisposition not restored to empty: %v", cc.bakeTodoDisposition)
 	}
 }

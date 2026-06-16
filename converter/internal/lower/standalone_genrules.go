@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 
@@ -602,11 +603,18 @@ func (cc *codegenContext) tryStandaloneCmakeScriptCodegen(cmd, cmakeSrc, buildDi
 	return true
 }
 
-// codegenCheckpoint snapshots the codegen-recovery cc state so a standalone
-// recognize-through-script attempt that recovers only SOME of an edge's outputs
-// rolls back cleanly. It covers exactly the consumer-wiring registries
-// recoverExecuteProcess + recognizeOrGenrule write; a new such registry must be
-// added here too (the all-or-nothing rollback is the contract).
+// codegenCheckpoint snapshots the cc state recoverExecuteProcess mutates, so a
+// standalone recognize-through-script attempt that recovers only SOME of an
+// edge's outputs rolls back cleanly. It covers BOTH the consumer-wiring
+// registries (recoverExecuteProcess + recognizeOrGenrule) AND the stamp / bake
+// state the shared recovery writes — its prescan populates StampVars at the top
+// of every call — so a partial rollback can't leak a STABLE_* workspace-status
+// key, a stamp-collision flag, or a bake-todo disposition. A leaked
+// StampVars[var] in particular could wrongly wire stamp_values onto a later
+// configure_file reading the same-named var. A new cc registry the recovery
+// writes must be added here too (the all-or-nothing rollback is the contract).
+// SeenBuilds is intentionally omitted: it's keyed by *ninja.Build and this
+// ExecuteProcessCall-based path never writes it.
 type codegenCheckpoint struct {
 	genrules                  int
 	outToGenrule              map[string]string
@@ -615,6 +623,10 @@ type codegenCheckpoint struct {
 	nativeRuleSubPackage      map[string]string
 	recognizedConsumerByInput map[string]string
 	recognizedNameOwner       map[string]string
+	stampVars                 map[string]string
+	stampCommands             map[string]string
+	stampKeyCollisions        map[string]bool
+	bakeTodoDisposition       map[string]todos.Disposition
 }
 
 func (cc *codegenContext) checkpointCodegen() codegenCheckpoint {
@@ -626,6 +638,10 @@ func (cc *codegenContext) checkpointCodegen() codegenCheckpoint {
 		nativeRuleSubPackage:      maps.Clone(cc.NativeRuleSubPackage),
 		recognizedConsumerByInput: maps.Clone(cc.recognizedConsumerByInput),
 		recognizedNameOwner:       maps.Clone(cc.recognizedNameOwner),
+		stampVars:                 maps.Clone(cc.StampVars),
+		stampCommands:             maps.Clone(cc.StampCommands),
+		stampKeyCollisions:        maps.Clone(cc.StampKeyCollisions),
+		bakeTodoDisposition:       maps.Clone(cc.bakeTodoDisposition),
 	}
 }
 
@@ -637,6 +653,10 @@ func (cc *codegenContext) restoreCodegen(cp codegenCheckpoint) {
 	cc.NativeRuleSubPackage = cp.nativeRuleSubPackage
 	cc.recognizedConsumerByInput = cp.recognizedConsumerByInput
 	cc.recognizedNameOwner = cp.recognizedNameOwner
+	cc.StampVars = cp.stampVars
+	cc.StampCommands = cp.stampCommands
+	cc.StampKeyCollisions = cp.stampKeyCollisions
+	cc.bakeTodoDisposition = cp.bakeTodoDisposition
 }
 
 // tryStandaloneCmakeScriptBake bakes a standalone `cmake -P` script edge at
