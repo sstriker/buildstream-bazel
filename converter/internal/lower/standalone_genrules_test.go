@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -665,5 +666,32 @@ func TestRecognizeViaTraceWrapperArgv(t *testing.T) {
 	tgts, ok := recognizeOrGenrule(cc, cmd, fallback)
 	if !ok || len(tgts) != 2 || tgts[0].NativeRule == nil || tgts[0].NativeRule.Kind != "proto_library" {
 		t.Fatalf("a wrapped protoc should recognize to proto_library + cc_proto_library; got ok=%v %+v", ok, tgts)
+	}
+}
+
+// TestDropLiftedToolSrcs pins the shared step that keeps a tool the swap lifted
+// to $(execpath <label>) + tools out of srcs (else it'd be both a src and a
+// tool). Now called by all three genrule-emission paths (emitRecoveredGenrule,
+// the standalone path, workdir-buildout) — direct coverage for the pure helper.
+func TestDropLiftedToolSrcs(t *testing.T) {
+	artifactToName := map[string]string{"tools/gen.sh": "gen_sh", "in.txt": "in_txt"}
+	// gen.sh was lifted (its name is in tools as ":gen_sh") → dropped; in.txt is
+	// a plain src (not in tools) → kept; helper.h has no artifactToName → kept.
+	got := dropLiftedToolSrcs(
+		[]string{"tools/gen.sh", "in.txt", "helper.h"},
+		[]string{":gen_sh"},
+		artifactToName,
+	)
+	want := []string{"in.txt", "helper.h"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("dropLiftedToolSrcs = %v, want %v", got, want)
+	}
+	// No-op guards: empty tools / srcs / artifactToName return srcs unchanged.
+	srcs := []string{"tools/gen.sh"}
+	if got := dropLiftedToolSrcs(srcs, nil, artifactToName); !reflect.DeepEqual(got, srcs) {
+		t.Errorf("empty tools should be a no-op; got %v", got)
+	}
+	if got := dropLiftedToolSrcs(srcs, []string{":gen_sh"}, nil); !reflect.DeepEqual(got, srcs) {
+		t.Errorf("empty artifactToName should be a no-op; got %v", got)
 	}
 }
