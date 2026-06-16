@@ -695,3 +695,31 @@ func TestDropLiftedToolSrcs(t *testing.T) {
 		t.Errorf("empty artifactToName should be a no-op; got %v", got)
 	}
 }
+
+// TestCodegenCommandFrom_UnwrapsWrappers: the recognizer's command view sees
+// through cmake -E env/chdir and bare shell wrappers to the real tool, so a
+// wrapped protoc still lowers to a native rule instead of a genrule of the
+// wrapper. Only the driver/args VIEW is unwrapped; the genrule fallback keeps
+// the original command.
+func TestCodegenCommandFrom_UnwrapsWrappers(t *testing.T) {
+	for _, tc := range []struct {
+		name, cmd, wantDriver string
+		wantArg0              string
+	}{
+		{"bare", "protoc --cpp_out=. foo.proto", "protoc", "--cpp_out=."},
+		{"env", "env GEN=1 protoc --cpp_out=. foo.proto", "protoc", "--cpp_out=."},
+		{"cmake -E env", "/usr/bin/cmake -E env GEN_FAST=1 protoc --cpp_out=. foo.proto", "protoc", "--cpp_out=."},
+		{"cmake -E chdir", "cmake -E chdir /b protoc --cpp_out=. foo.proto", "protoc", "--cpp_out=."},
+		{"cmake -E env then env", "cmake -E env A=1 env B=2 protoc --cpp_out=. foo.proto", "protoc", "--cpp_out=."},
+		// A real cmake -E op (copy) is not a wrapper: driver stays cmake.
+		{"cmake -E copy not unwrapped", "cmake -E copy a b", "cmake", "-E"},
+	} {
+		got := codegenCommandFrom(tc.cmd, nil, nil, "")
+		if got.Driver != tc.wantDriver {
+			t.Errorf("%s: Driver = %q, want %q", tc.name, got.Driver, tc.wantDriver)
+		}
+		if len(got.Args) == 0 || got.Args[0] != tc.wantArg0 {
+			t.Errorf("%s: Args[0] = %v, want %q", tc.name, got.Args, tc.wantArg0)
+		}
+	}
+}
