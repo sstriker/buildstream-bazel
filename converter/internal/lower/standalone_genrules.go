@@ -525,6 +525,17 @@ func codegenCommandFrom(cmd string, srcs, outs []string, pkg string) CodegenComm
 // Call.Commands) rather than a build-line string, so we skip the lossy
 // re-tokenization (args with spaces survive).
 func codegenCommandFromArgv(argv, srcs, outs []string, pkg string) CodegenCommand {
+	// See through wrapper prefixes so the recognizer matches the REAL tool:
+	// `cmake -E env K=V … protoc …`, `cmake -E chdir <dir> protoc …`, and a bare
+	// `env K=V protoc …` all recognize as protoc rather than `cmake`/`env`. Only
+	// the recognizer's driver/args VIEW is unwrapped here — the emitted genrule
+	// fallback keeps the original command verbatim (its `cmake -E env …` still
+	// runs at build time). A trace-real argv (no wrapper) is a no-op. Mirrors the
+	// execute_process path's normalizeCMakeECall so all recovery paths see the
+	// same driver. cmake -E first (peels its env/chdir), then shell wrappers
+	// (env/sh/taskset/…), so a doubly-wrapped `cmake -E env … env … tool` resolves.
+	argv, _ = stripCMakeEWrappers(argv)
+	argv = stripWrapperPrefix(argv)
 	var driver string
 	var args []string
 	if len(argv) > 0 {
