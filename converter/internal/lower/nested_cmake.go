@@ -367,7 +367,7 @@ func recoverNestedCMakeCall(call shadow.ExecuteProcessCall, anc execAnchors, cc 
 func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSrc string) ([]executeProcessOut, error) {
 	var outs []executeProcessOut
 	for _, nb := range opts.NestedBuilds {
-		nestedPkg, err := lowerOneNestedBuild(nb, opts, hostSrc)
+		nestedPkg, nestedStatus, err := lowerOneNestedBuild(nb, opts, hostSrc)
 		if err != nil {
 			fmt.Fprintf(warningsOrDiscard(opts.Warnings),
 				"lower: nested cmake build %s: lowering failed (%v); falling back to the not-lifted warning\n", nb.BuildRel, err)
@@ -393,9 +393,24 @@ func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSr
 		}
 		cc.NestedLifted[nb.BuildRel] = true
 		mergeNestedPackage(pkg, nestedPkg, nb, cc, opts, hostSrc)
+		cc.mergeNestedStampCommands(nestedStatus)
 		outs = append(outs, bakeNestedGeneratedHeaders(nb, cc, opts)...)
 	}
 	return outs, nil
+}
+
+// mergeNestedStampCommands folds a nested build's workspace-status commands
+// (status key -> producing shell command, from the nested lowering's own
+// WorkspaceStatusSink) into the outer cc.StampCommands, first-write-wins so an
+// outer key keeps its own command. This lets the outer populateWorkspaceStatusSink
+// emit a nested configure_file's stamp key: the merged nested target carries
+// the stamp_values key, but its producing command lived only in the nested pass.
+func (cc *codegenContext) mergeNestedStampCommands(nested map[string]string) {
+	for key, cmd := range nested {
+		if _, ok := cc.StampCommands[key]; !ok {
+			cc.StampCommands[key] = cmd
+		}
+	}
 }
 
 // nestedHasCompiledSources reports whether a nested package has any target
@@ -467,7 +482,7 @@ func nestedElementRoot(outerRootAbs, nestedSrc string) string {
 // does for the outer project. Nil TraceRaw degrades to the trace-less
 // lowering: the codemodel still carries targets, sources, flags, and
 // artifacts, and the generic on-disk bakes cover consumable outputs.
-func lowerOneNestedBuild(nb NestedBuildInput, opts Options, hostSrc string) (*ir.Package, error) {
+func lowerOneNestedBuild(nb NestedBuildInput, opts Options, hostSrc string) (*ir.Package, map[string]string, error) {
 	// resolveElementSourceRoot requires an absolute root; a relative
 	// --source-root (CI scripts, ad-hoc runs) reaches here verbatim, so
 	// absolutize against the converter's cwd first — without this the
@@ -475,13 +490,24 @@ func lowerOneNestedBuild(nb NestedBuildInput, opts Options, hostSrc string) (*ir
 	// not-lifted warning on otherwise-fine invocations.
 	rootAbs, absErr := filepath.Abs(hostSrc)
 	if absErr != nil {
-		return nil, absErr
+		return nil, nil, absErr
 	}
 	// Promote to the OUTER root for an in-tree nested source, or fall back
 	// to the nested's OWN root for a build-dir-generated one (see
 	// nestedElementRoot).
 	elementRoot := nestedElementRoot(rootAbs, nb.SrcDir)
-	return ToIR(nb.Reply, nb.Graph, nestedOptionsFor(nb, opts, elementRoot))
+	nestedOpts := nestedOptionsFor(nb, opts, elementRoot)
+	// Give the nested lowering its OWN fresh workspace-status sink (a
+	// status-key -> producing-command map) — distinct from the outer's, which
+	// nestedOptionsFor clears to avoid cross-contamination. lowerNestedBuilds
+	// folds the result into the outer cc.StampCommands so a nested
+	// configure_file's stamp key reaches the --out-workspace-status helper
+	// (the merged nested target carries the stamp_values key, but its producing
+	// command lived only in the nested cc).
+	nestedStatus := map[string]string{}
+	nestedOpts.WorkspaceStatusSink = nestedStatus
+	pkg, err := ToIR(nb.Reply, nb.Graph, nestedOpts)
+	return pkg, nestedStatus, err
 }
 
 // nestedOptionsFor builds the Options the recursive ToIR runs the nested
