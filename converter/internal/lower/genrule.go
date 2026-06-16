@@ -795,6 +795,10 @@ func (cc *codegenContext) emitRecoveredGenrule(b *ninja.Build, cmd, cmakeSrc, bu
 	// keys on the pre-swap driver. See standalone_genrules.go for the same guard.
 	preToolSwapCmd := rewrittenCmd
 	rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName, cc.ExecArtifacts, cc.Imports, cc.HostPrefixDir)
+	// A tool the swap lifted to $(execpath <label>) + tools must not also remain
+	// in srcs (it'd be both a src and a tool). The standalone + workdir emission
+	// paths drop it; do the same here so the per-target path stays consistent.
+	srcs = dropLiftedToolSrcs(srcs, tools, cc.ArtifactToName)
 	// Anchor declared outputs to $(RULEDIR)/<out> so a cmd that names its
 	// output as a literal arg (curl's `perl mk-lib1521.pl < curl.h lib1521.c`,
 	// where the script writes to argv) writes under bazel-out rather than a
