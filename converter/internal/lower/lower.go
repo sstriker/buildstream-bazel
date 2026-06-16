@@ -7026,6 +7026,17 @@ func scanFortranModuleSrc(path string) (provides, uses []string) {
 	if err != nil {
 		return nil, nil
 	}
+	// Keyword pre-gate: fortranModuleDefRe requires the literal "module", so a
+	// file that doesn't contain that substring (case-insensitively) ANYWHERE
+	// provably can't match — it defines no module, and the early return below
+	// then also skips the `use` scan. Only a handful of files in a Fortran
+	// project define modules (6 of OpenBLAS's 3,841), so this cheap byte scan
+	// replaces the (far heavier) regex execution on ~all of them with
+	// identical results. Sound because the gate only skips files where the
+	// regex could not have matched.
+	if !containsASCIIFold(body, "module") {
+		return nil, nil
+	}
 	for _, m := range fortranModuleDefRe.FindAllSubmatch(body, -1) {
 		name := strings.ToLower(string(m[1]))
 		// `module procedure` is excluded by the regex (it requires the module
@@ -7043,6 +7054,34 @@ func scanFortranModuleSrc(path string) (provides, uses []string) {
 		uses = append(uses, strings.ToLower(string(m[1])))
 	}
 	return provides, uses
+}
+
+// containsASCIIFold reports whether b contains word (ASCII lowercase) as a
+// substring, comparing case-insensitively for ASCII letters. A cheap O(n*len)
+// byte scan used to pre-gate the Fortran module regex: it allocates nothing
+// (unlike lowercasing the whole body) and avoids the regex machine for files
+// that can't match. word must be ASCII lowercase.
+func containsASCIIFold(b []byte, word string) bool {
+	m := len(word)
+	if m == 0 {
+		return true
+	}
+	for i := 0; i+m <= len(b); i++ {
+		k := 0
+		for ; k < m; k++ {
+			c := b[i+k]
+			if 'A' <= c && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != word[k] {
+				break
+			}
+		}
+		if k == m {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeFortranTarget folds a (former) cc target's attributes onto the
