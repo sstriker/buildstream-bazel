@@ -375,13 +375,7 @@ transition cleanly.
     functions); the real stress is SCALE — `groups/bsl` alone emits 53
     `cc_library` + **729 per-component `.t.cpp` test-driver `cc_binary`s** from
     a tiny CMakeLists. Structural lenses: rejections 1, idiom 0, coverage 7,
-    todos 2. The three follow-ups it surfaced:
-    - **`python3` test-runner `add_test` → `cc_test`.** BBS registers each
-      driver as `add_test(NAME … COMMAND python3 <bbs runner> <driver-exe>)`,
-      not the bare executable, so all 729 drivers stay `cc_binary` and none
-      lower to `cc_test` (folds into "Test-target coverage" / "Lower dropped
-      test trees" — here the cause is the python-runner COMMAND shape, so the
-      lowering needs to see through the BBS wrapper to the driver exe).
+    todos 2. The follow-ups it surfaced:
     - **`bde_xt_cpp_splitter.py` / `sim_cpp11_features.pl` codegen recovery.**
       The 1 rejection is `unsupported-execute-process` (9 calls): BBS runs
       these as a configure-time `execute_process` to split large `.xt.cpp`

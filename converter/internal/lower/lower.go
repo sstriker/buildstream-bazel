@@ -1461,6 +1461,24 @@ type targetIndexes struct {
 // buildTargetIndexes builds the id→name / artifact / PCH index maps the
 // target loop and post-passes consult. Body and rationale comments are
 // verbatim from ToIR's original inline section.
+// resolveWrappedTestCommands re-points launcher-wrapped add_test registrations
+// at their real driver executable (see ctest.Registry.ResolveWrappedCommands).
+// The executable predicate is the codemodel's EXECUTABLE target NAME set — the
+// same key the direct add_test classification matches against — so a wrapped
+// driver lowers to cc_test exactly as a bare-executable registration would.
+func resolveWrappedTestCommands(r *fileapi.Reply, cfg fileapi.Configuration, tests *ctest.Registry) {
+	if tests == nil {
+		return
+	}
+	execNames := map[string]bool{}
+	for _, tref := range cfg.Targets {
+		if et, ok := r.Targets[tref.Id]; ok && et.Type == "EXECUTABLE" {
+			execNames[tref.Name] = true
+		}
+	}
+	tests.ResolveWrappedCommands(func(name string) bool { return execNames[name] })
+}
+
 func buildTargetIndexes(r *fileapi.Reply, cfg fileapi.Configuration, cmakeBuild string, cc *codegenContext) targetIndexes {
 	idToName := map[string]string{}
 	utilityIDs := map[string]bool{}
@@ -2625,8 +2643,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		return fallbackPkg, nil
 	}
 	ra.executeProcesses = append(ra.executeProcesses, nestedOuts...)
-	executeProcesses, configureFiles, fileGenerates := ra.executeProcesses, ra.configureFiles, ra.fileGenerates
-	genexTargets, findPkgAttrib := ra.genexTargets, ra.findPkgAttrib
+	executeProcesses, configureFiles, fileGenerates, genexTargets, findPkgAttrib := ra.executeProcesses, ra.configureFiles, ra.fileGenerates, ra.genexTargets, ra.findPkgAttrib
 
 	// Build the in-codebase id -> Bazel-rule-name map up front so dep
 	// lowering can map t.Dependencies[].Id to a label without re-walking
@@ -2636,8 +2653,11 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	// via srcs/hdrs instead. utilityIDs records them separately so dep
 	// resolution can distinguish "skip utility" from "unresolved".
 	ti := buildTargetIndexes(r, cfg, cmakeBuild, cc)
-	idToName, utilityIDs := ti.idToName, ti.utilityIDs
-	codegenConsumerDeps, pchResolve := ti.codegenConsumerDeps, ti.pchResolve
+	idToName, utilityIDs, codegenConsumerDeps, pchResolve := ti.idToName, ti.utilityIDs, ti.codegenConsumerDeps, ti.pchResolve
+
+	// See through launcher-wrapped add_test COMMANDs to the real driver exe
+	// before the target loop classifies it (see the helper).
+	resolveWrappedTestCommands(r, cfg, opts.CTest)
 
 	lc := targetLowerCtx{
 		cmakeSrc:            cmakeSrc,

@@ -232,6 +232,62 @@ func TestEmit_CCTest(t *testing.T) {
 	}
 }
 
+// TestToIR_CTest_SeesThroughLauncherWrapper covers the launcher-wrapped
+// add_test shape (BDE: `add_test(NAME … COMMAND python3 <runner> <driver>)`).
+// COMMAND[0] is the launcher, so the driver never matches its EXECUTABLE
+// target by the direct-COMMAND rule — without the wrapper resolution it stays
+// a cc_binary no test references. lower must see through the launcher to the
+// driver exe and classify it as cc_test, forwarding the driver's own args and
+// tagging the launcher it unwrapped.
+func TestToIR_CTest_SeesThroughLauncherWrapper(t *testing.T) {
+	r := &fileapi.Reply{
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name: "Release",
+				Targets: []fileapi.ConfigTargetRef{
+					{Name: "bsl_foo.t", Id: "bsl_foo.t::@a"},
+				},
+			}},
+		},
+		Targets: map[string]fileapi.Target{
+			"bsl_foo.t::@a": {
+				Name:          "bsl_foo.t",
+				Type:          "EXECUTABLE",
+				Sources:       []fileapi.TargetSource{{Path: "bsl_foo.t.cc", CompileGroupIndex: 0}},
+				CompileGroups: []fileapi.CompileGroup{{Language: "CXX", SourceIndexes: []int{0}}},
+			},
+		},
+	}
+	const fixture = `add_test([=[bsl_foo]=] "/usr/bin/python3" "/bde/runner.py" "/build/bsl_foo.t" "--verbose")
+`
+	pkg, err := lower.ToIR(r, nil, lower.Options{
+		HostSourceRoot: "/nonexistent",
+		CTest:          buildRegistry(t, fixture),
+	})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+
+	var gotTest *ir.Target
+	for i := range pkg.Targets {
+		if pkg.Targets[i].Kind == ir.KindCCBinary {
+			t.Errorf("driver should not stay cc_binary: %+v", pkg.Targets[i])
+		}
+		if pkg.Targets[i].Kind == ir.KindCCTest {
+			gotTest = &pkg.Targets[i]
+		}
+	}
+	if gotTest == nil {
+		t.Fatalf("wrapped driver was not classified as cc_test: %+v", pkg.Targets)
+	}
+	if got, want := gotTest.TestArgs, []string{"--verbose"}; !equalStrings(got, want) {
+		t.Errorf("TestArgs = %v, want %v (the driver's own args, launcher prefix dropped)", got, want)
+	}
+	if !contains(gotTest.Tags, "cmake-test-launcher=python3") {
+		t.Errorf("expected the unwrapped-launcher tag, got Tags=%v", gotTest.Tags)
+	}
+}
+
 // fixtureCTestSimple is the parsed CTestTestfile.cmake content for
 // TestToIR_CTest_ClassifiesExecutableAsTest. One add_test for
 // format-test with a full property surface.
