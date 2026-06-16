@@ -455,9 +455,13 @@ func removeFromHdrs(t *ir.Target, incs []string) {
 // uniqueName must be a collision-free namer over pkg (see targetNamer).
 func attachTextualSourceIncludes(pkg *ir.Package, t *ir.Target, incs []string, tag string, synth *[]ir.Target, uniqueName func(string) string) string {
 	if t.Kind == ir.KindCCLibrary || t.Kind == ir.KindCCInterface {
-		for _, inc := range incs {
-			t.TextualHdrs = appendUnique(t.TextualHdrs, inc)
-		}
+		// One variadic appendUnique call, not one-per-inc: appendUnique builds a
+		// `seen` set over the whole slice on each call, so a per-entry loop is
+		// O(n²) with an allocation per entry (runtime.makemap dominated this in
+		// the OpenBLAS profile, where extension routing feeds many incs). The
+		// trailing sort makes the result order-independent, so a single dedup +
+		// sort is identical.
+		t.TextualHdrs = appendUnique(t.TextualHdrs, incs...)
 		sort.Strings(t.TextualHdrs)
 		return ""
 	}
