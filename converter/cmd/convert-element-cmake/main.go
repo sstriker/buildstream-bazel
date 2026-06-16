@@ -172,11 +172,12 @@ func configureCmakeFresh(ctx context.Context, a cli.Args) (buildDir, replyDir st
 		// configure_file lift or probe-genex. cmake 3.24+ is the
 		// dump-vars-hook floor; on older cmakes the staged file is never
 		// sourced and downstream paths fall back cleanly.
-		DumpVars:    a.DumpVars,
-		CMP0026Shim: a.CMP0026Shim,
-		ProbeGenex:  a.ProbeGenex,
-		Stdout:      os.Stderr, // route cmake noise to our stderr
-		Stderr:      os.Stderr,
+		DumpVars:               a.DumpVars,
+		CMP0026Shim:            a.CMP0026Shim,
+		ProbeGenex:             a.ProbeGenex,
+		DisableProbeTraceSplit: !a.ProbeTraceSplit,
+		Stdout:                 os.Stderr, // route cmake noise to our stderr
+		Stderr:                 os.Stderr,
 	}
 	opts.TracePath = filepath.Join(buildDir, "trace.jsonl")
 	configureStart := time.Now()

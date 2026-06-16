@@ -190,6 +190,19 @@ type Options struct {
 	// probe-genex (whose DEFER runs after both).
 	ProbeGenex bool
 
+	// DisableProbeTraceSplit opts OUT of running the genex probe and the
+	// trace as two separate cmake configures (the default when both
+	// ProbeGenex and TracePath are set). The split exists because, combined,
+	// --trace-expand logs every command the probe hook runs — its per-target
+	// lang-gate BFS plus thousands of file(GENERATE) calls — which on a
+	// target-heavy project balloons the trace and configure time ~15-25x. The
+	// split instead captures the trace WITHOUT the probe, then runs the probe
+	// (warm) WITHOUT the trace. That doubles listfile execution, so it's a
+	// LOSS on the rare project with few targets but heavy generated listfiles
+	// (OpenBLAS-class): set this to fall back to a single combined configure
+	// there. Output is identical either way.
+	DisableProbeTraceSplit bool
+
 	// CMP0026Shim enables the cmake-4.x compatibility shim that
 	// overrides get_target_property to translate LOCATION queries
 	// into $<TARGET_FILE:<tgt>> generator expressions. cmake 4.x
@@ -355,57 +368,9 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		return Reply{}, err
 	}
 
-	// Stage the dump-vars hook into the build dir when the
-	// caller opted into the namespace capture (see
-	// Options.DumpVars). When opted out we leave
-	// CMAKE_PROJECT_TOP_LEVEL_INCLUDES alone so projects /
-	// operators that set it don't get silently overridden, and
-	// cmake < 3.24 doesn't see the unused-variable diagnostic.
-	var dumpVarsPath string
-	if opts.DumpVars {
-		dumpVarsPath = filepath.Join(opts.BuildDir, "cmake-to-bazel.dump-vars.cmake")
-		if err := os.WriteFile(dumpVarsPath, dumpVarsCMake, 0o644); err != nil {
-			return Reply{}, fmt.Errorf("cmakerun: stage dump-vars hook: %w", err)
-		}
-	}
-
-	// Stage the cmp0026 shim alongside dump-vars when the caller
-	// opted in. Both are layered onto CMAKE_PROJECT_TOP_LEVEL_INCLUDES
-	// as a `;`-joined list; cmake includes them in order, so the
-	// shim's wrapper is installed before dump-vars enumerates the
-	// namespace and after any project-level project() setup.
-	var cmp0026ShimPath string
-	if opts.CMP0026Shim {
-		cmp0026ShimPath = filepath.Join(opts.BuildDir, CMP0026ShimFilename)
-		if err := os.WriteFile(cmp0026ShimPath, cmp0026ShimCMake, 0o644); err != nil {
-			return Reply{}, fmt.Errorf("cmakerun: stage cmp0026 shim: %w", err)
-		}
-	}
-
-	// Stage the genex-probe hook (Phase 3 of the generator-parity
-	// uplift) when the caller opted in. Layers onto the same
-	// CMAKE_PROJECT_TOP_LEVEL_INCLUDES slot as the other hooks —
-	// the slot is a list, so cmake includes them in order.
-	var probeGenexPath string
-	if opts.ProbeGenex {
-		probeGenexPath = filepath.Join(opts.BuildDir, ProbeGenexFilename)
-		if err := os.WriteFile(probeGenexPath, probeGenexCMake, 0o644); err != nil {
-			return Reply{}, fmt.Errorf("cmakerun: stage probe-genex hook: %w", err)
-		}
-	}
-
-	// Stage the generalized genex literal probe hook (the warm
-	// second configure pass) when the caller supplied literals to
-	// resolve. The body is generated from the request set rather
-	// than a static asset because the literals are only known after
-	// the first pass's trace is parsed. Layers onto the same
-	// TOP_LEVEL_INCLUDES slot as the other hooks.
-	var probeLiteralsPath string
-	if len(opts.LiteralProbes) > 0 {
-		probeLiteralsPath = filepath.Join(opts.BuildDir, LiteralProbeFilename)
-		if err := os.WriteFile(probeLiteralsPath, RenderLiteralProbeHook(opts.LiteralProbes), 0o644); err != nil {
-			return Reply{}, fmt.Errorf("cmakerun: stage literal-probe hook: %w", err)
-		}
+	dumpVarsPath, cmp0026ShimPath, probeGenexPath, probeLiteralsPath, err := stageConfigureHooks(opts)
+	if err != nil {
+		return Reply{}, err
 	}
 
 	// Empty HOME defeats ~/.cmake/packages reads when no outer sandbox
@@ -416,19 +381,13 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 	}
 	defer os.RemoveAll(homeDir)
 
-	argv, err := buildCmakeArgv(opts, dumpVarsPath, cmp0026ShimPath, probeGenexPath, probeLiteralsPath)
-	if err != nil {
-		return Reply{}, err
-	}
-
-	// runOnce executes the staged cmake argv with the controlled env plus
-	// any extra entries (e.g. a policy-floor rescue), teeing cmake's
-	// stderr into a fresh bounded tail buffer so a failed run can be
-	// annotated with hints for well-known incompat patterns (cmake 4.x
-	// CMP0026, etc.) without breaking the live op-stderr passthrough. The
-	// buffer is bounded to keep memory predictable on projects whose
-	// configure emits thousands of lines.
-	runOnce := func(extraEnv ...string) ([]byte, error) {
+	// runOnce executes a cmake argv with the controlled env plus any extra
+	// entries (e.g. a policy-floor rescue), teeing cmake's stderr into a fresh
+	// bounded tail buffer so a failed run can be annotated with hints for
+	// well-known incompat patterns (cmake 4.x CMP0026, etc.) without breaking
+	// the live op-stderr passthrough. The buffer is bounded to keep memory
+	// predictable on projects whose configure emits thousands of lines.
+	runOnce := func(argv []string, extraEnv ...string) ([]byte, error) {
 		cmd := exec.CommandContext(ctx, "cmake", argv...)
 		// Run the configure with cwd = the build dir — the canonical
 		// `cd build && cmake ..` contract. execute_process's default
@@ -456,31 +415,71 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		return stderrTail.Bytes(), runErr
 	}
 
-	stderrBytes, runErr := runOnce()
-	if runErr != nil && matchPolicyFloorRemoved(stderrBytes) {
-		// cmake 4.x removed compatibility with cmake_minimum_required
-		// floors below 3.5 and fatal-errors at configure on projects (and
-		// the try_compile sub-projects cmake generates internally) that
-		// still declare them — the OpenBLAS class. Retry once with the
-		// one-version policy bump cmake itself suggests
-		// (CMAKE_POLICY_VERSION_MINIMUM=3.5) so these projects configure.
-		//
-		// This is reactive — after observing the failure — rather than
-		// setting the var on every cmake-4 configure: it keeps the
-		// configure pristine for the projects that don't need it (the var
-		// would otherwise flip a sub-3.5-floor project's old-policy
-		// defaults to NEW), and the first-pass failure stays a visible
-		// signal that the project leans on a pre-3.5 floor. cmake re-runs
-		// configure cleanly in the same build dir — the floor check fires
-		// at cmake_minimum_required, before project() populates the cache.
-		if opts.Stderr != nil {
-			fmt.Fprintln(opts.Stderr,
-				"cmakerun: configure hit cmake 4.x's pre-3.5 policy-floor removal; retrying once with CMAKE_POLICY_VERSION_MINIMUM=3.5")
+	// runConfigure runs one cmake argv, retrying once on cmake 4.x's pre-3.5
+	// policy-floor removal. cmake 4.x removed compatibility with
+	// cmake_minimum_required floors below 3.5 and fatal-errors at configure on
+	// projects (and the try_compile sub-projects cmake generates internally)
+	// that still declare them — the OpenBLAS class. The retry uses the
+	// one-version policy bump cmake itself suggests
+	// (CMAKE_POLICY_VERSION_MINIMUM=3.5). Reactive — after observing the
+	// failure — rather than set on every cmake-4 configure: it keeps the
+	// configure pristine for projects that don't need it (the var would
+	// otherwise flip a sub-3.5-floor project's old-policy defaults to NEW), and
+	// the first-pass failure stays a visible signal. cmake re-runs configure
+	// cleanly in the same build dir — the floor check fires at
+	// cmake_minimum_required, before project() populates the cache.
+	runConfigure := func(argv []string) error {
+		stderrBytes, runErr := runOnce(argv)
+		if runErr != nil && matchPolicyFloorRemoved(stderrBytes) {
+			if opts.Stderr != nil {
+				fmt.Fprintln(opts.Stderr,
+					"cmakerun: configure hit cmake 4.x's pre-3.5 policy-floor removal; retrying once with CMAKE_POLICY_VERSION_MINIMUM=3.5")
+			}
+			stderrBytes, runErr = runOnce(argv, "CMAKE_POLICY_VERSION_MINIMUM=3.5")
 		}
-		stderrBytes, runErr = runOnce("CMAKE_POLICY_VERSION_MINIMUM=3.5")
+		if runErr != nil {
+			return annotateConfigureFailure(runErr, stderrBytes)
+		}
+		return nil
 	}
-	if runErr != nil {
-		return Reply{}, annotateConfigureFailure(runErr, stderrBytes)
+
+	if opts.ProbeGenex && opts.TracePath != "" && !opts.DisableProbeTraceSplit {
+		// SPLIT the probe and the trace across two cmake runs of the same build
+		// dir. Combined, --trace-expand logs (and variable-expands) EVERY
+		// command the genex-probe hook executes — its per-target lang-gate BFS
+		// plus thousands of file(GENERATE) calls — which on a target-heavy
+		// project (abseil: ~1000 targets) balloons the trace ~25x (11MB -> 273MB,
+		// 96% of it the probe hook's own lines) and configure ~15x (1.6s ->
+		// ~25s), then costs that again parsing the bloated trace in Go. Neither
+		// needs the other: run 1 captures the codemodel + trace WITHOUT the probe
+		// hook (small, fast); run 2 (warm reconfigure) runs the probe hook
+		// WITHOUT trace to populate the genex outputs. The codemodel reply, the
+		// trace file, and the probe outputs are byte-identical to the combined
+		// run — only the cross-instrumentation cost is gone.
+		argvTrace, err := buildCmakeArgv(opts, dumpVarsPath, cmp0026ShimPath, "", probeLiteralsPath)
+		if err != nil {
+			return Reply{}, err
+		}
+		if err := runConfigure(argvTrace); err != nil {
+			return Reply{}, err
+		}
+		probeOpts := opts
+		probeOpts.TracePath = "" // drop the --trace flags for the probe run
+		argvProbe, err := buildCmakeArgv(probeOpts, dumpVarsPath, cmp0026ShimPath, probeGenexPath, probeLiteralsPath)
+		if err != nil {
+			return Reply{}, err
+		}
+		if err := runConfigure(argvProbe); err != nil {
+			return Reply{}, err
+		}
+	} else {
+		argv, err := buildCmakeArgv(opts, dumpVarsPath, cmp0026ShimPath, probeGenexPath, probeLiteralsPath)
+		if err != nil {
+			return Reply{}, err
+		}
+		if err := runConfigure(argv); err != nil {
+			return Reply{}, err
+		}
 	}
 
 	// Best-effort read of the variable dump (only when we
@@ -503,6 +502,42 @@ func Configure(ctx context.Context, opts Options) (Reply, error) {
 		Path: filepath.Join(opts.BuildDir, ".cmake", "api", "v1", "reply"),
 		Vars: vars,
 	}, nil
+}
+
+// stageConfigureHooks writes the opt-in CMAKE_PROJECT_TOP_LEVEL_INCLUDES hook
+// scripts (dump-vars, cmp0026 shim, genex probe, literal probe) into the build
+// dir and returns their paths ("" when the corresponding option is off). The
+// hooks layer onto the same TOP_LEVEL_INCLUDES list in cmake-include order:
+// the cmp0026 shim's get_target_property wrapper installs before either of the
+// metadata-querying hooks, then dump-vars, then probe-genex (whose DEFER runs
+// after both); the literal probe is the warm second-pass hook. Factored out of
+// Configure to keep its complexity in check.
+func stageConfigureHooks(opts Options) (dumpVarsPath, cmp0026ShimPath, probeGenexPath, probeLiteralsPath string, err error) {
+	if opts.DumpVars {
+		dumpVarsPath = filepath.Join(opts.BuildDir, "cmake-to-bazel.dump-vars.cmake")
+		if err := os.WriteFile(dumpVarsPath, dumpVarsCMake, 0o644); err != nil {
+			return "", "", "", "", fmt.Errorf("cmakerun: stage dump-vars hook: %w", err)
+		}
+	}
+	if opts.CMP0026Shim {
+		cmp0026ShimPath = filepath.Join(opts.BuildDir, CMP0026ShimFilename)
+		if err := os.WriteFile(cmp0026ShimPath, cmp0026ShimCMake, 0o644); err != nil {
+			return "", "", "", "", fmt.Errorf("cmakerun: stage cmp0026 shim: %w", err)
+		}
+	}
+	if opts.ProbeGenex {
+		probeGenexPath = filepath.Join(opts.BuildDir, ProbeGenexFilename)
+		if err := os.WriteFile(probeGenexPath, probeGenexCMake, 0o644); err != nil {
+			return "", "", "", "", fmt.Errorf("cmakerun: stage probe-genex hook: %w", err)
+		}
+	}
+	if len(opts.LiteralProbes) > 0 {
+		probeLiteralsPath = filepath.Join(opts.BuildDir, LiteralProbeFilename)
+		if err := os.WriteFile(probeLiteralsPath, RenderLiteralProbeHook(opts.LiteralProbes), 0o644); err != nil {
+			return "", "", "", "", fmt.Errorf("cmakerun: stage literal-probe hook: %w", err)
+		}
+	}
+	return dumpVarsPath, cmp0026ShimPath, probeGenexPath, probeLiteralsPath, nil
 }
 
 // buildCmakeArgv assembles cmake's command-line arguments from
