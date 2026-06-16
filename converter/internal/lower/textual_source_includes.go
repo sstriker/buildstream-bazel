@@ -206,8 +206,8 @@ func resolveTextualInclude(hostSrc, dir, inc, self string) string {
 // Under --split-packages the emitter relabels textual_hdrs to cross-package
 // file labels, exactly like hdrs. Gated on hostSrcOnDisk (the scan reads source
 // files); breadcrumbed so the wiring is auditable.
-func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrcOnDisk bool, warn io.Writer) {
-	if pkg == nil || !hostSrcOnDisk {
+func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrcOnDisk, detectFused bool, extraExts map[string]bool, warn io.Writer) {
+	if pkg == nil {
 		return
 	}
 	uniqueName := targetNamer(pkg)
@@ -218,10 +218,8 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 	var recs []rec       // synth-lib wirings (cc_binary / cc_test)
 	var inlineRecs []rec // direct textual_hdrs wirings (cc_library / cc_interface)
 	var synth []ir.Target
-	// ONE per-file scan cache for the whole pass: a header shared across many
-	// targets' Hdrs (or a source across targets) is read + regex-scanned once,
-	// not once per target — the fix for the per-target re-read blowup on large,
-	// shared-header projects.
+	// One per-file scan cache for the whole pass; ONLY the opt-in fused scan
+	// reads files, so this stays empty in the default (zero-read) path.
 	scanCache := map[string]textualFileScan{}
 	for i := range pkg.Targets {
 		t := &pkg.Targets[i]
@@ -230,28 +228,37 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 		default:
 			continue
 		}
-		// Scan BOTH the compiled sources AND the headers as includers: the
-		// fused-source idiom has a .cc include a sibling .cc, but the genclass
-		// idiom has a HEADER textually #include its implementation (glm's
-		// func_common.hpp -> func_common.inl, a template header -> its .tcc/.cc
-		// definition). A header-only library carries the includer entirely in
-		// hdrs, so scanning srcs alone never saw it.
-		includers := append(append([]string(nil), t.Srcs...), t.Hdrs...)
-		incs, readers := findTextualSourceIncludesCached(hostSrc, includers, scanCache)
+		// (1) ZERO-READ extension routing. A Hdrs entry whose extension marks a
+		// non-self-contained textual include — a compiled source (a
+		// HEADER_FILE_ONLY .cc reclassifyHeaderOnlySources moved into hdrs), a
+		// built-in impl header (.inl/.txx/.tcc/.ipp/.def/.inc), or an operator
+		// --textual-include-exts extension — can only be pasted into an includer,
+		// never compiled/parsed standalone (a parse_headers/layering_check build
+		// would fail it alone). Route it to textual_hdrs from the IR alone, with
+		// NO file read. This covers the LISTED impl-header / genclass idiom (the
+		// common case) without touching the disk.
+		extIncs := textualImplExtEntries(t.Hdrs, extraExts)
+		// (2) OPT-IN read-based fused scan. Catches a textual include the target
+		// does NOT list in hdrs — a compiled source #included from another file
+		// (fmt's posix-mock, gtest's gtest-all.cc, VTK's lz4hc.c `#include
+		// "lz4.c"`) or a header pulling an on-disk .cc (glm). It reads source
+		// bytes, so it's gated on --detect-fused-sources (+ an on-disk tree); off
+		// by default so the common convert reads zero files.
+		var fusedIncs, readers []string
+		if detectFused && hostSrcOnDisk {
+			includers := append(append([]string(nil), t.Srcs...), t.Hdrs...)
+			fusedIncs, readers = findTextualSourceIncludesCached(hostSrc, includers, scanCache)
+		}
+		incs := sliceutil.SortedUnique(append(append([]string(nil), extIncs...), fusedIncs...))
 		if len(incs) == 0 {
 			continue
 		}
-		// Publish the includer sources whose bytes drove this detection, so the
-		// source-narrowing lens keeps them real (the declared exception to the
-		// no-source-read rule). See ir.Package.SourceByteReads.
+		// Only the fused scan read bytes; publish those includer reads so the
+		// source-narrowing lens keeps them real (see ir.Package.SourceByteReads).
+		// Extension routing reads nothing and contributes no reads.
 		pkg.SourceByteReads = append(pkg.SourceByteReads, readers...)
-		// A non-self-contained impl header (.inl/.tcc/.ipp/...) the initial
-		// extension classification routed to hdrs must MOVE to textual_hdrs: in
-		// hdrs a Bazel parse_headers / layering_check build compiles the fragment
-		// standalone and fails (it only makes sense pasted into its includer).
-		// attachTextualSourceIncludes adds it to textual_hdrs below; drop it from
-		// hdrs here so it isn't double-listed. Compiled-source incs (the lz4
-		// fused case) aren't in hdrs and stay in srcs — untouched.
+		// Drop the routed entries from hdrs so they aren't double-listed; a
+		// compiled-source fused include (lz4.c) isn't in hdrs, so it stays in srcs.
 		removeFromHdrs(t, incs)
 		lib := attachTextualSourceIncludes(pkg, t, incs, "cmake-codegen-textual-source-include", &synth, uniqueName)
 		if lib == "" {
@@ -266,7 +273,7 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 	if warn != nil {
 		if len(inlineRecs) > 0 {
 			fmt.Fprintf(warn,
-				"lower: added textual_hdrs to %d cc_library/cc_interface target(s) that textually #include a .cc they don't compile (the fused-source idiom):\n",
+				"lower: routed textual_hdrs onto %d cc_library/cc_interface target(s) carrying a non-self-contained textual include (impl-header / fused-source idiom):\n",
 				len(inlineRecs))
 			for _, r := range inlineRecs {
 				fmt.Fprintf(warn, "  %s (textual_hdrs: %s)\n", r.target, strings.Join(r.srcs, ", "))
@@ -274,13 +281,56 @@ func synthesizeTextualSourceIncludeLibs(pkg *ir.Package, hostSrc string, hostSrc
 		}
 		if len(recs) > 0 {
 			fmt.Fprintf(warn,
-				"lower: synthesized %d textual_hdrs cc_library(ies) for cc_binary/cc_test target(s) that textually #include a .cc they don't compile (those rules have no textual_hdrs slot):\n",
+				"lower: synthesized %d textual_hdrs cc_library(ies) for cc_binary/cc_test target(s) carrying a non-self-contained textual include (those rules have no textual_hdrs slot):\n",
 				len(recs))
 			for _, r := range recs {
 				fmt.Fprintf(warn, "  %s -> %s (textual_hdrs: %s)\n", r.target, r.lib, strings.Join(r.srcs, ", "))
 			}
 		}
+		// Note: the read-based fused-source scan is opt-in. When it's OFF and we
+		// routed something by extension (the project uses textual includes), a
+		// textual include the target does NOT list (a compiled source #included
+		// from elsewhere) won't be detected — point the operator at the flag.
+		if !detectFused && (len(inlineRecs) > 0 || len(recs) > 0) {
+			fmt.Fprint(warn,
+				"  note: the read-based fused-source scan is off (default, reads no files); pass --detect-fused-sources to also detect a source textually #included but not listed on the target (fmt/gtest/lz4-style) — SLOW: it reads every source + header.\n")
+		}
 	}
+}
+
+// textualImplExtEntries returns the Hdrs entries whose extension marks a
+// non-self-contained textual include — a compiled source (a HEADER_FILE_ONLY
+// .cc reclassified into hdrs), a built-in impl header
+// (.inl/.txx/.tcc/.ipp/.def/.inc), or an operator-supplied extra extension.
+// These move to textual_hdrs with no file read (the zero-read default path).
+func textualImplExtEntries(hdrs []string, extra map[string]bool) []string {
+	var out []string
+	for _, h := range hdrs {
+		if cclang.IsCompiledSource(h) || cclang.IsTextualImplHeader(h) || extra[strings.ToLower(filepath.Ext(h))] {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// normalizeTextualIncludeExts lowercases the operator's --textual-include-exts
+// values and ensures a leading dot, into a set for textualImplExtEntries.
+func normalizeTextualIncludeExts(exts []string) map[string]bool {
+	if len(exts) == 0 {
+		return nil
+	}
+	m := make(map[string]bool, len(exts))
+	for _, e := range exts {
+		e = strings.ToLower(strings.TrimSpace(e))
+		if e == "" {
+			continue
+		}
+		if !strings.HasPrefix(e, ".") {
+			e = "." + e
+		}
+		m[e] = true
+	}
+	return m
 }
 
 // textualIncludeClosure expands a seed set of element-root-relative compiled

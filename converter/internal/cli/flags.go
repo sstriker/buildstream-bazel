@@ -510,6 +510,18 @@ type Args struct {
 	// rendered).
 	EmitStandaloneCustomCommands bool
 
+	// DetectFusedSources opts into the read-based textual-source-include scan
+	// (the fused-source idiom: a source/header textually #includes another
+	// source it doesn't list). OFF by default so the common convert reads no
+	// source files; the listed impl-header idiom routes by extension without
+	// reads regardless. See lower.Options.DetectFusedSources.
+	DetectFusedSources bool
+
+	// TextualIncludeExts are extra extensions (comma-separated, e.g.
+	// ".ii,.def") to treat as non-self-contained textual includes for the
+	// zero-read extension routing. See lower.Options.TextualIncludeExts.
+	TextualIncludeExts string
+
 	// OutSanitizerFeatures, when non-empty, writes a .bzl file
 	// at this path carrying cc_toolchain feature definitions
 	// extracted from cmake's CMAKE_<LANG>_FLAGS_<CONFIG> /
@@ -867,6 +879,8 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.BoolVar(&a.EmitProvenance, "emit-provenance", true, "above each emitted rule, write a leading `# Source: <file>:<line> (<command>)` comment derived from the cmake codemodel's BacktraceGraph (macro-declared targets get the invocation as `# Source:` plus the declaring command on a `# Declared:` line). Default ON; pass --emit-provenance=false for byte-clean output.")
 	fs.BoolVar(&a.EmitSourceComments, "emit-source-comments", true, "carry author comments from CMakeLists into the emitted BUILD: the leading `#` comment block above each target's declaration, plus the top-of-file header block. Default ON; pass --emit-source-comments=false to suppress (skips reading raw source — useful for byte-clean output or reply-dir-only runs where source isn't staged).")
 	fs.BoolVar(&a.EmitStandaloneCustomCommands, "emit-standalone-custom-commands", true, "Phase 4 of the generator-parity uplift: walk every CUSTOM_COMMAND edge in build.ninja and emit a genrule for each whose outputs aren't already covered by an existing recoverGenrule emission. On by default; covers add_custom_target / add_custom_command edges nothing consumes. Pass --emit-standalone-custom-commands=false to opt out.")
+	fs.BoolVar(&a.DetectFusedSources, "detect-fused-sources", false, "SLOW (off by default): scan source/header BYTES to detect the fused-source idiom — a file that textually #includes another source it doesn't list (fmt's posix-mock, gtest's gtest-all.cc, VTK's lz4hc.c #include \"lz4.c\"). This READS EVERY compiled source AND header on every cc target (each distinct file once) and regex-scans it — O(source tree), the dominant cost on large projects, which is why it's opt-in. The common impl-header idiom (a listed .inl/.txx/.tcc/.ipp/.def/.inc or HEADER_FILE_ONLY .cc) is routed to textual_hdrs by EXTENSION with NO reads regardless of this flag; enable this only for projects that textually include an UNLISTED source.")
+	fs.StringVar(&a.TextualIncludeExts, "textual-include-exts", "", "comma-separated extra file extensions (e.g. \".ii,.def\") to treat as non-self-contained textual includes: a Hdrs entry with one of these moves to textual_hdrs by extension (no file read), extending the built-in .inl/.txx/.tcc/.ipp/.def/.inc set.")
 	fs.StringVar(&a.OutSanitizerFeatures, "out-sanitizer-features", "", "write cc_toolchain sanitizer feature definitions (.bzl) extracted from cmake's CMAKE_<LANG>_FLAGS_<CONFIG> cache for sanitizer-shaped configs in --build-types. Phase 5 of the generator-parity uplift.")
 	fs.StringVar(&a.OutCommonCompileFlagsFeature, "out-common-compile-flags-feature", "", "write a cc_toolchain feature (.bzl) carrying the longest copt prefix shared by every converted cc target (cmake's project-wide CMAKE_<LANG>_FLAGS), strip that prefix from each target's copts, and tag those targets features=[\"cmake_common_compile_flags\"] so the flags aren't duplicated per target. Thread COMMON_COMPILE_FLAGS_FEATURES into your cc_toolchain config (same as --out-sanitizer-features). Off by default (byte-stable inline emission).")
 	fs.BoolVar(&a.EmitCommonCompileFlagsBzl, "emit-common-compile-flags-bzl", false, "self-contained alternative to --out-common-compile-flags-feature: strip the longest shared copt prefix and rewrite each target's copts as COMMON_COPTS + [delta], with COMMON_COPTS in a generated common_compile_flags.bzl (next to the root BUILD) that every BUILD load()s. Needs no cc_toolchain wiring. Mutually exclusive with --out-common-compile-flags-feature.")
