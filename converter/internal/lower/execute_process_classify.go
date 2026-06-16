@@ -712,22 +712,33 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	// stays BucketStamp below (refuse-unless-consumed). Checked before the
 	// stamp-driver gate so the location form doesn't get the value-stamp
 	// treatment.
-	if driver == "git" && gitRepoLocationQuery(argv) {
+	// Peel leading shell wrappers (env / taskset / …) for the stamp/probe
+	// recognition cluster so a wrapped `env GIT_DIR=… git rev-parse` /
+	// `taskset 0x1 date` classifies by its REAL driver — symmetric with the
+	// codegen recognizer's wrapper see-through. realArgv carries the peeled
+	// argv so the git-location-query check inspects the git args, not the
+	// wrapper's env assignments. An unwrapped call is a no-op (realArgv==argv).
+	realArgv := stripWrapperPrefix(argv)
+	if len(realArgv) == 0 {
+		realArgv = argv
+	}
+	realDriver := executeProcessDriverBasename(realArgv[0])
+	if realDriver == "git" && gitRepoLocationQuery(realArgv) {
 		return ClassifyResult{
 			Bucket: BucketProbe,
-			Reason: "git repo-location query (" + strings.Join(argv[1:], " ") + ") — configure-time repo layout, no baked value" + outputContext(call),
+			Reason: "git repo-location query (" + strings.Join(realArgv[1:], " ") + ") — configure-time repo layout, no baked value" + outputContext(call),
 		}
 	}
-	if stampDrivers[driver] {
+	if stampDrivers[realDriver] {
 		return ClassifyResult{
 			Bucket: BucketStamp,
-			Reason: driver + " is a stamp / non-hermetic driver" + outputContext(call),
+			Reason: realDriver + " is a stamp / non-hermetic driver" + outputContext(call),
 		}
 	}
-	if strongProbeDrivers[driver] {
+	if strongProbeDrivers[realDriver] {
 		return ClassifyResult{
 			Bucket: BucketProbe,
-			Reason: driver + " is a host probe driver" + outputContext(call),
+			Reason: realDriver + " is a host probe driver" + outputContext(call),
 		}
 	}
 	// Host-triple detection scripts (GNU config.guess / config.sub),
@@ -970,4 +981,25 @@ func executeProcessDriverBasename(arg0 string) string {
 		base = base[:len(base)-len(".exe")]
 	}
 	return strings.ToLower(base)
+}
+
+// realExecuteProcessDriver returns the canonical driver basename of an argv
+// after peeling leading shell wrappers (env / sh / bash / taskset / nice /
+// ionice and their K=V / flag args — stripWrapperPrefix), so a wrapped stamp
+// like `env GIT_DIR=… git rev-parse HEAD` or `taskset 0x1 date` classifies (and
+// keys) by its REAL driver (git / date), not the wrapper. This mirrors the
+// codegen recognizer, which sees through the same wrappers via
+// stripWrapperPrefix in codegenCommandFromArgv. `cmake -E env/chdir` is peeled
+// upstream by normalizeCMakeECall before classification; this covers the bare
+// (non-cmake) wrappers that normalization doesn't. `sh -c "<script>"` keeps the
+// shell as the driver (stripWrapperPrefix's -c guard) — its quoted command
+// isn't a clean argv to classify, so it stays unrecognized as before.
+func realExecuteProcessDriver(argv []string) string {
+	if len(argv) == 0 {
+		return ""
+	}
+	if peeled := stripWrapperPrefix(argv); len(peeled) > 0 {
+		return executeProcessDriverBasename(peeled[0])
+	}
+	return executeProcessDriverBasename(argv[0])
 }

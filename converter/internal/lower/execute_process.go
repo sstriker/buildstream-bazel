@@ -400,7 +400,10 @@ func recoverProbeOrStampCall(call shadow.ExecuteProcessCall, v ClassifyResult, c
 	// (which runs later over the same cc) consults cc.StampVars; the
 	// stamp call itself still skips (captured) or refuses (not) here.
 	if v.Bucket == BucketStamp && call.OutputVariable != "" {
-		driver := executeProcessDriverBasename(call.Commands[0][0])
+		// Peel shell wrappers so the status-key PREFIX keys on the real driver
+		// (a wrapped `… date` is VOLATILE_, `… git` is STABLE_); the recorded
+		// command keeps the full wrapped argv so it reproduces the value.
+		driver := realExecuteProcessDriver(call.Commands[0])
 		key := stampStatusKey(call.OutputVariable, driver)
 		cc.StampVars[call.OutputVariable] = key
 		recordStampCommand(cc, key, call)
@@ -483,7 +486,7 @@ func prescanStampVars(calls []shadow.ExecuteProcessCall, cc *codegenContext) {
 		// GIT_DIR=… git describe` stamp must.
 		v := Classify(call)
 		if v.Bucket == BucketStamp && call.OutputVariable != "" && len(call.Commands) > 0 && len(call.Commands[0]) > 0 {
-			driver := executeProcessDriverBasename(call.Commands[0][0])
+			driver := realExecuteProcessDriver(call.Commands[0])
 			key := stampStatusKey(call.OutputVariable, driver)
 			cc.StampVars[call.OutputVariable] = key
 			recordStampCommand(cc, key, call)
@@ -1793,9 +1796,10 @@ func buildCMakeEConfigureFileGenrule(name, srcRel, dstRel string, template, rend
 	// VCS-stamp lift parity with the configure_file recovery: a template
 	// var written by a stamp execute_process re-reads its value from the
 	// Bazel workspace status at build time; the baked value stays in
-	// `values` as the non-stamped fallback. Limitation (documented at the
-	// prescan): set()-copy-forwarded stamps (propagateStampVars runs after
-	// this recovery) don't wire here.
+	// `values` as the non-stamped fallback. set()-copy + PARENT_SCOPE-
+	// forwarded stamps wire here too: recoverExecuteProcess runs the
+	// propagation right after the prescan, BEFORE this -E lift (the v1
+	// trace-order limitation this comment used to note is closed).
 	spec.StampValues = stampValuesForTemplate(template, opts, stampVars)
 	return cmakeConfigureFileTarget(name, spec, cmakeEConfigureFileTags(true))
 }
