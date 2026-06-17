@@ -2523,6 +2523,20 @@ func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts
 		for _, f := range coverage.AuditLinkDeps(pkg, traceLinkLibs) {
 			opts.Coverage.Add(f)
 		}
+		// Unrecognized-command-FORM breadcrumb: surface a build-input-producing
+		// command the decoder models but in a shape no classifier accepted (the
+		// class of bug where add_custom_command's TARGET-event form was silently
+		// dropped). A coverage finding makes the next missed form loud instead of
+		// invisible. No-op without a trace.
+		for _, uf := range shadow.AuditUnrecognizedCommandForms(opts.TraceRaw, cmakeSrc) {
+			opts.Coverage.Add(coverage.Finding{
+				Target: uf.Form,
+				Dep:    fmt.Sprintf("%s:%d", uf.File, uf.Line),
+				Code:   "unrecognized-command-form",
+				Message: "cmake `" + uf.Cmd + "` appears in a form no trace classifier handles, so its effect is dropped — " +
+					"a modeled command in an unmodeled shape (cf. the add_custom_command TARGET-event miss); args: " + uf.Detail,
+			})
+		}
 	}
 
 	// Drop include dirs that are unresolved generator expressions (any entry
