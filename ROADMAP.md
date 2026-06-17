@@ -946,9 +946,24 @@ trees, optional-feature deps, codegen instances). Each member's
     file_generate.go), OR source the command from the ninja link-edge
     `PRE_LINK`/`POST_BUILD` binding (where cmake already resolved the genex).
     Demand signal: a corpus member whose POST_BUILD-produced artifact is consumed.
-  - **Pure side-effect commands (no BYPRODUCTS)** are warned + dropped (no Bazel
-    cc-rule pre-link/post-build hook). If a corpus member needs the effect (not
-    just an output), that's a deeper gap with no clean mapping.
+  - **Phantom link inputs as an alternative producer signal.** Command-line
+    output inference for the no-BYPRODUCTS case now SHIPPED
+    (`inferTargetEventOutputs`, gated by `meta-cmake-target-event-inferred-output`):
+    a command with no recoverable `BYPRODUCTS` has its output inferred from a
+    compiler `-o <path>` or a `> <file>` redirect (best-effort, tagged
+    `cmake-codegen-target-event-inferred-output`; `>>`/`2>`/`&>` excluded). That
+    subsumes the common phantom-input case (an unproduced link input written by a
+    no-BYPRODUCTS TARGET-event command now gets a producer). The remaining piece:
+    a phantom input whose producer is some OTHER untracked command form — search
+    the trace for a command that writes that path and treat IT as the producer.
+    Demand-gated on a corpus member whose phantom link input isn't already
+    recovered by the `-o`/`>` inference; until then it surfaces via the
+    unrecognized-command-form breadcrumb.
+  - **Pure side-effect commands (genuinely no output)** are warned + dropped (no
+    Bazel cc-rule pre-link/post-build hook). Only a command with no BYPRODUCTS
+    *and* no inferable output (no `-o`, no `>` redirect) is a true side-effect; if
+    a corpus member needs the effect (not just an output), that's a deeper gap
+    with no clean mapping.
   - **PRE_BUILD** is captured the same as PRE_LINK; on Make/Ninja cmake treats
     PRE_BUILD like PRE_LINK, so no separate handling — confirm if a VS-generator
     member ever surfaces a true pre-build distinction.
@@ -981,17 +996,14 @@ trees, optional-feature deps, codegen instances). Each member's
     `COMMAND_ERROR_IS_FATAL` / `ENCODING`, `file(GENERATE)` `PERMISSIONS`,
     `add_custom_command` `IMPLICIT_DEPENDS` / `DEPFILE`. Documented, not actioned.
 
-- **Nested OUTPUT→include codegen recovery — carried; remaining follow-ups.**
+- **Nested OUTPUT→include codegen recovery — remaining follow-ups.**
   `adoptIncludedRecipeOutput` ties a codegen recipe's declared `.cmake` OUTPUT to
-  the `include()` that consumes it, and `mergeNestedPackage` now carries a nested
-  build's `include()` events into the outer `cc.IncludeCalls` so an OUTER consumer
-  of a recipe produced+included inside a NESTED cmake resolves (#721). Remaining:
-  - **End-to-end render fixture** for the outer-consumes-nested-recipe shape — the
-    unit tests + the existing nested gate cover the mechanism but not that exact
-    consumer shape end-to-end (convert + bazel build).
-  - **Reliable nested-trace capture.** The include-tie (and the whole trace-driven
-    nested recovery ladder) degrades when `nb.TraceRaw` is empty — a breadcrumb now
-    surfaces the trace-less case. If it fires often across the corpus, making
+  the `include()` that consumes it (the include events come from the OUTER trace —
+  an outer target's `target_sources()` only ever runs in the outer cmake process,
+  so its include is always in `opts.TraceRaw`). Remaining:
+  - **Reliable nested-trace capture.** The trace-driven nested recovery ladder
+    (configure_file lifts, stamp-command folding) degrades when `nb.TraceRaw` is
+    empty. If that turns out to fire often across the corpus, making
     `runNestedTraceReconfigure` capture the nested trace reliably is the next lever.
 
 - **A-B-C fidelity harness — remaining: VTK/LLVM gates.** The harness shipped

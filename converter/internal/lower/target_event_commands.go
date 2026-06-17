@@ -47,11 +47,28 @@ func lowerTargetEventCommands(calls []shadow.TargetEventCommandCall, cc *codegen
 			}
 		}
 		outs = sliceutil.SortedUnique(outs)
+		// Best-effort fallback when no BYPRODUCTS were declared: the command argv
+		// is often a stronger output signal than their absence — a compiler called
+		// with `-o <path>` writes that path; a `> <file>` redirect writes that
+		// file. Infer those build-dir operands as outputs rather than dropping the
+		// command as a pure side-effect. Inference, not declaration, so it only
+		// runs as a fallback; the declared-BYPRODUCTS path stays authoritative.
+		inferred := false
+		if len(outs) == 0 {
+			if io := inferTargetEventOutputs(call.Commands, cmakeBuild); len(io) > 0 {
+				outs, inferred = io, true
+			}
+		}
 		if len(outs) == 0 {
 			fmt.Fprintf(warningsOrDiscard(warn),
-				"lower: add_custom_command(TARGET %s %s) carries no recoverable BYPRODUCTS — a build-event command with no Bazel cc-rule equivalent; dropped\n",
+				"lower: add_custom_command(TARGET %s %s) carries no recoverable BYPRODUCTS and no inferable command-line output (-o / > redirect) — a build-event command with no Bazel cc-rule equivalent; dropped\n",
 				call.Target, call.Event)
 			continue
+		}
+		if inferred {
+			fmt.Fprintf(warningsOrDiscard(warn),
+				"lower: add_custom_command(TARGET %s %s) declares no BYPRODUCTS; inferred output(s) %v from the command line (-o flag / > redirect) — best-effort, declare BYPRODUCTS to make recovery authoritative\n",
+				call.Target, call.Event, outs)
 		}
 		// Skip if every byproduct is already produced (e.g. it's also an
 		// OUTPUT-form output, or two events share a byproduct).
@@ -127,6 +144,12 @@ func lowerTargetEventCommands(calls []shadow.TargetEventCommandCall, cc *codegen
 		}
 		used[name] = true
 
+		tags := []string{"cmake-codegen-target-event-command"}
+		if inferred {
+			// Auditable: this genrule's outputs were inferred from the command
+			// line, not declared via BYPRODUCTS.
+			tags = append(tags, "cmake-codegen-target-event-inferred-output")
+		}
 		cc.Genrules = append(cc.Genrules, ir.Target{
 			Name:         name,
 			Kind:         ir.KindGenrule,
@@ -135,10 +158,52 @@ func lowerTargetEventCommands(calls []shadow.TargetEventCommandCall, cc *codegen
 			GenruleTools: tools,
 			Srcs:         srcs,
 			Visibility:   []string{"//visibility:private"},
-			Tags:         []string{"cmake-codegen-target-event-command"},
+			Tags:         tags,
 		})
 		for _, o := range outs {
 			cc.OutToGenrule[o] = name
 		}
 	}
+}
+
+// inferTargetEventOutputs is the best-effort output signal for a TARGET-event
+// command that declares no (recoverable) BYPRODUCTS. Two argv shapes name an
+// output strongly enough to act on:
+//
+//   - **compiler `-o <path>`** — the operand after a standalone `-o` flag is the
+//     thing the command writes (a `VERBATIM` compile/link the project hooked onto
+//     a build event without listing the result as a byproduct).
+//   - **shell `> <file>` redirect** — a standalone `>` or `1>` token's operand is
+//     the redirect target. Only plain stdout redirects: `>>` (append), `2>`
+//     (stderr) and `&>` (both) are different tokens and deliberately excluded —
+//     their target isn't the command's data output.
+//
+// An operand is taken only when it relativizes under the build dir (the same
+// frame a declared byproduct uses), which also filters out `$`-bearing operands
+// (unexpanded `${VAR}` / `$<genex>`) and out-of-tree paths. This is inference,
+// so the caller runs it only as a fallback when no BYPRODUCTS were recovered.
+func inferTargetEventOutputs(commands [][]string, cmakeBuild string) []string {
+	var outs []string
+	add := func(operand string) {
+		operand = strings.TrimSpace(operand)
+		if operand == "" || strings.Contains(operand, "$") {
+			return
+		}
+		if rel, ok := relativeIfInsideRelaxed(cmakeBuild, operand); ok {
+			outs = append(outs, rel)
+		}
+	}
+	for _, argv := range commands {
+		for i := 0; i < len(argv); i++ {
+			switch tok := argv[i]; {
+			case tok == "-o" && i+1 < len(argv):
+				add(argv[i+1])
+				i++
+			case (tok == ">" || tok == "1>") && i+1 < len(argv):
+				add(argv[i+1])
+				i++
+			}
+		}
+	}
+	return sliceutil.SortedUnique(outs)
 }
