@@ -1999,6 +1999,125 @@ func classifyAddCustomCommand(ev TraceEvent, sourceRoot string) (AddCustomComman
 	return call, true
 }
 
+// TargetEventCommandCall records the TARGET-event form of add_custom_command —
+// add_custom_command(TARGET <t> <PRE_BUILD|PRE_LINK|POST_BUILD> COMMAND <cmd...>
+// [BYPRODUCTS <f...>] [WORKING_DIRECTORY <d>] [COMMENT <c>] ...) — which attaches
+// a build-event hook to an existing target rather than declaring a file-producing
+// rule. cmake folds these into the target's link edge (a $PRE_LINK / $POST_BUILD
+// binding) and lists BYPRODUCTS as extra outputs of that edge; the converter
+// recovers the byproducts as a genrule so consumers resolve. The OUTPUT form is
+// classifyAddCustomCommand; this is its TARGET-form sibling.
+type TargetEventCommandCall struct {
+	Target           string
+	Event            string // PRE_BUILD | PRE_LINK | POST_BUILD
+	Commands         [][]string
+	ByProducts       []string
+	WorkingDirectory string
+	Comment          string
+	File             string
+	Line             int
+}
+
+// ExtractTargetEventCommands returns every in-source-tree TARGET-event
+// add_custom_command (PRE_BUILD / PRE_LINK / POST_BUILD) in the trace.
+func ExtractTargetEventCommands(traceRaw []byte, sourceRoot string) []TargetEventCommandCall {
+	var out []TargetEventCommandCall
+	for _, ev := range ParseTrace(traceRaw) {
+		if call, ok := classifyTargetEventCommand(ev, sourceRoot); ok {
+			out = append(out, call)
+		}
+	}
+	return out
+}
+
+// classifyTargetEventCommand parses one trace event into a TargetEventCommandCall,
+// or (_, false) when it isn't an in-source-tree add_custom_command(TARGET <t>
+// <event> ...). Shares the section-keyword grammar with classifyAddCustomCommand
+// but anchors on the TARGET/<target>/<event> prefix.
+func classifyTargetEventCommand(ev TraceEvent, sourceRoot string) (TargetEventCommandCall, bool) {
+	if !strings.EqualFold(ev.Cmd, "add_custom_command") {
+		return TargetEventCommandCall{}, false
+	}
+	if !inSourceTree(ev.File, sourceRoot) {
+		return TargetEventCommandCall{}, false
+	}
+	if len(ev.Args) < 3 || !strings.EqualFold(ev.Args[0], "TARGET") {
+		return TargetEventCommandCall{}, false
+	}
+	event := strings.ToUpper(ev.Args[2])
+	switch event {
+	case "PRE_BUILD", "PRE_LINK", "POST_BUILD":
+	default:
+		return TargetEventCommandCall{}, false
+	}
+	call := TargetEventCommandCall{
+		Target: ev.Args[1],
+		Event:  event,
+		File:   ev.File,
+		Line:   ev.Line,
+	}
+	const (
+		secNone = iota
+		secCommand
+		secByProducts
+	)
+	sec := secNone
+	var currentCmd []string
+	flushCommand := func() {
+		if len(currentCmd) > 0 {
+			call.Commands = append(call.Commands, currentCmd)
+		}
+		currentCmd = nil
+	}
+	for i := 3; i < len(ev.Args); i++ {
+		a := ev.Args[i]
+		switch strings.ToUpper(a) {
+		case "COMMAND":
+			flushCommand()
+			sec = secCommand
+			continue
+		case "BYPRODUCTS":
+			flushCommand()
+			sec = secByProducts
+			continue
+		case "WORKING_DIRECTORY":
+			flushCommand()
+			sec = secNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.WorkingDirectory = ev.Args[i]
+			}
+			continue
+		case "COMMENT":
+			flushCommand()
+			sec = secNone
+			if i+1 < len(ev.Args) {
+				i++
+				call.Comment = ev.Args[i]
+			}
+			continue
+		case "VERBATIM",
+			"APPEND",
+			"USES_TERMINAL",
+			"COMMAND_EXPAND_LISTS":
+			flushCommand()
+			sec = secNone
+			continue
+		}
+		switch sec {
+		case secCommand:
+			currentCmd = append(currentCmd, a)
+		case secByProducts:
+			call.ByProducts = append(call.ByProducts, a)
+		}
+	}
+	flushCommand()
+	if len(call.Commands) == 0 {
+		return TargetEventCommandCall{}, false
+	}
+	return call, true
+}
+
 // ExtractAddCustomTargets returns one entry per user-written
 // add_custom_target call whose trace event fires inside
 // sourceRoot. cmake-internal scratch-CMakeLists are filtered out

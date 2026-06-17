@@ -924,6 +924,69 @@ trees, optional-feature deps, codegen instances). Each member's
     scrubs the ephemeral build/source-dir prefixes. (Sibling check still worth
     doing: whether `file(GENERATE)` bakes the same prefixes and needs the scrub.)
 
+- **TARGET-event `add_custom_command` (PRE_BUILD / PRE_LINK / POST_BUILD) —
+  byproduct recovery shipped; remaining edges.** The TARGET-event form
+  (`add_custom_command(TARGET t PRE_LINK … BYPRODUCTS f)`) was previously dropped
+  outright (`classifyAddCustomCommand` filtered it) — cmake folds it onto the
+  target's link edge, listing BYPRODUCTS as extra LINKER-edge outputs that
+  `recoverGenrule` can't reach, so a consumer of a stamp byproduct dangled/refused
+  with no breadcrumb. `lowerTargetEventCommands` now synthesizes a genrule per
+  command that declares BYPRODUCTS (token-safe output anchoring + source-input
+  recovery), registered in `OutToGenrule` so consumers resolve; gated by
+  `meta-cmake-prelink-stamp-byproduct`. Remaining:
+  - **POST_BUILD-on-binary commands** (objcopy/strip/copy the produced artifact):
+    `rewriteToolFromTarget` maps the binary ref to `$(execpath :tgt)` + a tools
+    dep, but this isn't yet validated end-to-end against a real strip/objcopy
+    shape — add a POST_BUILD fixture that consumes the post-processed artifact.
+  - **Pure side-effect commands (no BYPRODUCTS)** are warned + dropped (no Bazel
+    cc-rule pre-link/post-build hook). If a corpus member needs the effect (not
+    just an output), that's a deeper gap with no clean mapping.
+  - **PRE_BUILD** is captured the same as PRE_LINK; on Make/Ninja cmake treats
+    PRE_BUILD like PRE_LINK, so no separate handling — confirm if a VS-generator
+    member ever surfaces a true pre-build distinction.
+
+- **CMake command-form coverage audit (after the TARGET-form miss).** The
+  TARGET-event `add_custom_command` was silently dropped for a long time because
+  the trace decoder *returns false on unrecognized forms with no breadcrumb*. An
+  inventory of every command the `internal/shadow` trace decoder classifies, by
+  form, found these GENUINE trace-only gaps (the codemodel covers the target
+  graph — add_executable / target_sources / resolved deps+flags are NOT trace
+  concerns, so their absence from the decoder is by design, not a gap):
+  - **`file(COPY … FILES_MATCHING|PATTERN|REGEX|EXCLUDE|PERMISSIONS)`** —
+    `classifyFileWriter` returns false on the filtering form
+    (`file_writers.go:100`), so a configure-time staging copy whose files a build
+    consumes (headers copied into the build dir) is dropped. The plain
+    `file(COPY src DESTINATION dir)` IS handled. Demand signal: a corpus member
+    that stages build-consumed files via a PATTERN copy. Medium.
+  - **`install()` non-EXPORT forms (TARGETS / FILES / DIRECTORY / PROGRAMS /
+    SCRIPT / CODE).** Only `install(EXPORT …)` is classified; the rest are
+    deployment-scope (largely outside the build graph), partly covered by
+    `--emit-install-export-config`. Lower priority / partly by design — revisit
+    if a member needs install-driven build inputs.
+  - **Low-risk partial-keyword drops** (no clean Bazel mapping, or the codemodel
+    already carries the resolved value): `execute_process`
+    `COMMAND_ERROR_IS_FATAL` / `ENCODING`, `file(GENERATE)` `PERMISSIONS`,
+    `add_custom_command` `IMPLICIT_DEPENDS` / `DEPFILE`. Documented, not actioned.
+  - **Systemic fix (the real lesson):** add an unrecognized-command-FORM
+    breadcrumb to the decoder — when a known command (add_custom_command, file,
+    install, …) appears in a form no classifier matches, surface it (coverage
+    report / warning) instead of silently returning false. That is what would
+    have caught the TARGET-form earlier; it makes the next missed form loud
+    rather than invisible.
+
+- **Nested OUTPUT→include codegen recovery — carried; remaining follow-ups.**
+  `adoptIncludedRecipeOutput` ties a codegen recipe's declared `.cmake` OUTPUT to
+  the `include()` that consumes it, and `mergeNestedPackage` now carries a nested
+  build's `include()` events into the outer `cc.IncludeCalls` so an OUTER consumer
+  of a recipe produced+included inside a NESTED cmake resolves (#721). Remaining:
+  - **End-to-end render fixture** for the outer-consumes-nested-recipe shape — the
+    unit tests + the existing nested gate cover the mechanism but not that exact
+    consumer shape end-to-end (convert + bazel build).
+  - **Reliable nested-trace capture.** The include-tie (and the whole trace-driven
+    nested recovery ladder) degrades when `nb.TraceRaw` is empty — a breadcrumb now
+    surfaces the trace-less case. If it fires often across the corpus, making
+    `runNestedTraceReconfigure` capture the nested trace reliably is the next lever.
+
 - **A-B-C fidelity harness — remaining: VTK/LLVM gates.** The harness shipped
   CI-wired and **blocking** for the six fixtures (zlib, spdlog, fmt,
   nlohmann-json, Catch2, libpng — 0 impactful deltas each), with two
