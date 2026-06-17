@@ -3720,6 +3720,26 @@ func recoverOrElideBuildDirSource(irt *ir.Target, src fileapi.TargetSource, rel 
 		st.elidedBuildDirSrc = true
 		return
 	}
+	// A build-dir source cmake never flagged IsGenerated but that a codegen
+	// recipe produces: the OUTPUT->include->target_sources() tie. A recovered
+	// genrule's declared OUTPUT is a `.cmake` the project include()s, and that
+	// recipe's target_sources() pulled THIS file in — so it's a real (side-)
+	// output of the same codegen, not static content. cmake doesn't mark such a
+	// file GENERATED when the producing edge is invisible to it (e.g. the recipe
+	// runs in a deferred include(), or the file is an undeclared side output of
+	// the recipe's generator), so it reaches this ordinary-source path instead of
+	// the IsGenerated branch. Mirror that branch's adoptIncludedRecipeOutput tie
+	// here — before baking — so the file wires to its producing genrule rather
+	// than being frozen as static bytes (which wouldn't regenerate on input
+	// change). Strictly additive: adoptIncludedRecipeOutput declines (returns
+	// false) unless a sole / scope-matched included recipe codegen claims it.
+	if _, _, ok := cc.adoptIncludedRecipeOutput(filepath.Join(lc.cmakeBuild, rel), lc.cmakeBuild, ""); ok {
+		st.consumesCodegen = true
+		if sp := attachGeneratedSource(irt, rel, inCG, false, cc.CcEmbedSourceToHeader[rel]); sp != "" {
+			st.srcEmitPath[i] = sp
+		}
+		return
+	}
 	// On-disk bake fallback (no silent drops of anything in the
 	// codemodel): the configure already CREATED this file — by a
 	// writer the trace classifiers don't model (file(WRITE) /

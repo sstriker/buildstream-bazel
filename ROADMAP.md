@@ -996,37 +996,14 @@ trees, optional-feature deps, codegen instances). Each member's
     `COMMAND_ERROR_IS_FATAL` / `ENCODING`, `file(GENERATE)` `PERMISSIONS`,
     `add_custom_command` `IMPLICIT_DEPENDS` / `DEPFILE`. Documented, not actioned.
 
-- **Nested OUTPUT→include codegen recovery — carried; remaining follow-ups.**
+- **Nested OUTPUT→include codegen recovery — remaining follow-ups.**
   `adoptIncludedRecipeOutput` ties a codegen recipe's declared `.cmake` OUTPUT to
-  the `include()` that consumes it, and `mergeNestedPackage` now carries a nested
-  build's `include()` events into the outer `cc.IncludeCalls` so an OUTER consumer
-  of a recipe produced+included inside a NESTED cmake resolves (#721). Remaining:
-  - **#721 is likely redundant / a no-op — verify and revert if so.** The outer
-    trace's own `include(<file>)` command already carries the single included
-    file in its `args`, so carrying the nested build's `include()` events into
-    `cc.IncludeCalls` may add nothing the outer trace didn't already have. Before
-    building more on it: confirm whether the outer `include` event's `args` cover
-    the consumer-resolution path; if they do, the `mergeNestedPackage` carry is
-    dead weight and should be reverted (and the end-to-end fixture below
-    re-scoped to what actually still needs proving).
-  - **`target_sources()` from inside a deferred `include()` doesn't mark its
-    sources `isGenerated` → they get BAKED (real bug).** When a generated
-    `.cmake` recipe is consumed via a deferred `include()` and that recipe calls
-    `target_sources(...)` to add the just-generated files, those sources are NOT
-    flagged `isGenerated`, so the converter inlines them as static source content
-    instead of wiring them to the producing genrule. The fix: propagate the
-    generated bit through the deferred-include `target_sources` path so the added
-    sources resolve to the genrule output (the `OutToGenrule` consumer wiring)
-    rather than baking. This is the concrete consumer shape #721/the fixture
-    below should pin.
-  - **End-to-end render fixture** for the outer-consumes-nested-recipe shape — the
-    unit tests + the existing nested gate cover the mechanism but not that exact
-    consumer shape end-to-end (convert + bazel build). Should exercise the
-    deferred-`include()` + `target_sources()` baking case above so the
-    isGenerated fix has a gate.
-  - **Reliable nested-trace capture.** The include-tie (and the whole trace-driven
-    nested recovery ladder) degrades when `nb.TraceRaw` is empty — a breadcrumb now
-    surfaces the trace-less case. If it fires often across the corpus, making
+  the `include()` that consumes it (the include events come from the OUTER trace —
+  an outer target's `target_sources()` only ever runs in the outer cmake process,
+  so its include is always in `opts.TraceRaw`). Remaining:
+  - **Reliable nested-trace capture.** The trace-driven nested recovery ladder
+    (configure_file lifts, stamp-command folding) degrades when `nb.TraceRaw` is
+    empty. If that turns out to fire often across the corpus, making
     `runNestedTraceReconfigure` capture the nested trace reliably is the next lever.
 
 - **A-B-C fidelity harness — remaining: VTK/LLVM gates.** The harness shipped
