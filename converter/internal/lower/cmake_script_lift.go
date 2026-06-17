@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
@@ -194,35 +193,18 @@ func discoverCmakeScriptOutputs(scriptArg string, dArgs []string, buildDir, cmak
 		}
 	}
 
-	// Recipe files to scan: the -P script, plus every -D value that names a
-	// `.cmake` file (the generated-recipe-via-SCRIPT_OUT shape). The recipe path
-	// may itself carry a ${VAR}; expand it before resolving on disk.
-	recipes := []string{scriptArg}
-	for _, v := range vars {
-		if expanded, ok := expandCmakeVars(v, vars); ok && strings.HasSuffix(strings.ToLower(expanded), ".cmake") {
-			recipes = append(recipes, expanded)
-		}
+	// Scan the `-P` script — the one the genrule actually executes — for its
+	// output-producing statements. (Following a `-D`-named recipe `.cmake` that
+	// this command doesn't itself run is handled the principled way elsewhere:
+	// a codegen whose declared OUTPUT is a recipe `.cmake` has its real outputs
+	// recovered from the consuming target_sources() via the OUTPUT->include tie,
+	// see adoptIncludedRecipeOutput — so we don't speculatively parse recipe
+	// contents here.)
+	body, err := readCmakeScript(scriptArg, buildDir, cmakeSrc)
+	if err != nil {
+		return nil
 	}
-	// `vars` is a map, so its iteration order is random — sort the collected
-	// recipe files (keeping the -P script first) so the scan order, and thus the
-	// accumulated `outs` order, is deterministic when 2+ -D args name readable
-	// recipe .cmake files. Without this the emitted genrule outs / discovered
-	// outputs would vary run-to-run, breaking the converter's byte-identity.
-	sort.Strings(recipes[1:])
-
-	var raw []string
-	scannedFile := map[string]struct{}{}
-	for _, recipe := range recipes {
-		body, err := readCmakeScript(recipe, buildDir, cmakeSrc)
-		if err != nil {
-			continue
-		}
-		if _, dup := scannedFile[recipe]; dup {
-			continue
-		}
-		scannedFile[recipe] = struct{}{}
-		raw = append(raw, scanCmakeScriptOutputRefs(string(body))...)
-	}
+	raw := scanCmakeScriptOutputRefs(string(body))
 
 	seen := map[string]struct{}{}
 	var outs []string
