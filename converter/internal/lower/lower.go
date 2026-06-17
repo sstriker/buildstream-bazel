@@ -1119,6 +1119,7 @@ type traceFacts struct {
 	decodedExecuteProcesses      []shadow.ExecuteProcessCall
 	decodedOutOfTreeExecProcs    []shadow.ExecuteProcessCall
 	decodedAddCustomCommands     []shadow.AddCustomCommandCall
+	decodedTargetEventCommands   []shadow.TargetEventCommandCall
 	decodedIncludes              []shadow.IncludeCall
 	decodedAddCustomTargets      []shadow.AddCustomTargetCall
 	decodedAddDependencies       []shadow.AddDependenciesCall
@@ -1216,6 +1217,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 	// no-trace path → cross-reference disabled → legacy naming +
 	// private visibility preserved.
 	var decodedAddCustomCommands []shadow.AddCustomCommandCall
+	var decodedTargetEventCommands []shadow.TargetEventCommandCall
 	var decodedIncludes []shadow.IncludeCall
 	var decodedAddCustomTargets []shadow.AddCustomTargetCall
 	var decodedAddDependencies []shadow.AddDependenciesCall
@@ -1309,6 +1311,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 		decodedExecuteProcesses = decoded.ExecuteProcesses
 		decodedOutOfTreeExecProcs = decoded.OutOfTreeExecuteProcesses
 		decodedAddCustomCommands = decoded.AddCustomCommands
+		decodedTargetEventCommands = shadow.ExtractTargetEventCommands(opts.TraceRaw, cmakeSrcForTrace)
 		decodedIncludes = shadow.ExtractIncludeCalls(opts.TraceRaw)
 		decodedAddCustomTargets = decoded.AddCustomTargets
 		decodedAddDependencies = decoded.AddDependencies
@@ -1385,6 +1388,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 		decodedExecuteProcesses:      decodedExecuteProcesses,
 		decodedOutOfTreeExecProcs:    decodedOutOfTreeExecProcs,
 		decodedAddCustomCommands:     decodedAddCustomCommands,
+		decodedTargetEventCommands:   decodedTargetEventCommands,
 		decodedIncludes:              decodedIncludes,
 		decodedAddCustomTargets:      decodedAddCustomTargets,
 		decodedAddDependencies:       decodedAddDependencies,
@@ -1658,6 +1662,7 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 	traceDecoded, decodedTrace := tf.traceDecoded, tf.decodedTrace
 	decodedConfigureFiles, decodedFileGenerates, decodedExecuteProcesses := tf.decodedConfigureFiles, tf.decodedFileGenerates, tf.decodedExecuteProcesses
 	decodedOutOfTreeExecProcs := tf.decodedOutOfTreeExecProcs
+	decodedTargetEventCommands := tf.decodedTargetEventCommands
 	// execute_process recovery. Configure-time subprocess
 	// invocations are a hermeticity violation by Bazel's
 	// analysis-then-action model. Some calls are liftable
@@ -1891,6 +1896,13 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 			return nil, nil, err
 		}
 	}
+
+	// Recover the TARGET-event add_custom_command stamp pattern (PRE_BUILD /
+	// PRE_LINK / POST_BUILD with BYPRODUCTS): cmake folds these onto the target's
+	// link edge, so recoverGenrule can't reach the byproducts — synthesize a
+	// genrule per command and register the byproducts in cc.OutToGenrule here,
+	// before lowerTarget, so a consuming target resolves them via outputClaimed.
+	lowerTargetEventCommands(decodedTargetEventCommands, cc, cmakeSrc, cmakeBuild, hostSrc, opts.BazelPackagePath, opts.Warnings)
 
 	return &recoveredArtifacts{
 		executeProcesses: executeProcesses,
