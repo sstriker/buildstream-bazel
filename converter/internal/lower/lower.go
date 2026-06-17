@@ -1119,6 +1119,7 @@ type traceFacts struct {
 	decodedExecuteProcesses      []shadow.ExecuteProcessCall
 	decodedOutOfTreeExecProcs    []shadow.ExecuteProcessCall
 	decodedAddCustomCommands     []shadow.AddCustomCommandCall
+	decodedIncludes              []shadow.IncludeCall
 	decodedAddCustomTargets      []shadow.AddCustomTargetCall
 	decodedAddDependencies       []shadow.AddDependenciesCall
 	decodedFileWriters           []shadow.FileWriterCall
@@ -1215,6 +1216,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 	// no-trace path → cross-reference disabled → legacy naming +
 	// private visibility preserved.
 	var decodedAddCustomCommands []shadow.AddCustomCommandCall
+	var decodedIncludes []shadow.IncludeCall
 	var decodedAddCustomTargets []shadow.AddCustomTargetCall
 	var decodedAddDependencies []shadow.AddDependenciesCall
 	var decodedFileWriters []shadow.FileWriterCall
@@ -1307,6 +1309,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 		decodedExecuteProcesses = decoded.ExecuteProcesses
 		decodedOutOfTreeExecProcs = decoded.OutOfTreeExecuteProcesses
 		decodedAddCustomCommands = decoded.AddCustomCommands
+		decodedIncludes = shadow.ExtractIncludeCalls(opts.TraceRaw)
 		decodedAddCustomTargets = decoded.AddCustomTargets
 		decodedAddDependencies = decoded.AddDependencies
 		decodedFileWriters = shadow.ExtractFileWriterCalls(opts.TraceRaw, cmakeSrcForTrace)
@@ -1382,6 +1385,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 		decodedExecuteProcesses:      decodedExecuteProcesses,
 		decodedOutOfTreeExecProcs:    decodedOutOfTreeExecProcs,
 		decodedAddCustomCommands:     decodedAddCustomCommands,
+		decodedIncludes:              decodedIncludes,
 		decodedAddCustomTargets:      decodedAddCustomTargets,
 		decodedAddDependencies:       decodedAddDependencies,
 		decodedFileWriters:           decodedFileWriters,
@@ -2647,7 +2651,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	cc.LiftCCEmbed = opts.LiftCCEmbed
 	cc.LiftCCHash = opts.LiftCCHash
 	cc.CMakeBinary, cc.Warnings = lookupCmakeBinary(), opts.Warnings
-	cc.OutputToCustomCommand = buildOutputToCustomCommand(tf.decodedAddCustomCommands, opts.BuildDir)
+	cc.OutputToCustomCommand, cc.IncludeCalls = buildOutputToCustomCommand(tf.decodedAddCustomCommands, opts.BuildDir), tf.decodedIncludes
 	cc.LiteralProbeSink = opts.LiteralProbeSink
 	cc.LiteralResolutions = opts.LiteralResolutions
 	// Parallel pre-warm of the cmake -P script bakes: with the bake opted
@@ -3494,6 +3498,18 @@ func lowerGeneratedSource(irt *ir.Target, t *fileapi.Target, src fileapi.TargetS
 		}
 	}
 	relOut, _, err := cc.recoverGenrule(src.Path, cmakeSrc, cmakeBuild, g)
+	if err != nil {
+		// No ninja edge produces this generated source. It may be a file a
+		// codegen recipe (the declared OUTPUT of a custom command, include()d by
+		// the project) produces via target_sources() — recover it by attributing
+		// it to that codegen genrule (OUTPUT -> include -> target_sources tie).
+		// consumerDefFile left "" for now: ir.Target carries no defining-file,
+		// so attribution disambiguates on a sole included-recipe codegen genrule
+		// (the common case); multi-codegen scope matching is a follow-up.
+		if rel2, _, ok := cc.adoptIncludedRecipeOutput(src.Path, cmakeBuild, ""); ok {
+			relOut, err = rel2, nil
+		}
+	}
 	if err != nil {
 		if rejections != nil {
 			// Diagnostic mode: drop the generated source
