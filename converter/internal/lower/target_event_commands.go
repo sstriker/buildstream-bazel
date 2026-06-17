@@ -104,6 +104,22 @@ func lowerTargetEventCommands(calls []shadow.TargetEventCommandCall, cc *codegen
 		}
 		cmd = strings.Join(toks, " ")
 
+		// Unresolved generator expression guard. cmake's --trace-expand expands
+		// ${VAR} but NOT $<...> genexes (they resolve at generation time), so a
+		// command like a POST_BUILD `cmake -E copy $<TARGET_FILE:t> …` carries the
+		// genex verbatim. We don't yet rewrite $<TARGET_FILE:t> → $(execpath :t)
+		// for build-event commands, and emitting the literal would be a broken
+		// genrule (the action can't open a file named "$<TARGET_FILE:t>"). Skip +
+		// warn instead; the byproduct then surfaces via the unrecognized-form /
+		// missing-producer breadcrumbs rather than a build that fails opaquely.
+		// Resolving the TARGET_FILE family here is a roadmapped enhancement.
+		if strings.Contains(cmd, "$<") {
+			fmt.Fprintf(warningsOrDiscard(warn),
+				"lower: add_custom_command(TARGET %s %s) command references an unresolved generator expression (e.g. $<TARGET_FILE:…>) not yet rewritten for build-event commands; skipping its byproduct genrule to avoid emitting a broken rule\n",
+				call.Target, call.Event)
+			continue
+		}
+
 		base := sanitizeOutputName(call.Target) + "_" + strings.ToLower(call.Event)
 		name := base
 		for n := 2; used[name]; n++ {
