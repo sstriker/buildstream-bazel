@@ -63,3 +63,32 @@ func TestLowerTargetEventCommands(t *testing.T) {
 		t.Errorf("expected no-byproducts warning for bar; got %q", warn.String())
 	}
 }
+
+// TestLowerTargetEventCommands_UnresolvedGenexSkipped: a POST_BUILD command that
+// references an unresolved $<TARGET_FILE:…> genex (cmake --trace-expand does NOT
+// expand genexes) must NOT emit a genrule with the literal genex (a broken rule)
+// — it's skipped + warned, byproduct left for the breadcrumb to surface.
+func TestLowerTargetEventCommands_UnresolvedGenexSkipped(t *testing.T) {
+	const buildDir = "/tmp/build"
+	cc := newCodegenContext()
+	var warn bytes.Buffer
+	calls := []shadow.TargetEventCommandCall{{
+		Target:     "producer",
+		Event:      "POST_BUILD",
+		Commands:   [][]string{{"cp", "$<TARGET_FILE:producer>", "/tmp/build/producer_copy.a"}},
+		ByProducts: []string{"/tmp/build/producer_copy.a"},
+	}}
+	lowerTargetEventCommands(calls, cc, "/src", buildDir, "/src", "", &warn)
+
+	for i := range cc.Genrules {
+		if cc.Genrules[i].Name == "producer_post_build" {
+			t.Errorf("emitted a genrule for an unresolved-genex command (would be broken): %+v", cc.Genrules[i])
+		}
+	}
+	if cc.OutToGenrule["producer_copy.a"] != "" {
+		t.Errorf("byproduct must not be registered when the command is skipped: %v", cc.OutToGenrule)
+	}
+	if !strings.Contains(warn.String(), "unresolved generator expression") {
+		t.Errorf("expected unresolved-genex skip warning; got %q", warn.String())
+	}
+}

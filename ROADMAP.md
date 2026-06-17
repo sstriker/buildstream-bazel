@@ -935,9 +935,17 @@ trees, optional-feature deps, codegen instances). Each member's
   recovery), registered in `OutToGenrule` so consumers resolve; gated by
   `meta-cmake-prelink-stamp-byproduct`. Remaining:
   - **POST_BUILD-on-binary commands** (objcopy/strip/copy the produced artifact):
-    `rewriteToolFromTarget` maps the binary ref to `$(execpath :tgt)` + a tools
-    dep, but this isn't yet validated end-to-end against a real strip/objcopy
-    shape — add a POST_BUILD fixture that consumes the post-processed artifact.
+    these reference the binary as a GENERATOR EXPRESSION (`$<TARGET_FILE:t>`),
+    which cmake's `--trace-expand` does NOT expand (genexes resolve at generation
+    time), so `rewriteToolFromTarget` (which maps resolved artifact PATHS) can't
+    catch it. `lowerTargetEventCommands` now DETECTS an unresolved `$<…>` in the
+    command and SKIPS the byproduct genrule with a warning rather than emitting a
+    broken rule (the byproduct then surfaces via the breadcrumbs). The
+    enhancement: resolve the `$<TARGET_FILE*:t>` family to `$(execpath :t)` + a
+    tools dep (reuse `extractTargetFileRefs` / `resolveTargetFileLabels` from
+    file_generate.go), OR source the command from the ninja link-edge
+    `PRE_LINK`/`POST_BUILD` binding (where cmake already resolved the genex).
+    Demand signal: a corpus member whose POST_BUILD-produced artifact is consumed.
   - **Pure side-effect commands (no BYPRODUCTS)** are warned + dropped (no Bazel
     cc-rule pre-link/post-build hook). If a corpus member needs the effect (not
     just an output), that's a deeper gap with no clean mapping.
