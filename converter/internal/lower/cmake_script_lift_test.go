@@ -1,6 +1,8 @@
 package lower
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -339,4 +341,59 @@ func TestRecoverGenrule_CmakeScriptLift_RequestedOutput(t *testing.T) {
 	if got := cc.Genrules[0].GenruleOuts; len(got) != 2 {
 		t.Errorf("GenruleOuts = %v, want both outputs", got)
 	}
+}
+
+// TestDiscoverCmakeScriptOutputs: a `cmake -P` script's outputs are recovered
+// from its configure_file / file(WRITE|GENERATE) / execute_process(OUTPUT_FILE)
+// statements, with ${VAR} resolved from the command's -D args (the VTK
+// -DSCRIPT_OUT=<path> shape) and the standard CMAKE_*_DIR locations. This is the
+// set fed as discovered_outputs when the ninja edge declared no outputs.
+func TestDiscoverCmakeScriptOutputs(t *testing.T) {
+	buildDir := t.TempDir()
+	srcDir := t.TempDir()
+	script := filepath.Join(srcDir, "gen.cmake")
+	body := `# generated recipe
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/in.h.in" "${CMAKE_CURRENT_BINARY_DIR}/configured.h" @ONLY)
+file(WRITE "${SCRIPT_OUT}" "contents")
+file(GENERATE OUTPUT ${CMAKE_BINARY_DIR}/generated.cpp CONTENT "x")
+execute_process(COMMAND foo OUTPUT_FILE ${CMAKE_BINARY_DIR}/captured.txt)
+file(WRITE ${UNRESOLVED_VAR}/skip.h "y")
+`
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dArgs := []string{"-D", "SCRIPT_OUT=" + filepath.Join(buildDir, "out", "hashed.h"), "-DUNUSED:STRING=z"}
+
+	got := discoverCmakeScriptOutputs(script, dArgs, buildDir, srcDir)
+	want := []string{"configured.h", "out/hashed.h", "generated.cpp", "captured.txt"}
+	// Order follows the collect order (configure_file, file WRITE, file GENERATE,
+	// execute_process); compare as sets to stay robust to that.
+	if !sameStringSet(got, want) {
+		t.Errorf("discoverCmakeScriptOutputs = %v, want set %v", got, want)
+	}
+	// The ${UNRESOLVED_VAR} write must be dropped (no -D for it).
+	for _, g := range got {
+		if strings.Contains(g, "skip.h") {
+			t.Errorf("unresolved ${VAR} output leaked: %v", got)
+		}
+	}
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	m := map[string]int{}
+	for _, x := range a {
+		m[x]++
+	}
+	for _, x := range b {
+		m[x]--
+	}
+	for _, v := range m {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
 }
