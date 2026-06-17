@@ -644,6 +644,27 @@ func mergeNestedPackage(pkg *ir.Package, nestedPkg *ir.Package, nb NestedBuildIn
 			}
 		}
 	}
+	// Carry the nested build's include() events into the OUTER cc so the
+	// OUTPUT->include tie (adoptIncludedRecipeOutput) can attribute an OUTER
+	// consumer's generated source to a recipe `.cmake` that was produced AND
+	// include()d inside this nested build. The nested producer's outs are
+	// already merged into cc.OutToGenrule above (re-homed to <buildRel>/...),
+	// but the matching include() events live only in the nested trace — so
+	// without this the outer adopt sees the producer yet never forms the
+	// recipe key (no include event) and can't match. The nested trace's paths
+	// are absolute under nb.HostBuildDir (a subdir of the outer build dir), so
+	// the outer adopt's relativeIfInsideRelaxed(outerBuild, …) yields the same
+	// <buildRel>/... key the re-home registered — no prefixing needed here.
+	if len(nb.TraceRaw) > 0 {
+		cc.IncludeCalls = append(cc.IncludeCalls, shadow.ExtractIncludeCalls(nb.TraceRaw)...)
+	} else {
+		// Breadcrumb: a trace-less nested lowering carries no include events, so
+		// the include-tie recovery is degraded for outer consumers of this
+		// build's generated sources (the nested trace reconfigure didn't reach
+		// the lowering — see runNestedTraceReconfigure).
+		fmt.Fprintf(warningsOrDiscard(opts.Warnings),
+			"lower: nested cmake build %s: no trace captured (nb.TraceRaw empty); OUTPUT->include codegen-output recovery is degraded for outer consumers of its generated sources\n", nb.BuildRel)
+	}
 }
 
 // nestedProducerReHomes maps the nested lowering's producer-rule outs
