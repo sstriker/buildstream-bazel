@@ -168,20 +168,17 @@ var (
 	cmakeVarRefRe         = regexp.MustCompile(`\$\{([A-Za-z0-9_]+)\}`)
 )
 
-// discoverCmakeScriptOutputs reads the `cmake -P` script at scriptArg and
-// returns the build-dir-relative paths it WRITES — recovered from its
-// configure_file / file(WRITE|GENERATE|APPEND|TOUCH) / execute_process(OUTPUT_FILE)
-// statements, with `${VAR}` references resolved against the command's `-D` args
-// (dArgs) plus the standard CMAKE_*_DIR locations. Used when the ninja edge
-// declared no outputs, so the recognizer / genrule fallback still get a real
-// output set as discovered_outputs. Returns nil when the script is unreadable or
-// no output resolves to an in-tree (build- or source-relative) path.
+// discoverCmakeScriptOutputs returns the build-dir-relative paths a `cmake -P`
+// custom command WRITES, recovered by scanning the output-producing statements —
+// configure_file / file(WRITE|GENERATE|APPEND|TOUCH) / execute_process(OUTPUT_FILE) —
+// of (a) the `-P` script itself AND (b) every GENERATED RECIPE `.cmake` file the
+// command names through a `-D` arg (the `-DSCRIPT_OUT=abc_out.cmake` shape, where
+// the recipe file enumerates the real outputs). `${VAR}` references are resolved
+// against the command's `-D` args plus the standard CMAKE_*_DIR locations. Used
+// when the ninja edge declared no outputs, so the recognizer / genrule fallback
+// still get a real output set as discovered_outputs. Returns nil when nothing is
+// readable or no output resolves to an in-tree (build- or source-relative) path.
 func discoverCmakeScriptOutputs(scriptArg string, dArgs []string, buildDir, cmakeSrc string) []string {
-	body, err := readCmakeScript(scriptArg, buildDir, cmakeSrc)
-	if err != nil {
-		return nil
-	}
-	text := string(body)
 	vars := cmakeScriptDefineMap(dArgs)
 	// Best-effort standard locations a configure-time script resolves outputs
 	// against. The -D args win (set first) so a project override is honored.
@@ -195,16 +192,30 @@ func discoverCmakeScriptOutputs(scriptArg string, dArgs []string, buildDir, cmak
 			vars[k] = v
 		}
 	}
-	var raw []string
-	collect := func(re *regexp.Regexp, group int) {
-		for _, m := range re.FindAllStringSubmatch(text, -1) {
-			raw = append(raw, strings.Trim(m[group], `"`))
+
+	// Recipe files to scan: the -P script, plus every -D value that names a
+	// `.cmake` file (the generated-recipe-via-SCRIPT_OUT shape). The recipe path
+	// may itself carry a ${VAR}; expand it before resolving on disk.
+	recipes := []string{scriptArg}
+	for _, v := range vars {
+		if expanded, ok := expandCmakeVars(v, vars); ok && strings.HasSuffix(strings.ToLower(expanded), ".cmake") {
+			recipes = append(recipes, expanded)
 		}
 	}
-	collect(scriptConfigureFileRe, 2)
-	collect(scriptFileWriteRe, 1)
-	collect(scriptFileGenerateRe, 1)
-	collect(scriptExecOutFileRe, 1)
+
+	var raw []string
+	scannedFile := map[string]struct{}{}
+	for _, recipe := range recipes {
+		body, err := readCmakeScript(recipe, buildDir, cmakeSrc)
+		if err != nil {
+			continue
+		}
+		if _, dup := scannedFile[recipe]; dup {
+			continue
+		}
+		scannedFile[recipe] = struct{}{}
+		raw = append(raw, scanCmakeScriptOutputRefs(string(body))...)
+	}
 
 	seen := map[string]struct{}{}
 	var outs []string
@@ -228,6 +239,25 @@ func discoverCmakeScriptOutputs(scriptArg string, dArgs []string, buildDir, cmak
 		outs = append(outs, rel)
 	}
 	return outs
+}
+
+// scanCmakeScriptOutputRefs returns the raw (un-expanded, unquoted) OUTPUT path
+// tokens of the output-producing statements in one cmake script's text:
+// configure_file (2nd arg), file(WRITE|APPEND|TOUCH|TOUCH_NOCREATE) and
+// execute_process(OUTPUT_FILE) (the path after the keyword), and
+// file(GENERATE ... OUTPUT <path>). The caller resolves ${VAR} and relativizes.
+func scanCmakeScriptOutputRefs(text string) []string {
+	var raw []string
+	collect := func(re *regexp.Regexp, group int) {
+		for _, m := range re.FindAllStringSubmatch(text, -1) {
+			raw = append(raw, strings.Trim(m[group], `"`))
+		}
+	}
+	collect(scriptConfigureFileRe, 2)
+	collect(scriptFileWriteRe, 1)
+	collect(scriptFileGenerateRe, 1)
+	collect(scriptExecOutFileRe, 1)
+	return raw
 }
 
 // readCmakeScript loads a `cmake -P` script's bytes, trying scriptArg as given

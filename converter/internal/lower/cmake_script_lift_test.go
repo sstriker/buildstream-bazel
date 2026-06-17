@@ -397,3 +397,32 @@ func sameStringSet(a, b []string) bool {
 	}
 	return true
 }
+
+// TestDiscoverCmakeScriptOutputs_ScriptOutRecipe: a custom command names a
+// GENERATED recipe .cmake via -DSCRIPT_OUT=<file>.cmake; the real outputs are
+// recovered by parsing THAT recipe file (not just the -P driver script). This
+// is the -DSCRIPT_OUT=abc_out.cmake shape.
+func TestDiscoverCmakeScriptOutputs_ScriptOutRecipe(t *testing.T) {
+	buildDir := t.TempDir()
+	srcDir := t.TempDir()
+	driver := filepath.Join(srcDir, "driver.cmake")
+	if err := os.WriteFile(driver, []byte("include(${SCRIPT_OUT})\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The generated recipe the command points at via -DSCRIPT_OUT; it enumerates
+	// the actual produced files. Lives in the build dir (configure-generated).
+	recipe := filepath.Join(buildDir, "abc_out_bla.cmake")
+	recipeBody := `configure_file("${CMAKE_CURRENT_SOURCE_DIR}/tmpl.in" "${CMAKE_BINARY_DIR}/recipe_gen.h")
+file(WRITE "${CMAKE_BINARY_DIR}/recipe_written.cpp" "x")
+`
+	if err := os.WriteFile(recipe, []byte(recipeBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dArgs := []string{"-DSCRIPT_OUT=" + recipe}
+
+	got := discoverCmakeScriptOutputs(driver, dArgs, buildDir, srcDir)
+	want := []string{"recipe_gen.h", "recipe_written.cpp"}
+	if !sameStringSet(got, want) {
+		t.Errorf("discoverCmakeScriptOutputs (SCRIPT_OUT recipe) = %v, want set %v", got, want)
+	}
+}
