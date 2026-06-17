@@ -1,6 +1,8 @@
 package lower
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -338,5 +340,144 @@ func TestRecoverGenrule_CmakeScriptLift_RequestedOutput(t *testing.T) {
 	}
 	if got := cc.Genrules[0].GenruleOuts; len(got) != 2 {
 		t.Errorf("GenruleOuts = %v, want both outputs", got)
+	}
+}
+
+// TestDiscoverCmakeScriptOutputs: a `cmake -P` script's outputs are recovered
+// from its configure_file / file(WRITE|GENERATE) / execute_process(OUTPUT_FILE)
+// statements, with ${VAR} resolved from the command's -D args (the VTK
+// -DSCRIPT_OUT=<path> shape) and the standard CMAKE_*_DIR locations. This is the
+// set fed as discovered_outputs when the ninja edge declared no outputs.
+func TestDiscoverCmakeScriptOutputs(t *testing.T) {
+	buildDir := t.TempDir()
+	srcDir := t.TempDir()
+	script := filepath.Join(srcDir, "gen.cmake")
+	body := `# generated recipe
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/in.h.in" "${CMAKE_CURRENT_BINARY_DIR}/configured.h" @ONLY)
+file(WRITE "${SCRIPT_OUT}" "contents")
+file(GENERATE OUTPUT ${CMAKE_BINARY_DIR}/generated.cpp CONTENT "x")
+execute_process(COMMAND foo OUTPUT_FILE ${CMAKE_BINARY_DIR}/captured.txt)
+file(WRITE ${UNRESOLVED_VAR}/skip.h "y")
+`
+	if err := os.WriteFile(script, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dArgs := []string{"-D", "SCRIPT_OUT=" + filepath.Join(buildDir, "out", "hashed.h"), "-DUNUSED:STRING=z"}
+
+	got := discoverCmakeScriptOutputs(script, dArgs, buildDir, srcDir)
+	want := []string{"configured.h", "out/hashed.h", "generated.cpp", "captured.txt"}
+	// Order follows the collect order (configure_file, file WRITE, file GENERATE,
+	// execute_process); compare as sets to stay robust to that.
+	if !sameStringSet(got, want) {
+		t.Errorf("discoverCmakeScriptOutputs = %v, want set %v", got, want)
+	}
+	// The ${UNRESOLVED_VAR} write must be dropped (no -D for it).
+	for _, g := range got {
+		if strings.Contains(g, "skip.h") {
+			t.Errorf("unresolved ${VAR} output leaked: %v", got)
+		}
+	}
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	m := map[string]int{}
+	for _, x := range a {
+		m[x]++
+	}
+	for _, x := range b {
+		m[x]--
+	}
+	for _, v := range m {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// TestDiscoverCmakeScriptOutputs_ScriptOutRecipe: a custom command names a
+// GENERATED recipe .cmake via -DSCRIPT_OUT=<file>.cmake; the real outputs are
+// recovered by parsing THAT recipe file (not just the -P driver script). This
+// is the -DSCRIPT_OUT=abc_out.cmake shape.
+func TestDiscoverCmakeScriptOutputs_ScriptOutRecipe(t *testing.T) {
+	buildDir := t.TempDir()
+	srcDir := t.TempDir()
+	driver := filepath.Join(srcDir, "driver.cmake")
+	if err := os.WriteFile(driver, []byte("include(${SCRIPT_OUT})\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The generated recipe the command points at via -DSCRIPT_OUT; it enumerates
+	// the actual produced files. Lives in the build dir (configure-generated).
+	recipe := filepath.Join(buildDir, "abc_out_bla.cmake")
+	recipeBody := `configure_file("${CMAKE_CURRENT_SOURCE_DIR}/tmpl.in" "${CMAKE_BINARY_DIR}/recipe_gen.h")
+file(WRITE "${CMAKE_BINARY_DIR}/recipe_written.cpp" "x")
+`
+	if err := os.WriteFile(recipe, []byte(recipeBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dArgs := []string{"-DSCRIPT_OUT=" + recipe}
+
+	got := discoverCmakeScriptOutputs(driver, dArgs, buildDir, srcDir)
+	want := []string{"recipe_gen.h", "recipe_written.cpp"}
+	if !sameStringSet(got, want) {
+		t.Errorf("discoverCmakeScriptOutputs (SCRIPT_OUT recipe) = %v, want set %v", got, want)
+	}
+}
+
+// TestDiscoverCmakeScriptOutputs_OutputVarName: the generated-recipe parse keys
+// on the -D VALUE being a .cmake file, not on the var being named SCRIPT_OUT —
+// so -DOUTPUT=abc.cmake (and any other var name) is recovered the same way.
+func TestDiscoverCmakeScriptOutputs_OutputVarName(t *testing.T) {
+	buildDir := t.TempDir()
+	srcDir := t.TempDir()
+	driver := filepath.Join(srcDir, "driver.cmake")
+	if err := os.WriteFile(driver, []byte("include(${OUTPUT})\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recipe := filepath.Join(buildDir, "abc.cmake")
+	if err := os.WriteFile(recipe, []byte(`file(WRITE "${CMAKE_BINARY_DIR}/from_output_var.h" "x")`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := discoverCmakeScriptOutputs(driver, []string{"-DOUTPUT=" + recipe}, buildDir, srcDir)
+	if !sameStringSet(got, []string{"from_output_var.h"}) {
+		t.Errorf("OUTPUT=<recipe>.cmake not recovered (var-name-agnostic): got %v", got)
+	}
+}
+
+// TestDiscoverCmakeScriptOutputs_MultiRecipeDeterministic: when 2+ -D args name
+// readable recipe .cmake files, the recovered output order must be stable across
+// runs (the recipe scan is sorted, not map-iteration order) — byte-identity the
+// converter relies on. Outputs come in sorted-recipe-path order.
+func TestDiscoverCmakeScriptOutputs_MultiRecipeDeterministic(t *testing.T) {
+	buildDir := t.TempDir()
+	srcDir := t.TempDir()
+	driver := filepath.Join(srcDir, "driver.cmake")
+	if err := os.WriteFile(driver, []byte("# driver\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	aaa := filepath.Join(buildDir, "aaa.cmake")
+	bbb := filepath.Join(buildDir, "bbb.cmake")
+	if err := os.WriteFile(aaa, []byte(`file(WRITE "${CMAKE_BINARY_DIR}/a1.h" "x")`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bbb, []byte(`file(WRITE "${CMAKE_BINARY_DIR}/b1.h" "y")`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Many vars so map iteration order would vary if it leaked through.
+	dArgs := []string{"-DR1=" + bbb, "-DR2=" + aaa, "-DX=1", "-DY=2", "-DZ=3", "-DW=4"}
+	want := []string{"a1.h", "b1.h"} // sorted-recipe-path order: aaa before bbb
+	for i := 0; i < 25; i++ {
+		got := discoverCmakeScriptOutputs(driver, dArgs, buildDir, srcDir)
+		if len(got) != len(want) {
+			t.Fatalf("run %d: got %v, want %v", i, got, want)
+		}
+		for j := range want {
+			if got[j] != want[j] {
+				t.Fatalf("run %d: non-deterministic/order: got %v, want %v", i, got, want)
+			}
+		}
 	}
 }

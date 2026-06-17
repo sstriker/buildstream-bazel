@@ -71,7 +71,17 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	}
 	outs := genruleOuts(b, buildDir)
 	if len(outs) == 0 {
-		return "", "", false
+		// Ninja edge declared no outputs — recover them from the script's own
+		// write statements, resolving ${VAR} against the command's -D args (the
+		// libpng `gensrc.cmake -DOUTPUT=pnglibconf.c` shape noted below, and the
+		// VTK -DSCRIPT_OUT= shape). cmakeSrc isn't in scope here; generated bake
+		// outputs land in the build dir, which discoverCmakeScriptOutputs resolves
+		// without it. Still empty ⇒ decline as before (the bake then can't know
+		// what bytes to capture).
+		outs = discoverCmakeScriptOutputs(scriptArg, extractCmakePDashArgs(cmd), buildDir, "")
+		if len(outs) == 0 {
+			return "", "", false
+		}
 	}
 
 	// Producer-chain pre-bake: libpng's genchk.cmake reads
