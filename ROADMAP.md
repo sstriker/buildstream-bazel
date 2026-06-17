@@ -946,9 +946,32 @@ trees, optional-feature deps, codegen instances). Each member's
     file_generate.go), OR source the command from the ninja link-edge
     `PRE_LINK`/`POST_BUILD` binding (where cmake already resolved the genex).
     Demand signal: a corpus member whose POST_BUILD-produced artifact is consumed.
-  - **Pure side-effect commands (no BYPRODUCTS)** are warned + dropped (no Bazel
-    cc-rule pre-link/post-build hook). If a corpus member needs the effect (not
-    just an output), that's a deeper gap with no clean mapping.
+  - **Output inference when no BYPRODUCTS is declared (the better signal may be
+    the command line itself).** Recovery currently keys ONLY on a declared
+    `BYPRODUCTS`, so a command that genuinely produces a file but never lists it
+    is treated as a side-effect and dropped. The command argv (which the trace
+    carries) is often a stronger output signal than the absence of BYPRODUCTS:
+    - **Compiler `-o <path>`** — a `VERBATIM` COMMAND that is the compiler with a
+      `-o` flag followed by an output path: the path after `-o` is an output.
+      Best-effort signal: simply being present on the command line as the `-o`
+      argument.
+    - **Shell `> <file>` redirect** — a COMMAND containing `>` followed by an
+      output file: the redirect target is an output. (Watch for `>>`, `2>`,
+      `&>` variants; the COMMAND is the redirect target only for plain `>`/`1>`.)
+    - **Phantom link inputs** — when a target's link edge lists an input the
+      target graph has no producer for (a "phantom" input), search the trace for
+      a command that writes that path and treat IT as the producer — an
+      alternative to BYPRODUCTS for tying the generated input to its generator.
+    These are inference heuristics, so they belong on the best-effort side (the
+    declared-BYPRODUCTS path stays the strict/authoritative one). Demand signal:
+    a corpus member whose build-consumed file is produced by an undeclared
+    TARGET-event (or plain) command.
+  - **Pure side-effect commands (genuinely no output)** are warned + dropped (no
+    Bazel cc-rule pre-link/post-build hook). Distinct from the case above: only
+    a command with no BYPRODUCTS *and* no inferable output (no `-o`, no `>`
+    redirect, not a phantom-input producer) is a true side-effect. If a corpus
+    member needs the effect (not just an output), that's a deeper gap with no
+    clean mapping.
   - **PRE_BUILD** is captured the same as PRE_LINK; on Make/Ninja cmake treats
     PRE_BUILD like PRE_LINK, so no separate handling — confirm if a VS-generator
     member ever surfaces a true pre-build distinction.
@@ -986,9 +1009,29 @@ trees, optional-feature deps, codegen instances). Each member's
   the `include()` that consumes it, and `mergeNestedPackage` now carries a nested
   build's `include()` events into the outer `cc.IncludeCalls` so an OUTER consumer
   of a recipe produced+included inside a NESTED cmake resolves (#721). Remaining:
+  - **#721 is likely redundant / a no-op — verify and revert if so.** The outer
+    trace's own `include(<file>)` command already carries the single included
+    file in its `args`, so carrying the nested build's `include()` events into
+    `cc.IncludeCalls` may add nothing the outer trace didn't already have. Before
+    building more on it: confirm whether the outer `include` event's `args` cover
+    the consumer-resolution path; if they do, the `mergeNestedPackage` carry is
+    dead weight and should be reverted (and the end-to-end fixture below
+    re-scoped to what actually still needs proving).
+  - **`target_sources()` from inside a deferred `include()` doesn't mark its
+    sources `isGenerated` → they get BAKED (real bug).** When a generated
+    `.cmake` recipe is consumed via a deferred `include()` and that recipe calls
+    `target_sources(...)` to add the just-generated files, those sources are NOT
+    flagged `isGenerated`, so the converter inlines them as static source content
+    instead of wiring them to the producing genrule. The fix: propagate the
+    generated bit through the deferred-include `target_sources` path so the added
+    sources resolve to the genrule output (the `OutToGenrule` consumer wiring)
+    rather than baking. This is the concrete consumer shape #721/the fixture
+    below should pin.
   - **End-to-end render fixture** for the outer-consumes-nested-recipe shape — the
     unit tests + the existing nested gate cover the mechanism but not that exact
-    consumer shape end-to-end (convert + bazel build).
+    consumer shape end-to-end (convert + bazel build). Should exercise the
+    deferred-`include()` + `target_sources()` baking case above so the
+    isGenerated fix has a gate.
   - **Reliable nested-trace capture.** The include-tie (and the whole trace-driven
     nested recovery ladder) degrades when `nb.TraceRaw` is empty — a breadcrumb now
     surfaces the trace-less case. If it fires often across the corpus, making
