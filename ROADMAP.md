@@ -946,32 +946,24 @@ trees, optional-feature deps, codegen instances). Each member's
     file_generate.go), OR source the command from the ninja link-edge
     `PRE_LINK`/`POST_BUILD` binding (where cmake already resolved the genex).
     Demand signal: a corpus member whose POST_BUILD-produced artifact is consumed.
-  - **Output inference when no BYPRODUCTS is declared (the better signal may be
-    the command line itself).** Recovery currently keys ONLY on a declared
-    `BYPRODUCTS`, so a command that genuinely produces a file but never lists it
-    is treated as a side-effect and dropped. The command argv (which the trace
-    carries) is often a stronger output signal than the absence of BYPRODUCTS:
-    - **Compiler `-o <path>`** — a `VERBATIM` COMMAND that is the compiler with a
-      `-o` flag followed by an output path: the path after `-o` is an output.
-      Best-effort signal: simply being present on the command line as the `-o`
-      argument.
-    - **Shell `> <file>` redirect** — a COMMAND containing `>` followed by an
-      output file: the redirect target is an output. (Watch for `>>`, `2>`,
-      `&>` variants; the COMMAND is the redirect target only for plain `>`/`1>`.)
-    - **Phantom link inputs** — when a target's link edge lists an input the
-      target graph has no producer for (a "phantom" input), search the trace for
-      a command that writes that path and treat IT as the producer — an
-      alternative to BYPRODUCTS for tying the generated input to its generator.
-    These are inference heuristics, so they belong on the best-effort side (the
-    declared-BYPRODUCTS path stays the strict/authoritative one). Demand signal:
-    a corpus member whose build-consumed file is produced by an undeclared
-    TARGET-event (or plain) command.
+  - **Phantom link inputs as an alternative producer signal.** Command-line
+    output inference for the no-BYPRODUCTS case now SHIPPED
+    (`inferTargetEventOutputs`, gated by `meta-cmake-target-event-inferred-output`):
+    a command with no recoverable `BYPRODUCTS` has its output inferred from a
+    compiler `-o <path>` or a `> <file>` redirect (best-effort, tagged
+    `cmake-codegen-target-event-inferred-output`; `>>`/`2>`/`&>` excluded). That
+    subsumes the common phantom-input case (an unproduced link input written by a
+    no-BYPRODUCTS TARGET-event command now gets a producer). The remaining piece:
+    a phantom input whose producer is some OTHER untracked command form — search
+    the trace for a command that writes that path and treat IT as the producer.
+    Demand-gated on a corpus member whose phantom link input isn't already
+    recovered by the `-o`/`>` inference; until then it surfaces via the
+    unrecognized-command-form breadcrumb.
   - **Pure side-effect commands (genuinely no output)** are warned + dropped (no
-    Bazel cc-rule pre-link/post-build hook). Distinct from the case above: only
-    a command with no BYPRODUCTS *and* no inferable output (no `-o`, no `>`
-    redirect, not a phantom-input producer) is a true side-effect. If a corpus
-    member needs the effect (not just an output), that's a deeper gap with no
-    clean mapping.
+    Bazel cc-rule pre-link/post-build hook). Only a command with no BYPRODUCTS
+    *and* no inferable output (no `-o`, no `>` redirect) is a true side-effect; if
+    a corpus member needs the effect (not just an output), that's a deeper gap
+    with no clean mapping.
   - **PRE_BUILD** is captured the same as PRE_LINK; on Make/Ninja cmake treats
     PRE_BUILD like PRE_LINK, so no separate handling — confirm if a VS-generator
     member ever surfaces a true pre-build distinction.
