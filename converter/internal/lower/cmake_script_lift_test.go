@@ -446,3 +446,38 @@ func TestDiscoverCmakeScriptOutputs_OutputVarName(t *testing.T) {
 		t.Errorf("OUTPUT=<recipe>.cmake not recovered (var-name-agnostic): got %v", got)
 	}
 }
+
+// TestDiscoverCmakeScriptOutputs_MultiRecipeDeterministic: when 2+ -D args name
+// readable recipe .cmake files, the recovered output order must be stable across
+// runs (the recipe scan is sorted, not map-iteration order) — byte-identity the
+// converter relies on. Outputs come in sorted-recipe-path order.
+func TestDiscoverCmakeScriptOutputs_MultiRecipeDeterministic(t *testing.T) {
+	buildDir := t.TempDir()
+	srcDir := t.TempDir()
+	driver := filepath.Join(srcDir, "driver.cmake")
+	if err := os.WriteFile(driver, []byte("# driver\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	aaa := filepath.Join(buildDir, "aaa.cmake")
+	bbb := filepath.Join(buildDir, "bbb.cmake")
+	if err := os.WriteFile(aaa, []byte(`file(WRITE "${CMAKE_BINARY_DIR}/a1.h" "x")`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bbb, []byte(`file(WRITE "${CMAKE_BINARY_DIR}/b1.h" "y")`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Many vars so map iteration order would vary if it leaked through.
+	dArgs := []string{"-DR1=" + bbb, "-DR2=" + aaa, "-DX=1", "-DY=2", "-DZ=3", "-DW=4"}
+	want := []string{"a1.h", "b1.h"} // sorted-recipe-path order: aaa before bbb
+	for i := 0; i < 25; i++ {
+		got := discoverCmakeScriptOutputs(driver, dArgs, buildDir, srcDir)
+		if len(got) != len(want) {
+			t.Fatalf("run %d: got %v, want %v", i, got, want)
+		}
+		for j := range want {
+			if got[j] != want[j] {
+				t.Fatalf("run %d: non-deterministic/order: got %v, want %v", i, got, want)
+			}
+		}
+	}
+}

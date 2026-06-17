@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
@@ -202,6 +203,12 @@ func discoverCmakeScriptOutputs(scriptArg string, dArgs []string, buildDir, cmak
 			recipes = append(recipes, expanded)
 		}
 	}
+	// `vars` is a map, so its iteration order is random — sort the collected
+	// recipe files (keeping the -P script first) so the scan order, and thus the
+	// accumulated `outs` order, is deterministic when 2+ -D args name readable
+	// recipe .cmake files. Without this the emitted genrule outs / discovered
+	// outputs would vary run-to-run, breaking the converter's byte-identity.
+	sort.Strings(recipes[1:])
 
 	var raw []string
 	scannedFile := map[string]struct{}{}
