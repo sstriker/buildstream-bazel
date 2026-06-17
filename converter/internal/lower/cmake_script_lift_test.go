@@ -426,3 +426,23 @@ file(WRITE "${CMAKE_BINARY_DIR}/recipe_written.cpp" "x")
 		t.Errorf("discoverCmakeScriptOutputs (SCRIPT_OUT recipe) = %v, want set %v", got, want)
 	}
 }
+
+// TestDiscoverCmakeScriptOutputs_OutputVarName: the generated-recipe parse keys
+// on the -D VALUE being a .cmake file, not on the var being named SCRIPT_OUT —
+// so -DOUTPUT=abc.cmake (and any other var name) is recovered the same way.
+func TestDiscoverCmakeScriptOutputs_OutputVarName(t *testing.T) {
+	buildDir := t.TempDir()
+	srcDir := t.TempDir()
+	driver := filepath.Join(srcDir, "driver.cmake")
+	if err := os.WriteFile(driver, []byte("include(${OUTPUT})\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recipe := filepath.Join(buildDir, "abc.cmake")
+	if err := os.WriteFile(recipe, []byte(`file(WRITE "${CMAKE_BINARY_DIR}/from_output_var.h" "x")`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := discoverCmakeScriptOutputs(driver, []string{"-DOUTPUT=" + recipe}, buildDir, srcDir)
+	if !sameStringSet(got, []string{"from_output_var.h"}) {
+		t.Errorf("OUTPUT=<recipe>.cmake not recovered (var-name-agnostic): got %v", got)
+	}
+}
