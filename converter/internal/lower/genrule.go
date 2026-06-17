@@ -67,6 +67,14 @@ type codegenContext struct {
 	// has-cmake-codegen and to reference outputs by label.
 	OutToGenrule map[string]string
 
+	// IncludeCalls are the trace's user-level include(<file>) events. Used to
+	// tie a codegen genrule that produces a recipe `.cmake` (the declared
+	// OUTPUT) to the CMakeLists scope that include()s it and then
+	// target_sources()'s the files the recipe really produces — so those
+	// otherwise-unproduced generated sources can be adopted as the codegen
+	// genrule's outputs. Empty on the no-trace path.
+	IncludeCalls []shadow.IncludeCall
+
 	// OutputToCustomCommand indexes the add_custom_command trace records by their
 	// OUTPUT/BYPRODUCT paths (keyed in both raw trace and build-relative form via
 	// outputKeyForms), for recovering the REAL command when a ninja edge is a
@@ -574,6 +582,95 @@ func newCodegenContext() *codegenContext {
 		BuildDirHdrWalked:          map[string]bool{},
 		BuildDirBakedHdrs:          map[string]string{},
 	}
+}
+
+// adoptIncludedRecipeOutput attributes a consumed-but-unproduced GENERATED
+// source (genSrcAbs — an isGenerated target source that recoverGenrule found no
+// producing ninja edge for) to a codegen genrule that produces a recipe
+// `.cmake` the project include()s. The chain is OUTPUT -> include -> the
+// consuming CMakeLists' target_sources(): a custom command writes a recipe
+// (its declared OUTPUT), the project include()s that recipe, and the recipe's
+// target_sources() pulls in files cmake never declared as ninja outputs. Those
+// files are the codegen's REAL outputs; we add genSrc to that genrule's outs +
+// OutToGenrule so the consumer resolves to it.
+//
+// Disambiguation when several codegen recipes are include()d: pick the sole
+// candidate, else the one include()d from the consumer's own directory scope
+// (consumerDefFile); otherwise decline (the caller keeps its existing refusal,
+// so this strictly adds recovery). Returns (relOut, genruleName, true) on
+// success.
+func (cc *codegenContext) adoptIncludedRecipeOutput(genSrcAbs, buildDir, consumerDefFile string) (string, string, bool) {
+	if cc == nil || len(cc.IncludeCalls) == 0 || cc.OutToGenrule == nil {
+		return "", "", false
+	}
+	rel, ok := relativeIfInsideRelaxed(buildDir, genSrcAbs)
+	if !ok {
+		return "", "", false
+	}
+	// Already produced by a genrule (e.g. an earlier recovery / a sibling
+	// consumer already adopted it) — resolve to that producer rather than
+	// attributing it to a second genrule, which Bazel would reject as a
+	// multiple-producer conflict.
+	if existing, ok := cc.OutToGenrule[rel]; ok {
+		return rel, existing, true
+	}
+	// Codegen genrules whose produced recipe .cmake is include()d, with the
+	// directory the include() ran in (for scope disambiguation).
+	type cand struct{ name, siteDir string }
+	var cands []cand
+	seen := map[string]bool{}
+	for _, inc := range cc.IncludeCalls {
+		recipeRel, ok := relativeIfInsideRelaxed(buildDir, inc.Path)
+		if !ok || !strings.HasSuffix(strings.ToLower(recipeRel), ".cmake") {
+			continue
+		}
+		g, ok := cc.OutToGenrule[recipeRel]
+		if !ok || seen[g] {
+			continue
+		}
+		seen[g] = true
+		cands = append(cands, cand{name: g, siteDir: filepath.Dir(inc.File)})
+	}
+	if len(cands) == 0 {
+		return "", "", false
+	}
+	chosen := ""
+	switch {
+	case len(cands) == 1:
+		chosen = cands[0].name
+	case consumerDefFile != "":
+		consumerDir := filepath.Dir(consumerDefFile)
+		for _, c := range cands {
+			if c.siteDir == consumerDir {
+				chosen = c.name
+				break
+			}
+		}
+	}
+	if chosen == "" || !cc.appendGenruleOut(chosen, rel) {
+		return "", "", false
+	}
+	cc.OutToGenrule[rel] = chosen
+	return rel, chosen, true
+}
+
+// appendGenruleOut adds out to the named genrule's GenruleOuts (sorted, deduped)
+// and reports whether the genrule was found. Idempotent.
+func (cc *codegenContext) appendGenruleOut(name, out string) bool {
+	for i := range cc.Genrules {
+		if cc.Genrules[i].Name != name {
+			continue
+		}
+		for _, o := range cc.Genrules[i].GenruleOuts {
+			if o == out {
+				return true // already declared
+			}
+		}
+		cc.Genrules[i].GenruleOuts = append(cc.Genrules[i].GenruleOuts, out)
+		sort.Strings(cc.Genrules[i].GenruleOuts)
+		return true
+	}
+	return false
 }
 
 // recoverCmakeScriptGenrule handles the `cmake -P <script>` custom-command case

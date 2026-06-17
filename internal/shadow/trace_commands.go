@@ -199,6 +199,37 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 	return d
 }
 
+// IncludeCall records one user-level `include(<file>)` trace event: the
+// included path (args[0], --trace-expand-resolved) and the File doing the
+// include (the consuming directory scope). Used to tie a codegen custom
+// command's generated recipe `.cmake` OUTPUT to the CMakeLists that pulls it
+// in and then target_sources()'s the files the recipe produces — see
+// converter/internal/lower's included-recipe output attribution.
+type IncludeCall struct {
+	Path string // the include() argument (abs under --trace-expand)
+	File string // the CMakeLists.txt that executed the include()
+	Line int
+}
+
+// ExtractIncludeCalls returns every `include(<file>)` event in the trace, in
+// trace order. cmake emits an `include` event for module includes and for the
+// user's own include(<generated>.cmake); the caller filters to the recipe
+// paths it cares about (build-tree .cmake files a codegen produced).
+func ExtractIncludeCalls(traceRaw []byte) []IncludeCall {
+	var out []IncludeCall
+	for _, ev := range ParseTrace(traceRaw) {
+		if !strings.EqualFold(ev.Cmd, "include") || len(ev.Args) == 0 {
+			continue
+		}
+		p := strings.TrimSpace(ev.Args[0])
+		if p == "" {
+			continue
+		}
+		out = append(out, IncludeCall{Path: p, File: ev.File, Line: ev.Line})
+	}
+	return out
+}
+
 // TargetIncludeCall records one user-written
 // target_include_directories(target [SYSTEM] [AFTER|BEFORE]
 //
