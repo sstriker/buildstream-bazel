@@ -945,6 +945,35 @@ trees, optional-feature deps, codegen instances). Each member's
     PRE_BUILD like PRE_LINK, so no separate handling — confirm if a VS-generator
     member ever surfaces a true pre-build distinction.
 
+- **CMake command-form coverage audit (after the TARGET-form miss).** The
+  TARGET-event `add_custom_command` was silently dropped for a long time because
+  the trace decoder *returns false on unrecognized forms with no breadcrumb*. An
+  inventory of every command the `internal/shadow` trace decoder classifies, by
+  form, found these GENUINE trace-only gaps (the codemodel covers the target
+  graph — add_executable / target_sources / resolved deps+flags are NOT trace
+  concerns, so their absence from the decoder is by design, not a gap):
+  - **`file(COPY … FILES_MATCHING|PATTERN|REGEX|EXCLUDE|PERMISSIONS)`** —
+    `classifyFileWriter` returns false on the filtering form
+    (`file_writers.go:100`), so a configure-time staging copy whose files a build
+    consumes (headers copied into the build dir) is dropped. The plain
+    `file(COPY src DESTINATION dir)` IS handled. Demand signal: a corpus member
+    that stages build-consumed files via a PATTERN copy. Medium.
+  - **`install()` non-EXPORT forms (TARGETS / FILES / DIRECTORY / PROGRAMS /
+    SCRIPT / CODE).** Only `install(EXPORT …)` is classified; the rest are
+    deployment-scope (largely outside the build graph), partly covered by
+    `--emit-install-export-config`. Lower priority / partly by design — revisit
+    if a member needs install-driven build inputs.
+  - **Low-risk partial-keyword drops** (no clean Bazel mapping, or the codemodel
+    already carries the resolved value): `execute_process`
+    `COMMAND_ERROR_IS_FATAL` / `ENCODING`, `file(GENERATE)` `PERMISSIONS`,
+    `add_custom_command` `IMPLICIT_DEPENDS` / `DEPFILE`. Documented, not actioned.
+  - **Systemic fix (the real lesson):** add an unrecognized-command-FORM
+    breadcrumb to the decoder — when a known command (add_custom_command, file,
+    install, …) appears in a form no classifier matches, surface it (coverage
+    report / warning) instead of silently returning false. That is what would
+    have caught the TARGET-form earlier; it makes the next missed form loud
+    rather than invisible.
+
 - **Nested OUTPUT→include codegen recovery — carried; remaining follow-ups.**
   `adoptIncludedRecipeOutput` ties a codegen recipe's declared `.cmake` OUTPUT to
   the `include()` that consumes it, and `mergeNestedPackage` now carries a nested
