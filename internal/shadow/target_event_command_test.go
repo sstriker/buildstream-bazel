@@ -11,9 +11,13 @@ func TestExtractTargetEventCommands(t *testing.T) {
 {"args":["OUTPUT","gen.c","COMMAND","tool"],"cmd":"add_custom_command","file":"/src/CMakeLists.txt","line":12}
 {"args":["TARGET","bar","POST_BUILD","COMMAND","echo","hi"],"cmd":"add_custom_command","file":"/elsewhere/CMakeLists.txt","line":3}
 `
-	got := ExtractTargetEventCommands([]byte(trace), "/src")
-	if len(got) != 2 {
-		t.Fatalf("got %d TARGET-event commands, want 2 (OUTPUT-form + out-of-tree excluded): %+v", len(got), got)
+	got := ExtractTargetEventCommands([]byte(trace))
+	// OUTPUT-form is still excluded (not a TARGET event); the out-of-tree TARGET
+	// event IS now included — a stamp hook is output-bearing and may legitimately
+	// be defined outside the source root (build-tree recipe / cmake module), so it
+	// is no longer location-gated at extraction.
+	if len(got) != 3 {
+		t.Fatalf("got %d TARGET-event commands, want 3 (OUTPUT-form excluded, out-of-tree included): %+v", len(got), got)
 	}
 	if got[0].Target != "foo" || got[0].Event != "PRE_LINK" ||
 		!reflect.DeepEqual(got[0].ByProducts, []string{"/src/build/foo_stamp.h"}) ||
@@ -23,5 +27,8 @@ func TestExtractTargetEventCommands(t *testing.T) {
 	if got[1].Target != "foo" || got[1].Event != "POST_BUILD" ||
 		!reflect.DeepEqual(got[1].ByProducts, []string{"/src/build/foo.built"}) {
 		t.Errorf("POST_BUILD call wrong: %+v", got[1])
+	}
+	if got[2].Target != "bar" || got[2].Event != "POST_BUILD" || got[2].File != "/elsewhere/CMakeLists.txt" {
+		t.Errorf("out-of-tree TARGET event should be included now: %+v", got[2])
 	}
 }

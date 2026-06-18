@@ -46,7 +46,7 @@ func AuditUnrecognizedCommandForms(traceRaw []byte, sourceRoot string) []Unrecog
 			if _, ok := classifyAddCustomCommand(ev, sourceRoot); ok {
 				continue
 			}
-			if _, ok := classifyTargetEventCommand(ev, sourceRoot); ok {
+			if _, ok := classifyTargetEventCommand(ev); ok {
 				continue
 			}
 			out = append(out, unrecognizedFormOf(ev, "add_custom_command"))
