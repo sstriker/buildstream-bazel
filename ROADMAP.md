@@ -1259,11 +1259,13 @@ trees, optional-feature deps, codegen instances). Each member's
   dependency — overlap would need speculative demand prediction. The
   **nested-build harvest** (`harvestNestedBuilds`) still configures nested
   cmake builds serially within their superbuild dependency order; fan those
-  out. And if the breakdown ever shows `lowering_seconds` dominating on a
-  real corpus member (not the tiny gate fixture), per-target `lower.ToIR`
-  parallelism becomes worth its shared-collector refactor. Demand signal:
-  a survey member whose `--out-timings` shows warm/nested/lowering, not the
-  fresh configure, as the largest bucket.
+  out (siblings parallel, parent→child serial — design in
+  `docs/design/nested-build-harvest-fanout.md`). And if the breakdown ever
+  shows `lowering_seconds` dominating on a real corpus member (not the tiny
+  gate fixture), per-target `lower.ToIR` parallelism becomes worth its
+  shared-collector refactor. Demand signal: a survey member whose
+  `--out-timings` shows warm/nested/lowering, not the fresh configure, as
+  the largest bucket.
 
 ---
 
