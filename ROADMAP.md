@@ -1248,6 +1248,23 @@ trees, optional-feature deps, codegen instances). Each member's
   `docs/design/remotable-configure-convert.md` (delete that doc once this
   lands).
 
+- **Further converter wall-time overlap, measured by the v2 timings
+  breakdown.** `--out-timings` now splits the post-configure span into
+  `lowering_seconds` vs. the reconfigure subprocess buckets
+  (`warm_configure_seconds`, `per_config_bake_seconds`). The per-config
+  bakes already overlap lowering (launched at the top of `runLowerPasses`,
+  joined at the fold). Two buckets remain on the critical path: the **warm
+  second reconfigure** can't start before pass-1 lowering discovers its
+  demands (genex/stamp/nested/capture sinks), so it's a genuine data
+  dependency — overlap would need speculative demand prediction. The
+  **nested-build harvest** (`harvestNestedBuilds`) still configures nested
+  cmake builds serially within their superbuild dependency order; fan those
+  out. And if the breakdown ever shows `lowering_seconds` dominating on a
+  real corpus member (not the tiny gate fixture), per-target `lower.ToIR`
+  parallelism becomes worth its shared-collector refactor. Demand signal:
+  a survey member whose `--out-timings` shows warm/nested/lowering, not the
+  fresh configure, as the largest bucket.
+
 ---
 
 For how the codebase works *today* (not just what's planned here), see

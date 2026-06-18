@@ -589,6 +589,16 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	g, imports, prefixAbs := in.g, in.imports, in.prefixAbs
 	testRegistry, traceRaw, hostBuildOrReply := in.testRegistry, in.traceRaw, in.hostBuildOrReply
 	genexProbes, configureLogEvents := in.genexProbes, in.configureLogEvents
+
+	// Launch the per-config bake configures NOW — the trace the auto pre-gate
+	// needs is in hand, and the cold configures (the largest single
+	// subprocess block on CMAKE_BUILD_TYPE-reading projects) don't need the IR
+	// to RUN, only to know which outputs to read back. Firing them here
+	// overlaps them with the lowering + warm passes below; finishPerConfigBakes
+	// joins + folds once pkg is final. The defer is the early-error safety net:
+	// cleanup is idempotent, so finish's own cleanup doesn't double-free.
+	bakeJob := startPerConfigBakes(ctx, a, hostBuildDir, traceRaw, rec)
+	defer bakeJob.cleanup()
 	rejections, execFallback := in.rejections, in.execFallback
 	coverageCollector, todosCollector := in.coverageCollector, in.todosCollector
 	stampSink, backedFeatures := in.stampSink, in.backedFeatures
@@ -790,19 +800,18 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 		}
 	}
 
-	// Per-config bake passes (conditional, cold): a multi-config configure
-	// runs ONCE with no CMAKE_BUILD_TYPE, so a baked configure_file body the
-	// project derives from CMAKE_BUILD_TYPE (LLVM's abi-breaking.h) carries
-	// one config's view for every //config:* arm. When multi-config was
-	// requested, the package holds ≥1 write_file bake, and the trace shows
-	// the project's own files consulting CMAKE_BUILD_TYPE (or --per-config-
-	// bake=on forces it), re-configure once per build type — single-config,
-	// into sibling scratch dirs (the multi-config build dir can't switch
-	// generators in place) — read each recovered output's per-config bytes,
-	// and fold differing bodies into content select() arms
-	// (lower.ApplyPerConfigBakes). Failures degrade to the pass-1 single
-	// body, exactly as without the feature.
-	runPerConfigBakes(ctx, a, hostBuildDir, traceRaw, pkg, rec)
+	// Per-config bake fold (conditional, cold): a multi-config configure runs
+	// ONCE with no CMAKE_BUILD_TYPE, so a baked configure_file body the project
+	// derives from CMAKE_BUILD_TYPE (LLVM's abi-breaking.h) carries one config's
+	// view for every //config:* arm. The cold per-build-type configures that
+	// recover the per-config bodies were launched at the top of this function
+	// (startPerConfigBakes) so they overlapped the lowering + warm passes above;
+	// join them now, apply the write_file-presence gate against the final pkg,
+	// read each recovered output's per-config bytes, and fold differing bodies
+	// into content select() arms (lower.ApplyPerConfigBakes). A declined pre-gate
+	// (nil job) or no write_file bakes is a no-op; failures degrade to the pass-1
+	// single body, exactly as without the feature.
+	finishPerConfigBakes(bakeJob, a, hostBuildDir, pkg)
 
 	// The file(DOWNLOAD) lockfile is a lowering byproduct (the recovered
 	// http_file repo specs) not carried on the IR, so write it here where
