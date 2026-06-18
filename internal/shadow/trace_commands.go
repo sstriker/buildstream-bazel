@@ -1170,6 +1170,27 @@ func inSourceTree(file, sourceRoot string) bool {
 	return tail == "" || tail[0] == '/' || tail[0] == '\\'
 }
 
+// isCmakeBundledModulePath reports whether file is one of cmake's own bundled
+// modules — its installed `Modules/` dir — which is confident machinery noise,
+// distinct from the project's own source-tree OR build-tree files. cmake lays
+// these out as `<prefix>/share/cmake-<ver>/Modules/...` (and
+// `<prefix>/cmake-<ver>/Modules/...` on some installs); the `/cmake-<ver>/.../
+// Modules/` shape is the stable marker across install layouts.
+//
+// Used by location policies that want to admit a project's BUILD-tree files (a
+// generated+include()d recipe, a producer-element .cmake) while still rejecting
+// cmake's bundled modules — the distinction inSourceTree alone can't make, since
+// it lumps build-tree and prefix-tree together as "not source tree". A focused
+// denylist rather than threading the build root through Decode; it captures the
+// one high-volume noise source the source-tree filter was really guarding.
+func isCmakeBundledModulePath(file string) bool {
+	i := strings.Index(file, "/cmake-")
+	if i < 0 {
+		return false
+	}
+	return strings.Contains(file[i:], "/Modules/")
+}
+
 // ExecuteProcessCall records one user-written
 // execute_process(...) trace event. cmake's
 // `execute_process` runs an arbitrary subprocess at configure
@@ -1701,14 +1722,25 @@ func ExtractSourceFileProperties(traceRaw []byte, sourceRoot string) []SourceFil
 	return out
 }
 
-func classifySourceFileProperties(ev TraceEvent, sourceRoot string) (SourceFilePropertiesCall, bool) {
+func classifySourceFileProperties(ev TraceEvent, _ string) (SourceFilePropertiesCall, bool) {
 	if !strings.EqualFold(ev.Cmd, "set_source_files_properties") {
 		return SourceFilePropertiesCall{}, false
 	}
-	if !inSourceTree(ev.File, sourceRoot) {
+	// Location policy: reject only cmake's own bundled modules (confident noise),
+	// NOT every non-source-tree file. A GENERATED (or per-source
+	// COMPILE_DEFINITIONS) marking is a build-graph fact about a TARGET's source,
+	// and the call that makes it commonly lives in the project's BUILD tree — a
+	// generated+include()d recipe `.cmake` — or a producer-element `.cmake` module
+	// (the macro-from-import shape). The old inSourceTree gate dropped those too,
+	// the build-tree gap from the consistency audit: a source the project KNOWS is
+	// generated then looks "missing" and is elided / baked instead of resolving to
+	// its producer. Excluding only the bundled-module dir keeps cmake-internal
+	// markings out (a find-module setting LANGUAGE on its own scratch file) while
+	// admitting build-tree recipes. Self-limiting anyway — collectGeneratedSources
+	// keys on the marked paths, matched only against actual target-source paths.
+	if isCmakeBundledModulePath(ev.File) {
 		return SourceFilePropertiesCall{}, false
 	}
-
 	call := SourceFilePropertiesCall{
 		File: ev.File,
 		Line: ev.Line,

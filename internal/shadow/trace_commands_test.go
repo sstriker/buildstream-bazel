@@ -765,19 +765,37 @@ func TestExtractSourceFileProperties_TargetDirectoryArm(t *testing.T) {
 	}
 }
 
-// TestExtractSourceFileProperties_FiltersOutOfTree drops calls
-// whose trace event fires outside the source tree (cmake-internal
-// modules invoking set_source_files_properties).
+// TestExtractSourceFileProperties_FiltersOutOfTree drops calls issued from
+// cmake's own bundled modules (its installed Modules/ dir) — confident
+// machinery noise — while keeping the project's source-tree call.
 func TestExtractSourceFileProperties_FiltersOutOfTree(t *testing.T) {
 	trace := `{"args":["fake.c","PROPERTIES","LANGUAGE","C"],"cmd":"set_source_files_properties","file":"/usr/share/cmake-3.28/Modules/some.cmake","line":3}
 {"args":["user.c","PROPERTIES","LANGUAGE","C"],"cmd":"set_source_files_properties","file":"/src/CMakeLists.txt","line":5}
 `
 	got := ExtractSourceFileProperties([]byte(trace), "/src")
 	if len(got) != 1 {
-		t.Fatalf("want 1 user call (cmake-internal filtered); got %d (%+v)", len(got), got)
+		t.Fatalf("want 1 user call (cmake bundled module filtered); got %d (%+v)", len(got), got)
 	}
 	if got[0].Files[0] != "user.c" {
 		t.Errorf("kept wrong call: %+v", got[0])
+	}
+}
+
+// TestExtractSourceFileProperties_AcceptsBuildTreeRecipe: a set_source_files_
+// properties marking issued from a build-tree recipe .cmake (outside the source
+// root, but NOT a cmake bundled module) is kept — the build-tree gap from the
+// consistency audit. Previously the inSourceTree gate dropped it, so a generated
+// source the project marked GENERATED looked "missing" and was elided/baked.
+func TestExtractSourceFileProperties_AcceptsBuildTreeRecipe(t *testing.T) {
+	trace := `{"args":["/home/u/proj/build/gen.c","PROPERTIES","GENERATED","TRUE"],"cmd":"set_source_files_properties","file":"/home/u/proj/build/recipe.cmake","line":1}
+{"args":["fake.c","PROPERTIES","GENERATED","TRUE"],"cmd":"set_source_files_properties","file":"/opt/cmake-4.3/share/cmake-4.3/Modules/GenFoo.cmake","line":9}
+`
+	got := ExtractSourceFileProperties([]byte(trace), "/home/u/proj")
+	if len(got) != 1 {
+		t.Fatalf("want 1 call (build-tree recipe kept, bundled module dropped); got %d (%+v)", len(got), got)
+	}
+	if got[0].File != "/home/u/proj/build/recipe.cmake" || got[0].Files[0] != "/home/u/proj/build/gen.c" {
+		t.Errorf("expected the build-tree recipe's GENERATED marking kept: %+v", got[0])
 	}
 }
 
