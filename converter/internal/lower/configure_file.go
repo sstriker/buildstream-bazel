@@ -60,7 +60,7 @@ func recoverConfigureFiles(traceRaw []byte, hostSrcDir, hostBuildDir, recordedSr
 	if hostSrcDir == "" {
 		hostSrcDir = recordedSrcDir
 	}
-	return recoverConfigureFilesFromCalls(shadow.ExtractConfigureFiles(traceRaw, recordedSrcDir), hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, dirScopes, liftEnabled, cmakeVars, cc)
+	return recoverConfigureFilesFromCalls(shadow.ExtractConfigureFiles(traceRaw, recordedSrcDir, recordedBuildDir), hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir, dirScopes, liftEnabled, cmakeVars, cc)
 }
 
 // dirScope is one codemodel directory scope: the SOURCE dir (source-root-

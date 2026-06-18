@@ -1299,7 +1299,10 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 
 	if len(opts.TraceRaw) > 0 {
 		cmakeSrcForTrace := r.Codemodel.Paths.Source
-		decodedVal := shadow.Decode(opts.TraceRaw, cmakeSrcForTrace, knownTargets)
+		// Pass the recorded build root (same frame as the trace's event files) so
+		// the output-bearing extractors accept calls issued from the project's
+		// BUILD tree — a generated+include()d recipe — not just the source tree.
+		decodedVal := shadow.DecodeWithBuild(opts.TraceRaw, cmakeSrcForTrace, r.Codemodel.Paths.Build, knownTargets)
 		decoded := &decodedVal
 		decodedTrace = decoded
 		traceDecoded = true
