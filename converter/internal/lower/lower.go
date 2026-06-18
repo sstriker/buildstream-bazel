@@ -1318,7 +1318,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 		decodedAddCustomCommands = decoded.AddCustomCommands
 		decodedTargetEventCommands = shadow.ExtractTargetEventCommands(opts.TraceRaw)
 		decodedIncludes = shadow.ExtractIncludeCalls(opts.TraceRaw)
-		decodedTargetSourcesCalls = shadow.ExtractTargetSourcesCalls(opts.TraceRaw)
+		decodedTargetSourcesCalls = shadow.ExtractTargetSourcesCalls(opts.TraceRaw, cmakeSrcForTrace, r.Codemodel.Paths.Build)
 		decodedAddCustomTargets = decoded.AddCustomTargets
 		decodedAddDependencies = decoded.AddDependencies
 		decodedFileWriters = shadow.ExtractFileWriterCalls(opts.TraceRaw, cmakeSrcForTrace)

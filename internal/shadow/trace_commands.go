@@ -247,12 +247,9 @@ func ExtractIncludeCalls(traceRaw []byte) []IncludeCall {
 // (the File is the recipe) — an exact alternative to the include-scope
 // heuristic, since we know precisely which recipe added the source.
 //
-// Like ExtractIncludeCalls this is deliberately NOT source-tree-filtered: a
-// recipe that target_sources()'s a generated file commonly lives under the
-// BUILD tree (a produced-and-include()d recipe) or in a cmake module, and its
-// added source is a real build input we must recover regardless of where the
-// call is defined — the consumer side only acts when the File resolves to a
-// recovered recipe genrule.
+// A recipe that target_sources()'s a generated file commonly lives under the
+// BUILD tree (a produced-and-include()d recipe), so this is scoped with
+// inProjectScope (source-tree OR build-tree), NOT the strict inSourceTree gate.
 type TargetSourcesCall struct {
 	Target  string
 	Sources []string
@@ -262,10 +259,20 @@ type TargetSourcesCall struct {
 
 // ExtractTargetSourcesCalls returns every `target_sources(<t> <vis> <src>...)`
 // event in the trace, in trace order (FILE_SET / header-set forms skipped).
-func ExtractTargetSourcesCalls(traceRaw []byte) []TargetSourcesCall {
+//
+// Scoped with inProjectScope like the other output-bearing forms: the only
+// consumer, the recipe tie, matches a call's File against a RECOVERED recipe
+// `.cmake` in OutToGenrule — always a source/build-tree codegen output, never a
+// prefix module or a CMakeFiles try_compile-scratch file — so dropping those
+// loses no tie and keeps the slice free of scratch noise (e.g. SDL emits 200+
+// target_sources from CMakeFiles scratch). buildRoot == "" → source-tree-only.
+func ExtractTargetSourcesCalls(traceRaw []byte, sourceRoot, buildRoot string) []TargetSourcesCall {
 	var out []TargetSourcesCall
 	for _, ev := range ParseTrace(traceRaw) {
 		if !strings.EqualFold(ev.Cmd, "target_sources") {
+			continue
+		}
+		if !inProjectScope(ev.File, sourceRoot, buildRoot) {
 			continue
 		}
 		target, srcs, ok := parseTargetSourcesArgs(ev.Args)
