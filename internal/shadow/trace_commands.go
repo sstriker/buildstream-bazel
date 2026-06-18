@@ -161,7 +161,7 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot, buildRoot st
 			call.CallFile, call.CallLine, call.CallCmd = invocationCallSite(ev, lastEventAtFrame, traceSourceRoot)
 			d.OutOfTreeExecuteProcesses = append(d.OutOfTreeExecuteProcesses, call)
 		}
-		if call, ok := classifySourceFileProperties(ev, traceSourceRoot); ok {
+		if call, ok := classifySourceFileProperties(ev, traceSourceRoot, buildRoot); ok {
 			d.SourceFileProperties = append(d.SourceFileProperties, call)
 		}
 		if call, ok := classifyAddCustomCommand(ev, traceSourceRoot, buildRoot); ok {
@@ -1204,41 +1204,6 @@ func inProjectScope(file, sourceRoot, buildRoot string) bool {
 	return !strings.Contains(file[len(buildRoot):], "/CMakeFiles/")
 }
 
-// isCmakeBundledModulePath reports whether file is one of cmake's own bundled
-// modules — its installed `Modules/` dir — which is confident machinery noise,
-// distinct from the project's own source-tree OR build-tree files. cmake lays
-// these out as `<prefix>/share/cmake-<ver>/Modules/...` (and
-// `<prefix>/cmake-<ver>/Modules/...` on some installs); the `/cmake-<ver>/.../
-// Modules/` shape is the stable marker across install layouts.
-//
-// Used by location policies that want to admit a project's BUILD-tree files (a
-// generated+include()d recipe, a producer-element .cmake) while still rejecting
-// cmake's bundled modules — the distinction inSourceTree alone can't make, since
-// it lumps build-tree and prefix-tree together as "not source tree". A focused
-// denylist rather than threading the build root through Decode; it captures the
-// one high-volume noise source the source-tree filter was really guarding.
-func isCmakeBundledModulePath(file string) bool {
-	// Match a `/cmake-<digit…>` segment (the VERSIONED install dir) with a
-	// `/Modules/` under it. Requiring a digit after `/cmake-` keeps a vendored
-	// project dir like `third_party/cmake-foo/Modules/` (the project's own files)
-	// from being mistaken for cmake's bundled modules; scanning every occurrence
-	// keeps a real install behind an earlier non-version `/cmake-` segment
-	// (e.g. `/home/cmake-tools/…/share/cmake-4.3/Modules/`) from being missed.
-	const marker = "/cmake-"
-	for off := 0; ; {
-		j := strings.Index(file[off:], marker)
-		if j < 0 {
-			return false
-		}
-		k := off + j + len(marker)
-		if k < len(file) && file[k] >= '0' && file[k] <= '9' &&
-			strings.Contains(file[k:], "/Modules/") {
-			return true
-		}
-		off += j + 1
-	}
-}
-
 // ExecuteProcessCall records one user-written
 // execute_process(...) trace event. cmake's
 // `execute_process` runs an arbitrary subprocess at configure
@@ -1760,33 +1725,29 @@ type SourceFileProperty struct {
 // set_source_files_properties call whose trace event fires inside
 // sourceRoot. Calls with no source files or no properties (malformed
 // or interface-only) are skipped.
-func ExtractSourceFileProperties(traceRaw []byte, sourceRoot string) []SourceFilePropertiesCall {
+func ExtractSourceFileProperties(traceRaw []byte, sourceRoot, buildRoot string) []SourceFilePropertiesCall {
 	var out []SourceFilePropertiesCall
 	for _, ev := range ParseTrace(traceRaw) {
-		if call, ok := classifySourceFileProperties(ev, sourceRoot); ok {
+		if call, ok := classifySourceFileProperties(ev, sourceRoot, buildRoot); ok {
 			out = append(out, call)
 		}
 	}
 	return out
 }
 
-func classifySourceFileProperties(ev TraceEvent, _ string) (SourceFilePropertiesCall, bool) {
+func classifySourceFileProperties(ev TraceEvent, sourceRoot, buildRoot string) (SourceFilePropertiesCall, bool) {
 	if !strings.EqualFold(ev.Cmd, "set_source_files_properties") {
 		return SourceFilePropertiesCall{}, false
 	}
-	// Location policy: reject only cmake's own bundled modules (confident noise),
-	// NOT every non-source-tree file. A GENERATED (or per-source
-	// COMPILE_DEFINITIONS) marking is a build-graph fact about a TARGET's source,
-	// and the call that makes it commonly lives in the project's BUILD tree — a
-	// generated+include()d recipe `.cmake` — or a producer-element `.cmake` module
-	// (the macro-from-import shape). The old inSourceTree gate dropped those too,
-	// the build-tree gap from the consistency audit: a source the project KNOWS is
-	// generated then looks "missing" and is elided / baked instead of resolving to
-	// its producer. Excluding only the bundled-module dir keeps cmake-internal
-	// markings out (a find-module setting LANGUAGE on its own scratch file) while
-	// admitting build-tree recipes. Self-limiting anyway — collectGeneratedSources
-	// keys on the marked paths, matched only against actual target-source paths.
-	if isCmakeBundledModulePath(ev.File) {
+	// A GENERATED (or per-source COMPILE_DEFINITIONS) marking is a build-graph fact
+	// about a TARGET's source, and the call that makes it commonly lives in the
+	// project's BUILD tree — a generated+include()d recipe `.cmake`. The old
+	// inSourceTree gate dropped those (the build-tree gap from the consistency
+	// audit: a source the project KNOWS is generated then looks "missing" and is
+	// elided / baked instead of resolving to its producer). inProjectScope accepts
+	// source-tree OR build-tree while still dropping cmake's prefix/system
+	// machinery — the same shared policy the other output-bearing forms use.
+	if !inProjectScope(ev.File, sourceRoot, buildRoot) {
 		return SourceFilePropertiesCall{}, false
 	}
 	call := SourceFilePropertiesCall{
