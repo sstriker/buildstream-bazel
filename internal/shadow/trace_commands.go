@@ -1184,11 +1184,25 @@ func inSourceTree(file, sourceRoot string) bool {
 // denylist rather than threading the build root through Decode; it captures the
 // one high-volume noise source the source-tree filter was really guarding.
 func isCmakeBundledModulePath(file string) bool {
-	i := strings.Index(file, "/cmake-")
-	if i < 0 {
-		return false
+	// Match a `/cmake-<digit…>` segment (the VERSIONED install dir) with a
+	// `/Modules/` under it. Requiring a digit after `/cmake-` keeps a vendored
+	// project dir like `third_party/cmake-foo/Modules/` (the project's own files)
+	// from being mistaken for cmake's bundled modules; scanning every occurrence
+	// keeps a real install behind an earlier non-version `/cmake-` segment
+	// (e.g. `/home/cmake-tools/…/share/cmake-4.3/Modules/`) from being missed.
+	const marker = "/cmake-"
+	for off := 0; ; {
+		j := strings.Index(file[off:], marker)
+		if j < 0 {
+			return false
+		}
+		k := off + j + len(marker)
+		if k < len(file) && file[k] >= '0' && file[k] <= '9' &&
+			strings.Contains(file[k:], "/Modules/") {
+			return true
+		}
+		off += j + 1
 	}
-	return strings.Contains(file[i:], "/Modules/")
 }
 
 // ExecuteProcessCall records one user-written

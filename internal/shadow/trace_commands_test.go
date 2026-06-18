@@ -781,6 +781,30 @@ func TestExtractSourceFileProperties_FiltersOutOfTree(t *testing.T) {
 	}
 }
 
+func TestIsCmakeBundledModulePath(t *testing.T) {
+	cases := []struct {
+		file string
+		want bool
+	}{
+		{"/usr/share/cmake-3.28/Modules/some.cmake", true},
+		{"/opt/cmake-4.3/share/cmake-4.3/Modules/GenFoo.cmake", true},
+		// real install behind an earlier NON-version /cmake- segment.
+		{"/home/cmake-tools/x/share/cmake-4.3/Modules/y.cmake", true},
+		// project files — kept.
+		{"/home/u/proj/build/recipe.cmake", false},
+		{"/src/CMakeLists.txt", false},
+		// vendored dir whose name starts with cmake- but isn't a version.
+		{"third_party/cmake-foo/Modules/x.cmake", false},
+		// cmake- segment but no /Modules/ under it.
+		{"/proj/cmake-3.0/helpers/foo.cmake", false},
+	}
+	for _, tc := range cases {
+		if got := isCmakeBundledModulePath(tc.file); got != tc.want {
+			t.Errorf("isCmakeBundledModulePath(%q) = %v, want %v", tc.file, got, tc.want)
+		}
+	}
+}
+
 // TestExtractSourceFileProperties_AcceptsBuildTreeRecipe: a set_source_files_
 // properties marking issued from a build-tree recipe .cmake (outside the source
 // root, but NOT a cmake bundled module) is kept — the build-tree gap from the
