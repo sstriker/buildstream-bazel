@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/cli"
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
@@ -46,7 +47,7 @@ type warmRecovery struct {
 func runCoalescedWarmPass(ctx context.Context, a cli.Args, hostBuildDir string,
 	literalSink *lower.LiteralProbeSink, stampSink, nestedSink map[string]string,
 	recoveredStampSets []shadow.SetAssignment, recoveredStampForwards []shadow.ParentScopeForward,
-	captureSink map[string]bool) warmRecovery {
+	captureSink map[string]bool, rec *phaseRecorder) warmRecovery {
 
 	wr := warmRecovery{sets: recoveredStampSets, forwards: recoveredStampForwards}
 	warm := a.TwoPassGenex && hostBuildDir != ""
@@ -66,7 +67,10 @@ func runCoalescedWarmPass(ctx context.Context, a cli.Args, hostBuildDir string,
 
 	opts, plainTrace, demands := warmConfigureOptions(a, hostBuildDir, literalSink, stampSink, nestedRels, captureSink, needGenex, needStamp, needNested, needCapture)
 	fmt.Fprintf(os.Stderr, "convert-element-cmake: warm second configure for: %s.\n", strings.Join(demands, ", "))
-	if _, cfgErr := cmakerun.Configure(ctx, opts); cfgErr != nil {
+	warmStart := time.Now()
+	_, cfgErr := cmakerun.Configure(ctx, opts)
+	rec.add(phaseWarmConfigure, time.Since(warmStart))
+	if cfgErr != nil {
 		// Non-fatal: keep pass-1's result for every demand (exactly as without
 		// the two-pass feature). Loud, not silent.
 		fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: warm second configure failed (%v); keeping pass-1 result.\n", cfgErr)

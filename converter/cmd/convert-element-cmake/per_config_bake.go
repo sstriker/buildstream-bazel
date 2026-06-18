@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/cli"
 	"github.com/sstriker/buildstream-bazel/converter/internal/cmakerun"
@@ -36,7 +37,7 @@ import (
 // Every failure path degrades to the pass-1 result (the multi-config body
 // for all arms) with a stderr warning — exactly the output the convert
 // produces without the feature.
-func runPerConfigBakes(ctx context.Context, a cli.Args, hostBuildDir string, traceRaw []byte, pkg *ir.Package) {
+func runPerConfigBakes(ctx context.Context, a cli.Args, hostBuildDir string, traceRaw []byte, pkg *ir.Package, rec *phaseRecorder) {
 	if pkg == nil || hostBuildDir == "" || len(a.BuildTypes) < 2 {
 		return
 	}
@@ -93,6 +94,11 @@ func runPerConfigBakes(ctx context.Context, a cli.Args, hostBuildDir string, tra
 		out bytes.Buffer
 	}
 	results := make([]cfgResult, len(a.BuildTypes))
+	// Time the whole fan-out as one wall span (not per-goroutine summed):
+	// these run concurrently, so the bucket's honest wall contribution is
+	// max(individual) ≈ this region, the block the overlap optimization
+	// aims to hide behind lowering.
+	bakeStart := time.Now()
 	var wg sync.WaitGroup
 	for i, cfg := range a.BuildTypes {
 		results[i].cfg = cfg
@@ -113,6 +119,7 @@ func runPerConfigBakes(ctx context.Context, a cli.Args, hostBuildDir string, tra
 		}(i, cfg)
 	}
 	wg.Wait()
+	rec.add(phasePerConfigBake, time.Since(bakeStart))
 	for i := range results {
 		if results[i].err != nil {
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: per-config configure (%s) failed (%v); keeping the multi-config body for all arms. cmake output:\n", results[i].cfg, results[i].err)
