@@ -81,7 +81,17 @@ type Decoded struct {
 // FileGenerates / ExecuteProcesses / PlatformConditionalSources)
 // preserve insertion order from the trace.
 func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) Decoded {
-	return DecodeWithFS(traceRaw, sourceRoot, sourceRoot, knownTargets, defaultFS{})
+	return DecodeWithFS(traceRaw, sourceRoot, sourceRoot, "", knownTargets, defaultFS{})
+}
+
+// DecodeWithBuild is Decode plus the project's build root, so the output-bearing
+// extractors (configure_file / file(RENAME) / file(GENERATE) / add_custom_command)
+// accept calls issued from the BUILD tree — a generated+include()d recipe — not
+// just the source tree, while still dropping cmake's prefix/system machinery
+// (inProjectScope). buildRoot must be in the same frame as the trace's event
+// files (the codemodel's recorded paths). Pass "" to get plain Decode behavior.
+func DecodeWithBuild(traceRaw []byte, sourceRoot, buildRoot string, knownTargets map[string]bool) Decoded {
+	return DecodeWithFS(traceRaw, sourceRoot, sourceRoot, buildRoot, knownTargets, defaultFS{})
 }
 
 // DecodeWithFS is the file-system-abstracted variant. Required
@@ -92,7 +102,7 @@ func Decode(traceRaw []byte, sourceRoot string, knownTargets map[string]bool) De
 //
 // In-process callers (the converter) pass traceSourceRoot ==
 // hostSourceRoot since cmake just ran on the same machine.
-func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, knownTargets map[string]bool, fs fsReader) Decoded {
+func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot, buildRoot string, knownTargets map[string]bool, fs fsReader) Decoded {
 	events := ParseTrace(traceRaw)
 	reads := map[string]struct{}{}
 	deferDirs := deferDirectoryIndex(events)
@@ -127,15 +137,15 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 		if call, ok := classifyTargetCompile(ev, traceSourceRoot, knownTargets, "target_compile_options"); ok {
 			d.CompileOptions = append(d.CompileOptions, call)
 		}
-		if call, ok := classifyConfigureFile(ev, traceSourceRoot); ok {
+		if call, ok := classifyConfigureFile(ev, traceSourceRoot, buildRoot); ok {
 			call.DeferDir = deferDirFor(ev, deferDirs)
 			d.ConfigFiles = append(d.ConfigFiles, call)
 		}
-		if call, ok := classifyFileRename(ev, traceSourceRoot); ok {
+		if call, ok := classifyFileRename(ev, traceSourceRoot, buildRoot); ok {
 			call.DeferDir = deferDirFor(ev, deferDirs)
 			d.ConfigFiles = append(d.ConfigFiles, call)
 		}
-		if call, ok := classifyFileGenerate(ev, traceSourceRoot); ok {
+		if call, ok := classifyFileGenerate(ev, traceSourceRoot, buildRoot); ok {
 			d.FileGenerates = append(d.FileGenerates, call)
 		}
 		if call, ok := classifyFileGlob(ev, traceSourceRoot); ok {
@@ -154,7 +164,7 @@ func DecodeWithFS(traceRaw []byte, traceSourceRoot, hostSourceRoot string, known
 		if call, ok := classifySourceFileProperties(ev, traceSourceRoot); ok {
 			d.SourceFileProperties = append(d.SourceFileProperties, call)
 		}
-		if call, ok := classifyAddCustomCommand(ev, traceSourceRoot); ok {
+		if call, ok := classifyAddCustomCommand(ev, traceSourceRoot, buildRoot); ok {
 			call.CallFile, call.CallLine, call.CallCmd = invocationCallSite(ev, lastEventAtFrame, traceSourceRoot)
 			d.AddCustomCommands = append(d.AddCustomCommands, call)
 		}
@@ -775,12 +785,12 @@ func classifyDefineSymbols(ev TraceEvent) map[string]string {
 // args as resolved strings (variables already expanded);
 // callers resolve relative paths against the source dir
 // (input) or build dir (output) per cmake's conventions.
-func ExtractConfigureFiles(traceRaw []byte, sourceRoot string) []ConfigureFileCall {
+func ExtractConfigureFiles(traceRaw []byte, sourceRoot, buildRoot string) []ConfigureFileCall {
 	events := ParseTrace(traceRaw)
 	deferDirs := deferDirectoryIndex(events)
 	var out []ConfigureFileCall
 	for _, ev := range events {
-		if call, ok := classifyConfigureFile(ev, sourceRoot); ok {
+		if call, ok := classifyConfigureFile(ev, sourceRoot, buildRoot); ok {
 			call.DeferDir = deferDirFor(ev, deferDirs)
 			out = append(out, call)
 		}
@@ -851,17 +861,19 @@ func deferSiteKey(file string, line int) string {
 	return file + "\x00" + strconv.Itoa(line)
 }
 
-func classifyConfigureFile(ev TraceEvent, sourceRoot string) (ConfigureFileCall, bool) {
+func classifyConfigureFile(ev TraceEvent, sourceRoot, buildRoot string) (ConfigureFileCall, bool) {
 	if !strings.EqualFold(ev.Cmd, "configure_file") {
 		return ConfigureFileCall{}, false
 	}
 	if len(ev.Args) < 2 {
 		return ConfigureFileCall{}, false
 	}
-	// Normally a configure_file is only interesting when its CALL SITE is
-	// inside the project tree — that filters out cmake's own internal
-	// configure_file calls (try_compile scratch, package-config helpers,
-	// etc.) whose outputs aren't project compile inputs.
+	// A configure_file is interesting when its CALL SITE is inside the project —
+	// its source tree OR its build tree (a generated+include()d recipe). That
+	// filters out cmake's own internal configure_file calls (try_compile scratch,
+	// package-config helpers under the install prefix) whose outputs aren't
+	// project compile inputs, while recovering build-tree-recipe ones (the
+	// consistency-audit gap). buildRoot == "" keeps the source-tree-only behavior.
 	//
 	// The one universal exception is generate_export_header (CMake's
 	// GenerateExportHeader module): it calls configure_file from cmake's
@@ -871,7 +883,7 @@ func classifyConfigureFile(ev TraceEvent, sourceRoot string) (ConfigureFileCall,
 	// recovers the (baked) header instead of dropping it, while keeping
 	// every other out-of-tree configure_file filtered — the same
 	// recognize-a-known-idiom move as the cc_embed encoder list.
-	if !inSourceTree(ev.File, sourceRoot) && !isGenerateExportHeaderTemplate(ev.Args[0]) {
+	if !inProjectScope(ev.File, sourceRoot, buildRoot) && !isGenerateExportHeaderTemplate(ev.Args[0]) {
 		return ConfigureFileCall{}, false
 	}
 	return ConfigureFileCall{
@@ -896,14 +908,14 @@ func classifyConfigureFile(ev TraceEvent, sourceRoot string) (ConfigureFileCall,
 // cmake-internal renames (try_compile scratch, etc.) are filtered; renames
 // whose dest lands outside the build dir are dropped later by the recovery
 // (relativeIfInsideRelaxed), so a source-tree-dest rename can't bake.
-func classifyFileRename(ev TraceEvent, sourceRoot string) (ConfigureFileCall, bool) {
+func classifyFileRename(ev TraceEvent, sourceRoot, buildRoot string) (ConfigureFileCall, bool) {
 	if !strings.EqualFold(ev.Cmd, "file") {
 		return ConfigureFileCall{}, false
 	}
 	if len(ev.Args) != 3 || !strings.EqualFold(ev.Args[0], "RENAME") {
 		return ConfigureFileCall{}, false
 	}
-	if !inSourceTree(ev.File, sourceRoot) {
+	if !inProjectScope(ev.File, sourceRoot, buildRoot) {
 		return ConfigureFileCall{}, false
 	}
 	return ConfigureFileCall{
@@ -988,10 +1000,10 @@ type FileGenerateCall struct {
 // (the command is user-facing by design), but the
 // source-tree filter keeps the extractor honest with the
 // configure_file / execute_process siblings.
-func ExtractFileGenerate(traceRaw []byte, sourceRoot string) []FileGenerateCall {
+func ExtractFileGenerate(traceRaw []byte, sourceRoot, buildRoot string) []FileGenerateCall {
 	var out []FileGenerateCall
 	for _, ev := range ParseTrace(traceRaw) {
-		if call, ok := classifyFileGenerate(ev, sourceRoot); ok {
+		if call, ok := classifyFileGenerate(ev, sourceRoot, buildRoot); ok {
 			out = append(out, call)
 		}
 	}
@@ -1011,11 +1023,11 @@ func ExtractFileGenerate(traceRaw []byte, sourceRoot string) []FileGenerateCall 
 // Unknown tokens at the top level are dropped silently —
 // matches the execute_process classifier's tolerance for
 // cmake-version-added options that don't affect the lift.
-func classifyFileGenerate(ev TraceEvent, sourceRoot string) (FileGenerateCall, bool) {
+func classifyFileGenerate(ev TraceEvent, sourceRoot, buildRoot string) (FileGenerateCall, bool) {
 	if !strings.EqualFold(ev.Cmd, "file") {
 		return FileGenerateCall{}, false
 	}
-	if !inSourceTree(ev.File, sourceRoot) {
+	if !inProjectScope(ev.File, sourceRoot, buildRoot) {
 		return FileGenerateCall{}, false
 	}
 	if len(ev.Args) == 0 || !strings.EqualFold(ev.Args[0], "GENERATE") {
@@ -1168,6 +1180,28 @@ func inSourceTree(file, sourceRoot string) bool {
 	}
 	tail := file[len(sourceRoot):]
 	return tail == "" || tail[0] == '/' || tail[0] == '\\'
+}
+
+// inProjectScope reports whether a trace event's file is part of the PROJECT —
+// its source tree OR its build tree — as opposed to cmake's own machinery
+// (bundled modules / package configs under the install prefix). Output-bearing
+// extractors (configure_file / file(GENERATE) / add_custom_command OUTPUT-form)
+// use this instead of the strict inSourceTree gate so a codegen defined in a
+// generated+include()d recipe — or any other build-tree file — is recovered,
+// while prefix/system calls stay dropped (the consistency audit's build-tree
+// gap). cmake's own try_compile / internal scratch under <build>/CMakeFiles is
+// excluded: configure-time probe noise, never a project build input.
+//
+// buildRoot == "" falls back to the source-tree-only gate, so callers without a
+// build root (or that want the prior behavior) are unaffected.
+func inProjectScope(file, sourceRoot, buildRoot string) bool {
+	if inSourceTree(file, sourceRoot) {
+		return true
+	}
+	if buildRoot == "" || !inSourceTree(file, buildRoot) {
+		return false
+	}
+	return !strings.Contains(file[len(buildRoot):], "/CMakeFiles/")
 }
 
 // isCmakeBundledModulePath reports whether file is one of cmake's own bundled
@@ -1927,10 +1961,10 @@ type AddDependenciesCall struct {
 // add_custom_command call whose trace event fires inside
 // sourceRoot. cmake-internal scratch-CMakeLists from try_compile
 // etc. are filtered out by the source-tree gate.
-func ExtractAddCustomCommands(traceRaw []byte, sourceRoot string) []AddCustomCommandCall {
+func ExtractAddCustomCommands(traceRaw []byte, sourceRoot, buildRoot string) []AddCustomCommandCall {
 	var out []AddCustomCommandCall
 	for _, ev := range ParseTrace(traceRaw) {
-		if call, ok := classifyAddCustomCommand(ev, sourceRoot); ok {
+		if call, ok := classifyAddCustomCommand(ev, sourceRoot, buildRoot); ok {
 			out = append(out, call)
 		}
 	}
@@ -1946,11 +1980,11 @@ func ExtractAddCustomCommands(traceRaw []byte, sourceRoot string) []AddCustomCom
 // declaring a new file-producing rule — and is filtered out
 // here; the standalone-genrule cross-reference only consumes
 // the OUTPUT form.
-func classifyAddCustomCommand(ev TraceEvent, sourceRoot string) (AddCustomCommandCall, bool) {
+func classifyAddCustomCommand(ev TraceEvent, sourceRoot, buildRoot string) (AddCustomCommandCall, bool) {
 	if !strings.EqualFold(ev.Cmd, "add_custom_command") {
 		return AddCustomCommandCall{}, false
 	}
-	if !inSourceTree(ev.File, sourceRoot) {
+	if !inProjectScope(ev.File, sourceRoot, buildRoot) {
 		return AddCustomCommandCall{}, false
 	}
 	if len(ev.Args) == 0 {

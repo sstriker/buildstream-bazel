@@ -182,7 +182,7 @@ func TestExtractTargetCompile_LegacyPositional(t *testing.T) {
 }
 
 func TestExtractConfigureFiles_FiltersCmakeInternal(t *testing.T) {
-	got := ExtractConfigureFiles([]byte(traceMixed), "/src")
+	got := ExtractConfigureFiles([]byte(traceMixed), "/src", "")
 	if len(got) != 1 {
 		t.Fatalf("want 1 user configure_file (cmake-internal one filtered); got %d (%+v)", len(got), got)
 	}
@@ -206,7 +206,7 @@ const traceExportHeader = `{"args":["in.h.in","out.h","@ONLY"],"cmd":"configure_
 `
 
 func TestExtractConfigureFiles_GenerateExportHeader(t *testing.T) {
-	got := ExtractConfigureFiles([]byte(traceExportHeader), "/src")
+	got := ExtractConfigureFiles([]byte(traceExportHeader), "/src", "")
 	// The in-tree user call AND the export-header call are kept; the
 	// CMakeSystem cmake-internal call is filtered.
 	if len(got) != 2 {
@@ -476,7 +476,7 @@ func TestExtract_RealCmakeTrace(t *testing.T) {
 	if len(ExtractTargetLinks([]byte(real), "/src", nil)) != 1 {
 		t.Errorf("missed target_link_libraries with extra fields")
 	}
-	if len(ExtractConfigureFiles([]byte(real), "/src")) != 1 {
+	if len(ExtractConfigureFiles([]byte(real), "/src", "")) != 1 {
 		t.Errorf("missed configure_file with extra fields")
 	}
 }
@@ -532,7 +532,7 @@ func TestDecode_InstallExportNoNamespace(t *testing.T) {
 func TestExtractFileGenerate_InputForm(t *testing.T) {
 	trace := `{"args":["GENERATE","OUTPUT","gen.h","INPUT","gen.h.in","CONDITION","$<CONFIG:Release>","NEWLINE_STYLE","UNIX"],"cmd":"file","file":"/src/CMakeLists.txt","line":11}
 `
-	got := ExtractFileGenerate([]byte(trace), "/src")
+	got := ExtractFileGenerate([]byte(trace), "/src", "")
 	if len(got) != 1 {
 		t.Fatalf("want 1 call, got %d (%+v)", len(got), got)
 	}
@@ -563,7 +563,7 @@ func TestExtractFileGenerate_InputForm(t *testing.T) {
 func TestExtractFileGenerate_ContentForm(t *testing.T) {
 	trace := `{"args":["GENERATE","OUTPUT","banner.h","CONTENT","#define BANNER \"hi\"\n","TARGET","mytarget"],"cmd":"file","file":"/src/CMakeLists.txt","line":3}
 `
-	got := ExtractFileGenerate([]byte(trace), "/src")
+	got := ExtractFileGenerate([]byte(trace), "/src", "")
 	if len(got) != 1 {
 		t.Fatalf("want 1 call, got %d (%+v)", len(got), got)
 	}
@@ -591,7 +591,7 @@ func TestExtractFileGenerate_FiltersNonGenerateAndOutOfTree(t *testing.T) {
 {"args":["GENERATE","OUTPUT","/build/internal.h","CONTENT","internal\n"],"cmd":"file","file":"/usr/share/cmake-3.28/Modules/CMakeSomething.cmake","line":42}
 {"args":["GENERATE","OUTPUT","ok.h","CONTENT","ok\n"],"cmd":"file","file":"/src/CMakeLists.txt","line":12}
 `
-	got := ExtractFileGenerate([]byte(trace), "/src")
+	got := ExtractFileGenerate([]byte(trace), "/src", "")
 	if len(got) != 1 {
 		t.Fatalf("want 1 user file(GENERATE); got %d (%+v)", len(got), got)
 	}
@@ -610,7 +610,7 @@ func TestExtractFileGenerate_FiltersNonGenerateAndOutOfTree(t *testing.T) {
 func TestExtractFileGenerate_EmptyContentPreserved(t *testing.T) {
 	trace := `{"args":["GENERATE","OUTPUT","empty.txt","CONTENT",""],"cmd":"file","file":"/src/CMakeLists.txt","line":5}
 `
-	got := ExtractFileGenerate([]byte(trace), "/src")
+	got := ExtractFileGenerate([]byte(trace), "/src", "")
 	if len(got) != 1 {
 		t.Fatalf("CONTENT \"\" should be preserved; got %d (%+v)", len(got), got)
 	}
@@ -637,7 +637,7 @@ func TestExtractFileGenerate_EmptyContentPreserved(t *testing.T) {
 func TestExtractFileGenerate_BothInputAndContentDropped(t *testing.T) {
 	trace := `{"args":["GENERATE","OUTPUT","x.h","INPUT","x.in","CONTENT","fallback\n"],"cmd":"file","file":"/src/CMakeLists.txt","line":1}
 `
-	if got := ExtractFileGenerate([]byte(trace), "/src"); len(got) != 0 {
+	if got := ExtractFileGenerate([]byte(trace), "/src", ""); len(got) != 0 {
 		t.Errorf("both-keywords-set should be rejected; got %+v", got)
 	}
 }
@@ -652,7 +652,7 @@ func TestExtractFileGenerate_MalformedDropped(t *testing.T) {
 {"args":["GENERATE","OUTPUT","y.h"],"cmd":"file","file":"/src/CMakeLists.txt","line":2}
 {"args":["GENERATE"],"cmd":"file","file":"/src/CMakeLists.txt","line":3}
 `
-	if got := ExtractFileGenerate([]byte(trace), "/src"); len(got) != 0 {
+	if got := ExtractFileGenerate([]byte(trace), "/src", ""); len(got) != 0 {
 		t.Errorf("want 0 (all malformed); got %+v", got)
 	}
 }
@@ -666,7 +666,7 @@ func TestExtractFileGenerate_MalformedDropped(t *testing.T) {
 func TestExtractFileGenerate_PermissionsConsumed(t *testing.T) {
 	trace := `{"args":["GENERATE","OUTPUT","p.h","CONTENT","p\n","FILE_PERMISSIONS","OWNER_READ","OWNER_WRITE","GROUP_READ","CONDITION","TRUE"],"cmd":"file","file":"/src/CMakeLists.txt","line":1}
 `
-	got := ExtractFileGenerate([]byte(trace), "/src")
+	got := ExtractFileGenerate([]byte(trace), "/src", "")
 	if len(got) != 1 {
 		t.Fatalf("got %+v", got)
 	}
@@ -871,7 +871,7 @@ func sliceEq(a, b []string) bool {
 func TestExtractAddCustomCommand_OutputForm(t *testing.T) {
 	trace := `{"args":["OUTPUT","gen/version.h","gen/build.h","COMMAND","python3","gen.py","--out","gen/version.h","COMMAND","touch","gen/build.h","DEPENDS","gen.py","BYPRODUCTS","gen.log","WORKING_DIRECTORY","/src","COMMENT","generating version+build headers","VERBATIM"],"cmd":"add_custom_command","file":"/src/CMakeLists.txt","line":12}
 `
-	got := ExtractAddCustomCommands([]byte(trace), "/src")
+	got := ExtractAddCustomCommands([]byte(trace), "/src", "")
 	if len(got) != 1 {
 		t.Fatalf("want 1 call, got %d (%+v)", len(got), got)
 	}
@@ -912,7 +912,7 @@ func TestExtractAddCustomCommand_OutputForm(t *testing.T) {
 func TestExtractAddCustomCommand_TargetFormFiltered(t *testing.T) {
 	trace := `{"args":["TARGET","mylib","POST_BUILD","COMMAND","echo","done"],"cmd":"add_custom_command","file":"/src/CMakeLists.txt","line":3}
 `
-	got := ExtractAddCustomCommands([]byte(trace), "/src")
+	got := ExtractAddCustomCommands([]byte(trace), "/src", "")
 	if len(got) != 0 {
 		t.Errorf("TARGET-form should be filtered; got %+v", got)
 	}
@@ -970,7 +970,7 @@ func TestExtractAddCustomCommand_FiltersCmakeInternal(t *testing.T) {
 	trace := `{"args":["OUTPUT","internal.txt","COMMAND","cmake","-E","touch","internal.txt"],"cmd":"add_custom_command","file":"/usr/share/cmake-3.28/Modules/foo.cmake","line":1}
 {"args":["OUTPUT","user.txt","COMMAND","cmake","-E","touch","user.txt"],"cmd":"add_custom_command","file":"/src/CMakeLists.txt","line":1}
 `
-	got := ExtractAddCustomCommands([]byte(trace), "/src")
+	got := ExtractAddCustomCommands([]byte(trace), "/src", "")
 	if len(got) != 1 {
 		t.Fatalf("want 1 user call (cmake-internal filtered); got %d (%+v)", len(got), got)
 	}
@@ -1200,7 +1200,7 @@ const traceDeferDirectory = `{"args":["DEFER","DIRECTORY","/src","CALL","configu
 `
 
 func TestExtractConfigureFiles_DeferDirectory(t *testing.T) {
-	got := ExtractConfigureFiles([]byte(traceDeferDirectory), "/src")
+	got := ExtractConfigureFiles([]byte(traceDeferDirectory), "/src", "")
 	if len(got) != 2 {
 		t.Fatalf("want 2 configure_file calls; got %d (%+v)", len(got), got)
 	}

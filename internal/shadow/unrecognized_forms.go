@@ -43,7 +43,7 @@ func AuditUnrecognizedCommandForms(traceRaw []byte, sourceRoot string) []Unrecog
 		}
 		switch strings.ToLower(ev.Cmd) {
 		case "add_custom_command":
-			if _, ok := classifyAddCustomCommand(ev, sourceRoot); ok {
+			if _, ok := classifyAddCustomCommand(ev, sourceRoot, ""); ok {
 				continue
 			}
 			if _, ok := classifyTargetEventCommand(ev); ok {
@@ -66,10 +66,10 @@ func fileFormRecognized(ev TraceEvent, sourceRoot string) bool {
 	if _, ok := classifyFileWriter(ev); ok {
 		return true
 	}
-	if _, ok := classifyFileGenerate(ev, sourceRoot); ok {
+	if _, ok := classifyFileGenerate(ev, sourceRoot, ""); ok {
 		return true
 	}
-	if _, ok := classifyFileRename(ev, sourceRoot); ok {
+	if _, ok := classifyFileRename(ev, sourceRoot, ""); ok {
 		return true
 	}
 	return false
