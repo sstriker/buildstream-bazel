@@ -169,9 +169,11 @@ type Args struct {
 
 	// OutTimings, when non-empty, writes a JSON document with
 	// per-phase wall-clock timings: cmake configure, translation
-	// (lower + emit), and total. M3 aggregates these into a final
-	// summary so operators can see configure-vs-translate ratios
-	// across a project.
+	// (lower + emit), and total, plus a v2 breakdown of the
+	// translation span (in-process lowering vs. warm-reconfigure and
+	// per-config-bake subprocess wait). M3 aggregates these into a
+	// final summary so operators can see configure-vs-translate
+	// ratios — and which sub-phase dominates — across a project.
 	OutTimings string
 
 	// OutCMakeConfigureReads, when non-empty, writes a JSON array of

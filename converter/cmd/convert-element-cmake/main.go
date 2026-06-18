@@ -18,6 +18,7 @@ import (
 	"runtime/pprof"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sstriker/buildstream-bazel/converter/emit/bazel"
@@ -50,12 +51,72 @@ import (
 
 // timings is the on-disk schema for --out-timings. Captured per-phase
 // wall-clock seconds let operators see configure-vs-translation ratios
-// across a project. version=1 fences future readers.
+// across a project. version=2 adds the post-configure breakdown fields;
+// version fences future readers.
 type timings struct {
 	Version            int     `json:"version"`
 	CMakeConfigureSecs float64 `json:"cmake_configure_seconds"`
 	TranslationSecs    float64 `json:"translation_seconds"`
 	TotalSecs          float64 `json:"total_seconds"`
+	// v2 breakdown of the post-configure translation span. This is the
+	// lens that answers whether reducing converter wall time means
+	// overlapping cmake reconfigure subprocess wait off the critical path
+	// (warm second pass + per-config bakes dominate) or parallelizing the
+	// in-process IR lowering (lowering dominates). omitempty: the offline
+	// --reply-dir replay path runs none of these phases, so they stay 0.
+	LoweringSecs      float64 `json:"lowering_seconds,omitempty"`
+	WarmConfigureSecs float64 `json:"warm_configure_seconds,omitempty"`
+	PerConfigBakeSecs float64 `json:"per_config_bake_seconds,omitempty"`
+}
+
+// phase names for the phaseRecorder buckets surfaced in timings (v2).
+const (
+	phaseLowering      = "lowering"       // wall of every lower.ToIR invocation
+	phaseWarmConfigure = "warm_configure" // wall of the warm second cmake reconfigure(s)
+	phasePerConfigBake = "per_config_bake"
+)
+
+// phaseRecorder accumulates per-phase wall-clock so --out-timings can show
+// where a conversion's post-configure span actually goes: how much is cmake
+// reconfigure subprocess wait (the warm second pass and the per-config bakes)
+// vs. in-process IR lowering. Safe for concurrent add — the per-config bakes
+// time their fan-out from one wall span, but recovery paths and goroutines may
+// add from other stacks. nil-safe so call sites needn't guard (the offline
+// --reply-dir replay path threads no recorder).
+type phaseRecorder struct {
+	mu  sync.Mutex
+	dur map[string]time.Duration
+}
+
+func newPhaseRecorder() *phaseRecorder {
+	return &phaseRecorder{dur: map[string]time.Duration{}}
+}
+
+// add folds d into the named phase's running total.
+func (p *phaseRecorder) add(phase string, d time.Duration) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.dur[phase] += d
+	p.mu.Unlock()
+}
+
+// since folds time.Since(start) into phase — the "time this region" shorthand:
+// `defer rec.since(phaseLowering, time.Now())`.
+func (p *phaseRecorder) since(phase string, start time.Time) {
+	p.add(phase, time.Since(start))
+}
+
+// get returns the accumulated wall for a phase (0 for a nil recorder or an
+// untouched phase).
+func (p *phaseRecorder) get(phase string) time.Duration {
+	if p == nil {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.dur[phase]
 }
 
 // fallbackInstallTarget derives the same-package pipeline_install
@@ -524,10 +585,20 @@ func loadConversionInputs(a cli.Args, r *fileapi.Reply, ninjaPath, hostBuildDir 
 // genex and stamp-indirection second passes, and the per-config bake fold.
 // The in fields destructure into run()'s original local names so the pass
 // bodies read exactly as they did inline.
-func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *convertInputs, hostBuildDir string, cmakeVars map[string]string) (*ir.Package, error) {
+func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *convertInputs, hostBuildDir string, cmakeVars map[string]string, rec *phaseRecorder) (*ir.Package, error) {
 	g, imports, prefixAbs := in.g, in.imports, in.prefixAbs
 	testRegistry, traceRaw, hostBuildOrReply := in.testRegistry, in.traceRaw, in.hostBuildOrReply
 	genexProbes, configureLogEvents := in.genexProbes, in.configureLogEvents
+
+	// Launch the per-config bake configures NOW — the trace the auto pre-gate
+	// needs is in hand, and the cold configures (the largest single
+	// subprocess block on CMAKE_BUILD_TYPE-reading projects) don't need the IR
+	// to RUN, only to know which outputs to read back. Firing them here
+	// overlaps them with the lowering + warm passes below; finishPerConfigBakes
+	// joins + folds once pkg is final. The defer is the early-error safety net:
+	// cleanup is idempotent, so finish's own cleanup doesn't double-free.
+	bakeJob := startPerConfigBakes(ctx, a, hostBuildDir, traceRaw, rec)
+	defer bakeJob.cleanup()
 	rejections, execFallback := in.rejections, in.execFallback
 	coverageCollector, todosCollector := in.coverageCollector, in.todosCollector
 	stampSink, backedFeatures := in.stampSink, in.backedFeatures
@@ -563,6 +634,11 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 		return nil, err
 	}
 	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment, parentScopeForwards []shadow.ParentScopeForward) (*ir.Package, error) {
+		// Time every lowering invocation into the one phase bucket: ToIR
+		// runs 2-3x (pass 1 + warm re-lowers), and their sum is the
+		// in-process cost the per-target-parallelism question weighs
+		// against subprocess wait.
+		defer rec.since(phaseLowering, time.Now())
 		// Reset the per-pass collectors each pass: ToIR can run more than
 		// once (two-pass genex / stamp / nested-cmake recovery) against the
 		// same collectors, and the producers Add on every pass. Resetting
@@ -689,7 +765,7 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	if deadCaptureVars != nil {
 		warmCaptureSink = nil
 	}
-	wr := runCoalescedWarmPass(ctx, a, hostBuildDir, literalSink, stampSink, nestedSink, recoveredStampSets, recoveredStampForwards, warmCaptureSink)
+	wr := runCoalescedWarmPass(ctx, a, hostBuildDir, literalSink, stampSink, nestedSink, recoveredStampSets, recoveredStampForwards, warmCaptureSink, rec)
 	if wr.recovered {
 		nestedBuilds = wr.nestedBuilds               // read by runToIR via closure capture
 		fileWriterTemplates = wr.fileWriterTemplates // likewise — stamp-bearing file(WRITE) wiring
@@ -714,7 +790,7 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	// re-lower. Bounded by construction: the second round passes empty
 	// genex/stamp/capture sinks, so it can only harvest nested builds.
 	if len(wr.deadCaptureVars) > 0 && len(nestedSink) > 0 && len(nestedBuilds) == 0 {
-		if wr2 := runCoalescedWarmPass(ctx, a, hostBuildDir, &lower.LiteralProbeSink{}, map[string]string{}, nestedSink, wr.sets, wr.forwards, nil); wr2.recovered {
+		if wr2 := runCoalescedWarmPass(ctx, a, hostBuildDir, &lower.LiteralProbeSink{}, map[string]string{}, nestedSink, wr.sets, wr.forwards, nil, rec); wr2.recovered {
 			nestedBuilds = wr2.nestedBuilds
 			pkg3, err3 := runToIR(nil, wr.genexResolutions, wr2.sets, wr2.forwards)
 			if err3 != nil {
@@ -724,19 +800,18 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 		}
 	}
 
-	// Per-config bake passes (conditional, cold): a multi-config configure
-	// runs ONCE with no CMAKE_BUILD_TYPE, so a baked configure_file body the
-	// project derives from CMAKE_BUILD_TYPE (LLVM's abi-breaking.h) carries
-	// one config's view for every //config:* arm. When multi-config was
-	// requested, the package holds ≥1 write_file bake, and the trace shows
-	// the project's own files consulting CMAKE_BUILD_TYPE (or --per-config-
-	// bake=on forces it), re-configure once per build type — single-config,
-	// into sibling scratch dirs (the multi-config build dir can't switch
-	// generators in place) — read each recovered output's per-config bytes,
-	// and fold differing bodies into content select() arms
-	// (lower.ApplyPerConfigBakes). Failures degrade to the pass-1 single
-	// body, exactly as without the feature.
-	runPerConfigBakes(ctx, a, hostBuildDir, traceRaw, pkg)
+	// Per-config bake fold (conditional, cold): a multi-config configure runs
+	// ONCE with no CMAKE_BUILD_TYPE, so a baked configure_file body the project
+	// derives from CMAKE_BUILD_TYPE (LLVM's abi-breaking.h) carries one config's
+	// view for every //config:* arm. The cold per-build-type configures that
+	// recover the per-config bodies were launched at the top of this function
+	// (startPerConfigBakes) so they overlapped the lowering + warm passes above;
+	// join them now, apply the write_file-presence gate against the final pkg,
+	// read each recovered output's per-config bytes, and fold differing bodies
+	// into content select() arms (lower.ApplyPerConfigBakes). A declined pre-gate
+	// (nil job) or no write_file bakes is a no-op; failures degrade to the pass-1
+	// single body, exactly as without the feature.
+	finishPerConfigBakes(bakeJob, a, hostBuildDir, pkg)
 
 	// The file(DOWNLOAD) lockfile is a lowering byproduct (the recovered
 	// http_file repo specs) not carried on the IR, so write it here where
@@ -1228,7 +1303,7 @@ func writeWorkspaceStatusScript(dst string, keyToCommand map[string]string) erro
 // writeRunTailReports writes the remaining per-run artifacts: the IR JSON
 // (multi-platform fold input), timings, the build.ninja reconfigure-input
 // oracle, and the trace read-paths report.
-func writeRunTailReports(a cli.Args, r *fileapi.Reply, g *ninja.Graph, pkg *ir.Package, hostBuildDir string, t0 time.Time, configureElapsed time.Duration) error {
+func writeRunTailReports(a cli.Args, r *fileapi.Reply, g *ninja.Graph, pkg *ir.Package, hostBuildDir string, t0 time.Time, configureElapsed time.Duration, rec *phaseRecorder) error {
 	// Stage 6 of the per-element multi-platform plan: ship the
 	// lowered ir.Package as JSON alongside the rendered
 	// BUILD.bazel so the orchestrator's fold can compose
@@ -1257,10 +1332,13 @@ func writeRunTailReports(a cli.Args, r *fileapi.Reply, g *ninja.Graph, pkg *ir.P
 			translation = 0
 		}
 		body, _ := json.MarshalIndent(timings{
-			Version:            1,
+			Version:            2,
 			CMakeConfigureSecs: configureElapsed.Seconds(),
 			TranslationSecs:    translation.Seconds(),
 			TotalSecs:          total.Seconds(),
+			LoweringSecs:       rec.get(phaseLowering).Seconds(),
+			WarmConfigureSecs:  rec.get(phaseWarmConfigure).Seconds(),
+			PerConfigBakeSecs:  rec.get(phasePerConfigBake).Seconds(),
 		}, "", "  ")
 		if err := os.MkdirAll(filepath.Dir(a.OutTimings), 0o755); err != nil {
 			return err
@@ -1365,6 +1443,7 @@ func writeRunTailReports(a cli.Args, r *fileapi.Reply, g *ninja.Graph, pkg *ir.P
 func run(a cli.Args) error {
 	t0 := time.Now()
 	var configureElapsed time.Duration
+	rec := newPhaseRecorder()
 
 	// Dev lens: CPU-profile the whole run (--cpuprofile). cmake
 	// subprocess time appears as wait, so the profile cleanly separates
@@ -1480,7 +1559,7 @@ func run(a cli.Args) error {
 	if err != nil {
 		return err
 	}
-	pkg, err := runLowerPasses(ctx, a, r, in, hostBuildDir, cmakeVars)
+	pkg, err := runLowerPasses(ctx, a, r, in, hostBuildDir, cmakeVars, rec)
 	if err != nil {
 		return err
 	}
@@ -1502,7 +1581,7 @@ func run(a cli.Args) error {
 	if err := emitProducerChannels(a, r, pkg, in.traceRaw); err != nil {
 		return err
 	}
-	return writeRunTailReports(a, r, in.g, pkg, hostBuildDir, t0, configureElapsed)
+	return writeRunTailReports(a, r, in.g, pkg, hostBuildDir, t0, configureElapsed, rec)
 }
 
 // compileCommandsPath returns the path to the compile_commands.json
