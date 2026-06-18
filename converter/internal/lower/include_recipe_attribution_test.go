@@ -74,6 +74,49 @@ func TestAdoptIncludedRecipeOutput_MultiCandidateDeclines(t *testing.T) {
 	}
 }
 
+// TestAdoptIncludedRecipeOutput_DirectTargetSourcesTie: when the trace records the
+// target_sources() that added the source — and the File that ran it is a recovered
+// recipe .cmake — the source is tied DIRECTLY to that recipe's genrule, with no
+// consumerDefFile and even when several recipe codegens are present (the case the
+// include-scope heuristic declines). This is the exact source->recipe signal.
+func TestAdoptIncludedRecipeOutput_DirectTargetSourcesTie(t *testing.T) {
+	const buildDir = "/tmp/build"
+	cc := newCodegenContext()
+	cc.Genrules = []ir.Target{
+		{Name: "g1", Kind: ir.KindGenrule, GenruleOuts: []string{"a/r1.cmake"}},
+		{Name: "g2", Kind: ir.KindGenrule, GenruleOuts: []string{"b/r2.cmake"}},
+	}
+	cc.OutToGenrule = map[string]string{"a/r1.cmake": "g1", "b/r2.cmake": "g2"}
+	// Two recipes are include()d (ambiguous for the scope heuristic), but the
+	// trace says r2 (g2) is the one whose target_sources() added b/foo.c.
+	cc.IncludeCalls = []shadow.IncludeCall{
+		{Path: filepath.Join(buildDir, "a/r1.cmake"), File: "/src/a/CMakeLists.txt"},
+		{Path: filepath.Join(buildDir, "b/r2.cmake"), File: "/src/b/CMakeLists.txt"},
+	}
+	cc.TargetSourcesCalls = []shadow.TargetSourcesCall{
+		{Target: "app", Sources: []string{filepath.Join(buildDir, "b/foo.c")}, File: filepath.Join(buildDir, "b/r2.cmake")},
+	}
+
+	// consumerDefFile empty + ambiguous candidates: the include-scope heuristic
+	// alone would decline, but the direct target_sources tie resolves it to g2.
+	relOut, name, ok := cc.adoptIncludedRecipeOutput(filepath.Join(buildDir, "b/foo.c"), buildDir, "")
+	if !ok || name != "g2" || relOut != "b/foo.c" {
+		t.Fatalf("direct tie: got (%q,%q,%v), want (b/foo.c, g2, true)", relOut, name, ok)
+	}
+	if cc.OutToGenrule["b/foo.c"] != "g2" {
+		t.Errorf("OutToGenrule not updated to g2: %v", cc.OutToGenrule)
+	}
+	found := false
+	for _, o := range cc.Genrules[1].GenruleOuts {
+		if o == "b/foo.c" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("b/foo.c not added to g2 outs: %v", cc.Genrules[1].GenruleOuts)
+	}
+}
+
 // TestOrdinarySource_RecipeTieBeforeBake: a build-dir source cmake did NOT flag
 // IsGenerated (e.g. target_sources()'d from a deferred include() of a generated
 // recipe) reaches the ORDINARY-source path. Before baking it as static bytes, the

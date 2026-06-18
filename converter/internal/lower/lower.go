@@ -1121,6 +1121,7 @@ type traceFacts struct {
 	decodedAddCustomCommands     []shadow.AddCustomCommandCall
 	decodedTargetEventCommands   []shadow.TargetEventCommandCall
 	decodedIncludes              []shadow.IncludeCall
+	decodedTargetSourcesCalls    []shadow.TargetSourcesCall
 	decodedAddCustomTargets      []shadow.AddCustomTargetCall
 	decodedAddDependencies       []shadow.AddDependenciesCall
 	decodedFileWriters           []shadow.FileWriterCall
@@ -1219,6 +1220,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 	var decodedAddCustomCommands []shadow.AddCustomCommandCall
 	var decodedTargetEventCommands []shadow.TargetEventCommandCall
 	var decodedIncludes []shadow.IncludeCall
+	var decodedTargetSourcesCalls []shadow.TargetSourcesCall
 	var decodedAddCustomTargets []shadow.AddCustomTargetCall
 	var decodedAddDependencies []shadow.AddDependenciesCall
 	var decodedFileWriters []shadow.FileWriterCall
@@ -1311,8 +1313,9 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 		decodedExecuteProcesses = decoded.ExecuteProcesses
 		decodedOutOfTreeExecProcs = decoded.OutOfTreeExecuteProcesses
 		decodedAddCustomCommands = decoded.AddCustomCommands
-		decodedTargetEventCommands = shadow.ExtractTargetEventCommands(opts.TraceRaw, cmakeSrcForTrace)
+		decodedTargetEventCommands = shadow.ExtractTargetEventCommands(opts.TraceRaw)
 		decodedIncludes = shadow.ExtractIncludeCalls(opts.TraceRaw)
+		decodedTargetSourcesCalls = shadow.ExtractTargetSourcesCalls(opts.TraceRaw)
 		decodedAddCustomTargets = decoded.AddCustomTargets
 		decodedAddDependencies = decoded.AddDependencies
 		decodedFileWriters = shadow.ExtractFileWriterCalls(opts.TraceRaw, cmakeSrcForTrace)
@@ -1390,6 +1393,7 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 		decodedAddCustomCommands:     decodedAddCustomCommands,
 		decodedTargetEventCommands:   decodedTargetEventCommands,
 		decodedIncludes:              decodedIncludes,
+		decodedTargetSourcesCalls:    decodedTargetSourcesCalls,
 		decodedAddCustomTargets:      decodedAddCustomTargets,
 		decodedAddDependencies:       decodedAddDependencies,
 		decodedFileWriters:           decodedFileWriters,
@@ -2677,7 +2681,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	cc.LiftCCEmbed = opts.LiftCCEmbed
 	cc.LiftCCHash = opts.LiftCCHash
 	cc.CMakeBinary, cc.Warnings = lookupCmakeBinary(), opts.Warnings
-	cc.OutputToCustomCommand, cc.IncludeCalls = buildOutputToCustomCommand(tf.decodedAddCustomCommands, opts.BuildDir), tf.decodedIncludes
+	cc.OutputToCustomCommand, cc.IncludeCalls, cc.TargetSourcesCalls = buildOutputToCustomCommand(tf.decodedAddCustomCommands, opts.BuildDir), tf.decodedIncludes, tf.decodedTargetSourcesCalls
 	cc.LiteralProbeSink = opts.LiteralProbeSink
 	cc.LiteralResolutions = opts.LiteralResolutions
 	// Parallel pre-warm of the cmake -P script bakes: with the bake opted

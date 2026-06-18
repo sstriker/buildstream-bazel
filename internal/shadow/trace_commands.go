@@ -230,6 +230,43 @@ func ExtractIncludeCalls(traceRaw []byte) []IncludeCall {
 	return out
 }
 
+// TargetSourcesCall records one user-level `target_sources(<t> <vis> <src>...)`
+// event: the target, the sources it adds (visibility keywords stripped,
+// --trace-expand-resolved), and the File that executed the call. Used to tie a
+// generated source DIRECTLY to the recipe `.cmake` that target_sources()'d it
+// (the File is the recipe) — an exact alternative to the include-scope
+// heuristic, since we know precisely which recipe added the source.
+//
+// Like ExtractIncludeCalls this is deliberately NOT source-tree-filtered: a
+// recipe that target_sources()'s a generated file commonly lives under the
+// BUILD tree (a produced-and-include()d recipe) or in a cmake module, and its
+// added source is a real build input we must recover regardless of where the
+// call is defined — the consumer side only acts when the File resolves to a
+// recovered recipe genrule.
+type TargetSourcesCall struct {
+	Target  string
+	Sources []string
+	File    string
+	Line    int
+}
+
+// ExtractTargetSourcesCalls returns every `target_sources(<t> <vis> <src>...)`
+// event in the trace, in trace order (FILE_SET / header-set forms skipped).
+func ExtractTargetSourcesCalls(traceRaw []byte) []TargetSourcesCall {
+	var out []TargetSourcesCall
+	for _, ev := range ParseTrace(traceRaw) {
+		if !strings.EqualFold(ev.Cmd, "target_sources") {
+			continue
+		}
+		target, srcs, ok := parseTargetSourcesArgs(ev.Args)
+		if !ok {
+			continue
+		}
+		out = append(out, TargetSourcesCall{Target: target, Sources: srcs, File: ev.File, Line: ev.Line})
+	}
+	return out
+}
+
 // TargetIncludeCall records one user-written
 // target_include_directories(target [SYSTEM] [AFTER|BEFORE]
 //
@@ -2018,12 +2055,25 @@ type TargetEventCommandCall struct {
 	Line             int
 }
 
-// ExtractTargetEventCommands returns every in-source-tree TARGET-event
-// add_custom_command (PRE_BUILD / PRE_LINK / POST_BUILD) in the trace.
-func ExtractTargetEventCommands(traceRaw []byte, sourceRoot string) []TargetEventCommandCall {
+// ExtractTargetEventCommands returns every TARGET-event add_custom_command
+// (PRE_BUILD / PRE_LINK / POST_BUILD) in the trace.
+//
+// Deliberately NOT source-tree-filtered: a build-event "stamp" hook is
+// output-bearing (it produces a byproduct / an inferable output a target
+// consumes), and such hooks commonly live in a generated+include()d recipe
+// `.cmake` under the BUILD tree or in a cmake module (the prefix dir) — neither
+// in the source root. Those modules don't run under Bazel, so any output they
+// attach to a target must be reproduced or the build breaks; location is the
+// machinery, the output is the build input. Mirrors the include()/
+// generate_export_header precedent (out-of-source-tree idioms recovered for
+// their outputs). Synthesis stays output-gated downstream (lowerTargetEvent
+// Commands only emits a genrule when there's a recoverable byproduct / inferred
+// output), so admitting non-source-tree forms recovers real outputs without
+// emitting rules for pure machinery chatter.
+func ExtractTargetEventCommands(traceRaw []byte) []TargetEventCommandCall {
 	var out []TargetEventCommandCall
 	for _, ev := range ParseTrace(traceRaw) {
-		if call, ok := classifyTargetEventCommand(ev, sourceRoot); ok {
+		if call, ok := classifyTargetEventCommand(ev); ok {
 			out = append(out, call)
 		}
 	}
@@ -2031,16 +2081,16 @@ func ExtractTargetEventCommands(traceRaw []byte, sourceRoot string) []TargetEven
 }
 
 // classifyTargetEventCommand parses one trace event into a TargetEventCommandCall,
-// or (_, false) when it isn't an in-source-tree add_custom_command(TARGET <t>
-// <event> ...). Shares the section-keyword grammar with classifyAddCustomCommand
-// but anchors on the TARGET/<target>/<event> prefix.
-func classifyTargetEventCommand(ev TraceEvent, sourceRoot string) (TargetEventCommandCall, bool) {
+// or (_, false) when it isn't an add_custom_command(TARGET <t> <event> ...).
+// Shares the section-keyword grammar with classifyAddCustomCommand but anchors
+// on the TARGET/<target>/<event> prefix. Not source-tree-gated (the caller that
+// wants that filter, the unrecognized-form audit, applies inSourceTree itself).
+func classifyTargetEventCommand(ev TraceEvent) (TargetEventCommandCall, bool) {
 	if !strings.EqualFold(ev.Cmd, "add_custom_command") {
 		return TargetEventCommandCall{}, false
 	}
-	if !inSourceTree(ev.File, sourceRoot) {
-		return TargetEventCommandCall{}, false
-	}
+	// No inSourceTree gate (see ExtractTargetEventCommands): a stamp hook is
+	// output-bearing and may be defined in a build-tree recipe or a cmake module.
 	if len(ev.Args) < 3 || !strings.EqualFold(ev.Args[0], "TARGET") {
 		return TargetEventCommandCall{}, false
 	}

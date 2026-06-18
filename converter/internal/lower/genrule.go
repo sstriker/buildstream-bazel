@@ -75,6 +75,16 @@ type codegenContext struct {
 	// genrule's outputs. Empty on the no-trace path.
 	IncludeCalls []shadow.IncludeCall
 
+	// TargetSourcesCalls are the trace's user-level target_sources(<t> <vis>
+	// <src>...) events. They give an EXACT source->recipe tie: a generated
+	// source whose producing edge cmake never modeled is attributed to the
+	// recipe .cmake that target_sources()'d it (the call's File), provided that
+	// recipe is itself a recovered codegen output (in OutToGenrule). Precise
+	// alternative to the include-scope heuristic in adoptIncludedRecipeOutput —
+	// no consumer-scope disambiguation needed, works with many recipes present.
+	// Empty on the no-trace path.
+	TargetSourcesCalls []shadow.TargetSourcesCall
+
 	// OutputToCustomCommand indexes the add_custom_command trace records by their
 	// OUTPUT/BYPRODUCT paths (keyed in both raw trace and build-relative form via
 	// outputKeyForms), for recovering the REAL command when a ninja edge is a
@@ -600,7 +610,8 @@ func newCodegenContext() *codegenContext {
 // so this strictly adds recovery). Returns (relOut, genruleName, true) on
 // success.
 func (cc *codegenContext) adoptIncludedRecipeOutput(genSrcAbs, buildDir, consumerDefFile string) (string, string, bool) {
-	if cc == nil || len(cc.IncludeCalls) == 0 || cc.OutToGenrule == nil {
+	if cc == nil || cc.OutToGenrule == nil ||
+		(len(cc.IncludeCalls) == 0 && len(cc.TargetSourcesCalls) == 0) {
 		return "", "", false
 	}
 	rel, ok := relativeIfInsideRelaxed(buildDir, genSrcAbs)
@@ -613,6 +624,17 @@ func (cc *codegenContext) adoptIncludedRecipeOutput(genSrcAbs, buildDir, consume
 	// multiple-producer conflict.
 	if existing, ok := cc.OutToGenrule[rel]; ok {
 		return rel, existing, true
+	}
+	// Exact tie first: a target_sources() call added THIS source, and the File
+	// that executed it is a recipe .cmake we recovered (in OutToGenrule). We know
+	// precisely which recipe produced it — no include-scope disambiguation, works
+	// with any number of recipes, and needs no consumerDefFile. (The include-scope
+	// heuristic below stays as the fallback when no target_sources event matches.)
+	if name, ok := cc.recipeFromTargetSources(rel, buildDir); ok {
+		if cc.appendGenruleOut(name, rel) {
+			cc.OutToGenrule[rel] = name
+			return rel, name, true
+		}
 	}
 	// Codegen genrules whose produced recipe .cmake is include()d, with the
 	// directory the include() ran in (for scope disambiguation).
@@ -652,6 +674,36 @@ func (cc *codegenContext) adoptIncludedRecipeOutput(genSrcAbs, buildDir, consume
 	}
 	cc.OutToGenrule[rel] = chosen
 	return rel, chosen, true
+}
+
+// recipeFromTargetSources returns the recovered codegen genrule that produced
+// the recipe `.cmake` which target_sources()'d the build-relative output `rel`,
+// if any. The trace's target_sources event carries the File that executed it
+// (the recipe), so this is an exact source->recipe->genrule tie: match the
+// event's added sources to `rel`, then map the event's File (a recipe .cmake) to
+// its producing genrule via OutToGenrule. A source named relative to the recipe
+// is resolved against the recipe's dir, mirroring cmake's own resolution.
+func (cc *codegenContext) recipeFromTargetSources(rel, buildDir string) (string, bool) {
+	for _, ts := range cc.TargetSourcesCalls {
+		recipeRel, ok := relativeIfInsideRelaxed(buildDir, ts.File)
+		if !ok || !strings.HasSuffix(strings.ToLower(recipeRel), ".cmake") {
+			continue
+		}
+		name, ok := cc.OutToGenrule[recipeRel]
+		if !ok {
+			continue
+		}
+		for _, s := range ts.Sources {
+			abs := s
+			if !filepath.IsAbs(abs) {
+				abs = filepath.Join(filepath.Dir(ts.File), s)
+			}
+			if sRel, ok := relativeIfInsideRelaxed(buildDir, abs); ok && sRel == rel {
+				return name, true
+			}
+		}
+	}
+	return "", false
 }
 
 // appendGenruleOut adds out to the named genrule's GenruleOuts (sorted, deduped)
