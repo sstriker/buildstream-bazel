@@ -685,7 +685,12 @@ func (cc *codegenContext) adoptIncludedRecipeOutput(genSrcAbs, buildDir, consume
 // is resolved against the recipe's dir, mirroring cmake's own resolution.
 func (cc *codegenContext) recipeFromTargetSources(rel, buildDir string) (string, bool) {
 	for _, ts := range cc.TargetSourcesCalls {
-		recipeRel, ok := relativeIfInsideRelaxed(buildDir, ts.File)
+		// Causal attribution: the recipe is the most recent include() preceding
+		// this target_sources in trace order (ts.Recipe), NOT ts.File. The recipe
+		// matters only if it was recovered as a genrule (OutToGenrule); a non-recipe
+		// preceding include relativizes-but-isn't-registered, or doesn't relativize
+		// under the build dir at all (e.g. a prefix module), and is skipped.
+		recipeRel, ok := relativeIfInsideRelaxed(buildDir, ts.Recipe)
 		if !ok || !strings.HasSuffix(strings.ToLower(recipeRel), ".cmake") {
 			continue
 		}
@@ -696,7 +701,7 @@ func (cc *codegenContext) recipeFromTargetSources(rel, buildDir string) (string,
 		for _, s := range ts.Sources {
 			abs := s
 			if !filepath.IsAbs(abs) {
-				abs = filepath.Join(filepath.Dir(ts.File), s)
+				abs = filepath.Join(filepath.Dir(ts.Recipe), s)
 			}
 			if sRel, ok := relativeIfInsideRelaxed(buildDir, abs); ok && sRel == rel {
 				return name, true

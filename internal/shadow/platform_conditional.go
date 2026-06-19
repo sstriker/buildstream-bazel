@@ -566,7 +566,13 @@ func parseTargetSourcesArgs(args []string) (string, []string, bool) {
 			// header-set-shaped, not a flat src list.
 			return "", nil, false
 		}
-		srcs = append(srcs, a)
+		// cmake stores a multi-file group as ONE `;`-delimited list arg
+		// ("a.cpp;b.cpp"); split it so each file is an individual source.
+		for _, s := range strings.Split(a, ";") {
+			if s != "" {
+				srcs = append(srcs, s)
+			}
+		}
 	}
 	if len(srcs) == 0 {
 		return "", nil, false
