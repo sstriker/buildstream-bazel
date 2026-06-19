@@ -1636,6 +1636,125 @@ func buildTargetIndexes(r *fileapi.Reply, cfg fileapi.Configuration, cmakeBuild 
 	}
 }
 
+// recoverUtilityRecipeCommands recovers the custom commands that produce
+// include()d `.cmake` recipes reached through a UTILITY (add_custom_target)
+// target's ninja deps, registering each into cc.OutToGenrule BEFORE the target
+// walk — so a consuming target's adoptIncludedRecipeOutput (the
+// OUTPUT -> include() -> target_sources() tie) resolves the recipe's generated
+// sources to the recovered genrule. lowerTarget skips UTILITY nodes themselves
+// (they have no Bazel equivalent), so without this pass a recipe produced under
+// a UTILITY target — the add_custom_target(gen DEPENDS recipe.cmake) shape, and
+// the dominant form a nested cmake sub-build uses to drive a code generator —
+// never reaches OutToGenrule, and the #730 causal attribution + `;`-split can't
+// complete the chain. Runs in every ToIR (outer and the recursive nested
+// lowering), which is what extends the recovery into nested builds.
+//
+// Strictly additive: the only edges recovered are those whose declared OUTPUT is
+// a `.cmake` recipe the project actually include()s (or that a target_sources()
+// causally attributes to). A UTILITY custom command whose output nothing
+// include()s is left untouched — no dead genrule. recoverGenrule dedups via
+// cc.SeenBuilds and declines (best-effort, error ignored) any non-CUSTOM_COMMAND
+// or empty-command node, so a UTILITY whose deps carry no recoverable recipe is
+// a no-op. The walk stops at sibling-target boundaries (every codemodel target
+// name, the same fence collectCodegenHeaders uses), so a depended-on tool's or
+// library's own edges aren't pulled in.
+func recoverUtilityRecipeCommands(r *fileapi.Reply, cfg fileapi.Configuration, g *ninja.Graph, cc *codegenContext, cmakeSrc, cmakeBuild string) {
+	if g == nil || cc == nil || cmakeBuild == "" {
+		return
+	}
+	// UTILITY target names to walk, and the sibling-target fence (every codemodel
+	// target name) the walk stops at — derived here so the pass is self-contained
+	// (it runs in recoverConfigureTimeArtifacts, before buildTargetIndexes).
+	var utilityNames []string
+	isTargetName := map[string]bool{}
+	for _, tref := range cfg.Targets {
+		isTargetName[tref.Name] = true
+		if t, ok := r.Targets[tref.Id]; ok && t.Type == "UTILITY" {
+			utilityNames = append(utilityNames, tref.Name)
+		}
+	}
+	if len(utilityNames) == 0 {
+		return
+	}
+	// The include()d `.cmake` recipe outputs (build-relative) — the only
+	// custom-command outputs whose recovery serves the include->target_sources
+	// chain. Both the include() events and the target_sources() causal recipes
+	// are unioned: every ts.Recipe is itself an include() by construction, but
+	// reading both keeps the gate aligned with the two consumer lookups
+	// (the include-scope heuristic and recipeFromTargetSources).
+	includedRecipes := map[string]bool{}
+	addRecipe := func(p string) {
+		rel, ok := relativeIfInsideRelaxed(cmakeBuild, p)
+		if ok && strings.HasSuffix(strings.ToLower(rel), ".cmake") {
+			includedRecipes[rel] = true
+		}
+	}
+	for _, inc := range cc.IncludeCalls {
+		addRecipe(inc.Path)
+	}
+	for _, ts := range cc.TargetSourcesCalls {
+		addRecipe(ts.Recipe)
+	}
+	if len(includedRecipes) == 0 {
+		return
+	}
+	if g.OutputIndex == nil {
+		g.Index()
+	}
+	// Seed each UTILITY's dep walk from its ninja phony. cmake names a
+	// sub-directory custom target's phony with its build-relative dir prefix
+	// (`gen/gen_recipe`) while the codemodel records the bare unique name
+	// (`gen_recipe`), so index every ninja output by its final path component
+	// and seed from the matches (falling back to the bare name for a root-dir
+	// target) — the same seeding collectCodegenHeaders performs.
+	phonyByName := map[string][]string{}
+	for o := range g.OutputIndex {
+		base := o
+		if i := strings.LastIndex(o, "/"); i >= 0 {
+			base = o[i+1:]
+		}
+		phonyByName[base] = append(phonyByName[base], o)
+	}
+	sort.Strings(utilityNames)
+	for _, name := range utilityNames {
+		seeds := append([]string(nil), phonyByName[name]...)
+		if len(seeds) == 0 {
+			seeds = []string{name}
+		}
+		sort.Strings(seeds) // deterministic recovery (emit) order
+		visited := map[string]bool{}
+		stack := seeds
+		for len(stack) > 0 {
+			cur := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if visited[cur] {
+				continue
+			}
+			visited[cur] = true
+			if includedRecipes[cur] {
+				// Reuse the per-target custom-command recovery: it finds the
+				// CUSTOM_COMMAND edge for this output, emits the genrule, and
+				// registers cc.OutToGenrule (genrule fallback) /
+				// OutToNativeConsumerDep (recognized). Errors — a non-custom-
+				// command or empty-command producer — are the decline path.
+				_, _, _ = cc.recoverGenrule(filepath.Join(cmakeBuild, filepath.FromSlash(cur)), cmakeSrc, cmakeBuild, g)
+			}
+			b := g.BuildFor(cur)
+			if b == nil {
+				continue
+			}
+			for _, ins := range [][]string{b.Inputs, b.ImplicitInputs, b.OrderOnly} {
+				for _, in := range ins {
+					if isTargetName[in] {
+						continue // don't cross into a sibling target's subgraph
+					}
+					stack = append(stack, in)
+				}
+			}
+		}
+	}
+}
+
 // recoveredArtifacts bundles the configure-time recovery results
 // (execute_process / configure_file / file(GENERATE) lifts, the genex
 // target facts, and the find_package attribution) ToIR threads into the
@@ -1910,6 +2029,11 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 	// genrule per command and register the byproducts in cc.OutToGenrule here,
 	// before lowerTarget, so a consuming target resolves them via outputClaimed.
 	lowerTargetEventCommands(decodedTargetEventCommands, cc, cmakeSrc, cmakeBuild, hostSrc, opts.BazelPackagePath, opts.Warnings)
+
+	// Recover include()d `.cmake` recipes produced under a UTILITY target's ninja
+	// deps into cc.OutToGenrule, before the target walk, so a consuming target's
+	// adoptIncludedRecipeOutput resolves them (see recoverUtilityRecipeCommands).
+	recoverUtilityRecipeCommands(r, cfg, g, cc, cmakeSrc, cmakeBuild)
 
 	return &recoveredArtifacts{
 		executeProcesses: executeProcesses,
