@@ -242,44 +242,57 @@ func ExtractIncludeCalls(traceRaw []byte) []IncludeCall {
 
 // TargetSourcesCall records one user-level `target_sources(<t> <vis> <src>...)`
 // event: the target, the sources it adds (visibility keywords stripped,
-// --trace-expand-resolved), and the File that executed the call. Used to tie a
-// generated source DIRECTLY to the recipe `.cmake` that target_sources()'d it
-// (the File is the recipe) — an exact alternative to the include-scope
-// heuristic, since we know precisely which recipe added the source.
+// cmake's `;`-delimited list flattened, --trace-expand-resolved), and Recipe —
+// the most recent `include(<file>)` that PRECEDES this call in trace order.
 //
-// A recipe that target_sources()'s a generated file commonly lives under the
-// BUILD tree (a produced-and-include()d recipe), so this is scoped with
-// inProjectScope (source-tree OR build-tree), NOT the strict inSourceTree gate.
+// cmake executes single-threaded and the trace is a total order, so a
+// target_sources() executed while a recipe `.cmake` is include()d is CAUSED by
+// that include — the innermost active one is the most recent preceding include.
+// That causal pairing is how the recipe tie attributes a generated source to the
+// recipe that target_sources()'d it, with NO reliance on the File field (cmake
+// can report it unreliably for deferred / generated includes) and no path
+// heuristics. The tie acts only when Recipe resolves to a RECOVERED recipe
+// genrule in OutToGenrule, so a non-recipe preceding include is inert.
 type TargetSourcesCall struct {
 	Target  string
 	Sources []string
 	File    string
+	Recipe  string // most recent include(<file>) preceding this call (trace order)
 	Line    int
 }
 
 // ExtractTargetSourcesCalls returns every `target_sources(<t> <vis> <src>...)`
-// event in the trace, in trace order (FILE_SET / header-set forms skipped).
+// event in the trace, in trace order (FILE_SET / header-set forms skipped), each
+// tagged with the most recent preceding include() (Recipe) for causal recipe
+// attribution.
 //
-// Scoped with inProjectScope like the other output-bearing forms: the only
-// consumer, the recipe tie, matches a call's File against a RECOVERED recipe
-// `.cmake` in OutToGenrule — always a source/build-tree codegen output, never a
-// prefix module or a CMakeFiles try_compile-scratch file — so dropping those
-// loses no tie and keeps the slice free of scratch noise (e.g. SDL emits 200+
-// target_sources from CMakeFiles scratch). buildRoot == "" → source-tree-only.
-func ExtractTargetSourcesCalls(traceRaw []byte, sourceRoot, buildRoot string) []TargetSourcesCall {
+// Location policy: a `.cmake` recipe never affects BUILD.bazel unless it became a
+// recovered configure_file/codegen genrule (the OutToGenrule gate downstream), so
+// WHERE a target_sources is issued is irrelevant — a recipe in the install prefix
+// is fine. The only thing dropped is cmake's own internal try_compile scratch
+// under <build>/CMakeFiles (e.g. SDL emits 200+ such target_sources), which is
+// pure machinery, never a project build input.
+func ExtractTargetSourcesCalls(traceRaw []byte) []TargetSourcesCall {
 	var out []TargetSourcesCall
+	var lastInclude string
 	for _, ev := range ParseTrace(traceRaw) {
+		if strings.EqualFold(ev.Cmd, "include") && len(ev.Args) > 0 {
+			if p := strings.TrimSpace(ev.Args[0]); p != "" {
+				lastInclude = p
+			}
+			continue
+		}
 		if !strings.EqualFold(ev.Cmd, "target_sources") {
 			continue
 		}
-		if !inProjectScope(ev.File, sourceRoot, buildRoot) {
-			continue
+		if strings.Contains(ev.File, "/CMakeFiles/") {
+			continue // cmake-internal try_compile scratch
 		}
 		target, srcs, ok := parseTargetSourcesArgs(ev.Args)
 		if !ok {
 			continue
 		}
-		out = append(out, TargetSourcesCall{Target: target, Sources: srcs, File: ev.File, Line: ev.Line})
+		out = append(out, TargetSourcesCall{Target: target, Sources: srcs, File: ev.File, Recipe: lastInclude, Line: ev.Line})
 	}
 	return out
 }

@@ -75,10 +75,11 @@ func TestAdoptIncludedRecipeOutput_MultiCandidateDeclines(t *testing.T) {
 }
 
 // TestAdoptIncludedRecipeOutput_DirectTargetSourcesTie: when the trace records the
-// target_sources() that added the source — and the File that ran it is a recovered
-// recipe .cmake — the source is tied DIRECTLY to that recipe's genrule, with no
-// consumerDefFile and even when several recipe codegens are present (the case the
-// include-scope heuristic declines). This is the exact source->recipe signal.
+// target_sources() that added the source — causally attributed (by trace order) to
+// a recovered recipe .cmake via its Recipe field — the source is tied DIRECTLY to
+// that recipe's genrule, with no consumerDefFile and even when several recipe
+// codegens are present (the case the include-scope heuristic declines). This is the
+// exact source->recipe signal.
 func TestAdoptIncludedRecipeOutput_DirectTargetSourcesTie(t *testing.T) {
 	const buildDir = "/tmp/build"
 	cc := newCodegenContext()
@@ -94,7 +95,7 @@ func TestAdoptIncludedRecipeOutput_DirectTargetSourcesTie(t *testing.T) {
 		{Path: filepath.Join(buildDir, "b/r2.cmake"), File: "/src/b/CMakeLists.txt"},
 	}
 	cc.TargetSourcesCalls = []shadow.TargetSourcesCall{
-		{Target: "app", Sources: []string{filepath.Join(buildDir, "b/foo.c")}, File: filepath.Join(buildDir, "b/r2.cmake")},
+		{Target: "app", Sources: []string{filepath.Join(buildDir, "b/foo.c")}, Recipe: filepath.Join(buildDir, "b/r2.cmake")},
 	}
 
 	// consumerDefFile empty + ambiguous candidates: the include-scope heuristic
