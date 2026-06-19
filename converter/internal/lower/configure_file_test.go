@@ -909,3 +909,47 @@ func TestRecoverConfigureFiles_SamePathCopyOnlyMirror_NoRule(t *testing.T) {
 		t.Errorf("same-path mirror must not register a producer; consumers resolve to the source file")
 	}
 }
+
+// TestRecoverConfigureFiles_OutOfProjectRecipeGate: a configure_file issued from
+// OUTSIDE the project (a cmake module in the install prefix) is recovered only
+// when its output is an include()d .cmake recipe — the OUTPUT->include tie. A
+// non-included out-of-project .cmake (a package/version config) is dropped (it
+// would be a dead genrule); an IN-project .cmake is recovered regardless of
+// include() (unchanged behavior).
+func TestRecoverConfigureFiles_OutOfProjectRecipeGate(t *testing.T) {
+	hostSrc := t.TempDir()
+	hostBuild := t.TempDir()
+	for _, f := range []string{"recipe.cmake", "inproj.cmake", "config.cmake"} {
+		if err := os.WriteFile(filepath.Join(hostBuild, f), []byte("# "+f+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const prefix = "/usr/share/cmake-4.3/Modules"
+	calls := []shadow.ConfigureFileCall{
+		// out-of-project, .cmake, INCLUDED -> recovered (the prefix-recipe win).
+		{Input: prefix + "/Mod.cmake.in", Output: filepath.Join(hostBuild, "recipe.cmake"), CallFile: prefix + "/Mod.cmake"},
+		// out-of-project, .cmake, NOT included -> dropped (dead genrule otherwise).
+		{Input: prefix + "/Cfg.cmake.in", Output: filepath.Join(hostBuild, "config.cmake"), CallFile: prefix + "/Cfg.cmake"},
+		// in-project, .cmake, NOT included -> recovered (in-project unaffected).
+		{Input: filepath.Join(hostSrc, "x.cmake.in"), Output: filepath.Join(hostBuild, "inproj.cmake"), CallFile: filepath.Join(hostSrc, "CMakeLists.txt")},
+	}
+	cc := newCodegenContext()
+	cc.IncludeCalls = []shadow.IncludeCall{{Path: filepath.Join(hostBuild, "recipe.cmake")}}
+	out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, hostBuild, hostBuild, nil, false, nil, cc)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	got := map[string]bool{}
+	for _, o := range out {
+		got[o.RelOutput] = true
+	}
+	if !got["recipe.cmake"] {
+		t.Error("included out-of-project recipe .cmake should be recovered")
+	}
+	if got["config.cmake"] {
+		t.Error("non-included out-of-project .cmake should be DROPPED (dead genrule)")
+	}
+	if !got["inproj.cmake"] {
+		t.Error("in-project .cmake should be recovered regardless of include()")
+	}
+}

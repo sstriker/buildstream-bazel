@@ -195,6 +195,24 @@ func TestExtractConfigureFiles_FiltersCmakeInternal(t *testing.T) {
 	}
 }
 
+// TestExtractConfigureFiles_PrefixRecipePassthrough: a prefix cmake-module
+// configure_file producing a NON-scratch `.cmake` recipe is let through (recovery
+// gates it on include()); one producing a non-`.cmake` stays filtered; a
+// scratch-output `.cmake` stays filtered.
+func TestExtractConfigureFiles_PrefixRecipePassthrough(t *testing.T) {
+	trace := `{"args":["/usr/share/cmake-4.3/Modules/Mod.cmake.in","/build/recipe.cmake","@ONLY"],"cmd":"configure_file","file":"/usr/share/cmake-4.3/Modules/Mod.cmake","line":5}
+{"args":["/usr/share/cmake-4.3/Modules/Probe.h.in","/build/probe.h"],"cmd":"configure_file","file":"/usr/share/cmake-4.3/Modules/Probe.cmake","line":6}
+{"args":["/usr/share/cmake-4.3/Modules/Sys.cmake.in","/build/CMakeFiles/4.3/Sys.cmake"],"cmd":"configure_file","file":"/usr/share/cmake-4.3/Modules/Det.cmake","line":7}
+`
+	got := ExtractConfigureFiles([]byte(trace), "/src", "/build")
+	if len(got) != 1 {
+		t.Fatalf("want 1 (prefix .cmake recipe kept; non-.cmake + scratch-output dropped): %+v", got)
+	}
+	if got[0].Output != "/build/recipe.cmake" {
+		t.Errorf("kept wrong call: %+v", got[0])
+	}
+}
+
 // traceExportHeader holds one generate_export_header configure_file call: its
 // call SITE is cmake's own GenerateExportHeader.cmake (outside the source
 // tree), but its template is exportheader.cmake.in and its output is a

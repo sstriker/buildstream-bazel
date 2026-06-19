@@ -154,6 +154,10 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 
 	var out []configureFileOut
 	seenRel := map[string]bool{}
+	includedSet := map[string]bool{}
+	for _, inc := range cc.IncludeCalls {
+		includedSet[inc.Path] = true
+	}
 	for _, call := range calls {
 		// configure_file output is sometimes a relative path: cmake
 		// resolves it against CMAKE_CURRENT_BINARY_DIR — the build-dir
@@ -203,6 +207,19 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 				}
 			}
 			output = filepath.Join(recordedBuildDir, relDir, call.Output)
+		}
+		// Out-of-project recipe gate: a configure_file issued from OUTSIDE the
+		// project (a cmake module in the install prefix) is recovered only when its
+		// output is an include()d `.cmake` recipe — the one shape whose output
+		// actually feeds the BUILD (via the OUTPUT->include tie). A prefix module's
+		// other `.cmake` outputs (package / version configs nothing includes) would
+		// be dead genrules, so they stay dropped. In-project calls are unaffected;
+		// the shadow classifier only lets out-of-project calls reach here when they
+		// produce a `.cmake` at all (see classifyConfigureFile).
+		if strings.HasSuffix(strings.ToLower(output), ".cmake") &&
+			!callSiteInProject(call.CallFile, recordedSrcDir, recordedBuildDir) &&
+			!includedSet[output] {
+			continue
 		}
 		rel, ok := relativeIfInsideRelaxed(recordedBuildDir, output)
 		if !ok {
@@ -767,4 +784,21 @@ func configureFileTags(s configureFileTagSet) []string {
 	}
 	sort.Strings(tags)
 	return tags
+}
+
+// callSiteInProject reports whether a configure_file's issuing file is part of
+// the project — its source tree or its build tree, excluding cmake's CMakeFiles
+// scratch — as opposed to an out-of-project location like the install prefix.
+// Used by the out-of-project recipe gate: in-project configure_file calls are
+// recovered unconditionally; out-of-project ones only when they produce an
+// include()d .cmake recipe.
+func callSiteInProject(file, srcDir, buildDir string) bool {
+	if file == "" || strings.Contains(file, "/CMakeFiles/") {
+		return false
+	}
+	if _, in := relativeIfInside(srcDir, file); in {
+		return true
+	}
+	_, in := relativeIfInside(buildDir, file)
+	return in
 }
