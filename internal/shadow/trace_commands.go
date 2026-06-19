@@ -890,7 +890,16 @@ func classifyConfigureFile(ev TraceEvent, sourceRoot, buildRoot string) (Configu
 	// recovers the (baked) header instead of dropping it, while keeping
 	// every other out-of-tree configure_file filtered — the same
 	// recognize-a-known-idiom move as the cc_embed encoder list.
-	if !inProjectScope(ev.File, sourceRoot, buildRoot) && !isGenerateExportHeaderTemplate(ev.Args[0]) {
+	// Also let through a configure_file whose OUTPUT is a `.cmake` (a candidate
+	// recipe) even when issued out-of-project — a cmake module in the install
+	// prefix can generate a recipe `.cmake` the project include()s, which DOES
+	// feed the BUILD via the OUTPUT->include tie. The recovery side gates these on
+	// being actually include()d, so a prefix module's non-included config/version
+	// `.cmake` is still dropped (it would be a dead genrule). Scratch-issued and
+	// scratch-output ones stay excluded.
+	cmakeRecipeOut := strings.HasSuffix(strings.ToLower(ev.Args[1]), ".cmake") &&
+		!strings.Contains(ev.File, "/CMakeFiles/") && !strings.Contains(ev.Args[1], "/CMakeFiles/")
+	if !inProjectScope(ev.File, sourceRoot, buildRoot) && !isGenerateExportHeaderTemplate(ev.Args[0]) && !cmakeRecipeOut {
 		return ConfigureFileCall{}, false
 	}
 	return ConfigureFileCall{
