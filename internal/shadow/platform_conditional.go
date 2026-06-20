@@ -485,10 +485,10 @@ func cmakeSystemNameToConstraint(name string) string {
 //	    [<PRIVATE|PUBLIC|INTERFACE> <src>...]...)
 //
 // Skipped: alias / imported add_library forms (no real
-// sources), target_sources FILE_SET form (more complex parse,
-// rare in conditional blocks). For target_sources we
-// concatenate sources across all visibility groups — the
-// platform-conditionality applies regardless of visibility.
+// sources). For target_sources we concatenate sources across all
+// visibility groups — the platform-conditionality applies
+// regardless of visibility — including each FILE_SET block's FILES
+// (parseTargetSourcesArgs handles the FILE_SET grammar).
 func sourcesFromAddOrTargetCall(ev TraceEvent) (target string, sources []string, ok bool) {
 	switch strings.ToLower(ev.Cmd) {
 	case "add_library":
@@ -556,15 +556,43 @@ func parseTargetSourcesArgs(args []string) (string, []string, bool) {
 	}
 	target := args[0]
 	var srcs []string
+	// State machine over the items after the target. target_sources has two
+	// shapes that can interleave across visibility (PRIVATE/PUBLIC/INTERFACE)
+	// groups: a flat source list, and FILE_SET blocks
+	//   FILE_SET <set> [TYPE <type>] [BASE_DIRS <dir>...] [FILES <file>...]
+	// (cmake 3.23+). We collect the flat sources AND each FILE_SET's FILES — the
+	// real file entries (generated headers / C++ module units a codegen recipe may
+	// produce), which the causal recipe attribution needs — while skipping the set
+	// name, the TYPE value, and the BASE_DIRS directories (not files). A non-FILE_SET
+	// flat list (the common case) is unaffected: collect stays true throughout.
+	collect := true // outside a FILE_SET sub-section, non-keyword args are sources
+	skip := 0       // skip the next N tokens (FILE_SET set name, TYPE value)
 	for _, a := range args[1:] {
-		u := strings.ToUpper(a)
-		if u == "PRIVATE" || u == "PUBLIC" || u == "INTERFACE" {
+		if skip > 0 {
+			skip--
 			continue
 		}
-		if u == "FILE_SET" || u == "TYPE" || u == "BASE_DIRS" || u == "FILES" {
-			// FILE_SET form — bail out; the arg structure is
-			// header-set-shaped, not a flat src list.
-			return "", nil, false
+		switch strings.ToUpper(a) {
+		case "PRIVATE", "PUBLIC", "INTERFACE":
+			collect = true // a new visibility group resets to the flat-source list
+			continue
+		case "FILE_SET":
+			collect = false
+			skip = 1 // the set name (a reserved type like HEADERS/CXX_MODULES, or a custom name)
+			continue
+		case "TYPE":
+			collect = false
+			skip = 1 // the type value (HEADERS / CXX_MODULES)
+			continue
+		case "BASE_DIRS":
+			collect = false // following tokens are directories, not source files
+			continue
+		case "FILES":
+			collect = true // following tokens are the FILE_SET's real files
+			continue
+		}
+		if !collect {
+			continue
 		}
 		// cmake stores a multi-file group as ONE `;`-delimited list arg
 		// ("a.cpp;b.cpp"); split it so each file is an individual source.
