@@ -262,7 +262,8 @@ type TargetSourcesCall struct {
 }
 
 // ExtractTargetSourcesCalls returns every `target_sources(<t> <vis> <src>...)`
-// event in the trace, in trace order (FILE_SET / header-set forms skipped), each
+// event in the trace, in trace order — including FILE_SET blocks, whose FILES
+// (generated headers / C++ module units) parseTargetSourcesArgs collects — each
 // tagged with the most recent preceding include() (Recipe) for causal recipe
 // attribution.
 //
