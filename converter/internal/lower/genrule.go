@@ -85,6 +85,14 @@ type codegenContext struct {
 	// Empty on the no-trace path.
 	TargetSourcesCalls []shadow.TargetSourcesCall
 
+	// OuterRecipeIncludes are the ANCESTOR builds' recipe `.cmake` paths
+	// (absolute), threaded into a nested lowering via Options.OuterRecipeIncludes.
+	// recoverUtilityRecipeCommands folds them into its include()d-recipe gate so a
+	// recipe produced by THIS (nested) build's UTILITY target but include()d by an
+	// OUTER build (the superbuild-at-configure shape) is still recovered. Empty at
+	// the top level / no-trace path.
+	OuterRecipeIncludes []string
+
 	// OutputToCustomCommand indexes the add_custom_command trace records by their
 	// OUTPUT/BYPRODUCT paths (keyed in both raw trace and build-relative form via
 	// outputKeyForms), for recovering the REAL command when a ninja edge is a

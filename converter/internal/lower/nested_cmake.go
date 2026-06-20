@@ -355,6 +355,37 @@ func recoverNestedCMakeCall(call shadow.ExecuteProcessCall, anc execAnchors, cc 
 	return nil
 }
 
+// accumulateRecipeIncludes unions the inherited ancestor recipe `.cmake` paths
+// with THIS build's own include()d / target_sources recipes (cc.IncludeCalls +
+// cc.TargetSourcesCalls), deduped, for threading into the nested lowerings. Paths
+// are kept absolute (as the trace records them) — the nested
+// recoverUtilityRecipeCommands relativizes them against its own build dir and
+// ignores any that don't land inside it. Filtered to `.cmake` so the threaded
+// slice stays small (only recipe-shaped paths can drive the recipe tie).
+func accumulateRecipeIncludes(inherited []string, cc *codegenContext) []string {
+	seen := make(map[string]bool, len(inherited))
+	out := make([]string, 0, len(inherited))
+	add := func(p string) {
+		if p == "" || seen[p] || !strings.HasSuffix(strings.ToLower(p), ".cmake") {
+			return
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	for _, p := range inherited {
+		add(p)
+	}
+	if cc != nil {
+		for _, inc := range cc.IncludeCalls {
+			add(inc.Path)
+		}
+		for _, ts := range cc.TargetSourcesCalls {
+			add(ts.Recipe)
+		}
+	}
+	return out
+}
+
 // lowerNestedBuilds is the ToIR pre-pass over Options.NestedBuilds (the
 // warm second pass's harvest): recursively lower each nested reply with
 // labels anchored at the OUTER root, merge the nested targets into the
@@ -366,6 +397,12 @@ func recoverNestedCMakeCall(call shadow.ExecuteProcessCall, anc execAnchors, cc 
 // get (targetBuildIncs prefix-matching in lowerTarget).
 func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSrc string) ([]executeProcessOut, error) {
 	var outs []executeProcessOut
+	// Thread THIS build's recipe `.cmake` include()s / target_sources recipes —
+	// accumulated onto any inherited from ancestors — into the nested lowerings, so
+	// a nested build's UTILITY-produced recipe that an OUTER configure include()s
+	// (the superbuild-at-configure shape) is still recovered there (its own gate
+	// only sees the nested trace's includes). See Options.OuterRecipeIncludes.
+	opts.OuterRecipeIncludes = accumulateRecipeIncludes(opts.OuterRecipeIncludes, cc)
 	for _, nb := range opts.NestedBuilds {
 		nestedPkg, nestedStatus, err := lowerOneNestedBuild(nb, opts, hostSrc)
 		if err != nil {

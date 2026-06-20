@@ -76,6 +76,19 @@ type Options struct {
 	// item.
 	EmitSharedLibraries bool
 
+	// OuterRecipeIncludes carries the ANCESTOR builds' include()d / target_sources
+	// recipe `.cmake` paths (absolute, accumulated down each nesting level) into a
+	// nested lowering. It exists for the superbuild-at-configure shape where the
+	// OUTER configure include()s a recipe produced by a NESTED build's UTILITY
+	// target: recoverUtilityRecipeCommands runs per-ToIR over each level's OWN
+	// graph + UTILITY targets, but gates on that level's own includes — so without
+	// the ancestor includes the nested pass can't tell the recipe is consumed, and
+	// the recipe (plus the generated sources it target_sources) is dropped. The
+	// nested pass relativizes these against its own build dir and acts only on the
+	// ones physically inside it, so an ancestor recipe elsewhere is a harmless
+	// no-op. Set by lowerNestedBuilds (from the outer cc); empty at the top level.
+	OuterRecipeIncludes []string
+
 	// HostPrefixDir, when set, is the absolute on-disk path to the
 	// synthesized prefix tree cmake configured against (CMAKE_PREFIX_PATH).
 	// Codemodel link.commandFragments paths anchored at this dir are
@@ -1681,7 +1694,9 @@ func recoverUtilityRecipeCommands(r *fileapi.Reply, cfg fileapi.Configuration, g
 	// chain. Both the include() events and the target_sources() causal recipes
 	// are unioned: every ts.Recipe is itself an include() by construction, but
 	// reading both keeps the gate aligned with the two consumer lookups
-	// (the include-scope heuristic and recipeFromTargetSources).
+	// (the include-scope heuristic and recipeFromTargetSources). cc.OuterRecipeIncludes
+	// adds the ancestor builds' recipes for the cross-boundary superbuild case (an
+	// OUTER configure include()ing a recipe THIS nested build's UTILITY produces).
 	includedRecipes := map[string]bool{}
 	addRecipe := func(p string) {
 		rel, ok := relativeIfInsideRelaxed(cmakeBuild, p)
@@ -1694,6 +1709,13 @@ func recoverUtilityRecipeCommands(r *fileapi.Reply, cfg fileapi.Configuration, g
 	}
 	for _, ts := range cc.TargetSourcesCalls {
 		addRecipe(ts.Recipe)
+	}
+	// Ancestor builds' recipe includes (the superbuild-at-configure shape: an OUTER
+	// configure include()s a recipe THIS nested build's UTILITY produces). addRecipe
+	// relativizes against this build's dir, so only ancestor recipes physically
+	// inside it survive — the rest are harmless no-ops.
+	for _, p := range cc.OuterRecipeIncludes {
+		addRecipe(p)
 	}
 	if len(includedRecipes) == 0 {
 		return
@@ -2808,7 +2830,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	cc.LiftCCEmbed = opts.LiftCCEmbed
 	cc.LiftCCHash = opts.LiftCCHash
 	cc.CMakeBinary, cc.Warnings = lookupCmakeBinary(), opts.Warnings
-	cc.OutputToCustomCommand, cc.IncludeCalls, cc.TargetSourcesCalls = buildOutputToCustomCommand(tf.decodedAddCustomCommands, opts.BuildDir), tf.decodedIncludes, tf.decodedTargetSourcesCalls
+	cc.OutputToCustomCommand, cc.IncludeCalls, cc.TargetSourcesCalls, cc.OuterRecipeIncludes = buildOutputToCustomCommand(tf.decodedAddCustomCommands, opts.BuildDir), tf.decodedIncludes, tf.decodedTargetSourcesCalls, opts.OuterRecipeIncludes
 	cc.LiteralProbeSink = opts.LiteralProbeSink
 	cc.LiteralResolutions = opts.LiteralResolutions
 	// Parallel pre-warm of the cmake -P script bakes: with the bake opted
