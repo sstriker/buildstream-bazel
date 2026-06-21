@@ -1448,6 +1448,54 @@ func isOutputDirFlag(flag string) bool {
 	return false
 }
 
+// anchorGenruleOutputDirsPositional anchors an output's PARENT directory that
+// appears as a bare, whitespace-delimited POSITIONAL argument (a codegen tool
+// invoked as `tool <outdir> …` that derives filenames under <outdir>, e.g.
+// `python3 gen.py gen 3`) to $(RULEDIR)/<outdir>. anchorGenruleOutputDirFlags
+// only handles `--flag=DIR` spellings and anchorGenruleOutputsToRuledir skips
+// single-component dirs (corruption-prone for a general cmd) — but for the
+// recipe-recovery override path the declared outs ARE the tool's real outputs, so
+// their parent dirs are known exactly and can be matched as whole tokens safely.
+// Boundary rule: the dir must be a COMPLETE token (start/whitespace on the left,
+// end/whitespace on the right), so `gen` matches the `gen` arg but never `gen.py`,
+// `gen/x`, or an already-`$(RULEDIR)/gen` occurrence.
+func anchorGenruleOutputDirsPositional(cmd string, outs []string) string {
+	if cmd == "" || len(outs) == 0 {
+		return cmd
+	}
+	dirs := map[string]bool{}
+	for _, o := range outs {
+		if o == "" || path.IsAbs(o) {
+			continue
+		}
+		if d := path.Dir(o); d != "." && !strings.HasPrefix(d, "$(RULEDIR)") {
+			dirs[d] = true
+		}
+	}
+	ds := make([]string, 0, len(dirs))
+	for d := range dirs {
+		ds = append(ds, d)
+	}
+	sort.Slice(ds, func(i, j int) bool { return len(ds[i]) > len(ds[j]) })
+	isWS := func(c byte) bool { return c == ' ' || c == '\t' }
+	for _, d := range ds {
+		var b strings.Builder
+		for i := 0; i < len(cmd); {
+			if strings.HasPrefix(cmd[i:], d) &&
+				(i == 0 || isWS(cmd[i-1])) &&
+				(i+len(d) == len(cmd) || isWS(cmd[i+len(d)])) {
+				b.WriteString("$(RULEDIR)/" + d)
+				i += len(d)
+				continue
+			}
+			b.WriteByte(cmd[i])
+			i++
+		}
+		cmd = b.String()
+	}
+	return cmd
+}
+
 // anchorGenruleOutputs anchors a recovered genrule's declared outputs to
 // $(RULEDIR): the literal output FILES named in the cmd (anchorGenruleOutputsTo
 // Ruledir) AND an output-DIRECTORY flag whose value is an output's parent dir

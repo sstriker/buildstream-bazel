@@ -34,6 +34,14 @@ type codegenContext struct {
 	// hostPrefix-rooted cmd tokens onto the anchor before LookupLinkPath,
 	// mirroring the link-fragment channel's pre-lookup rewrite.
 	HostPrefixDir string
+	// SourceLabelPrefix is cmakeSrc-relative-to-the-label-root (workspaceRoot),
+	// non-empty only when the label root sits ABOVE cmakeSrc — chiefly a nested
+	// lowering whose ElementSourceRoot is the OUTER root (cmakeSrc = the nested
+	// source subdir, prefix = `<nested-src-rel>`). The per-target genrule recovery
+	// anchors its source-tree srcs + cmd refs with it so a recovered nested genrule
+	// references `<nested-src-rel>/gen.py`, not a bare `gen.py` that wouldn't
+	// resolve in the merged outer package. Empty for a plain top-level lowering.
+	SourceLabelPrefix string
 	// Genrules is the list of synthesized ir.Target{Kind: KindGenrule}
 	// entries to append to the package.
 	Genrules []ir.Target
@@ -989,7 +997,7 @@ func (cc *codegenContext) emitRecoveredGenrule(b *ninja.Build, cmd, cmakeSrc, bu
 	// shape is unchanged. The umbrella anchoring lives on the
 	// standalone-custom-command path (lowerStandaloneCustomCommands),
 	// which is where LLVM's tablegen genrules surface.
-	srcs := genruleSrcs(b, cmakeSrc, buildDir, "")
+	srcs := genruleSrcs(b, cmakeSrc, buildDir, cc.SourceLabelPrefix)
 	tags := genruleTags(cmd, b, g)
 
 	// Exec-root anchoring: a genrule cmd runs at the Bazel exec root, so a
@@ -1000,7 +1008,7 @@ func (cc *codegenContext) emitRecoveredGenrule(b *ninja.Build, cmd, cmakeSrc, bu
 	// convert-at-root) leaves the bare shape unchanged. umbrellaPrefix stays ""
 	// here: the per-target recovery path isn't reached under the workspace-root
 	// umbrella promotion (that surfaces on the standalone path).
-	rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, "", cc.BazelPackagePath)
+	rewrittenCmd := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, cc.SourceLabelPrefix, cc.BazelPackagePath)
 	// Pre-tool-swap cmd for the recognizer dispatch: the swap can rewrite the
 	// DRIVER to $(execpath <label>) (--tool-conventions / manifest tools map),
 	// which would hide the driver the recognizer matches on (e.g. protoc). The
@@ -1022,6 +1030,15 @@ func (cc *codegenContext) emitRecoveredGenrule(b *ninja.Build, cmd, cmakeSrc, bu
 	// keeps churn-free for the stdout-redirect recovered genrules.
 	if len(outs) > 0 {
 		rewrittenCmd = anchorGenruleOutputs(rewrittenCmd, outs)
+	}
+	// Override (recipe gen_src) recovery: the codegen tool takes its output DIR as
+	// a bare positional arg and derives filenames under it (the tool names no
+	// output literally, so anchorGenruleOutputs above is a no-op), so anchor that
+	// dir to $(RULEDIR)/<dir> — otherwise the cmd writes under the exec-root cwd
+	// and Bazel can't find the declared output. Scoped to the override case since
+	// it knows the declared outs are the tool's real outputs.
+	if len(outsOverride) > 0 {
+		rewrittenCmd = anchorGenruleOutputDirsPositional(rewrittenCmd, outs)
 	}
 	// Build-dir staging-copy reanchor: when the raw command ran in a build-dir
 	// subdir of CONFIGURE-time-copied inputs (`cd <buildDir>/<sub> && tool -I .

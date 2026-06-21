@@ -801,6 +801,31 @@ func nativeRuleOuts(spec *ir.NativeRuleSpec) []string {
 	return outs
 }
 
+// rewriteRuledirDir rewrites `$(RULEDIR)/<oldDir>` to `$(RULEDIR)/<newDir>` at a
+// path-token boundary (the dir followed by whitespace, `/`, or end) — so a
+// genrule whose cmd anchored an output directory survives the nested re-home that
+// moved its declared outs under <buildRel>/.
+func rewriteRuledirDir(cmd, oldDir, newDir string) string {
+	if oldDir == "" || oldDir == "." {
+		return cmd
+	}
+	old := "$(RULEDIR)/" + oldDir
+	repl := "$(RULEDIR)/" + newDir
+	var b strings.Builder
+	for i := 0; i < len(cmd); {
+		if strings.HasPrefix(cmd[i:], old) {
+			if j := i + len(old); j == len(cmd) || cmd[j] == ' ' || cmd[j] == '\t' || cmd[j] == '/' {
+				b.WriteString(repl)
+				i = j
+				continue
+			}
+		}
+		b.WriteByte(cmd[i])
+		i++
+	}
+	return b.String()
+}
+
 // applyNestedProducerReHome re-anchors one merged target against the
 // re-homes: a producer rule's outs gain the <buildRel>/ prefix and the
 // rule renames (two nested builds recovering the same-named rule must
@@ -824,6 +849,14 @@ func applyNestedProducerReHome(t *ir.Target, rehome map[string]string, namePrefi
 		}
 		for i, out := range t.GenruleOuts {
 			if newRel, ok := rehome[out]; ok {
+				// A recovered genrule whose cmd anchored its output DIRECTORY to
+				// $(RULEDIR)/<dir> (a tool that takes an outdir arg, e.g. the recipe
+				// gen_src recovery) must follow the re-home: the declared out moved
+				// gen/… -> <buildRel>/gen/…, so the cmd's $(RULEDIR)/gen must become
+				// $(RULEDIR)/<buildRel>/gen or it writes to the wrong place.
+				if od, nd := slashDir(out), slashDir(newRel); od != nd {
+					t.GenruleCmd = rewriteRuledirDir(t.GenruleCmd, od, nd)
+				}
 				t.GenruleOuts[i] = newRel
 				renamed = true
 			}

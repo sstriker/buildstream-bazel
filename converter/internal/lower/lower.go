@@ -1873,6 +1873,21 @@ func pairAndRecoverRecipeEdges(cc *codegenContext, g *ninja.Graph, cmakeSrc, cma
 	}
 }
 
+// sourceLabelPrefix returns cmakeSrc relative to the label root (workspaceRoot)
+// when the label root sits ABOVE cmakeSrc — a nested lowering whose
+// ElementSourceRoot is the OUTER root, so recovered genrules' source srcs/cmd refs
+// must carry the `<nested-src-rel>` prefix to resolve in the merged outer package.
+// Empty for a plain top-level lowering (workspaceRoot == cmakeSrc).
+func sourceLabelPrefix(workspaceRoot, cmakeSrc string) string {
+	if workspaceRoot == "" || workspaceRoot == cmakeSrc {
+		return ""
+	}
+	if rel, inside := relativeIfInside(workspaceRoot, cmakeSrc); inside && rel != "" && rel != "." {
+		return filepath.ToSlash(rel)
+	}
+	return ""
+}
+
 // recipeStem normalizes a recipe `.cmake` path to a per-configure-stable key by
 // stripping a trailing variable token (`-`/`_`/`.` followed by a hex/numeric run)
 // from the basename — `gen/recipe-0.cmake` and `gen/recipe-3.cmake` both map to
@@ -2948,7 +2963,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 
 	cc := newCodegenContextFor(opts)
-	cc.BazelPackagePath = opts.BazelPackagePath
+	cc.BazelPackagePath, cc.SourceLabelPrefix = opts.BazelPackagePath, sourceLabelPrefix(workspaceRoot, cmakeSrc)
 	cc.CMakeScriptRunner = opts.CMakeScriptRunner
 	cc.CMakeScriptTrace = opts.CMakeScriptTrace
 	cc.CMakeScriptBake = opts.CMakeScriptBake

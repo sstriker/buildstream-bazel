@@ -7,6 +7,7 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -183,5 +184,85 @@ build gen_recipe: phony sibling_tool
 
 	if _, ok := cc.OutToGenrule["gen/recipe.cmake"]; ok {
 		t.Errorf("recipe behind a sibling target should not be recovered: %v", cc.OutToGenrule)
+	}
+}
+
+// TestRecipeStem pins the per-configure-stable normalization: a trailing
+// `[-_.]<hex-run>` token is stripped (so divergent counters/hashes map to one
+// stem), distinct stems stay distinct, and a non-hex / token-less name is kept.
+func TestRecipeStem(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"gen/recipe-0.cmake", "gen/recipe.cmake"},
+		{"gen/recipe-3.cmake", "gen/recipe.cmake"},
+		{"gen/recipe-1a2f.cmake", "gen/recipe.cmake"},
+		{"gen/module_a-0.cmake", "gen/module_a.cmake"},
+		{"gen/module_b-0.cmake", "gen/module_b.cmake"},
+		{"recipe.cmake", "recipe.cmake"},
+		{"gen/recipe-stable.cmake", "gen/recipe-stable.cmake"},
+	}
+	for _, c := range cases {
+		if got := recipeStem(c.in); got != c.want {
+			t.Errorf("recipeStem(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestSourceLabelPrefix: the label-root-relative source prefix is the nested
+// source subdir when the label root sits above cmakeSrc, else empty.
+func TestSourceLabelPrefix(t *testing.T) {
+	if got := sourceLabelPrefix("/proj", "/proj/sub"); got != "sub" {
+		t.Errorf("nested prefix = %q, want sub", got)
+	}
+	if got := sourceLabelPrefix("/proj", "/proj"); got != "" {
+		t.Errorf("equal-root prefix = %q, want empty", got)
+	}
+	if got := sourceLabelPrefix("", "/proj"); got != "" {
+		t.Errorf("no-root prefix = %q, want empty", got)
+	}
+}
+
+// TestRecoverUtilityRecipeCommands_DivergentStemPair is the superbuild
+// hash-unstable case: the outer trace's recipe (recipe-0) and target_sources
+// gen_src diverge from the re-configured graph's recipe edge (recipe-3). The
+// stem pairing recovers the recipe-3 edge declaring the STABLE gen_src (not the
+// recipe), so the consumer wires via OutToGenrule.
+func TestRecoverUtilityRecipeCommands_DivergentStemPair(t *testing.T) {
+	const cmakeSrc, cmakeBuild = "/src", "/build"
+	g := mustParseNinja(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build gen/recipe-3.cmake: CUSTOM_COMMAND sub/gen.py
+  COMMAND = python3 sub/gen.py gen 3
+build gen_recipe: phony gen/recipe-3.cmake
+`)
+	cc := newCodegenContext()
+	// Outer trace: include recipe-0 (diverges from the graph's recipe-3) and a
+	// target_sources of gen_src attributed to recipe-0.
+	cc.OuterRecipeIncludes = []string{filepath.Join(cmakeBuild, "gen/recipe-0.cmake")}
+	cc.OuterTargetSources = []shadow.TargetSourcesCall{{
+		Target:  "app",
+		Recipe:  filepath.Join(cmakeBuild, "gen/recipe-0.cmake"),
+		Sources: []string{filepath.Join(cmakeBuild, "gen/gen_src.c")},
+	}}
+	r, cfg := utilityReply("gen_recipe")
+
+	recoverUtilityRecipeCommands(r, cfg, g, cc, cmakeSrc, cmakeBuild)
+
+	name, ok := cc.OutToGenrule["gen/gen_src.c"]
+	if !ok {
+		t.Fatalf("divergent recipe gen_src not recovered: OutToGenrule=%v", cc.OutToGenrule)
+	}
+	// The recovered genrule declares the STABLE gen_src, not the unstable recipe.
+	if _, isRecipe := cc.OutToGenrule["gen/recipe-3.cmake"]; isRecipe {
+		t.Errorf("unstable recipe should not be a declared output: %v", cc.OutToGenrule)
+	}
+	var found *ir.Target
+	for i := range cc.Genrules {
+		if cc.Genrules[i].Name == name {
+			found = &cc.Genrules[i]
+		}
+	}
+	if found == nil || len(found.GenruleOuts) != 1 || found.GenruleOuts[0] != "gen/gen_src.c" {
+		t.Fatalf("genrule %q outs wrong: %+v", name, found)
 	}
 }
