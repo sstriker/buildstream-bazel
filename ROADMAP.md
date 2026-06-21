@@ -7,21 +7,22 @@ transition cleanly.
 
 ## Now
 
-- **grpc build-lens regression (NOT shared-specific — static control fails
-  identically).** As of 2026-06-12 the grpc lens run is red in BOTH link
-  modes at the same spot: `grpc_cpp_plugin`'s compile picks protobuf headers
-  whose `FileDescriptor::name()` returns `string_view` (grpc v1.68's
-  generator code wants `std::string`). Root shape: the find_package
-  ATTRIBUTION of `/tmp/protobuf-install/lib/lib{protoc,upb,utf8_validity}.a`
-  missed (the emitted target carries
-  `cmake-codegen-find-package-attribution-missed=…` tags, the fragments are
-  ELIDED, and no `@protobuf//:protoc_lib` dep is wired) — the conf's GREEN
-  record says those attributed at green time. Pins are unchanged (grpc
-  v1.68.0, BCR protobuf resolves 33.4, host protobuf-install 31.1 rebuilt by
-  install-survey-deps.sh). Suspects: a converter-side attribution change
-  since the grpc greening, or the rebuilt host install differing from the
-  green-era one. Needs a bisect against the green-era converter or an
-  install-tree diff; evidence preserved in the tags + this note.
+- **grpc build-lens red — a grpc↔protobuf version/cadence mismatch, NOT a
+  converter bug.** The grpc lens run is red in BOTH link modes at the same spot:
+  `grpc_cpp_plugin`'s compile picks protobuf headers whose
+  `FileDescriptor::name()` returns `string_view`, while grpc v1.68's generator
+  code wants `std::string`. That string_view-vs-std::string split is a protobuf
+  **API change across releases**: grpc v1.68 expects the protobuf it was cut
+  against, but the protobuf it builds here (BCR resolves 33.4, host
+  protobuf-install 31.1) is on the other side of that API. So this is a **pin
+  alignment** problem (release-cadence skew between the grpc pin and the protobuf
+  pin), resolved by pinning protobuf to grpc-1.68's expected version (or bumping
+  grpc to one matching protobuf 33.4) — NOT a converter-side regression to
+  bisect. The `cmake-codegen-find-package-attribution-missed=…` tags on the
+  emitted target are a downstream symptom of that broken build, not the root
+  cause; the find_package attribution path itself is exercised green elsewhere in
+  the corpus. (Mode-independent, so it neither blocks nor validates the SHARED
+  work tracked under Next.)
 
 - **CI baseline.** A handful of e2e jobs (`cmake + bwrap`,
   `bazel build downstream`) fail intermittently for environment reasons
@@ -114,6 +115,46 @@ transition cleanly.
   scoped out for disk. Capture the result as the corpus's "all green, no cmake"
   baseline. This is the acceptance gate, distinct from the per-change
   re-validation the dev loop already does.
+
+- **Validate the nested-recipe / superbuild-codegen recovery against REAL
+  corpus members (option-2 follow-on to the synthetic
+  `superbuild-hashed-recipe` fixture).** The nested UTILITY `.cmake`-recipe
+  recovery, the include()→target_sources causal tie + FILE_SET parse, and the
+  hash-unstable-recipe stem pairing all shipped validated by a SYNTHETIC fixture
+  + unit tests. The real-fidelity gap is exercising them on public projects.
+  Hunt findings (ranked by fit × feasibility):
+  - **LLVM TableGen — prime real-world UTILITY-recipe case.** `add_public_
+    tablegen_target` makes a custom target (UTILITY) whose deps are
+    `add_custom_command` outputs (`.td`→`.tmp`→conditional-copy `.inc`)
+    consumed by libs — exactly the UTILITY→generated-output shape the recovery
+    targets. Names are STABLE (`.inc`), so it validates the recovery proper, not
+    the hash-unstable variant. Already a corpus target deferred for disk
+    (LLVM `TOOLS=ON`); re-greening it on a big-disk host doubles as this
+    validation.
+  - **SPIRV-Tools (`KhronosGroup/SPIRV-Tools`) — feasible, standalone.** A
+    python `generate_grammar_tables.py` emits `.inc` grammar tables consumed by
+    `.cpp` via `add_custom_command` OUTPUT (notably issue #1941: the static and
+    `-shared` libs generate the SAME files — a producer-dedup case). Moderate
+    size, plain cmake, no ecosystem infra — a good first real onboarding for the
+    generated-source/codegen recovery.
+  - **Vulkan-Loader (`KhronosGroup/Vulkan-Loader`) — feasible, standalone.** A
+    `tools_codegen` target wraps `scripts/generate_source.py` (XML registry →
+    generated C source) via add_custom_command; depends only on Vulkan-Headers.
+  - **A FetchContent-based project — the canonical nested-cmake-at-configure.**
+    `FetchContent_MakeAvailable` runs a nested cmake configure+build in
+    `<build>/_deps/<name>-subbuild` AT CONFIGURE time — the superbuild idiom the
+    nested lift (#730–#734) handles. Pick a small member that FetchContents a
+    codegen dep so the nested lift + recipe recovery compose on real code.
+  - **ROS 2 `rosidl`/`ament_cmake` — high codegen, low feasibility.** Interface
+    generation is tightly coupled to cmake (generates many `.cmake` files), but
+    the ament/colcon infra makes a standalone build-lens survey hard; defer.
+
+  Honest note: the HASH-UNSTABLE recipe-filename variant specifically (#736/#737)
+  appears **rare** in public corpora — no surveyed public project generates a
+  per-configure-hash-named `.cmake` recipe that is include()d + target_sources'd
+  (most codegen uses stable generated names). So the synthetic fixture stays the
+  primary guard for the hash-unstable path; these real members validate the
+  surrounding nested-recipe / superbuild-codegen machinery it rides on.
 
 - **Expand the survey corpus: BuildBox + BDE (new cmake patterns).** Two
   projects that exercise idioms the current corpus doesn't:
