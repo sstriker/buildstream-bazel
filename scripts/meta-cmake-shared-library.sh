@@ -63,8 +63,14 @@ printf '%s\n' "$(attr_block '^    name = "app"')" | grep -qF 'dynamic_deps = [":
     || fail "transitive consumer (app -> mid -> foo) not wired to the shared .so"
 printf '%s\n' "$(attr_block '^    name = "app_test"')" | grep -qF 'dynamic_deps = [":foo_shared"]' \
     || fail "test consumer not wired to the shared .so"
+# 3. No convert-time build dir leaks into linkopts: cmake files its auto
+#    build-tree rpath under the "libraries" role (bypassing the flags-role
+#    reanchor), so a regression would re-leak `-Wl,-rpath,/tmp/...`. The .so
+#    rides runfiles with Bazel's own $ORIGIN rpath, so the absolute path is
+#    dead weight.
+grep -qF '/tmp/' "$build" && fail "convert-time absolute path (e.g. build-dir rpath) leaked into the BUILD file"
 
-echo "ok  meta-cmake-shared-library: SHARED target -> cc_shared_library + consumers' dynamic_deps wired (direct + transitive)"
+echo "ok  meta-cmake-shared-library: SHARED target -> cc_shared_library + consumers' dynamic_deps wired (direct + transitive); no build-dir rpath leak"
 
 # --- Bazel build + RUN + TEST half ---
 if command -v bazel >/dev/null; then
