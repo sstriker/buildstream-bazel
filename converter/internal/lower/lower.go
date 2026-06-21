@@ -3323,7 +3323,7 @@ func appendLinkFlagTokens(irt *ir.Target, t *fileapi.Target, fragment, cmakeSrc,
 // shapes to linkopts; a `-l<name>` first goes through the same
 // producer-element precedence as the absolute system-lib lift (a producer
 // claiming the name wins over the host -l<name>).
-func routeNonAbsLibraryFragment(irt *ir.Target, rt *linkDepRouter, path string, imports *manifest.Resolver, traceLinkScope map[string]string) {
+func routeNonAbsLibraryFragment(irt *ir.Target, rt *linkDepRouter, path string, imports *manifest.Resolver, traceLinkScope map[string]string, cmakeSrc, cmakeBuild string) {
 	if !strings.HasPrefix(path, "-") {
 		return
 	}
@@ -3333,6 +3333,20 @@ func routeNonAbsLibraryFragment(irt *ir.Target, rt *linkDepRouter, path string, 
 			return
 		}
 	}
+	// cmake mis-files some pure linker flags under the "libraries" role —
+	// notably the auto build-tree rpath (`-Wl,-rpath,<convert-time build
+	// dir>`) its Ninja generator adds so the just-built executable finds
+	// its sibling .so. That absolute path doesn't exist at Bazel
+	// action/run time (Bazel carries the .so in runfiles with its own
+	// $ORIGIN rpath), so route the flag through the same reanchor the
+	// "flags" role uses: it drops build-dir rpath / rpath-link and keeps
+	// legitimate source-relative runtime metadata. Without this the dead
+	// convert-time path leaks into every shared consumer's linkopts.
+	rewritten, keep := reanchorLinkOptToken(path, cmakeSrc, cmakeBuild)
+	if !keep {
+		return
+	}
+	path = rewritten
 	// `-l<name>` (no producer claim) or another link flag
 	// (`-pthread`). Defensive isCompileOnlyLinkFlag guard
 	// keeps a compile-only flag cmake mis-attached to the
@@ -3560,7 +3574,7 @@ func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 				rt.add(label, false)
 				continue
 			}
-			routeNonAbsLibraryFragment(irt, rt, path, imports, traceLinkScope)
+			routeNonAbsLibraryFragment(irt, rt, path, imports, traceLinkScope, cmakeSrc, cmakeBuild)
 			continue
 		}
 		// Nested-cmake artifact wiring: a fragment naming an archive the
@@ -5689,12 +5703,22 @@ func lowerTarget(t *fileapi.Target, tt targetTrace, lc targetLowerCtx) (*ir.Targ
 			if so == "" {
 				so = "lib" + t.Name + ".so"
 			}
-			if so == "lib"+t.Name+".so" {
+			if t.Type != "MODULE_LIBRARY" && so == "lib"+t.Name+".so" {
 				// The unversioned name collides with the impl cc_library's auto
 				// lib<target>.so output. Append a soversion so the two outputs
 				// stay distinct AND the name stays a valid .so.<N> filetype
 				// (cc_shared_library rejects e.g. ".so.shared"). Prefer the
 				// cmake-recorded soversion tag; fall back to ".1".
+				//
+				// MODULE_LIBRARY is exempt: a module is dlopen'd by EXACT
+				// filename (dlopen("libplugin.so")) and is never linked by a
+				// consumer — nothing carries the impl cc_library in `deps`, so
+				// the impl's implicit lib<target>.so is never built dynamically
+				// and there's no collision to dodge. Keeping cmake's exact name
+				// is what makes the dlopen-by-name contract resolve. (SHARED
+				// consumers DO carry both the impl in `deps` and :<lib>_shared
+				// in dynamic_deps, which is the brotli collision the suffix
+				// guards.)
 				so += "." + soversionFromTags(irt.Tags, "1")
 			}
 			irt.SharedLibName = so

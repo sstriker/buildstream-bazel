@@ -63,6 +63,56 @@ func TestLowerTarget_BareSystemLibLinkFlags(t *testing.T) {
 	}
 }
 
+// TestLowerTarget_BuildDirRpathDropped covers the SHARED-consumer rpath
+// leak: cmake's Ninja generator adds the auto build-tree rpath
+// (`-Wl,-rpath,<convert-time build dir>`) so the just-built executable
+// finds its sibling .so — and files it under the "libraries" role, NOT
+// "flags". That role bypasses appendLinkFlagTokens' reanchor, so the
+// dead convert-time absolute path used to leak into every shared
+// consumer's linkopts. routeNonAbsLibraryFragment now runs flag-shaped
+// "libraries" fragments through reanchorLinkOptToken: a rpath INSIDE the
+// build dir is dropped (Bazel carries the .so in runfiles with its own
+// $ORIGIN rpath), while a source-relative rpath is legitimate runtime
+// metadata and stays.
+func TestLowerTarget_BuildDirRpathDropped(t *testing.T) {
+	const buildDir = "/tmp/convert-element-build-test"
+	target := &fileapi.Target{
+		Name: "app",
+		Type: "EXECUTABLE",
+		Link: &fileapi.TargetLink{
+			Language: "C",
+			CommandFragments: []fileapi.CommandFragment{
+				// The cmake-mis-filed build-tree rpath — must be dropped.
+				{Fragment: "-Wl,-rpath," + buildDir, Role: "libraries"},
+				// A legitimate runtime-metadata rpath outside the build
+				// dir — must survive.
+				{Fragment: "-Wl,-rpath,/opt/vendor/lib", Role: "libraries"},
+			},
+		},
+	}
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"app::@": *target},
+		Codemodel: fileapi.Codemodel{
+			Paths:          fileapi.CodemodelPaths{Build: buildDir, Source: "/tmp/src"},
+			Configurations: []fileapi.Configuration{{Name: "Release", Targets: []fileapi.ConfigTargetRef{{Id: "app::@", Name: "app"}}}},
+		},
+	}
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{BuildDir: buildDir})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	got := findTarget(pkg, "app")
+	if got == nil {
+		t.Fatal("app not in pkg.Targets")
+	}
+	if stringSliceContains(got.LinkOpts, "-Wl,-rpath,"+buildDir) {
+		t.Errorf("LinkOpts must not leak the convert-time build-dir rpath; got %v", got.LinkOpts)
+	}
+	if !stringSliceContains(got.LinkOpts, "-Wl,-rpath,/opt/vendor/lib") {
+		t.Errorf("LinkOpts should keep the source-external runtime rpath; got %v", got.LinkOpts)
+	}
+}
+
 // TestLowerTarget_BareLinkFlagProducerRedirect covers the producer-
 // element precedence on the bare `-l<name>` path: when an imports
 // manifest claims the lib name via link_libraries, the `-l<name>`

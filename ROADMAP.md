@@ -49,10 +49,15 @@ transition cleanly.
   **Remaining:** grpc (blocked on the lens regression tracked under Now —
   its red is mode-independent, so it neither blocks nor validates shared),
   the heavy LLVM (needs a bigger-disk host — the one member not coverable
-  in a web-session container); `MODULE_LIBRARY` dlopen semantics; and
-  consider flipping `SURVEY_SHARED`
+  in a web-session container); and consider flipping `SURVEY_SHARED`
   to the DEFAULT once the corpus is green under it (so green + the fidelity
-  lens run against the config cmake produces).
+  lens run against the config cmake produces). (`MODULE_LIBRARY` dlopen
+  filename fidelity is done — the `cc_shared_library` keeps cmake's exact
+  `lib<mod>.so` so `dlopen("lib<mod>.so")` resolves, gated by
+  `meta-cmake-module-library.sh`. The remaining half — staging the module
+  into the dlopen-er's runfiles — is inherently NOT auto-derivable: cmake
+  records no static edge from an executable to the module it dlopens at
+  runtime, so that stays an operator step, not converter work.)
 
 - **Derive build-lens link mode from the project's static config — flip the
   default (the opt-in mechanism is SHIPPED).** The build lens forces
