@@ -173,20 +173,39 @@ func customTargetStampIsNonAll(outs []string, allByName map[string]bool) bool {
 	return false
 }
 
+// coveredOutsForStandalone builds the set of outputs the standalone pass must NOT
+// re-process: outputs already declared by an existing genrule (coveredOuts), those
+// a recognized native rule claimed (OutToNativeConsumerDep — recoverGenrule lowered
+// a consumed protoc add_custom_command to cc_proto_library, which carries no genrule
+// out for coveredOuts to see), and the OWN outputs of every edge an earlier
+// per-target / UTILITY-recipe pass already recovered (cc.SeenBuilds, keyed by edge —
+// the nested recipe recovery may declare DIFFERENT outs than the edge, e.g. the
+// recipe's generated sources rather than the unstable recipe itself, so folding the
+// edge's own outputs here is what keeps it from re-emitting as a dead genrule).
+func coveredOutsForStandalone(existing []ir.Target, cc *codegenContext) map[string]bool {
+	covered := coveredOuts(existing)
+	if cc == nil {
+		return covered
+	}
+	for o := range cc.OutToNativeConsumerDep {
+		covered[o] = true
+	}
+	for b := range cc.SeenBuilds {
+		for _, o := range b.Outputs {
+			covered[o] = true
+		}
+		for _, o := range b.ImplicitOuts {
+			covered[o] = true
+		}
+	}
+	return covered
+}
+
 func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath string, artifactToName map[string]string, traceCtx standaloneTraceContext, filteredInternal map[string]string, cc *codegenContext) []ir.Target {
 	if g == nil {
 		return nil
 	}
-	covered := coveredOuts(existing)
-	// Outputs a recognized native rule already claimed (recoverGenrule lowered a
-	// consumed protoc add_custom_command to cc_proto_library) carry no genrule
-	// out for coveredOuts to see — fold them in so this pass doesn't re-process
-	// the same edge and double-emit the native targets.
-	if cc != nil {
-		for o := range cc.OutToNativeConsumerDep {
-			covered[o] = true
-		}
-	}
+	covered := coveredOutsForStandalone(existing, cc)
 	edges := ninja.CustomCommandEdges(g)
 	if len(edges) == 0 {
 		return nil
@@ -1427,6 +1446,54 @@ func isOutputDirFlag(flag string) bool {
 		return true
 	}
 	return false
+}
+
+// anchorGenruleOutputDirsPositional anchors an output's PARENT directory that
+// appears as a bare, whitespace-delimited POSITIONAL argument (a codegen tool
+// invoked as `tool <outdir> …` that derives filenames under <outdir>, e.g.
+// `python3 gen.py gen 3`) to $(RULEDIR)/<outdir>. anchorGenruleOutputDirFlags
+// only handles `--flag=DIR` spellings and anchorGenruleOutputsToRuledir skips
+// single-component dirs (corruption-prone for a general cmd) — but for the
+// recipe-recovery override path the declared outs ARE the tool's real outputs, so
+// their parent dirs are known exactly and can be matched as whole tokens safely.
+// Boundary rule: the dir must be a COMPLETE token (start/whitespace on the left,
+// end/whitespace on the right), so `gen` matches the `gen` arg but never `gen.py`,
+// `gen/x`, or an already-`$(RULEDIR)/gen` occurrence.
+func anchorGenruleOutputDirsPositional(cmd string, outs []string) string {
+	if cmd == "" || len(outs) == 0 {
+		return cmd
+	}
+	dirs := map[string]bool{}
+	for _, o := range outs {
+		if o == "" || path.IsAbs(o) {
+			continue
+		}
+		if d := path.Dir(o); d != "." && !strings.HasPrefix(d, "$(RULEDIR)") {
+			dirs[d] = true
+		}
+	}
+	ds := make([]string, 0, len(dirs))
+	for d := range dirs {
+		ds = append(ds, d)
+	}
+	sort.Slice(ds, func(i, j int) bool { return len(ds[i]) > len(ds[j]) })
+	isWS := func(c byte) bool { return c == ' ' || c == '\t' }
+	for _, d := range ds {
+		var b strings.Builder
+		for i := 0; i < len(cmd); {
+			if strings.HasPrefix(cmd[i:], d) &&
+				(i == 0 || isWS(cmd[i-1])) &&
+				(i+len(d) == len(cmd) || isWS(cmd[i+len(d)])) {
+				b.WriteString("$(RULEDIR)/" + d)
+				i += len(d)
+				continue
+			}
+			b.WriteByte(cmd[i])
+			i++
+		}
+		cmd = b.String()
+	}
+	return cmd
 }
 
 // anchorGenruleOutputs anchors a recovered genrule's declared outputs to

@@ -89,6 +89,17 @@ type Options struct {
 	// no-op. Set by lowerNestedBuilds (from the outer cc); empty at the top level.
 	OuterRecipeIncludes []string
 
+	// OuterTargetSources carries the ANCESTOR builds' target_sources() calls
+	// (accumulated down each nesting level) into a nested lowering. Paired with
+	// OuterRecipeIncludes: when a nested build's UTILITY produces a recipe an
+	// OUTER configure include()s, the target_sources() the recipe runs executed in
+	// the OUTER process, so its (recipe -> generated source) mapping lives only in
+	// the outer trace. recoverUtilityRecipeCommands reads these to learn which
+	// generated sources to declare on the recovered genrule (the stable outputs
+	// the consumer actually compiles), keyed to the recipe via stable-stem pairing.
+	// Empty at the top level / no-trace path.
+	OuterTargetSources []shadow.TargetSourcesCall
+
 	// HostPrefixDir, when set, is the absolute on-disk path to the
 	// synthesized prefix tree cmake configured against (CMAKE_PREFIX_PATH).
 	// Codemodel link.commandFragments paths anchored at this dir are
@@ -1675,9 +1686,30 @@ func recoverUtilityRecipeCommands(r *fileapi.Reply, cfg fileapi.Configuration, g
 	if g == nil || cc == nil || cmakeBuild == "" {
 		return
 	}
-	// UTILITY target names to walk, and the sibling-target fence (every codemodel
-	// target name) the walk stops at — derived here so the pass is self-contained
-	// (it runs in recoverConfigureTimeArtifacts, before buildTargetIndexes).
+	utilityNames, isTargetName := utilityNamesAndFence(r, cfg)
+	if len(utilityNames) == 0 {
+		return
+	}
+	recipeToGenSrcs := nestedRecipeGenSrcs(cc, cmakeBuild)
+	includedRecipes := nestedIncludedRecipes(cc, cmakeBuild)
+	if len(includedRecipes) == 0 {
+		return
+	}
+	if g.OutputIndex == nil {
+		g.Index()
+	}
+	reachableEdges := reachableUtilityRecipeEdges(g, utilityNames, isTargetName)
+	if len(reachableEdges) == 0 {
+		return
+	}
+	pairAndRecoverRecipeEdges(cc, g, cmakeSrc, cmakeBuild, includedRecipes, reachableEdges, recipeToGenSrcs)
+}
+
+// utilityNamesAndFence returns the UTILITY (add_custom_target) target names to
+// walk and the sibling-target fence (every codemodel target name) the walk stops
+// at — derived from the reply so the pass is self-contained (it runs before
+// buildTargetIndexes).
+func utilityNamesAndFence(r *fileapi.Reply, cfg fileapi.Configuration) ([]string, map[string]bool) {
 	var utilityNames []string
 	isTargetName := map[string]bool{}
 	for _, tref := range cfg.Targets {
@@ -1686,49 +1718,77 @@ func recoverUtilityRecipeCommands(r *fileapi.Reply, cfg fileapi.Configuration, g
 			utilityNames = append(utilityNames, tref.Name)
 		}
 	}
-	if len(utilityNames) == 0 {
-		return
+	sort.Strings(utilityNames)
+	return utilityNames, isTargetName
+}
+
+// nestedRecipeGenSrcs maps each recipe `.cmake` (build-relative) to the generated
+// sources its target_sources() pulls in (build-relative) — from THIS build's own
+// target_sources AND the ancestor (threaded) ones (the superbuild case, where the
+// recipe runs in the OUTER configure). The recovered genrule declares these STABLE
+// sources instead of the recipe itself, so an unstable recipe filename (a
+// per-configure hash) never has to be a Bazel output and the consumer wires to
+// gen_src via outputClaimed after the merge re-home.
+func nestedRecipeGenSrcs(cc *codegenContext, cmakeBuild string) map[string][]string {
+	out := map[string][]string{}
+	add := func(ts shadow.TargetSourcesCall) {
+		recRel, ok := relativeIfInsideRelaxed(cmakeBuild, ts.Recipe)
+		if !ok || strings.HasPrefix(recRel, "../") || !strings.HasSuffix(strings.ToLower(recRel), ".cmake") {
+			return
+		}
+		for _, s := range ts.Sources {
+			abs := s
+			if !filepath.IsAbs(abs) {
+				abs = filepath.Join(filepath.Dir(ts.Recipe), s)
+			}
+			if sRel, ok := relativeIfInsideRelaxed(cmakeBuild, abs); ok && !strings.HasPrefix(sRel, "../") {
+				out[recRel] = append(out[recRel], sRel)
+			}
+		}
 	}
-	// The include()d `.cmake` recipe outputs (build-relative) — the only
-	// custom-command outputs whose recovery serves the include->target_sources
-	// chain. Both the include() events and the target_sources() causal recipes
-	// are unioned: every ts.Recipe is itself an include() by construction, but
-	// reading both keeps the gate aligned with the two consumer lookups
-	// (the include-scope heuristic and recipeFromTargetSources). cc.OuterRecipeIncludes
-	// adds the ancestor builds' recipes for the cross-boundary superbuild case (an
-	// OUTER configure include()ing a recipe THIS nested build's UTILITY produces).
-	includedRecipes := map[string]bool{}
-	addRecipe := func(p string) {
+	for _, ts := range cc.TargetSourcesCalls {
+		add(ts)
+	}
+	for _, ts := range cc.OuterTargetSources {
+		add(ts)
+	}
+	return out
+}
+
+// nestedIncludedRecipes is the gate: the recipe rels this build may recover —
+// include()s, target_sources causal recipes, and ancestor includes — relativized
+// to THIS build's dir so only recipes physically inside it survive. A UTILITY
+// custom command whose output nothing include()s is left untouched.
+func nestedIncludedRecipes(cc *codegenContext, cmakeBuild string) map[string]bool {
+	out := map[string]bool{}
+	add := func(p string) {
 		rel, ok := relativeIfInsideRelaxed(cmakeBuild, p)
-		if ok && strings.HasSuffix(strings.ToLower(rel), ".cmake") {
-			includedRecipes[rel] = true
+		if ok && !strings.HasPrefix(rel, "../") && strings.HasSuffix(strings.ToLower(rel), ".cmake") {
+			out[rel] = true
 		}
 	}
 	for _, inc := range cc.IncludeCalls {
-		addRecipe(inc.Path)
+		add(inc.Path)
 	}
 	for _, ts := range cc.TargetSourcesCalls {
-		addRecipe(ts.Recipe)
+		add(ts.Recipe)
 	}
-	// Ancestor builds' recipe includes (the superbuild-at-configure shape: an OUTER
-	// configure include()s a recipe THIS nested build's UTILITY produces). addRecipe
-	// relativizes against this build's dir, so only ancestor recipes physically
-	// inside it survive — the rest are harmless no-ops.
 	for _, p := range cc.OuterRecipeIncludes {
-		addRecipe(p)
+		add(p)
 	}
-	if len(includedRecipes) == 0 {
-		return
+	for _, ts := range cc.OuterTargetSources {
+		add(ts.Recipe)
 	}
-	if g.OutputIndex == nil {
-		g.Index()
-	}
-	// Seed each UTILITY's dep walk from its ninja phony. cmake names a
-	// sub-directory custom target's phony with its build-relative dir prefix
-	// (`gen/gen_recipe`) while the codemodel records the bare unique name
-	// (`gen_recipe`), so index every ninja output by its final path component
-	// and seed from the matches (falling back to the bare name for a root-dir
-	// target) — the same seeding collectCodegenHeaders performs.
+	return out
+}
+
+// reachableUtilityRecipeEdges collects every `.cmake` output with a
+// CUSTOM_COMMAND producer reachable from a UTILITY's ninja phony WITHOUT crossing
+// a sibling target — the recipe edges those UTILITY targets actually drive. The
+// phony is seeded by final-path-component (cmake prefixes a sub-dir custom
+// target's phony with its build-relative dir while the codemodel records the bare
+// name), the same seeding collectCodegenHeaders performs.
+func reachableUtilityRecipeEdges(g *ninja.Graph, utilityNames []string, isTargetName map[string]bool) map[string]bool {
 	phonyByName := map[string][]string{}
 	for o := range g.OutputIndex {
 		base := o
@@ -1737,13 +1797,13 @@ func recoverUtilityRecipeCommands(r *fileapi.Reply, cfg fileapi.Configuration, g
 		}
 		phonyByName[base] = append(phonyByName[base], o)
 	}
-	sort.Strings(utilityNames)
+	reachable := map[string]bool{}
 	for _, name := range utilityNames {
 		seeds := append([]string(nil), phonyByName[name]...)
 		if len(seeds) == 0 {
 			seeds = []string{name}
 		}
-		sort.Strings(seeds) // deterministic recovery (emit) order
+		sort.Strings(seeds)
 		visited := map[string]bool{}
 		stack := seeds
 		for len(stack) > 0 {
@@ -1753,28 +1813,117 @@ func recoverUtilityRecipeCommands(r *fileapi.Reply, cfg fileapi.Configuration, g
 				continue
 			}
 			visited[cur] = true
-			if includedRecipes[cur] {
-				// Reuse the per-target custom-command recovery: it finds the
-				// CUSTOM_COMMAND edge for this output, emits the genrule, and
-				// registers cc.OutToGenrule (genrule fallback) /
-				// OutToNativeConsumerDep (recognized). Errors — a non-custom-
-				// command or empty-command producer — are the decline path.
-				_, _, _ = cc.recoverGenrule(filepath.Join(cmakeBuild, filepath.FromSlash(cur)), cmakeSrc, cmakeBuild, g)
-			}
 			b := g.BuildFor(cur)
 			if b == nil {
 				continue
 			}
+			if strings.HasSuffix(strings.ToLower(cur), ".cmake") && b.Rule == "CUSTOM_COMMAND" {
+				reachable[cur] = true
+			}
 			for _, ins := range [][]string{b.Inputs, b.ImplicitInputs, b.OrderOnly} {
 				for _, in := range ins {
-					if isTargetName[in] {
-						continue // don't cross into a sibling target's subgraph
+					if !isTargetName[in] { // don't cross into a sibling target's subgraph
+						stack = append(stack, in)
 					}
-					stack = append(stack, in)
 				}
 			}
 		}
 	}
+	return reachable
+}
+
+// pairAndRecoverRecipeEdges pairs each included recipe to its producing ninja edge
+// — an exact output match, or a stable-stem match when the recipe filename carries
+// a per-configure-unstable token (the outer trace's name differs from the
+// re-configured graph's), gated 1:1 within a stem so an ambiguous group declines
+// to the bake — and recovers it, declaring the recipe's target_sources'd generated
+// sources (stable) rather than the recipe itself (configure-time-only, possibly
+// unstable). With no generated sources it falls back to recovering the recipe (the
+// include-only shape).
+func pairAndRecoverRecipeEdges(cc *codegenContext, g *ninja.Graph, cmakeSrc, cmakeBuild string, includedRecipes, reachableEdges map[string]bool, recipeToGenSrcs map[string][]string) {
+	edgesByStem := map[string][]string{}
+	for e := range reachableEdges {
+		edgesByStem[recipeStem(e)] = append(edgesByStem[recipeStem(e)], e)
+	}
+	recipesByStem := map[string][]string{}
+	recipeList := make([]string, 0, len(includedRecipes))
+	for rr := range includedRecipes {
+		recipesByStem[recipeStem(rr)] = append(recipesByStem[recipeStem(rr)], rr)
+		recipeList = append(recipeList, rr)
+	}
+	sort.Strings(recipeList)
+	for _, recRel := range recipeList {
+		edgeOut := recRel
+		if !reachableEdges[recRel] {
+			edgeOut = ""
+			stem := recipeStem(recRel)
+			if cand := edgesByStem[stem]; len(cand) == 1 && len(recipesByStem[stem]) == 1 {
+				edgeOut = cand[0] // unambiguous stable-stem pairing
+			}
+		}
+		if edgeOut == "" {
+			continue
+		}
+		abs := filepath.Join(cmakeBuild, filepath.FromSlash(edgeOut))
+		if genSrcs := dedupSorted(append([]string(nil), recipeToGenSrcs[recRel]...)); len(genSrcs) > 0 {
+			_, _, _ = cc.recoverGenruleDeclaring(abs, genSrcs, cmakeSrc, cmakeBuild, g)
+		} else {
+			_, _, _ = cc.recoverGenrule(abs, cmakeSrc, cmakeBuild, g)
+		}
+	}
+}
+
+// sourceLabelPrefix returns cmakeSrc relative to the label root (workspaceRoot)
+// when the label root sits ABOVE cmakeSrc — a nested lowering whose
+// ElementSourceRoot is the OUTER root, so recovered genrules' source srcs/cmd refs
+// must carry the `<nested-src-rel>` prefix to resolve in the merged outer package.
+// Empty for a plain top-level lowering (workspaceRoot == cmakeSrc).
+func sourceLabelPrefix(workspaceRoot, cmakeSrc string) string {
+	if workspaceRoot == "" || workspaceRoot == cmakeSrc {
+		return ""
+	}
+	if rel, inside := relativeIfInside(workspaceRoot, cmakeSrc); inside && rel != "" && rel != "." {
+		return filepath.ToSlash(rel)
+	}
+	return ""
+}
+
+// recipeStem normalizes a recipe `.cmake` path to a per-configure-stable key by
+// stripping a trailing variable token (`-`/`_`/`.` followed by a hex run that
+// CONTAINS A DIGIT) from the basename — `gen/recipe-0.cmake` and
+// `gen/recipe-3.cmake` (and `gen/recipe-1a2f.cmake`) all map to
+// `gen/recipe.cmake`, while `gen/module_a-0.cmake` and `gen/module_b-0.cmake`
+// stay distinct. The digit requirement keys precisely on the hash/counter shape:
+// since a-f are hex too, a meaningful single-letter suffix like `module_a` (no
+// digit) is preserved rather than collapsed to `module`. A name with no such
+// trailing token is returned unchanged (it can only ever match exactly). The stem
+// is what the divergent-hash pairing keys on; an all-letter "hash" (no digit) is
+// left exact-only, which the 1:1-within-stem gate then safely declines to the bake.
+func recipeStem(rel string) string {
+	dir, base := "", rel
+	if i := strings.LastIndex(rel, "/"); i >= 0 {
+		dir, base = rel[:i+1], rel[i+1:]
+	}
+	ext := ""
+	if i := strings.LastIndex(base, "."); i >= 0 {
+		ext, base = base[i:], base[:i]
+	}
+	i := len(base)
+	hasDigit := false
+	for i > 0 && isHexDigit(base[i-1]) {
+		if base[i-1] >= '0' && base[i-1] <= '9' {
+			hasDigit = true
+		}
+		i--
+	}
+	if hasDigit && i < len(base) && i > 0 && (base[i-1] == '-' || base[i-1] == '_' || base[i-1] == '.') {
+		base = base[:i-1]
+	}
+	return dir + base + ext
+}
+
+func isHexDigit(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
 
 // recoveredArtifacts bundles the configure-time recovery results
@@ -2823,14 +2972,14 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 
 	cc := newCodegenContextFor(opts)
-	cc.BazelPackagePath = opts.BazelPackagePath
+	cc.BazelPackagePath, cc.SourceLabelPrefix = opts.BazelPackagePath, sourceLabelPrefix(workspaceRoot, cmakeSrc)
 	cc.CMakeScriptRunner = opts.CMakeScriptRunner
 	cc.CMakeScriptTrace = opts.CMakeScriptTrace
 	cc.CMakeScriptBake = opts.CMakeScriptBake
 	cc.LiftCCEmbed = opts.LiftCCEmbed
 	cc.LiftCCHash = opts.LiftCCHash
 	cc.CMakeBinary, cc.Warnings = lookupCmakeBinary(), opts.Warnings
-	cc.OutputToCustomCommand, cc.IncludeCalls, cc.TargetSourcesCalls, cc.OuterRecipeIncludes = buildOutputToCustomCommand(tf.decodedAddCustomCommands, opts.BuildDir), tf.decodedIncludes, tf.decodedTargetSourcesCalls, opts.OuterRecipeIncludes
+	cc.OutputToCustomCommand, cc.IncludeCalls, cc.TargetSourcesCalls, cc.OuterRecipeIncludes, cc.OuterTargetSources = buildOutputToCustomCommand(tf.decodedAddCustomCommands, opts.BuildDir), tf.decodedIncludes, tf.decodedTargetSourcesCalls, opts.OuterRecipeIncludes, opts.OuterTargetSources
 	cc.LiteralProbeSink = opts.LiteralProbeSink
 	cc.LiteralResolutions = opts.LiteralResolutions
 	// Parallel pre-warm of the cmake -P script bakes: with the bake opted

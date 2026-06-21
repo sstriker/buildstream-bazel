@@ -386,6 +386,32 @@ func accumulateRecipeIncludes(inherited []string, cc *codegenContext) []string {
 	return out
 }
 
+// accumulateTargetSources unions the inherited ancestor target_sources() calls
+// with THIS build's own (cc.TargetSourcesCalls), deduped by (Target, Recipe,
+// joined Sources), for threading into the nested lowerings — so a nested build's
+// recovery can learn which generated sources an OUTER-included recipe pulls in.
+func accumulateTargetSources(inherited []shadow.TargetSourcesCall, cc *codegenContext) []shadow.TargetSourcesCall {
+	seen := make(map[string]bool, len(inherited))
+	out := make([]shadow.TargetSourcesCall, 0, len(inherited))
+	add := func(ts shadow.TargetSourcesCall) {
+		key := ts.Target + "\x00" + ts.Recipe + "\x00" + strings.Join(ts.Sources, "\x00")
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, ts)
+	}
+	for _, ts := range inherited {
+		add(ts)
+	}
+	if cc != nil {
+		for _, ts := range cc.TargetSourcesCalls {
+			add(ts)
+		}
+	}
+	return out
+}
+
 // lowerNestedBuilds is the ToIR pre-pass over Options.NestedBuilds (the
 // warm second pass's harvest): recursively lower each nested reply with
 // labels anchored at the OUTER root, merge the nested targets into the
@@ -403,6 +429,7 @@ func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSr
 	// (the superbuild-at-configure shape) is still recovered there (its own gate
 	// only sees the nested trace's includes). See Options.OuterRecipeIncludes.
 	opts.OuterRecipeIncludes = accumulateRecipeIncludes(opts.OuterRecipeIncludes, cc)
+	opts.OuterTargetSources = accumulateTargetSources(opts.OuterTargetSources, cc)
 	for _, nb := range opts.NestedBuilds {
 		nestedPkg, nestedStatus, err := lowerOneNestedBuild(nb, opts, hostSrc)
 		if err != nil {
@@ -774,6 +801,31 @@ func nativeRuleOuts(spec *ir.NativeRuleSpec) []string {
 	return outs
 }
 
+// rewriteRuledirDir rewrites `$(RULEDIR)/<oldDir>` to `$(RULEDIR)/<newDir>` at a
+// path-token boundary (the dir followed by whitespace, `/`, or end) — so a
+// genrule whose cmd anchored an output directory survives the nested re-home that
+// moved its declared outs under <buildRel>/.
+func rewriteRuledirDir(cmd, oldDir, newDir string) string {
+	if oldDir == "" || oldDir == "." {
+		return cmd
+	}
+	old := "$(RULEDIR)/" + oldDir
+	repl := "$(RULEDIR)/" + newDir
+	var b strings.Builder
+	for i := 0; i < len(cmd); {
+		if strings.HasPrefix(cmd[i:], old) {
+			if j := i + len(old); j == len(cmd) || cmd[j] == ' ' || cmd[j] == '\t' || cmd[j] == '/' {
+				b.WriteString(repl)
+				i = j
+				continue
+			}
+		}
+		b.WriteByte(cmd[i])
+		i++
+	}
+	return b.String()
+}
+
 // applyNestedProducerReHome re-anchors one merged target against the
 // re-homes: a producer rule's outs gain the <buildRel>/ prefix and the
 // rule renames (two nested builds recovering the same-named rule must
@@ -797,6 +849,14 @@ func applyNestedProducerReHome(t *ir.Target, rehome map[string]string, namePrefi
 		}
 		for i, out := range t.GenruleOuts {
 			if newRel, ok := rehome[out]; ok {
+				// A recovered genrule whose cmd anchored its output DIRECTORY to
+				// $(RULEDIR)/<dir> (a tool that takes an outdir arg, e.g. the recipe
+				// gen_src recovery) must follow the re-home: the declared out moved
+				// gen/… -> <buildRel>/gen/…, so the cmd's $(RULEDIR)/gen must become
+				// $(RULEDIR)/<buildRel>/gen or it writes to the wrong place.
+				if od, nd := slashDir(out), slashDir(newRel); od != nd {
+					t.GenruleCmd = rewriteRuledirDir(t.GenruleCmd, od, nd)
+				}
 				t.GenruleOuts[i] = newRel
 				renamed = true
 			}

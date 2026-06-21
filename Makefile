@@ -381,6 +381,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-e-tar-create.sh \
 	scripts/meta-cmake-nested-cmake.sh \
 	scripts/meta-cmake-nested-cmake-workdir.sh \
+	scripts/meta-cmake-superbuild-hashed-recipe.sh \
 	scripts/meta-cmake-build-dir-source-bake.sh \
 	scripts/meta-cmake-file-download-http.sh \
 	scripts/meta-cmake-cc-hash.sh \
