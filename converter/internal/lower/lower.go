@@ -100,6 +100,18 @@ type Options struct {
 	// Empty at the top level / no-trace path.
 	OuterTargetSources []shadow.TargetSourcesCall
 
+	// OuterBuildDirs carries the ANCESTOR builds' build-dir absolute paths
+	// (accumulated down each nesting level, outermost first) into a nested
+	// lowering. The cross-boundary codegen shape: a nested build's UTILITY writes
+	// its generated SOURCES up into an OUTER build tree (not its own build dir),
+	// while only the recipe `.cmake` lands locally — so the generated sources
+	// escape the nested build dir's boundary and recoverUtilityRecipeCommands
+	// can't capture them relative to it. These let it relativize an escaping
+	// source against the outer build that owns it (the path the outer consumer
+	// references) and reanchor the recovered genrule's cmd output paths to
+	// $(RULEDIR). Empty at the top level.
+	OuterBuildDirs []string
+
 	// HostPrefixDir, when set, is the absolute on-disk path to the
 	// synthesized prefix tree cmake configured against (CMAKE_PREFIX_PATH).
 	// Codemodel link.commandFragments paths anchored at this dir are
@@ -1741,7 +1753,7 @@ func nestedRecipeGenSrcs(cc *codegenContext, cmakeBuild string) map[string][]str
 			if !filepath.IsAbs(abs) {
 				abs = filepath.Join(filepath.Dir(ts.Recipe), s)
 			}
-			if sRel, ok := relativeIfInsideRelaxed(cmakeBuild, abs); ok && !strings.HasPrefix(sRel, "../") {
+			if sRel := genSrcRelToOwningBuild(abs, cmakeBuild, cc.OuterBuildDirs); sRel != "" {
 				out[recRel] = append(out[recRel], sRel)
 			}
 		}
@@ -1753,6 +1765,35 @@ func nestedRecipeGenSrcs(cc *codegenContext, cmakeBuild string) map[string][]str
 		add(ts)
 	}
 	return out
+}
+
+// genSrcRelToOwningBuild returns the build-relative path of a recipe's generated
+// source against whichever build dir physically OWNS it: the nested build dir
+// first, else an ancestor (outer) build dir — the cross-boundary codegen shape,
+// where the nested UTILITY writes the source UP into an outer build tree rather
+// than its own build dir. The returned rel is both the path the OUTER consumer
+// references and the path the recovered genrule declares; for an outer-owned
+// source it carries no nested `<buildRel>/` prefix, so the nested-merge re-home
+// (which only prefixes outs physically under the nested build dir) correctly
+// leaves it at the outer-package root. Empty when the source is inside no known
+// build dir (a plain source-tree input, handled by the normal source walk).
+//
+// Nested is tried first because it is a subdir of the outer build dir, so a
+// genuinely-nested source matches both; the nested-relative form is the correct
+// one for it.
+func genSrcRelToOwningBuild(abs, nestedBuild string, outerBuilds []string) string {
+	if rel, ok := relativeIfInsideRelaxed(nestedBuild, abs); ok && !strings.HasPrefix(rel, "../") {
+		return rel
+	}
+	for _, ob := range outerBuilds {
+		if ob == "" {
+			continue
+		}
+		if rel, ok := relativeIfInsideRelaxed(ob, abs); ok && !strings.HasPrefix(rel, "../") {
+			return rel
+		}
+	}
+	return ""
 }
 
 // nestedIncludedRecipes is the gate: the recipe rels this build may recover —
@@ -2983,7 +3024,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	cc.LiftCCEmbed = opts.LiftCCEmbed
 	cc.LiftCCHash = opts.LiftCCHash
 	cc.CMakeBinary, cc.Warnings = lookupCmakeBinary(), opts.Warnings
-	cc.OutputToCustomCommand, cc.IncludeCalls, cc.TargetSourcesCalls, cc.OuterRecipeIncludes, cc.OuterTargetSources = buildOutputToCustomCommand(tf.decodedAddCustomCommands, opts.BuildDir), tf.decodedIncludes, tf.decodedTargetSourcesCalls, opts.OuterRecipeIncludes, opts.OuterTargetSources
+	cc.OutputToCustomCommand, cc.IncludeCalls, cc.TargetSourcesCalls, cc.OuterRecipeIncludes, cc.OuterTargetSources, cc.OuterBuildDirs = buildOutputToCustomCommand(tf.decodedAddCustomCommands, opts.BuildDir), tf.decodedIncludes, tf.decodedTargetSourcesCalls, opts.OuterRecipeIncludes, opts.OuterTargetSources, opts.OuterBuildDirs
 	cc.LiteralProbeSink = opts.LiteralProbeSink
 	cc.LiteralResolutions = opts.LiteralResolutions
 	// Parallel pre-warm of the cmake -P script bakes: with the bake opted

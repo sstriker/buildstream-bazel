@@ -382,6 +382,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-nested-cmake.sh \
 	scripts/meta-cmake-nested-cmake-workdir.sh \
 	scripts/meta-cmake-superbuild-hashed-recipe.sh \
+	scripts/meta-cmake-superbuild-crossboundary-recipe.sh \
 	scripts/meta-cmake-shared-library.sh \
 	scripts/meta-cmake-module-library.sh \
 	scripts/meta-cmake-shared-soversion.sh \
