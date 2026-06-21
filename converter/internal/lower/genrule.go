@@ -108,6 +108,17 @@ type codegenContext struct {
 	// level / no-trace path.
 	OuterTargetSources []shadow.TargetSourcesCall
 
+	// OuterBuildDirs are the ANCESTOR builds' build-dir absolute paths, threaded
+	// via Options.OuterBuildDirs (outermost first). The cross-boundary codegen
+	// shape: a nested build's UTILITY writes its generated SOURCES up into an
+	// OUTER build tree (not its own build dir) while only the recipe `.cmake`
+	// lands locally. nestedRecipeGenSrcs relativizes those escaping sources
+	// against these so they're captured (build-relative to the outer build that
+	// owns them, the path the outer consumer references), and emitRecoveredGenrule
+	// reanchors the recovered cmd's outer-build-absolute output paths to
+	// $(RULEDIR). Empty at the top level.
+	OuterBuildDirs []string
+
 	// OutputToCustomCommand indexes the add_custom_command trace records by their
 	// OUTPUT/BYPRODUCT paths (keyed in both raw trace and build-relative form via
 	// outputKeyForms), for recovering the REAL command when a ninja edge is a
@@ -864,6 +875,27 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 	return cc.recoverGenruleDeclaring(srcPath, nil, cmakeSrc, buildDir, g)
 }
 
+// reanchorOuterBuildDirsToRuledir rewrites an ancestor (outer) build-dir prefix
+// `<outerBuildDir>/` to `$(RULEDIR)/` in a recovered genrule cmd — the
+// cross-boundary codegen shape, where the nested UTILITY's tool names its
+// OUTER-build output dir absolutely (rewriteGenruleCmd, keyed on the nested
+// build dir, leaves it untouched). The declared outs are outer-build-relative
+// (genSrcRelToOwningBuild), so anchoring the matching cmd path to $(RULEDIR)
+// makes the tool write where Bazel expects the declared output. Longest dir
+// first so the most-specific ancestor wins. No-op for an empty list or a cmd
+// carrying no such prefix.
+func reanchorOuterBuildDirsToRuledir(cmd string, outerBuilds []string) string {
+	dirs := append([]string(nil), outerBuilds...)
+	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
+	for _, ob := range dirs {
+		if ob == "" {
+			continue
+		}
+		cmd = strings.ReplaceAll(cmd, ob+"/", "$(RULEDIR)/")
+	}
+	return cmd
+}
+
 // recoverGenruleDeclaring is recoverGenrule with an explicit declared-output
 // override (see emitRecoveredGenrule's outsOverride): the producing CUSTOM_COMMAND
 // edge for srcPath is recovered, but the emitted genrule declares declaredOuts
@@ -1038,6 +1070,14 @@ func (cc *codegenContext) emitRecoveredGenrule(b *ninja.Build, cmd, cmakeSrc, bu
 	// and Bazel can't find the declared output. Scoped to the override case since
 	// it knows the declared outs are the tool's real outputs.
 	if len(outsOverride) > 0 {
+		// Cross-boundary codegen: the recipe's generated sources were written
+		// into an OUTER build tree (not this nested build dir), so the raw cmd
+		// names that OUTER-build-absolute output dir, which rewriteGenruleCmd
+		// (keyed on this nested buildDir) left untouched. Reanchor those
+		// outer-build paths to $(RULEDIR) so the cmd writes the declared
+		// (outer-relative) outs under bazel-out. No-op at the top level / when
+		// the cmd carries no outer-build path.
+		rewrittenCmd = reanchorOuterBuildDirsToRuledir(rewrittenCmd, cc.OuterBuildDirs)
 		rewrittenCmd = anchorGenruleOutputDirsPositional(rewrittenCmd, outs)
 	}
 	// Build-dir staging-copy reanchor: when the raw command ran in a build-dir

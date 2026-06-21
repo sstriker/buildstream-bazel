@@ -430,6 +430,13 @@ func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSr
 	// only sees the nested trace's includes). See Options.OuterRecipeIncludes.
 	opts.OuterRecipeIncludes = accumulateRecipeIncludes(opts.OuterRecipeIncludes, cc)
 	opts.OuterTargetSources = accumulateTargetSources(opts.OuterTargetSources, cc)
+	// Accumulate THIS (outer) build dir onto the ancestor chain (outermost
+	// first), so a nested lowering can resolve a generated source the nested
+	// UTILITY wrote UP into an ancestor build tree (the cross-boundary codegen
+	// shape). nestedOptionsFor then plainly forwards the accumulated chain.
+	if opts.BuildDir != "" {
+		opts.OuterBuildDirs = append(append([]string(nil), opts.OuterBuildDirs...), opts.BuildDir)
+	}
 	for _, nb := range opts.NestedBuilds {
 		nestedPkg, nestedStatus, err := lowerOneNestedBuild(nb, opts, hostSrc)
 		if err != nil {

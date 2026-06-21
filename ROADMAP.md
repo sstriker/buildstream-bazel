@@ -159,7 +159,14 @@ transition cleanly.
   per-configure-hash-named `.cmake` recipe that is include()d + target_sources'd
   (most codegen uses stable generated names). So the synthetic fixture stays the
   primary guard for the hash-unstable path; these real members validate the
-  surrounding nested-recipe / superbuild-codegen machinery it rides on.
+  surrounding nested-recipe / superbuild-codegen machinery it rides on. The
+  CROSS-BOUNDARY-output variant (a nested UTILITY writes its generated sources UP
+  into the OUTER build tree, not its own build dir) is likewise handled now —
+  `nestedRecipeGenSrcs` resolves an escaping source against the ancestor build
+  dir that owns it and the recovered genrule reanchors its cmd to `$(RULEDIR)`,
+  synthetic-fixture-validated by `meta-cmake-superbuild-crossboundary-recipe.sh`
+  — and shares the same real-corpus-validation gap (the real members above
+  exercise it too where their codegen writes outside the nested build dir).
 
 - **Expand the survey corpus: BuildBox + BDE (new cmake patterns).** Two
   projects that exercise idioms the current corpus doesn't:
