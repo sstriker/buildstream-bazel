@@ -52,8 +52,21 @@ fail() {
 }
 
 soname_of() { readelf -d "$1" 2>/dev/null | awk '/SONAME/{print $NF}' | tr -d '[]'; }
+# VERDEFNUM (count of .gnu.version_d nodes) + the sorted version-node names —
+# the byte-level signature of the symbol version script.
+verdefnum_of() { readelf -d "$1" 2>/dev/null | awk '/VERDEFNUM/{print $NF}'; }
+# Names from the version DEFINITIONS section (.gnu.version_d) only — the
+# version-script's output. Excludes the version NEEDS section (.gnu.version_r,
+# the libc GLIBC_* requirements), which is a libc-linking artifact, not part of
+# the version-script fidelity being compared.
+vernames_of() {
+    readelf --version-info "$1" 2>/dev/null | awk '
+        /\.gnu\.version_d/ {d=1; next}
+        /\.gnu\.version_r/ {d=0}
+        d && /Name:/ {sub(/.*Name: /,""); sub(/[[:space:]].*/,""); print}' | sort
+}
 
-# 0. cmake reference: what soname does cmake actually embed?
+# 0. cmake reference: what soname + version nodes does cmake actually embed?
 refb="$work_dir/refb"
 cmake -S "$fixture" -B "$refb" -G Ninja >/dev/null 2>&1 || fail "cmake configure (reference) failed"
 cmake --build "$refb" >/dev/null 2>&1 || fail "cmake build (reference) failed"
@@ -61,12 +74,24 @@ ref_so="$(find "$refb" -name 'libgreet.so.*' -type f | head -1)"
 [ -n "$ref_so" ] || fail "cmake reference build produced no libgreet.so.*"
 ref_soname="$(soname_of "$ref_so")"
 [ -n "$ref_soname" ] || fail "cmake reference .so carries no SONAME (fixture/toolchain issue)"
+ref_verdefnum="$(verdefnum_of "$ref_so")"
+ref_vernames="$(vernames_of "$ref_so")"
+[ "${ref_verdefnum:-0}" -ge 2 ] || fail "cmake reference .so has no version-script VERDEF (fixture/toolchain issue)"
 
-# 1. The cc_shared_library threads the soname as a user_link_flag.
-grep -qF "user_link_flags = [\"-Wl,-soname,$ref_soname\"]" "$build" \
+# 1. The cc_shared_library threads the soname AND the version-script (the
+#    latter as an unquoted $(location ...) with the map staged).
+grep -qF "\"-Wl,-soname,$ref_soname\"" "$build" \
     || fail "cc_shared_library missing user_link_flags soname matching cmake's '$ref_soname'"
+grep -qF '"-Wl,--version-script,$(location greet.map)"' "$build" \
+    || fail "cc_shared_library missing version-script user_link_flag (unquoted \$(location))"
+grep -qF 'additional_linker_inputs = ["greet.map"]' "$build" \
+    || fail "cc_shared_library missing additional_linker_inputs = [\"greet.map\"]"
+# The impl cc_library must NOT carry the version-script (it would propagate to
+# every consumer's link).
+awk '/^    name = "greet"/{f=1} f{print} /^\)/{if(f)exit}' "$build" | grep -qF 'version-script' \
+    && fail "impl cc_library leaks the version-script (propagates to consumers)"
 
-echo "ok  meta-cmake-shared-soversion: cc_shared_library threads -Wl,-soname,$ref_soname (matches cmake)"
+echo "ok  meta-cmake-shared-soversion: cc_shared_library threads -Wl,-soname,$ref_soname + version-script \$(location greet.map) (impl clean)"
 
 # --- Bazel build + readelf parity half ---
 if command -v bazel >/dev/null; then
@@ -89,7 +114,7 @@ fi
 
 ws="$work_dir/ws"
 mkdir -p "$ws"
-cp "$fixture"/greet.c "$fixture"/main.c "$ws/"
+cp "$fixture"/greet.c "$fixture"/main.c "$fixture"/greet.map "$ws/"
 cp "$build" "$ws/BUILD.bazel"
 cat > "$ws/MODULE.bazel" <<'EOF'
 module(name = "sharedsoversion", version = "0.0.0")
@@ -112,4 +137,14 @@ bz_soname="$(soname_of "$ws/$bz_so")"
 [ "$bz_soname" = "$ref_soname" ] \
     || fail "soname mismatch: bazel .so '$bz_soname' != cmake '$ref_soname'"
 
-echo "ok  meta-cmake-shared-soversion: bazel .so SONAME '$bz_soname' == cmake's; //:app links + runs"
+# Version-script parity: same VERDEF node count AND same version names as cmake.
+bz_verdefnum="$(verdefnum_of "$ws/$bz_so")"
+bz_vernames="$(vernames_of "$ws/$bz_so")"
+[ "$bz_verdefnum" = "$ref_verdefnum" ] \
+    || fail "VERDEFNUM mismatch: bazel .so '$bz_verdefnum' != cmake '$ref_verdefnum' (version script not applied)"
+[ "$bz_vernames" = "$ref_vernames" ] \
+    || fail "version-node names mismatch:
+   bazel: $(printf '%s' "$bz_vernames" | tr '\n' ' ')
+   cmake: $(printf '%s' "$ref_vernames" | tr '\n' ' ')"
+
+echo "ok  meta-cmake-shared-soversion: bazel .so SONAME '$bz_soname' + VERDEF ($bz_verdefnum nodes: $(printf '%s' "$bz_vernames" | tr '\n' ' ')) == cmake's; //:app links + runs"

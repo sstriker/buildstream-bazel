@@ -579,12 +579,23 @@ type Target struct {
 
 	// SharedLibUserLinkFlags are extra linker flags for the cc_shared_library
 	// WRAPPER's `user_link_flags` — flags that must reach the .so LINK (not the
-	// impl cc_library compile/archive). Today this carries the SONAME
+	// impl cc_library compile/archive). Carries the SONAME
 	// (`-Wl,-soname,lib<base>.so.<SOVERSION>`) so the produced .so embeds the
-	// same soname cmake's SOVERSION/VERSION does — without it the bazel .so has
-	// no soname and a consumer's NEEDED entry diverges from cmake (the zlib ELF
-	// lens gap). Empty for non-shared targets and unversioned shared libs.
+	// same soname cmake's SOVERSION/VERSION does, and the shared-only link flags
+	// cmake records via target_link_options — the symbol version script
+	// (`-Wl,--version-script,$(location <map>)`), retain-symbols-file, and
+	// dynamic-list — which belong on the .so link and must NOT propagate to
+	// consumers (a static cc_library's linkopts would). Empty for non-shared
+	// targets and unversioned, script-less shared libs.
 	SharedLibUserLinkFlags []string
+
+	// SharedLibAdditionalLinkerInputs are workspace-relative file paths the
+	// cc_shared_library WRAPPER's `additional_linker_inputs` must pin so the
+	// `$(location ...)` substitutions in SharedLibUserLinkFlags resolve at link
+	// time — typically the symbol version-map (.map / .ver) or retained-symbols
+	// file. Mirrors AdditionalLinkerInputs but targets the wrapper rather than
+	// the impl. Empty when no wrapper flag references a staged file.
+	SharedLibAdditionalLinkerInputs []string
 
 	// ImplementationDeps are Bazel labels to other targets used
 	// only in this target's .cc files (`PRIVATE`
