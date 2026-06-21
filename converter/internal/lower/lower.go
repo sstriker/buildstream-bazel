@@ -1889,11 +1889,16 @@ func sourceLabelPrefix(workspaceRoot, cmakeSrc string) string {
 }
 
 // recipeStem normalizes a recipe `.cmake` path to a per-configure-stable key by
-// stripping a trailing variable token (`-`/`_`/`.` followed by a hex/numeric run)
-// from the basename — `gen/recipe-0.cmake` and `gen/recipe-3.cmake` both map to
+// stripping a trailing variable token (`-`/`_`/`.` followed by a hex run that
+// CONTAINS A DIGIT) from the basename — `gen/recipe-0.cmake` and
+// `gen/recipe-3.cmake` (and `gen/recipe-1a2f.cmake`) all map to
 // `gen/recipe.cmake`, while `gen/module_a-0.cmake` and `gen/module_b-0.cmake`
-// stay distinct. A name with no such trailing token is returned unchanged (it can
-// only ever match exactly). The stem is what the divergent-hash pairing keys on.
+// stay distinct. The digit requirement keys precisely on the hash/counter shape:
+// since a-f are hex too, a meaningful single-letter suffix like `module_a` (no
+// digit) is preserved rather than collapsed to `module`. A name with no such
+// trailing token is returned unchanged (it can only ever match exactly). The stem
+// is what the divergent-hash pairing keys on; an all-letter "hash" (no digit) is
+// left exact-only, which the 1:1-within-stem gate then safely declines to the bake.
 func recipeStem(rel string) string {
 	dir, base := "", rel
 	if i := strings.LastIndex(rel, "/"); i >= 0 {
@@ -1904,10 +1909,14 @@ func recipeStem(rel string) string {
 		ext, base = base[i:], base[:i]
 	}
 	i := len(base)
+	hasDigit := false
 	for i > 0 && isHexDigit(base[i-1]) {
+		if base[i-1] >= '0' && base[i-1] <= '9' {
+			hasDigit = true
+		}
 		i--
 	}
-	if i < len(base) && i > 0 && (base[i-1] == '-' || base[i-1] == '_' || base[i-1] == '.') {
+	if hasDigit && i < len(base) && i > 0 && (base[i-1] == '-' || base[i-1] == '_' || base[i-1] == '.') {
 		base = base[:i-1]
 	}
 	return dir + base + ext

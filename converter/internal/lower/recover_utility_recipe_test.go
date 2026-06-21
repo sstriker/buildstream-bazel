@@ -199,6 +199,10 @@ func TestRecipeStem(t *testing.T) {
 		{"gen/module_b-0.cmake", "gen/module_b.cmake"},
 		{"recipe.cmake", "recipe.cmake"},
 		{"gen/recipe-stable.cmake", "gen/recipe-stable.cmake"},
+		// A meaningful single hex-LETTER suffix (no digit) is preserved, not
+		// collapsed to `module` — the strip keys on the digit-bearing hash shape.
+		{"gen/module_a.cmake", "gen/module_a.cmake"},
+		{"gen/foo-cafe.cmake", "gen/foo-cafe.cmake"},
 	}
 	for _, c := range cases {
 		if got := recipeStem(c.in); got != c.want {
