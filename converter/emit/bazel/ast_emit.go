@@ -533,6 +533,11 @@ func sharedLibraryExpr(t ir.Target) *build.CallExpr {
 		// emitSharedLibrary renders dynamic_deps multi-line (newline after `[`).
 		r.SetAttr("dynamic_deps", strListExpr(dd))
 	}
+	// user_link_flags reaches the .so LINK (soname etc.) — order-preserving,
+	// not sorted, since linker flag order is semantic.
+	if len(t.SharedLibUserLinkFlags) > 0 {
+		r.SetAttr("user_link_flags", strListExpr(t.SharedLibUserLinkFlags))
+	}
 	r.SetAttr("deps", strListExpr([]string{":" + t.Name}))
 	return call
 }
