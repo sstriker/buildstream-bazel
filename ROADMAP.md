@@ -49,8 +49,8 @@ transition cleanly.
   **Remaining:** grpc (blocked on the lens regression tracked under Now —
   its red is mode-independent, so it neither blocks nor validates shared),
   the heavy LLVM (needs a bigger-disk host — the one member not coverable
-  in a web-session container); carry the `.so` in runfiles for `bazel run`/test;
-  `MODULE_LIBRARY` dlopen semantics; and consider flipping `SURVEY_SHARED`
+  in a web-session container); `MODULE_LIBRARY` dlopen semantics; and
+  consider flipping `SURVEY_SHARED`
   to the DEFAULT once the corpus is green under it (so green + the fidelity
   lens run against the config cmake produces).
 
