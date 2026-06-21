@@ -6634,6 +6634,45 @@ func applyProbeBuildProps(tgt *ir.Target, p cmakerun.GenexProbe) {
 			tgt.Tags = append(tgt.Tags, tag)
 		}
 	}
+	// SONAME fidelity (faithful-SHARED only). cmake embeds a soname in a
+	// versioned SHARED library's .so (SOVERSION → lib<base>.so.<SOVERSION>,
+	// else VERSION → lib<base>.so.<VERSION>); Bazel's cc_shared_library
+	// defaults to none, so a consumer's NEEDED entry diverges from cmake (the
+	// zlib ELF-lens gap). Thread it as a -Wl,-soname user_link_flag on the
+	// wrapper. Only when this target renders a cc_shared_library (SharedLibName
+	// set under --emit-shared-libraries) AND cmake versioned it.
+	if tgt.SharedLibName != "" {
+		if soname := cmakeSoname(tgt.SharedLibName, p.Properties["SOVERSION"], p.Properties["VERSION"]); soname != "" {
+			flag := "-Wl,-soname," + soname
+			if !stringSliceContains(tgt.SharedLibUserLinkFlags, flag) {
+				tgt.SharedLibUserLinkFlags = append(tgt.SharedLibUserLinkFlags, flag)
+			}
+		}
+	}
+}
+
+// cmakeSoname derives the soname cmake embeds in a SHARED library's .so:
+//
+//	SOVERSION set    -> lib<base>.so.<SOVERSION>
+//	else VERSION set -> lib<base>.so.<VERSION>
+//	else             -> "" (no explicit soname; the linker default applies)
+//
+// base is sharedLibName up to its first ".so" segment — NameOnDisk may be the
+// fully-versioned file (libbrotlidec.so.1.2.0), whose soname is the SOVERSION
+// form (libbrotlidec.so.1), so the version suffix can't simply be reused.
+func cmakeSoname(sharedLibName, soversion, version string) string {
+	ver := strings.TrimSpace(soversion)
+	if ver == "" {
+		ver = strings.TrimSpace(version)
+	}
+	if ver == "" {
+		return ""
+	}
+	idx := strings.Index(sharedLibName, ".so")
+	if idx < 0 {
+		return ""
+	}
+	return sharedLibName[:idx] + ".so." + ver
 }
 
 // applyProbeTagProps maps the probe-recovered target properties that have no

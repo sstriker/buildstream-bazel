@@ -577,6 +577,15 @@ type Target struct {
 	// non-shared targets and leaf shared libs.
 	SharedLibDynamicDeps []string
 
+	// SharedLibUserLinkFlags are extra linker flags for the cc_shared_library
+	// WRAPPER's `user_link_flags` — flags that must reach the .so LINK (not the
+	// impl cc_library compile/archive). Today this carries the SONAME
+	// (`-Wl,-soname,lib<base>.so.<SOVERSION>`) so the produced .so embeds the
+	// same soname cmake's SOVERSION/VERSION does — without it the bazel .so has
+	// no soname and a consumer's NEEDED entry diverges from cmake (the zlib ELF
+	// lens gap). Empty for non-shared targets and unversioned shared libs.
+	SharedLibUserLinkFlags []string
+
 	// ImplementationDeps are Bazel labels to other targets used
 	// only in this target's .cc files (`PRIVATE`
 	// target_link_libraries() in CMake). Maps to
