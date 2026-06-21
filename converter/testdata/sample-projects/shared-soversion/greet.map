@@ -1,0 +1,6 @@
+GREET_1.0 {
+  global:
+    greet;
+  local:
+    *;
+};

@@ -3280,14 +3280,32 @@ func appendLinkFlagTokens(irt *ir.Target, t *fileapi.Target, fragment, cmakeSrc,
 			continue
 		}
 		// Shared-only link flags (version script / soname /
-		// retain-symbols) apply to a .so link. SHARED_LIBRARY /
-		// MODULE_LIBRARY collapse to a static cc_library (no .so),
-		// where a propagating version-script linkopt fails on every
-		// consumer link missing the script's symbols (zlib's
-		// zlib.map). Drop them (and their additional_linker_input,
-		// since this skips before the append below).
+		// retain-symbols) apply to a .so link.
 		if (t.Type == "SHARED_LIBRARY" || t.Type == "MODULE_LIBRARY") &&
 			isSharedOnlyLinkFlag(rewritten) {
+			// Under faithful-SHARED emit this target renders a real
+			// cc_shared_library wrapper (SharedLibName set), which DOES
+			// produce the .so these flags apply to — route them onto the
+			// WRAPPER's user_link_flags (not the impl cc_library, and not
+			// propagated to consumers), staging any referenced file
+			// (version-map etc.) as the wrapper's additional_linker_inputs.
+			// The reanchor emits the impl form `,"$(location <rel>)"`; the
+			// wrapper's user_link_flags is NOT shell-tokenised, so the
+			// literal quotes would reach ld ("cannot find version script").
+			// Strip them — these -Wl flags carry no meaningful quotes.
+			if irt.SharedLibName != "" {
+				wrapperFlag := strings.ReplaceAll(rewritten, `"`, "")
+				if !stringSliceContains(irt.SharedLibUserLinkFlags, wrapperFlag) {
+					irt.SharedLibUserLinkFlags = append(irt.SharedLibUserLinkFlags, wrapperFlag)
+					if addlInput != "" && !stringSliceContains(irt.SharedLibAdditionalLinkerInputs, addlInput) {
+						irt.SharedLibAdditionalLinkerInputs = append(irt.SharedLibAdditionalLinkerInputs, addlInput)
+					}
+				}
+			}
+			// No wrapper (default static-collapse): drop. A propagating
+			// version-script linkopt fails every consumer link missing the
+			// script's symbols (zlib's zlib.map), and a static cc_library
+			// has no .so for soname/retain-symbols to apply to.
 			continue
 		}
 		// Dedup against earlier appends — cmake's

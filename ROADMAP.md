@@ -650,26 +650,12 @@ transition cleanly.
   lens driven by `scripts/build-lens/<name>.elffidelity` +
   `testdata/fidelity/<name>.elf-allowlist.txt`, reporting
   `<out>/<name>/elf-fidelity.json`. SEEDED + run: `fmt` (natural `.a` → 0
-  impactful, structurally equivalent) and `zlib` (natural `.so` → surfaces the
-  converter gap below). REMAINING: add `.elffidelity` configs across the rest of
+  impactful, structurally equivalent) and `zlib` (natural `.so` → originally
+  surfaced the SONAME + symbol-version-script converter gaps, both now closed
+  and locked by `meta-cmake-shared-soversion.sh`). REMAINING: add `.elffidelity`
+  configs across the rest of
   the shared-validated corpus (libxml2, brotli, curl, glog, spdlog, mbedtls,
   protobuf) + curate each `.elf-allowlist.txt` as members come online.
-
-- **`cc_shared_library` symbol version-script fidelity (surfaced by the ELF
-  lens on zlib).** The converted `cc_shared_library` doesn't carry cmake's
-  **symbol version script** (`zlib.map` → `ZLIB_1.2.*` `.gnu.version_d` nodes;
-  the bazel `.so` exports unversioned → ~15 `version-node-only-in-cmake`) — a
-  real ABI delta a consumer links against. The fix routes
-  `target_link_options(-Wl,--version-script=...)` / `LINK_DEPENDS` to the
-  wrapper's `user_link_flags` + stages the version-map as an
-  `additional_linker_inputs` src with a `$(location)` rewrite (the impl-side
-  reanchor already produces the staged-input form via
-  `reanchorLinkOptTokenWithInput`; the shared path needs it on the wrapper).
-  Pure SHARED-path fidelity; off the static default. (SONAME parity is DONE —
-  `applyProbeBuildProps` threads cmake's `SOVERSION`/`VERSION` →
-  `-Wl,-soname,lib<base>.so.<N>` on the `cc_shared_library`'s `user_link_flags`,
-  validated byte-for-byte against cmake's own `.so` by
-  `meta-cmake-shared-soversion.sh`.)
 
 - **Source-narrowing-compatibility lens — SHIPPED (v1, opt-in
   `SURVEY_NARROWING_COMPAT=1`).** `scripts/narrowing-compat-lens.sh` (wired into
