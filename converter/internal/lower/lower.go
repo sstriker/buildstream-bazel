@@ -1890,15 +1890,18 @@ func sourceLabelPrefix(workspaceRoot, cmakeSrc string) string {
 
 // recipeStem normalizes a recipe `.cmake` path to a per-configure-stable key by
 // stripping a trailing variable token (`-`/`_`/`.` followed by a hex run that
-// CONTAINS A DIGIT) from the basename — `gen/recipe-0.cmake` and
-// `gen/recipe-3.cmake` (and `gen/recipe-1a2f.cmake`) all map to
-// `gen/recipe.cmake`, while `gen/module_a-0.cmake` and `gen/module_b-0.cmake`
-// stay distinct. The digit requirement keys precisely on the hash/counter shape:
-// since a-f are hex too, a meaningful single-letter suffix like `module_a` (no
-// digit) is preserved rather than collapsed to `module`. A name with no such
-// trailing token is returned unchanged (it can only ever match exactly). The stem
-// is what the divergent-hash pairing keys on; an all-letter "hash" (no digit) is
-// left exact-only, which the 1:1-within-stem gate then safely declines to the bake.
+// EITHER contains a digit OR is at least 2 chars long) from the basename —
+// `gen/recipe-0.cmake`/`gen/recipe-3.cmake`/`gen/recipe-1a2f.cmake` and the
+// all-letter `gen/foo-cafe.cmake`/`gen/foo-dead.cmake` all collapse to a common
+// stem, while `gen/module_a.cmake` and `gen/module_b.cmake` stay distinct. The
+// digit-or-length-2 rule keys on the hash/counter shape: a single hex LETTER
+// (`-a`, no digit, length 1) is treated as a meaningful name suffix, not a hash,
+// so `module_a`/`module_b` aren't collapsed; but a multi-char all-letter hash
+// (`-cafe`) is recognized — closing the no-digit gap a digit-only rule left
+// (all-letter hashes fell to the bake). A name with no such trailing token is
+// returned unchanged. The stem is what the divergent-hash pairing keys on; the
+// only residual (a contrived 2-letter all-letter NAME like `module_ab`) is caught
+// by the 1:1-within-stem gate, which declines an ambiguous group to the bake.
 func recipeStem(rel string) string {
 	dir, base := "", rel
 	if i := strings.LastIndex(rel, "/"); i >= 0 {
@@ -1916,7 +1919,8 @@ func recipeStem(rel string) string {
 		}
 		i--
 	}
-	if hasDigit && i < len(base) && i > 0 && (base[i-1] == '-' || base[i-1] == '_' || base[i-1] == '.') {
+	runLen := len(base) - i
+	if runLen > 0 && (hasDigit || runLen >= 2) && i > 0 && (base[i-1] == '-' || base[i-1] == '_' || base[i-1] == '.') {
 		base = base[:i-1]
 	}
 	return dir + base + ext

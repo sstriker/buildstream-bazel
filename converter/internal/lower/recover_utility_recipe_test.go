@@ -188,21 +188,24 @@ build gen_recipe: phony sibling_tool
 }
 
 // TestRecipeStem pins the per-configure-stable normalization: a trailing
-// `[-_.]<hex-run>` token is stripped (so divergent counters/hashes map to one
-// stem), distinct stems stay distinct, and a non-hex / token-less name is kept.
+// `[-_.]<hex-run>` token is stripped when the run has a digit OR is length >= 2
+// (so divergent counters AND all-letter hashes map to one stem), distinct stems
+// stay distinct, and a single hex LETTER is kept as a meaningful name suffix.
 func TestRecipeStem(t *testing.T) {
 	cases := []struct{ in, want string }{
-		{"gen/recipe-0.cmake", "gen/recipe.cmake"},
-		{"gen/recipe-3.cmake", "gen/recipe.cmake"},
-		{"gen/recipe-1a2f.cmake", "gen/recipe.cmake"},
-		{"gen/module_a-0.cmake", "gen/module_a.cmake"},
+		{"gen/recipe-0.cmake", "gen/recipe.cmake"},     // single-digit counter
+		{"gen/recipe-3.cmake", "gen/recipe.cmake"},     // divergent counter
+		{"gen/recipe-1a2f.cmake", "gen/recipe.cmake"},  // mixed hash
+		{"gen/foo-cafe.cmake", "gen/foo.cmake"},        // all-letter hash, len>=2 (no-digit gap closed)
+		{"gen/foo-deadbeef.cmake", "gen/foo.cmake"},    // longer all-letter hash
+		{"gen/module_a-0.cmake", "gen/module_a.cmake"}, // counter strips, _a kept
 		{"gen/module_b-0.cmake", "gen/module_b.cmake"},
-		{"recipe.cmake", "recipe.cmake"},
-		{"gen/recipe-stable.cmake", "gen/recipe-stable.cmake"},
-		// A meaningful single hex-LETTER suffix (no digit) is preserved, not
-		// collapsed to `module` — the strip keys on the digit-bearing hash shape.
+		{"recipe.cmake", "recipe.cmake"}, // no token
+		// A single hex LETTER (len 1, no digit) is a name suffix, not a hash, so
+		// module_a / module_b stay DISTINCT (the would-be mispair window).
 		{"gen/module_a.cmake", "gen/module_a.cmake"},
-		{"gen/foo-cafe.cmake", "gen/foo-cafe.cmake"},
+		{"gen/module_b.cmake", "gen/module_b.cmake"},
+		{"gen/recipe-stable.cmake", "gen/recipe-stable.cmake"}, // non-hex run, not stripped
 	}
 	for _, c := range cases {
 		if got := recipeStem(c.in); got != c.want {
