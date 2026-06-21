@@ -247,15 +247,29 @@ func splitFirstWord(s string) (string, string) {
 	return s, ""
 }
 
-// splitTokens splits a whitespace-delimited list, honoring `$ ` escapes.
+// splitTokens splits a whitespace-delimited path list, un-escaping ninja's path
+// escapes — `$ ` (space), `$:` (colon), `$$` (dollar), `$|` (bar) — to their
+// literal char so a colon-bearing path (`out$:a` for `out:a`, e.g. a Windows
+// drive letter `C$:`) lands in Outputs/Inputs un-escaped. A `$` before `{` or an
+// identifier is a VARIABLE reference (`${cmake_ninja_workdir}…`) and is kept raw:
+// the build line stores outputs pre-expansion, and downstream var-ref filtering
+// (filterOutVarRefs) still needs to see it. An unrecognized `$x` keeps the `$`
+// literal, matching Expand's default.
 func splitTokens(s string) []string {
 	var out []string
 	var cur strings.Builder
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if c == '$' && i+1 < len(s) && s[i+1] == ' ' {
-			cur.WriteByte(' ')
-			i++
+		if c == '$' && i+1 < len(s) {
+			switch s[i+1] {
+			case ' ', ':', '$', '|':
+				cur.WriteByte(s[i+1])
+				i++
+				continue
+			}
+			// Variable reference (${...} / $var) or unknown escape: keep the
+			// `$` and let the next byte be handled normally so the ref survives.
+			cur.WriteByte(c)
 			continue
 		}
 		if c == ' ' || c == '\t' {

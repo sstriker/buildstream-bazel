@@ -108,6 +108,29 @@ build a b | implicit_out: R x y | implicit_in || order_only
 	}
 }
 
+// TestParse_BuildStmt_PathEscapes pins that ninja path escapes are un-escaped in
+// Outputs/Inputs: `$:` -> `:` (the colon that would otherwise read as the
+// build-statement separator — e.g. a Windows drive letter `C$:`), `$$` -> `$`,
+// `$ ` -> a literal space inside one token. A `${var}` reference is preserved raw
+// (NOT corrupted to `{var}`) since outputs are stored pre-expansion.
+func TestParse_BuildStmt_PathEscapes(t *testing.T) {
+	g := mustParse(t, `rule R
+  command = c
+
+build out$:a c$$d | impl$ out: R in$:x ${ninja_dir}gen.h
+`)
+	b := g.Builds[0]
+	if got, want := b.Outputs, []string{"out:a", "c$d"}; !sameSlice(got, want) {
+		t.Errorf("Outputs = %v, want %v", got, want)
+	}
+	if got, want := b.ImplicitOuts, []string{"impl out"}; !sameSlice(got, want) {
+		t.Errorf("ImplicitOuts = %v, want %v", got, want)
+	}
+	if got, want := b.Inputs, []string{"in:x", "${ninja_dir}gen.h"}; !sameSlice(got, want) {
+		t.Errorf("Inputs = %v, want %v", got, want)
+	}
+}
+
 func TestParse_DollarContinuation(t *testing.T) {
 	g := mustParse(t, `rule R
   command = a $
