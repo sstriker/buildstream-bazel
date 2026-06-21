@@ -82,7 +82,7 @@ func (cc *codegenContext) recoverTracedToolCommand(b *ninja.Build, calls []shado
 	// shared emission. emitRecoveredGenrule declares the edge's outs, so relOut
 	// is registered (OutToGenrule, or OutToNativeConsumerDep on a recognizer
 	// match); confirm that before claiming success.
-	if _, _, err := cc.emitRecoveredGenrule(b, strings.Join(chosen, " "), cmakeSrc, buildDir, relOut, g); err != nil {
+	if _, _, err := cc.emitRecoveredGenrule(b, strings.Join(chosen, " "), cmakeSrc, buildDir, relOut, g, nil); err != nil {
 		return "", false
 	}
 	if !cc.outputClaimed(relOut) {

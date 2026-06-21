@@ -386,6 +386,32 @@ func accumulateRecipeIncludes(inherited []string, cc *codegenContext) []string {
 	return out
 }
 
+// accumulateTargetSources unions the inherited ancestor target_sources() calls
+// with THIS build's own (cc.TargetSourcesCalls), deduped by (Target, Recipe,
+// joined Sources), for threading into the nested lowerings — so a nested build's
+// recovery can learn which generated sources an OUTER-included recipe pulls in.
+func accumulateTargetSources(inherited []shadow.TargetSourcesCall, cc *codegenContext) []shadow.TargetSourcesCall {
+	seen := make(map[string]bool, len(inherited))
+	out := make([]shadow.TargetSourcesCall, 0, len(inherited))
+	add := func(ts shadow.TargetSourcesCall) {
+		key := ts.Target + "\x00" + ts.Recipe + "\x00" + strings.Join(ts.Sources, "\x00")
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, ts)
+	}
+	for _, ts := range inherited {
+		add(ts)
+	}
+	if cc != nil {
+		for _, ts := range cc.TargetSourcesCalls {
+			add(ts)
+		}
+	}
+	return out
+}
+
 // lowerNestedBuilds is the ToIR pre-pass over Options.NestedBuilds (the
 // warm second pass's harvest): recursively lower each nested reply with
 // labels anchored at the OUTER root, merge the nested targets into the
@@ -403,6 +429,7 @@ func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSr
 	// (the superbuild-at-configure shape) is still recovered there (its own gate
 	// only sees the nested trace's includes). See Options.OuterRecipeIncludes.
 	opts.OuterRecipeIncludes = accumulateRecipeIncludes(opts.OuterRecipeIncludes, cc)
+	opts.OuterTargetSources = accumulateTargetSources(opts.OuterTargetSources, cc)
 	for _, nb := range opts.NestedBuilds {
 		nestedPkg, nestedStatus, err := lowerOneNestedBuild(nb, opts, hostSrc)
 		if err != nil {

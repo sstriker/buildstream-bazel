@@ -615,6 +615,7 @@ var nestedOptionsClass = map[string]string{
 	"EmitSharedLibraries":               "forward",
 	"EmitInstallExportConfig":           "forward",
 	"OuterRecipeIncludes":               "forward",
+	"OuterTargetSources":                "forward",
 
 	"HostPrefixDir":          "drop",
 	"CTest":                  "drop",

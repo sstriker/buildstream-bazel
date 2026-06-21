@@ -173,20 +173,39 @@ func customTargetStampIsNonAll(outs []string, allByName map[string]bool) bool {
 	return false
 }
 
+// coveredOutsForStandalone builds the set of outputs the standalone pass must NOT
+// re-process: outputs already declared by an existing genrule (coveredOuts), those
+// a recognized native rule claimed (OutToNativeConsumerDep — recoverGenrule lowered
+// a consumed protoc add_custom_command to cc_proto_library, which carries no genrule
+// out for coveredOuts to see), and the OWN outputs of every edge an earlier
+// per-target / UTILITY-recipe pass already recovered (cc.SeenBuilds, keyed by edge —
+// the nested recipe recovery may declare DIFFERENT outs than the edge, e.g. the
+// recipe's generated sources rather than the unstable recipe itself, so folding the
+// edge's own outputs here is what keeps it from re-emitting as a dead genrule).
+func coveredOutsForStandalone(existing []ir.Target, cc *codegenContext) map[string]bool {
+	covered := coveredOuts(existing)
+	if cc == nil {
+		return covered
+	}
+	for o := range cc.OutToNativeConsumerDep {
+		covered[o] = true
+	}
+	for b := range cc.SeenBuilds {
+		for _, o := range b.Outputs {
+			covered[o] = true
+		}
+		for _, o := range b.ImplicitOuts {
+			covered[o] = true
+		}
+	}
+	return covered
+}
+
 func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath string, artifactToName map[string]string, traceCtx standaloneTraceContext, filteredInternal map[string]string, cc *codegenContext) []ir.Target {
 	if g == nil {
 		return nil
 	}
-	covered := coveredOuts(existing)
-	// Outputs a recognized native rule already claimed (recoverGenrule lowered a
-	// consumed protoc add_custom_command to cc_proto_library) carry no genrule
-	// out for coveredOuts to see — fold them in so this pass doesn't re-process
-	// the same edge and double-emit the native targets.
-	if cc != nil {
-		for o := range cc.OutToNativeConsumerDep {
-			covered[o] = true
-		}
-	}
+	covered := coveredOutsForStandalone(existing, cc)
 	edges := ninja.CustomCommandEdges(g)
 	if len(edges) == 0 {
 		return nil

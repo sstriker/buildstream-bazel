@@ -93,6 +93,13 @@ type codegenContext struct {
 	// the top level / no-trace path.
 	OuterRecipeIncludes []string
 
+	// OuterTargetSources are the ancestor builds' target_sources() calls, threaded
+	// via Options.OuterTargetSources. recoverUtilityRecipeCommands reads them to
+	// learn which generated sources a nested-produced, outer-included recipe pulls
+	// in, so the recovered genrule declares those stable outputs. Empty at the top
+	// level / no-trace path.
+	OuterTargetSources []shadow.TargetSourcesCall
+
 	// OutputToCustomCommand indexes the add_custom_command trace records by their
 	// OUTPUT/BYPRODUCT paths (keyed in both raw trace and build-relative form via
 	// outputKeyForms), for recovering the REAL command when a ninja edge is a
@@ -846,6 +853,16 @@ func (cc *codegenContext) recoverCmakeScriptGenrule(b *ninja.Build, cmd, cmakeSr
 // generated source paths in the File API are absolute under it, and ninja's
 // build statements are relative to it.
 func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *ninja.Graph) (relOut, name string, err error) {
+	return cc.recoverGenruleDeclaring(srcPath, nil, cmakeSrc, buildDir, g)
+}
+
+// recoverGenruleDeclaring is recoverGenrule with an explicit declared-output
+// override (see emitRecoveredGenrule's outsOverride): the producing CUSTOM_COMMAND
+// edge for srcPath is recovered, but the emitted genrule declares declaredOuts
+// instead of the edge's own outputs. Used by the nested UTILITY recipe recovery to
+// emit the STABLE target_sources'd generated sources rather than the unstable
+// recipe `.cmake`. declaredOuts nil reproduces recoverGenrule exactly.
+func (cc *codegenContext) recoverGenruleDeclaring(srcPath string, declaredOuts []string, cmakeSrc, buildDir string, g *ninja.Graph) (relOut, name string, err error) {
 	relOut, ok := relativeIfInside(buildDir, srcPath)
 	if !ok {
 		// Generated source outside the build dir is unusual; bail out
@@ -936,7 +953,7 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 		return cc.recoverCmakeScriptGenrule(b, cmd, cmakeSrc, buildDir, relOut, g)
 	}
 
-	return cc.emitRecoveredGenrule(b, cmd, cmakeSrc, buildDir, relOut, g)
+	return cc.emitRecoveredGenrule(b, cmd, cmakeSrc, buildDir, relOut, g, declaredOuts)
 }
 
 // emitRecoveredGenrule builds and registers a recovered custom-command as a
@@ -950,11 +967,23 @@ func (cc *codegenContext) recoverGenrule(srcPath, cmakeSrc, buildDir string, g *
 // substituted for `cmake -P <script>`), so both get identical tool resolution,
 // output anchoring, build-dir reanchor, and recognizer dispatch — instead of
 // the script path hand-rolling a parallel genrule builder.
-func (cc *codegenContext) emitRecoveredGenrule(b *ninja.Build, cmd, cmakeSrc, buildDir, relOut string, g *ninja.Graph) (string, string, error) {
+func (cc *codegenContext) emitRecoveredGenrule(b *ninja.Build, cmd, cmakeSrc, buildDir, relOut string, g *ninja.Graph, outsOverride []string) (string, string, error) {
 	// Sanitize a name from the build statement's first output.
 	name := genruleNameFor(b, buildDir)
 
 	outs := genruleOuts(b, buildDir)
+	// outsOverride declares DIFFERENT outputs than the edge's own — used when a
+	// recipe edge's real (configure-time) output is an unstable `.cmake` we don't
+	// want as a Bazel output, and the genrule should instead declare the STABLE
+	// generated sources the recipe target_sources() (which the edge's command
+	// produces as undeclared side outputs). Name from the first override out so it
+	// re-homes / dedups by the stable name, not the unstable recipe.
+	if len(outsOverride) > 0 {
+		outs = append([]string(nil), outsOverride...)
+		sort.Strings(outs)
+		outs = dedupSorted(outs)
+		name = "gen_" + sanitizePathToNameStem(outs[0])
+	}
 	// recoverGenrule predates the umbrella promotion and has no
 	// labelRoot in scope; pass "" so its source-relative srcs/cmd
 	// shape is unchanged. The umbrella anchoring lives on the
