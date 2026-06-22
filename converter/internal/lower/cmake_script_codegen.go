@@ -2,6 +2,7 @@ package lower
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -77,17 +78,28 @@ func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptA
 	// caller (recoverCmakeScriptGenrule via realCmakeCommandForEdge), so a
 	// generated dispatch wrapper has been unwrapped before we get here.
 	dArgs := extractCmakePDashArgs(cmd)
-	calls, fileCopies := cc.expandCommandSourcesAndCopies(scriptArg, dArgs, cmakeSrc, buildDir)
+	// Pre-create the declared outputs' parent dirs before the re-trace. The script
+	// is re-traced STANDALONE (just `cmake -P <script>`), without the sibling
+	// `cmake -E make_directory` COMMAND the real add_custom_command runs first — so
+	// a relocation that doesn't create its destination directory (`cmake -E rename`
+	// / `file(RENAME)`, unlike `copy` which makes the parent) would fatal on the
+	// missing dir, truncating the trace and leaving the output unmaterialized for
+	// the temp-dir-relocate corroboration. Harmless for the other script paths.
+	for _, o := range genruleOuts(b, buildDir) {
+		_ = os.MkdirAll(filepath.Dir(filepath.Join(buildDir, filepath.FromSlash(o))), 0o755)
+	}
+	calls, relocs := cc.expandCommandSourcesAndRelocations(scriptArg, dArgs, cmakeSrc, buildDir)
 	if len(calls) == 0 {
 		return "", false
 	}
 	// Temp-dir-then-copy codegen: a tool runs with WORKING_DIRECTORY=<tmp> and a
-	// relocation (`cmake -E copy` execute_process OR a `file(COPY)` cmake command)
-	// moves its output to the declared output. Recover the regenerating TOOL here,
-	// BEFORE recoverExecuteProcess, so its claim supersedes the frozen copy-bake
-	// (bakeBuildDirCopyOutput, which then defers to the existing claim). Declines
-	// for any other shape → recoverExecuteProcess handles the calls unchanged.
-	if name, ok := cc.recoverTempDirToolRelocate(b, calls, fileCopies, cmakeSrc, buildDir, relOut, g); ok {
+	// relocation (`cmake -E copy`/`rename` execute_process OR a `file(COPY)`/
+	// `file(RENAME)` cmake command) moves its output to the declared output.
+	// Recover the regenerating TOOL here, BEFORE recoverExecuteProcess, so its
+	// claim supersedes the frozen copy-bake (bakeBuildDirCopyOutput, which then
+	// defers to the existing claim). Declines for any other shape →
+	// recoverExecuteProcess handles the calls unchanged.
+	if name, ok := cc.recoverTempDirToolRelocate(b, calls, relocs, cmakeSrc, buildDir, relOut, g); ok {
 		cc.SeenBuilds[b] = name
 		return name, true
 	}
@@ -275,18 +287,27 @@ func (cc *codegenContext) expandCommandSources(scriptArg string, dArgs []string,
 	return cc.expandScriptCalls(scriptArg, dArgs, cmakeSrc, buildDir, map[string]bool{}, 0, nil)
 }
 
-// expandCommandSourcesAndCopies is expandCommandSources that ALSO returns the
-// script's file(COPY) relocations (Op=="copy", as FileWriterCalls). The
-// temp-dir-relocate recovery needs them because a `file(COPY)` is a cmake
-// command, not an execute_process, so it isn't among the harvested calls — yet
-// it's the relocation that moves a tool's tempdir output to the declared output.
-func (cc *codegenContext) expandCommandSourcesAndCopies(scriptArg string, dArgs []string, cmakeSrc, buildDir string) ([]shadow.ExecuteProcessCall, []shadow.FileWriterCall) {
-	var copies []shadow.FileWriterCall
-	calls := cc.expandScriptCalls(scriptArg, dArgs, cmakeSrc, buildDir, map[string]bool{}, 0, &copies)
-	return calls, copies
+// scriptRelocation is a single (src -> dst) file move a re-traced `cmake -P`
+// script performs via a CMAKE COMMAND (not an execute_process): `file(COPY …
+// DESTINATION …)` (one per source) or `file(RENAME <src> <dst>)`. The temp-dir-
+// relocate recovery folds these in alongside the `cmake -E copy/rename`
+// execute_process relocations — a file(COPY)/file(RENAME) is invisible to the
+// execute_process harvest, yet it's the relocation that moves a tool's tempdir
+// output to the declared output.
+type scriptRelocation struct {
+	src, dst string
 }
 
-func (cc *codegenContext) expandScriptCalls(scriptArg string, dArgs []string, cmakeSrc, buildDir string, visited map[string]bool, depth int, fileCopies *[]shadow.FileWriterCall) []shadow.ExecuteProcessCall {
+// expandCommandSourcesAndRelocations is expandCommandSources that ALSO returns
+// the script's cmake-command file relocations (file(COPY)/file(RENAME), as
+// scriptRelocation pairs).
+func (cc *codegenContext) expandCommandSourcesAndRelocations(scriptArg string, dArgs []string, cmakeSrc, buildDir string) ([]shadow.ExecuteProcessCall, []scriptRelocation) {
+	var relocs []scriptRelocation
+	calls := cc.expandScriptCalls(scriptArg, dArgs, cmakeSrc, buildDir, map[string]bool{}, 0, &relocs)
+	return calls, relocs
+}
+
+func (cc *codegenContext) expandScriptCalls(scriptArg string, dArgs []string, cmakeSrc, buildDir string, visited map[string]bool, depth int, relocs *[]scriptRelocation) []shadow.ExecuteProcessCall {
 	if depth > maxScriptRecursionDepth {
 		return nil
 	}
@@ -313,14 +334,27 @@ func (cc *codegenContext) expandScriptCalls(scriptArg string, dArgs []string, cm
 	dec := shadow.Decode(traceRaw, cmakeSrc, nil)
 	harvested := append(append([]shadow.ExecuteProcessCall(nil), dec.ExecuteProcesses...), dec.OutOfTreeExecuteProcesses...)
 
-	// Collect this level's file(COPY) relocations when the caller wants them
-	// (the temp-dir-relocate recovery). A file(COPY) isn't an execute_process, so
-	// it's invisible to the harvest above, but it's the relocation that moves a
-	// tool's tempdir output to the declared output.
-	if fileCopies != nil {
+	// Collect this level's CMAKE-COMMAND file relocations when the caller wants
+	// them (the temp-dir-relocate recovery): file(COPY) (one per source) from the
+	// file-writers, and file(RENAME) (decoded as a COPYONLY configure_file pair)
+	// from dec.ConfigFiles. These aren't execute_process calls, so they're
+	// invisible to the harvest above. A non-relocation configure_file (variable
+	// substitution) is excluded by gating on COPYONLY; and a relocation whose
+	// source isn't under the recovered tool's WORKING_DIRECTORY is filtered out
+	// downstream by recoverTempDirToolRelocate's owns-check.
+	if relocs != nil {
 		for _, w := range shadow.ExtractFileWriterCalls(traceRaw, cmakeSrc) {
 			if w.Op == "copy" || w.Op == "copy_file" {
-				*fileCopies = append(*fileCopies, w)
+				for i := range w.Outputs {
+					if i < len(w.Sources) {
+						*relocs = append(*relocs, scriptRelocation{src: w.Sources[i], dst: w.Outputs[i]})
+					}
+				}
+			}
+		}
+		for _, c := range dec.ConfigFiles {
+			if stringSliceContains(c.Options, "COPYONLY") && c.Input != "" && c.Output != "" {
+				*relocs = append(*relocs, scriptRelocation{src: c.Input, dst: c.Output})
 			}
 		}
 	}
@@ -328,7 +362,7 @@ func (cc *codegenContext) expandScriptCalls(scriptArg string, dArgs []string, cm
 	var leaves []shadow.ExecuteProcessCall
 	for _, c := range harvested {
 		if inner, innerD, ok := nestedCmakeScriptCall(c); ok {
-			leaves = append(leaves, cc.expandScriptCalls(inner, innerD, cmakeSrc, buildDir, visited, depth+1, fileCopies)...)
+			leaves = append(leaves, cc.expandScriptCalls(inner, innerD, cmakeSrc, buildDir, visited, depth+1, relocs)...)
 			continue
 		}
 		leaves = append(leaves, c)

@@ -6,9 +6,9 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
-// TestCmakeECopySingle pins the single-file `cmake -E copy|copy_if_different
-// <src> <dst>` detection used by the temp-dir-relocate recovery.
-func TestCmakeECopySingle(t *testing.T) {
+// TestCmakeRelocateSingle pins the single-file `cmake -E copy|copy_if_different|
+// rename <src> <dst>` detection used by the temp-dir-relocate recovery.
+func TestCmakeRelocateSingle(t *testing.T) {
 	call := func(argv ...string) shadow.ExecuteProcessCall {
 		return shadow.ExecuteProcessCall{Commands: [][]string{argv}}
 	}
@@ -20,7 +20,8 @@ func TestCmakeECopySingle(t *testing.T) {
 	}{
 		{"copy", call("cmake", "-E", "copy", "/tmp/x/v.c", "/b/gen/v.c"), "/tmp/x/v.c", "/b/gen/v.c", true},
 		{"copy_if_different", call("cmake", "-E", "copy_if_different", "/tmp/x/v.c", "/b/gen/v.c"), "/tmp/x/v.c", "/b/gen/v.c", true},
-		{"unsubstituted cmake", call("${CMAKE_COMMAND}", "-E", "copy", "a", "b"), "a", "b", true},
+		{"rename", call("cmake", "-E", "rename", "/tmp/x/v.c", "/b/gen/v.c"), "/tmp/x/v.c", "/b/gen/v.c", true},
+		{"unsubstituted cmake", call("${CMAKE_COMMAND}", "-E", "rename", "a", "b"), "a", "b", true},
 		{"copy_directory not matched", call("cmake", "-E", "copy_directory", "a", "b"), "", "", false},
 		{"multi-source dir form not matched", call("cmake", "-E", "copy", "a", "b", "destdir"), "", "", false},
 		{"not cmake", call("cp", "-E", "copy", "a", "b"), "", "", false},
@@ -28,7 +29,7 @@ func TestCmakeECopySingle(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			src, dst, ok := cmakeECopySingle(tc.c)
+			src, dst, ok := cmakeRelocateSingle(tc.c)
 			if ok != tc.wantOK || src != tc.wantSrc || dst != tc.wantDst {
 				t.Errorf("cmakeECopySingle = (%q, %q, %v), want (%q, %q, %v)", src, dst, ok, tc.wantSrc, tc.wantDst, tc.wantOK)
 			}
