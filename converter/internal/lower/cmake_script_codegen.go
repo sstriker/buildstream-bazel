@@ -81,6 +81,16 @@ func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptA
 	if len(calls) == 0 {
 		return "", false
 	}
+	// Temp-dir-then-copy codegen: a tool runs with WORKING_DIRECTORY=<tmp> and a
+	// `cmake -E copy` relocates its output to the declared output. Recover the
+	// regenerating TOOL here, BEFORE recoverExecuteProcess, so its claim
+	// supersedes the frozen copy-bake (bakeBuildDirCopyOutput, which then defers
+	// to the existing claim). Declines for any other shape → recoverExecuteProcess
+	// handles the calls unchanged.
+	if name, ok := cc.recoverTempDirToolRelocate(b, calls, cmakeSrc, buildDir, relOut, g); ok {
+		cc.SeenBuilds[b] = name
+		return name, true
+	}
 	// Route the leaf calls through the shared recovery. cmakeVars /
 	// forwardedStampVars are nil: the script's own -D args drove the trace
 	// expansion already, and the codegen lifts key on the tool + on-disk
