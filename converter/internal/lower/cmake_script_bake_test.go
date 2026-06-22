@@ -393,6 +393,91 @@ func TestBakeCmakeScriptGenrule_NoCmakeRefuses(t *testing.T) {
 	}
 }
 
+// TestBakeCmakeScriptGenrule_CrossBoundaryReadsOwningBuildDir covers the
+// cross-boundary shape: the recipe's generated source is declared relative to an
+// OUTER build dir (genSrcRelToOwningBuild) because the nested cmake -P script
+// wrote it UP there, but the script ran in the nested build dir. The bake must
+// read the declared output from the build dir that OWNS it (cc.OuterBuildDirs),
+// not the nested workDir/buildDir — and must NOT silently bake an empty file
+// when the read misses (the prior workDir==buildDir bug).
+func TestBakeCmakeScriptGenrule_CrossBoundaryReadsOwningBuildDir(t *testing.T) {
+	cmakeBin, err := execLookPath("cmake")
+	if err != nil {
+		t.Skip("cmake not on PATH; bake test requires convert-host cmake")
+	}
+	src := t.TempDir()
+	nestedBuild := t.TempDir()
+	outerBuild := t.TempDir()
+	scriptPath := filepath.Join(src, "gen.cmake")
+	// The script writes the gen source to an absolute path under the OUTER build
+	// dir (passed via -D), exactly like a cross-boundary codegen recipe.
+	if err := os.WriteFile(scriptPath, []byte(`file(WRITE "${OUT}" "int gen_value(void){ return 7; }\n")`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outAbs := filepath.Join(outerBuild, "generated", "type_a.c")
+
+	g := &ninja.Graph{Vars: map[string]string{}, Rules: map[string]*ninja.Rule{}, Pools: map[string]*ninja.Pool{}}
+	g.Rules["CUSTOM_COMMAND"] = &ninja.Rule{Name: "CUSTOM_COMMAND", Bindings: map[string]string{"command": "$COMMAND"}, BindingOrder: []string{"command"}}
+	cmd := cmakeBin + " -DOUT=" + outAbs + " -P " + scriptPath
+	b := &ninja.Build{
+		Outputs:      []string{"recipe.cmake"},
+		Rule:         "CUSTOM_COMMAND",
+		Bindings:     map[string]string{"COMMAND": cmd},
+		BindingOrder: []string{"COMMAND"},
+	}
+	g.Builds = append(g.Builds, b)
+
+	cc := newCodegenContext()
+	cc.CMakeBinary = cmakeBin
+	cc.OuterBuildDirs = []string{outerBuild} // the ancestor chain threaded by ToIR
+
+	// declaredOuts is OUTER-build-relative — the path the outer consumer references.
+	_, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, nestedBuild, g, []string{"generated/type_a.c"})
+	if !ok {
+		t.Fatalf("cross-boundary bake failed: %q", reason)
+	}
+	if cc.OutToGenrule["generated/type_a.c"] == "" {
+		t.Error("outer-build-relative gen source not registered in OutToGenrule")
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules len = %d, want 1", len(cc.Genrules))
+	}
+	// Must carry the REAL body read from the outer build dir, not an empty file.
+	assertBakedBody(t, cc.Genrules[0], "int gen_value(void){ return 7; }\n")
+}
+
+// TestBakeCmakeScriptGenrule_MissingOutputDeclines pins that a declared output
+// present under NO candidate root makes the bake decline (ok=false) rather than
+// silently bake an empty file — the workDir==buildDir error-swallow regression.
+func TestBakeCmakeScriptGenrule_MissingOutputDeclines(t *testing.T) {
+	cmakeBin, err := execLookPath("cmake")
+	if err != nil {
+		t.Skip("cmake not on PATH; bake test requires convert-host cmake")
+	}
+	src := t.TempDir()
+	build := t.TempDir()
+	scriptPath := filepath.Join(src, "gen.cmake")
+	// The script writes nothing the declared output names.
+	if err := os.WriteFile(scriptPath, []byte(`message(STATUS "noop")`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	g := &ninja.Graph{Vars: map[string]string{}, Rules: map[string]*ninja.Rule{}, Pools: map[string]*ninja.Pool{}}
+	g.Rules["CUSTOM_COMMAND"] = &ninja.Rule{Name: "CUSTOM_COMMAND", Bindings: map[string]string{"command": "$COMMAND"}, BindingOrder: []string{"command"}}
+	cmd := cmakeBin + " -P " + scriptPath
+	b := &ninja.Build{Outputs: []string{"recipe.cmake"}, Rule: "CUSTOM_COMMAND", Bindings: map[string]string{"COMMAND": cmd}, BindingOrder: []string{"COMMAND"}}
+	g.Builds = append(g.Builds, b)
+
+	cc := newCodegenContext()
+	cc.CMakeBinary = cmakeBin
+	_, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g, []string{"missing.c"})
+	if ok {
+		t.Fatalf("expected decline for a never-produced output; got ok (reason=%q)", reason)
+	}
+	if len(cc.Genrules) != 0 {
+		t.Errorf("no genrule should be emitted on decline; got %d", len(cc.Genrules))
+	}
+}
+
 func TestSanitizeForName(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"foo.h", "foo_h"},

@@ -65,6 +65,20 @@ func dirExists(p string) bool {
 // a clean bake; reason carries a structured diagnostic on failure (cmake
 // non-zero exit, missing output files, etc.) that the caller surfaces in
 // the refusal message.
+// readFirstExisting returns the bytes of out (a slash-form relative path) read
+// from the first root under which it exists, or found=false when no root has it.
+// Used by the bake to resolve a declared output against whichever build dir
+// physically owns it (the nested build dir, or an ancestor outer one for the
+// cross-boundary shape).
+func readFirstExisting(roots []string, out string) (body []byte, found bool) {
+	for _, root := range roots {
+		if b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(out))); err == nil {
+			return b, true
+		}
+	}
+	return nil, false
+}
+
 func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, buildDir string, g *ninja.Graph, declaredOuts []string) (name, reason string, ok bool) {
 	if cc.CMakeBinary == "" {
 		return "", "cmake binary not on PATH at convert time — --cmake-script-bake requires the convert host to have cmake available", false
@@ -218,23 +232,33 @@ func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	// in — either buildDir or a fresh tmp dir for unit tests)
 	// and fall back to buildDir if the script's path
 	// substitution wrote elsewhere.
+	// Candidate roots for a declared output, in order: the dir cmake ran in,
+	// the build dir, then ancestor (outer) build dirs. The last covers the
+	// CROSS-BOUNDARY shape — the recipe's gen source is declared relative to an
+	// OUTER build dir (genSrcRelToOwningBuild) because the nested script wrote it
+	// up there, but the script ran in this nested build dir. Reading only
+	// workDir/buildDir missed it; and when workDir == buildDir the prior
+	// fallback's error check was unreachable, so a failed read silently baked an
+	// EMPTY file. Try every owning root and decline cleanly if none has it.
+	roots := []string{workDir}
+	if buildDir != "" && buildDir != workDir {
+		roots = append(roots, buildDir)
+	}
+	for _, ob := range cc.OuterBuildDirs {
+		if ob != "" {
+			roots = append(roots, ob)
+		}
+	}
 	type baked struct {
 		out, name string
 		body      []byte
 	}
 	var entries []baked
 	for _, out := range outs {
-		// Try the workDir-relative location first.
-		body, err := os.ReadFile(filepath.Join(workDir, out))
-		if err != nil && workDir != buildDir {
-			// Fall back to the original build dir when workDir
-			// is a tmpDir — cmake-configure-time substitution
-			// may have baked the absolute path in.
-			body, err = os.ReadFile(filepath.Join(buildDir, out))
-			if err != nil {
-				return "", fmt.Sprintf("cmake -P bake of %q ran but didn't produce output %q (looked in %s and %s): %v",
-					scriptArg, out, workDir, buildDir, err), false
-			}
+		body, found := readFirstExisting(roots, out)
+		if !found {
+			return "", fmt.Sprintf("cmake -P bake of %q ran but didn't produce output %q (looked in %v)",
+				scriptArg, out, roots), false
 		}
 		entries = append(entries, baked{
 			out:  out,
