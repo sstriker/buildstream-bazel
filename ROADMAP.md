@@ -174,23 +174,6 @@ transition cleanly.
   Bazel build time) instead of falling to the consumer-side build-dir bake —
   `meta-cmake-superbuild-cmake-script-recipe.sh`.
 
-- **Temp-dir-then-copy codegen in a `cmake -P` wrapper — recover the
-  regenerating tool (in progress).** A tool runs with `WORKING_DIRECTORY=<tmp>`
-  (writing its outputs there, naming no final path in argv) and a relocation
-  copies `<tmp>/<x>` to the custom command's declared output. The trace-codegen
-  path's eligibility gates (`WorkingDirectory != ""`, argv-names-the-output-dir)
-  blocked recovering the tool, so the only lift was FREEZING the copy's
-  destination bytes — a static snapshot. DONE for the `cmake -E
-  copy`/`copy_if_different` relocation: `recoverTempDirToolRelocate` runs before
-  `recoverExecuteProcess` (so its claim supersedes the frozen copy-bake, which
-  defers via `outputClaimed`), relaxes the eligibility in-wrapper, and emits the
-  regenerating recovery — a recognizer's native rule when the tool is claimed,
-  else a genrule that runs the tool and relocates its cwd output to `$(RULEDIR)`
-  (`meta-cmake-cmake-script-tempdir-relocate.sh`). NEXT: the `file(COPY)`
-  relocation form (a cmake command, not an `execute_process`, so it needs the
-  script trace's file-writers threaded into the recovery alongside the
-  `execute_process` calls).
-
 - **Expand the survey corpus: BuildBox + BDE (new cmake patterns).** Two
   projects that exercise idioms the current corpus doesn't:
   - **BuildBox** (`gitlab.com/BuildGrid/buildbox`) — ONBOARDED, structural

@@ -65,7 +65,7 @@ func cmakeECopySingle(call shadow.ExecuteProcessCall) (src, dst string, ok bool)
 // producer) instead of frozen-baking. Declines (→ recoverExecuteProcess handles
 // the calls as before, frozen-bake included) unless every gate below holds, so
 // it never regresses a shape it doesn't fully own.
-func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []shadow.ExecuteProcessCall, cmakeSrc, buildDir, relOut string, g *ninja.Graph) (string, bool) {
+func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []shadow.ExecuteProcessCall, fileCopies []shadow.FileWriterCall, cmakeSrc, buildDir, relOut string, g *ninja.Graph) (string, bool) {
 	declared := genruleOuts(b, buildDir)
 	if len(declared) == 0 {
 		return "", false
@@ -90,20 +90,30 @@ func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []sha
 	}
 
 	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir}
-	// Harvest the relocations: a `cmake -E copy[_if_different]` whose dst anchors
-	// to a declared output. Map declaredOut -> raw copy source.
+	// Harvest the relocations whose dst anchors to a declared output, mapping
+	// declaredOut -> raw copy source. Two forms, identical (src, dst) semantics:
+	//   - `cmake -E copy[_if_different] <src> <dst>` (an execute_process), and
+	//   - `file(COPY <src…> DESTINATION <dir>)` (a cmake command harvested as a
+	//     file-writer, dst = <dir>/<basename(src)> per source).
 	relocate := map[string]string{}
+	addReloc := func(src, dst string) {
+		dstRel, ok := executeProcessAnchorOutput(dst, anc)
+		if ok && declaredSet[dstRel] {
+			relocate[dstRel] = src
+		}
+	}
 	for _, raw := range calls {
 		c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))
-		src, dst, ok := cmakeECopySingle(c)
-		if !ok {
-			continue
+		if src, dst, ok := cmakeECopySingle(c); ok {
+			addReloc(src, dst)
 		}
-		dstRel, ok := executeProcessAnchorOutput(dst, anc)
-		if !ok || !declaredSet[dstRel] {
-			continue
+	}
+	for _, w := range fileCopies {
+		for i := range w.Outputs {
+			if i < len(w.Sources) {
+				addReloc(w.Sources[i], w.Outputs[i])
+			}
 		}
-		relocate[dstRel] = src
 	}
 	// Every declared output must be a relocation destination — otherwise the tool
 	// alone doesn't account for the declaration and we'd under-produce.

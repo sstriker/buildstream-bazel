@@ -77,17 +77,17 @@ func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptA
 	// caller (recoverCmakeScriptGenrule via realCmakeCommandForEdge), so a
 	// generated dispatch wrapper has been unwrapped before we get here.
 	dArgs := extractCmakePDashArgs(cmd)
-	calls := cc.expandCommandSources(scriptArg, dArgs, cmakeSrc, buildDir)
+	calls, fileCopies := cc.expandCommandSourcesAndCopies(scriptArg, dArgs, cmakeSrc, buildDir)
 	if len(calls) == 0 {
 		return "", false
 	}
 	// Temp-dir-then-copy codegen: a tool runs with WORKING_DIRECTORY=<tmp> and a
-	// `cmake -E copy` relocates its output to the declared output. Recover the
-	// regenerating TOOL here, BEFORE recoverExecuteProcess, so its claim
-	// supersedes the frozen copy-bake (bakeBuildDirCopyOutput, which then defers
-	// to the existing claim). Declines for any other shape → recoverExecuteProcess
-	// handles the calls unchanged.
-	if name, ok := cc.recoverTempDirToolRelocate(b, calls, cmakeSrc, buildDir, relOut, g); ok {
+	// relocation (`cmake -E copy` execute_process OR a `file(COPY)` cmake command)
+	// moves its output to the declared output. Recover the regenerating TOOL here,
+	// BEFORE recoverExecuteProcess, so its claim supersedes the frozen copy-bake
+	// (bakeBuildDirCopyOutput, which then defers to the existing claim). Declines
+	// for any other shape → recoverExecuteProcess handles the calls unchanged.
+	if name, ok := cc.recoverTempDirToolRelocate(b, calls, fileCopies, cmakeSrc, buildDir, relOut, g); ok {
 		cc.SeenBuilds[b] = name
 		return name, true
 	}
@@ -272,10 +272,21 @@ func (cc *codegenContext) recordNestedConfiguresFromScript(scriptArg string, dAr
 // calls — the caller's recoverExecuteProcess does the normalization (dead
 // captures cleared, cmake -E folded) every consumer expects.
 func (cc *codegenContext) expandCommandSources(scriptArg string, dArgs []string, cmakeSrc, buildDir string) []shadow.ExecuteProcessCall {
-	return cc.expandScriptCalls(scriptArg, dArgs, cmakeSrc, buildDir, map[string]bool{}, 0)
+	return cc.expandScriptCalls(scriptArg, dArgs, cmakeSrc, buildDir, map[string]bool{}, 0, nil)
 }
 
-func (cc *codegenContext) expandScriptCalls(scriptArg string, dArgs []string, cmakeSrc, buildDir string, visited map[string]bool, depth int) []shadow.ExecuteProcessCall {
+// expandCommandSourcesAndCopies is expandCommandSources that ALSO returns the
+// script's file(COPY) relocations (Op=="copy", as FileWriterCalls). The
+// temp-dir-relocate recovery needs them because a `file(COPY)` is a cmake
+// command, not an execute_process, so it isn't among the harvested calls — yet
+// it's the relocation that moves a tool's tempdir output to the declared output.
+func (cc *codegenContext) expandCommandSourcesAndCopies(scriptArg string, dArgs []string, cmakeSrc, buildDir string) ([]shadow.ExecuteProcessCall, []shadow.FileWriterCall) {
+	var copies []shadow.FileWriterCall
+	calls := cc.expandScriptCalls(scriptArg, dArgs, cmakeSrc, buildDir, map[string]bool{}, 0, &copies)
+	return calls, copies
+}
+
+func (cc *codegenContext) expandScriptCalls(scriptArg string, dArgs []string, cmakeSrc, buildDir string, visited map[string]bool, depth int, fileCopies *[]shadow.FileWriterCall) []shadow.ExecuteProcessCall {
 	if depth > maxScriptRecursionDepth {
 		return nil
 	}
@@ -302,10 +313,22 @@ func (cc *codegenContext) expandScriptCalls(scriptArg string, dArgs []string, cm
 	dec := shadow.Decode(traceRaw, cmakeSrc, nil)
 	harvested := append(append([]shadow.ExecuteProcessCall(nil), dec.ExecuteProcesses...), dec.OutOfTreeExecuteProcesses...)
 
+	// Collect this level's file(COPY) relocations when the caller wants them
+	// (the temp-dir-relocate recovery). A file(COPY) isn't an execute_process, so
+	// it's invisible to the harvest above, but it's the relocation that moves a
+	// tool's tempdir output to the declared output.
+	if fileCopies != nil {
+		for _, w := range shadow.ExtractFileWriterCalls(traceRaw, cmakeSrc) {
+			if w.Op == "copy" || w.Op == "copy_file" {
+				*fileCopies = append(*fileCopies, w)
+			}
+		}
+	}
+
 	var leaves []shadow.ExecuteProcessCall
 	for _, c := range harvested {
 		if inner, innerD, ok := nestedCmakeScriptCall(c); ok {
-			leaves = append(leaves, cc.expandScriptCalls(inner, innerD, cmakeSrc, buildDir, visited, depth+1)...)
+			leaves = append(leaves, cc.expandScriptCalls(inner, innerD, cmakeSrc, buildDir, visited, depth+1, fileCopies)...)
 			continue
 		}
 		leaves = append(leaves, c)
