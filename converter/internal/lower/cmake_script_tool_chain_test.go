@@ -1,9 +1,38 @@
 package lower
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
+
+// TestChainIntermediates_DeclinesBuildDirIntermediate pins the guard against the
+// mixed-intermediate leak: a build-dir NON-declared intermediate (anchorable by
+// the per-step recovery) makes the whole fold decline, so its absolute path is
+// never emitted verbatim into the folded cmd. Only an all-non-anchorable chain
+// folds.
+func TestChainIntermediates_DeclinesBuildDirIntermediate(t *testing.T) {
+	build := t.TempDir()
+	src := t.TempDir()
+	anc := execAnchors{hostSrcDir: src, recordedSrcDir: src, hostBuildDir: build, recordedBuildDir: build}
+	declared := []string{"gen/value.c"}
+	declaredSet := map[string]bool{"gen/value.c": true}
+
+	// A build-dir intermediate that exists on disk but isn't a declared output.
+	mid := filepath.Join(build, "mid.tmp")
+	if err := os.WriteFile(mid, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(build, "gen", "value.c")
+	stages := [][]string{
+		{"python3", filepath.Join(src, "a.py"), mid},
+		{"python3", filepath.Join(src, "b.py"), mid, out},
+	}
+	if _, ok := chainIntermediates(stages, anc, declaredSet, declared); ok {
+		t.Error("a build-dir non-declared intermediate must make the fold decline (anchorable → per-step owns it)")
+	}
+}
 
 func TestChainToolToken(t *testing.T) {
 	cases := []struct{ in, want string }{

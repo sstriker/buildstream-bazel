@@ -139,15 +139,28 @@ func chainIntermediates(stages [][]string, anc execAnchors, declaredSet map[stri
 			if rel, ok := executeProcessAnchorOutput(raw, anc); ok {
 				if declaredSet[rel] {
 					declaredWritten[rel] = true
+					continue
 				}
-				continue // build-dir path: declared output or anchorable intermediate
+				// A build-dir NON-declared path (an anchorable intermediate, or a
+				// build-dir input) is one the per-step recovery CAN anchor. The
+				// fold gives it no CWD name, so emitting it would leak its absolute
+				// convert-time path. Decline the whole fold and let the per-step
+				// chaining own the chain — so the fold only fires when EVERY
+				// intermediate is non-anchorable (outside source + build).
+				return nil, false
 			}
 			if !filepath.IsAbs(raw) {
-				continue
+				continue // a relative literal / flag
 			}
-			if st, err := os.Stat(raw); err == nil && !st.IsDir() {
-				intermediates[raw] = true
+			// An absolute operand outside source + build. A regular file on disk
+			// is a transient intermediate (the trace produced it). Anything else —
+			// a directory, or a path that no longer exists — the fold can't
+			// classify, and emitting it verbatim would leak an absolute path, so
+			// decline (per-step recovery takes the chain).
+			if st, err := os.Stat(raw); err != nil || st.IsDir() {
+				return nil, false
 			}
+			intermediates[raw] = true
 		}
 	}
 	if len(intermediates) == 0 {
