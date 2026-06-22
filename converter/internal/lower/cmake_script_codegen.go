@@ -103,6 +103,15 @@ func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptA
 		cc.SeenBuilds[b] = name
 		return name, true
 	}
+	// Multi-stage tool chain with a NON-anchorable (system-tempdir) intermediate:
+	// fold the whole pipeline into one genrule with the intermediate a CWD
+	// transient, so the per-step path doesn't leak the absolute `/tmp/…` path it
+	// can't anchor. Declines for an all-anchorable chain (the per-step recovery
+	// handles that correctly).
+	if name, ok := cc.recoverToolChain(b, calls, cmakeSrc, buildDir, relOut, g); ok {
+		cc.SeenBuilds[b] = name
+		return name, true
+	}
 	// Route the leaf calls through the shared recovery. cmakeVars /
 	// forwardedStampVars are nil: the script's own -D args drove the trace
 	// expansion already, and the codegen lifts key on the tool + on-disk
