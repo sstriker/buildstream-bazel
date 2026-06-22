@@ -24,11 +24,13 @@ func argvStructurallyLiftableInWrapper(call shadow.ExecuteProcessCall) bool {
 		call.OutputFile == "" && call.ErrorVariable == ""
 }
 
-// cmakeECopySingle reports a `cmake -E copy|copy_if_different <src> <dst>`
-// single-file relocation (the 2-operand form), returning the raw src + dst.
-// ok=false for any other call (a different driver/op, or the multi-source
-// `copy a b destdir/` form, which the temp-dir pattern doesn't use).
-func cmakeECopySingle(call shadow.ExecuteProcessCall) (src, dst string, ok bool) {
+// cmakeRelocateSingle reports a single-file `cmake -E copy|copy_if_different|
+// rename <src> <dst>` relocation (the 2-operand form), returning the raw src +
+// dst. `rename` (an atomic move — the write-to-tempfile-then-rename idiom) maps
+// identically to `copy` for recovery: the genrule re-runs the tool and copies
+// its cwd output to $(RULEDIR). ok=false for any other call (a different
+// driver/op, or the multi-source `copy a b destdir/` form).
+func cmakeRelocateSingle(call shadow.ExecuteProcessCall) (src, dst string, ok bool) {
 	if len(call.Commands) != 1 {
 		return "", "", false
 	}
@@ -39,7 +41,7 @@ func cmakeECopySingle(call shadow.ExecuteProcessCall) (src, dst string, ok bool)
 	if executeProcessDriverBasename(argv[0]) != "cmake" && argv[0] != "${CMAKE_COMMAND}" {
 		return "", "", false
 	}
-	if argv[1] != "-E" || (argv[2] != "copy" && argv[2] != "copy_if_different") {
+	if argv[1] != "-E" || (argv[2] != "copy" && argv[2] != "copy_if_different" && argv[2] != "rename") {
 		return "", "", false
 	}
 	return argv[3], argv[4], true
@@ -65,7 +67,7 @@ func cmakeECopySingle(call shadow.ExecuteProcessCall) (src, dst string, ok bool)
 // producer) instead of frozen-baking. Declines (→ recoverExecuteProcess handles
 // the calls as before, frozen-bake included) unless every gate below holds, so
 // it never regresses a shape it doesn't fully own.
-func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []shadow.ExecuteProcessCall, fileCopies []shadow.FileWriterCall, cmakeSrc, buildDir, relOut string, g *ninja.Graph) (string, bool) {
+func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []shadow.ExecuteProcessCall, relocs []scriptRelocation, cmakeSrc, buildDir, relOut string, g *ninja.Graph) (string, bool) {
 	declared := genruleOuts(b, buildDir)
 	if len(declared) == 0 {
 		return "", false
@@ -91,10 +93,9 @@ func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []sha
 
 	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir}
 	// Harvest the relocations whose dst anchors to a declared output, mapping
-	// declaredOut -> raw copy source. Two forms, identical (src, dst) semantics:
-	//   - `cmake -E copy[_if_different] <src> <dst>` (an execute_process), and
-	//   - `file(COPY <src…> DESTINATION <dir>)` (a cmake command harvested as a
-	//     file-writer, dst = <dir>/<basename(src)> per source).
+	// declaredOut -> raw relocation source. All forms share (src, dst) semantics:
+	//   - `cmake -E copy[_if_different]|rename <src> <dst>` (an execute_process), and
+	//   - `file(COPY …)` / `file(RENAME …)` (cmake commands, passed in as relocs).
 	relocate := map[string]string{}
 	addReloc := func(src, dst string) {
 		dstRel, ok := executeProcessAnchorOutput(dst, anc)
@@ -104,16 +105,12 @@ func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []sha
 	}
 	for _, raw := range calls {
 		c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))
-		if src, dst, ok := cmakeECopySingle(c); ok {
+		if src, dst, ok := cmakeRelocateSingle(c); ok {
 			addReloc(src, dst)
 		}
 	}
-	for _, w := range fileCopies {
-		for i := range w.Outputs {
-			if i < len(w.Sources) {
-				addReloc(w.Sources[i], w.Outputs[i])
-			}
-		}
+	for _, r := range relocs {
+		addReloc(r.src, r.dst)
 	}
 	// Every declared output must be a relocation destination — otherwise the tool
 	// alone doesn't account for the declaration and we'd under-produce.
