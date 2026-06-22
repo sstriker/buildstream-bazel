@@ -778,7 +778,13 @@ func (cc *codegenContext) appendGenruleOut(name, out string) bool {
 // build-rel output (relOut) + the emitted target name on success. When none
 // apply it returns a typed Tier-1 UnsupportedCustomCommandScript failure naming
 // the script + every opt-in path.
-func (cc *codegenContext) recoverCmakeScriptGenrule(b *ninja.Build, cmd, cmakeSrc, buildDir, relOut string, g *ninja.Graph) (string, string, error) {
+// declaredOuts (when non-empty) overrides the edge's own outputs with the
+// caller's STABLE declared outputs — the nested-recipe recovery's gen sources
+// (the recipe `.cmake` edge produces them as undeclared side outputs). The bake
+// lift honors it so those gen sources are registered in cc.OutToGenrule rather
+// than the recipe `.cmake` itself, closing the gap where a `cmake -P`-produced
+// recipe's generated sources fell through to the consumer-side build-dir bake.
+func (cc *codegenContext) recoverCmakeScriptGenrule(b *ninja.Build, cmd, cmakeSrc, buildDir, relOut string, g *ninja.Graph, declaredOuts []string) (string, string, error) {
 	// Unwrap a cmake-GENERATED dispatch wrapper to the real `cmake -P <script>`
 	// from the add_custom_command trace, so every sub-path below (cc_embed/cc_hash
 	// recognizers, codegen re-trace, bake, runner, refusal diagnostic) acts on the
@@ -819,7 +825,7 @@ func (cc *codegenContext) recoverCmakeScriptGenrule(b *ninja.Build, cmd, cmakeSr
 	// bake declines (e.g. cmake not on PATH, script
 	// produced no output).
 	if cc.CMakeScriptBake {
-		name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, script, buildDir, g)
+		name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, script, buildDir, g, declaredOuts)
 		if ok {
 			// Return the REQUESTED output, not the bake's primary out:
 			// a multi-output script (vtkEncodeString writes a .h + the
@@ -990,7 +996,7 @@ func (cc *codegenContext) recoverGenruleDeclaring(srcPath string, declaredOuts [
 		cmd = strings.Join(realArgv, " ")
 	}
 	if usesCmakeScriptMode(cmd) {
-		return cc.recoverCmakeScriptGenrule(b, cmd, cmakeSrc, buildDir, relOut, g)
+		return cc.recoverCmakeScriptGenrule(b, cmd, cmakeSrc, buildDir, relOut, g, declaredOuts)
 	}
 
 	return cc.emitRecoveredGenrule(b, cmd, cmakeSrc, buildDir, relOut, g, declaredOuts)

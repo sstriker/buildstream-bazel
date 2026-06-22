@@ -80,7 +80,7 @@ func TestBakeCmakeScriptGenrule_RunsCmakeAndEmbedsOutput(t *testing.T) {
 	cc.CMakeBinary = cmakeBin
 
 	cmd := cmakeBin + " -P " + scriptPath
-	name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g)
+	name, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g, nil)
 	if !ok {
 		t.Fatalf("bake failed: reason=%q", reason)
 	}
@@ -106,6 +106,61 @@ func TestBakeCmakeScriptGenrule_RunsCmakeAndEmbedsOutput(t *testing.T) {
 	}
 	// The genrule cmd should base64-decode the literal "hello\n".
 	assertBakedBody(t, gen, "hello\n")
+}
+
+// TestBakeCmakeScriptGenrule_DeclaredOutsOverride covers the nested-recipe
+// recovery of a `cmake -P`-produced recipe: the edge's own output is the recipe
+// `.cmake`, but the script ALSO writes the generated source the recipe
+// target_sources(). The recovery passes the stable gen source as declaredOuts,
+// so the bake must capture + register THAT (not the recipe edge's output) — the
+// fix for the gap where the cmake-script divert dropped declaredOuts and the gen
+// source fell to the consumer-side build-dir bake.
+func TestBakeCmakeScriptGenrule_DeclaredOutsOverride(t *testing.T) {
+	cmakeBin, err := execLookPath("cmake")
+	if err != nil {
+		t.Skip("cmake not on PATH; bake test requires convert-host cmake")
+	}
+	src := t.TempDir()
+	build := t.TempDir()
+	scriptPath := filepath.Join(src, "gen.cmake")
+	// The script writes BOTH the recipe and the generated source.
+	body := `file(WRITE "type_a.c" "int gen_value(void){ return 7; }\n")` + "\n" +
+		`file(WRITE "recipe.cmake" "target_sources(app PRIVATE type_a.c)\n")`
+	if err := os.WriteFile(scriptPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	g := &ninja.Graph{Vars: map[string]string{}, Rules: map[string]*ninja.Rule{}, Pools: map[string]*ninja.Pool{}}
+	g.Rules["CUSTOM_COMMAND"] = &ninja.Rule{Name: "CUSTOM_COMMAND", Bindings: map[string]string{"command": "$COMMAND"}, BindingOrder: []string{"command"}}
+	// The edge's declared output is the RECIPE — not the gen source.
+	b := &ninja.Build{
+		Outputs:      []string{"recipe.cmake"},
+		Rule:         "CUSTOM_COMMAND",
+		Bindings:     map[string]string{"COMMAND": cmakeBin + " -P " + scriptPath},
+		BindingOrder: []string{"COMMAND"},
+	}
+	g.Builds = append(g.Builds, b)
+
+	cc := newCodegenContext()
+	cc.CMakeBinary = cmakeBin
+
+	cmd := cmakeBin + " -P " + scriptPath
+	// declaredOuts overrides the edge's recipe out with the stable gen source.
+	_, _, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g, []string{"type_a.c"})
+	if !ok {
+		t.Fatal("bake with declaredOuts override failed")
+	}
+	// The DECLARED gen source is registered, NOT the recipe edge output.
+	if cc.OutToGenrule["type_a.c"] == "" {
+		t.Error("declared gen source type_a.c not registered in OutToGenrule")
+	}
+	if _, leaked := cc.OutToGenrule["recipe.cmake"]; leaked {
+		t.Error("recipe.cmake should not be registered when declaredOuts overrides to the gen source")
+	}
+	if len(cc.Genrules) != 1 {
+		t.Fatalf("Genrules len = %d, want 1 (only the declared gen source)", len(cc.Genrules))
+	}
+	assertBakedBody(t, cc.Genrules[0], "int gen_value(void){ return 7; }\n")
 }
 
 // TestBakeCmakeScriptGenrule_ForwardsPositionalArgs covers the
@@ -165,7 +220,7 @@ endif()
 	cc := newCodegenContext()
 	cc.CMakeBinary = cmakeBin
 	cmd := cmakeBin + " -P " + scriptPath + " a.txt"
-	_, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g)
+	_, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g, nil)
 	if !ok {
 		t.Fatalf("bake failed (positional arg not forwarded?): reason=%q", reason)
 	}
@@ -236,7 +291,7 @@ endif()
 	cc := newCodegenContext()
 	cc.CMakeBinary = cmakeBin
 	cmd := cmakeBin + " -DOUTPUT=a.txt -P " + scriptPath
-	_, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g)
+	_, reason, ok := bakeCmakeScriptGenrule(cc, b, cmd, scriptPath, build, g, nil)
 	if !ok {
 		t.Fatalf("bake failed (-D arg ordering bug?): reason=%q", reason)
 	}
@@ -310,7 +365,7 @@ file(WRITE "step2.txt" "${STEP1}step2\n")
 	// Bake the consumer; bakeProducerChain should pre-bake the
 	// producer so step1.txt exists in buildDir when consumer runs.
 	cmd := cmakeBin + " -P " + consumerPath
-	_, reason, ok := bakeCmakeScriptGenrule(cc, consumerBuild, cmd, consumerPath, build, g)
+	_, reason, ok := bakeCmakeScriptGenrule(cc, consumerBuild, cmd, consumerPath, build, g, nil)
 	if !ok {
 		t.Fatalf("chain bake failed: reason=%q", reason)
 	}
@@ -329,7 +384,7 @@ func TestBakeCmakeScriptGenrule_NoCmakeRefuses(t *testing.T) {
 	cc := newCodegenContext()
 	cc.CMakeBinary = "" // not available
 	b := &ninja.Build{Outputs: []string{"foo"}}
-	_, reason, ok := bakeCmakeScriptGenrule(cc, b, "cmake -P /x/y.cmake", "/x/y.cmake", "/build", nil)
+	_, reason, ok := bakeCmakeScriptGenrule(cc, b, "cmake -P /x/y.cmake", "/x/y.cmake", "/build", nil, nil)
 	if ok {
 		t.Fatal("expected refusal when CMakeBinary empty; got ok")
 	}

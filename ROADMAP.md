@@ -166,7 +166,13 @@ transition cleanly.
   dir that owns it and the recovered genrule reanchors its cmd to `$(RULEDIR)`,
   synthetic-fixture-validated by `meta-cmake-superbuild-crossboundary-recipe.sh`
   — and shares the same real-corpus-validation gap (the real members above
-  exercise it too where their codegen writes outside the nested build dir).
+  exercise it too where their codegen writes outside the nested build dir). The
+  CMAKE-`-P`-PRODUCED-recipe variant (the recipe edge's command is a `cmake -P`
+  script, not a plain python/shell tool) is handled too: the cmake-script divert
+  now threads the recipe's declared gen sources through, so under
+  `--cmake-script-bake` they're recovered as registered producers (no `-P` at
+  Bazel build time) instead of falling to the consumer-side build-dir bake —
+  `meta-cmake-superbuild-cmake-script-recipe.sh`.
 
 - **Expand the survey corpus: BuildBox + BDE (new cmake patterns).** Two
   projects that exercise idioms the current corpus doesn't:
