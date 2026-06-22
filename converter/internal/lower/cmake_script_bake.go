@@ -65,11 +65,18 @@ func dirExists(p string) bool {
 // a clean bake; reason carries a structured diagnostic on failure (cmake
 // non-zero exit, missing output files, etc.) that the caller surfaces in
 // the refusal message.
-func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, buildDir string, g *ninja.Graph) (name, reason string, ok bool) {
+func bakeCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, buildDir string, g *ninja.Graph, declaredOuts []string) (name, reason string, ok bool) {
 	if cc.CMakeBinary == "" {
 		return "", "cmake binary not on PATH at convert time — --cmake-script-bake requires the convert host to have cmake available", false
 	}
-	outs := genruleOuts(b, buildDir)
+	// declaredOuts overrides the edge's own output (the nested-recipe recovery's
+	// STABLE gen sources, which the recipe `.cmake` edge writes as undeclared side
+	// outputs). The script still runs to produce them; the bake then reads the gen
+	// sources' bytes (not the recipe's) and registers THEM in cc.OutToGenrule.
+	outs := declaredOuts
+	if len(outs) == 0 {
+		outs = genruleOuts(b, buildDir)
+	}
 	if len(outs) == 0 {
 		// Ninja edge declared no outputs — recover them from the script's own
 		// write statements, resolving ${VAR} against the command's -D args (the
@@ -299,7 +306,7 @@ func bakeProducerChain(cc *codegenContext, g *ninja.Graph, inputPath, buildDir s
 	// Mark in-progress to break any pathological cycles (a valid
 	// ninja graph is acyclic, but defensive).
 	cc.SeenBuilds[producer] = ""
-	_, reason, ok := bakeCmakeScriptGenrule(cc, producer, cmd, script, buildDir, g)
+	_, reason, ok := bakeCmakeScriptGenrule(cc, producer, cmd, script, buildDir, g, nil)
 	if !ok {
 		delete(cc.SeenBuilds, producer)
 		return reason, false

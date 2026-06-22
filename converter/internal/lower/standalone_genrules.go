@@ -703,7 +703,7 @@ func (cc *codegenContext) tryStandaloneCmakeScriptBake(b *ninja.Build, cmd, cmak
 	// already merged into pkg.Targets before this pass runs). Bake declining
 	// (no cmake on PATH, no output) falls through to the raw emit / refusal.
 	n := len(cc.Genrules)
-	if _, _, ok := bakeCmakeScriptGenrule(cc, b, cmd, extractCmakeScriptPath(cmd), buildDir, g); !ok {
+	if _, _, ok := bakeCmakeScriptGenrule(cc, b, cmd, extractCmakeScriptPath(cmd), buildDir, g, nil); !ok {
 		return nil, false
 	}
 	baked := append([]ir.Target(nil), cc.Genrules[n:]...)
