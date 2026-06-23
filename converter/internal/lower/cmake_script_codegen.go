@@ -141,6 +141,14 @@ func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptA
 	if name, ok := cc.recoverTracedToolCommand(b, calls, cmakeSrc, buildDir, relOut, g); ok {
 		return name, true
 	}
+	// Last rung: WRITE-IN-PLACE — a tool whose WORKING_DIRECTORY IS the declared
+	// outputs' dir, writing them there by basename with no argv-named output and no
+	// relocation. Every more-explicit rung above declined (the argv names nothing,
+	// there's no copy to harvest), so the only data is the WORKING_DIRECTORY anchor
+	// + the on-disk outputs — enough to recover the regenerating tool.
+	if name, ok := cc.recoverWriteInPlaceTool(b, calls, cmakeSrc, buildDir, relOut, g); ok {
+		return name, true
+	}
 	return "", false
 }
 
