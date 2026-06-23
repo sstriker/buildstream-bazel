@@ -377,6 +377,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-cmake-script-tempdir-relocate.sh \
 	scripts/meta-cmake-cmake-script-tempdir-relocate-filecopy.sh \
 	scripts/meta-cmake-cmake-script-tempdir-relocate-rename.sh \
+	scripts/meta-cmake-cmake-script-tool-chain.sh \
 	scripts/meta-cmake-execute-process-unspecified-outs.sh \
 	scripts/meta-cmake-execute-process-dead-capture.sh \
 	scripts/meta-cmake-execute-process-pipeline-wd.sh \
