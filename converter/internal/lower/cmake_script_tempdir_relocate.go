@@ -24,6 +24,26 @@ func argvStructurallyLiftableInWrapper(call shadow.ExecuteProcessCall) bool {
 		call.OutputFile == "" && call.ErrorVariable == ""
 }
 
+// cmakeECopyArgv reports whether call is a `cmake -E <op> …` invocation and
+// returns its op + operands (the args after the op). ok=false for any other
+// driver / structure.
+func cmakeECopyArgv(call shadow.ExecuteProcessCall) (op string, operands []string, ok bool) {
+	if len(call.Commands) != 1 {
+		return "", nil, false
+	}
+	argv := call.Commands[0]
+	if len(argv) < 4 {
+		return "", nil, false
+	}
+	if executeProcessDriverBasename(argv[0]) != "cmake" && argv[0] != "${CMAKE_COMMAND}" {
+		return "", nil, false
+	}
+	if argv[1] != "-E" {
+		return "", nil, false
+	}
+	return argv[2], argv[3:], true
+}
+
 // cmakeRelocateSingle reports a single-file `cmake -E copy|copy_if_different|
 // rename <src> <dst>` relocation (the 2-operand form), returning the raw src +
 // dst. `rename` (an atomic move — the write-to-tempfile-then-rename idiom) maps
@@ -31,20 +51,87 @@ func argvStructurallyLiftableInWrapper(call shadow.ExecuteProcessCall) bool {
 // its cwd output to $(RULEDIR). ok=false for any other call (a different
 // driver/op, or the multi-source `copy a b destdir/` form).
 func cmakeRelocateSingle(call shadow.ExecuteProcessCall) (src, dst string, ok bool) {
-	if len(call.Commands) != 1 {
+	op, operands, isE := cmakeECopyArgv(call)
+	if !isE || len(operands) != 2 {
 		return "", "", false
 	}
-	argv := call.Commands[0]
-	if len(argv) != 5 {
+	if op != "copy" && op != "copy_if_different" && op != "rename" {
 		return "", "", false
 	}
-	if executeProcessDriverBasename(argv[0]) != "cmake" && argv[0] != "${CMAKE_COMMAND}" {
+	return operands[0], operands[1], true
+}
+
+// cmakeRelocateMulti reports the multi-source `cmake -E copy|copy_if_different
+// <s1> <s2> … <destdir>` form (≥2 sources + a trailing destination directory),
+// expanding it to one (src, dst) relocation per source where dst is
+// destdir/basename(src) — cmake's "copy each file INTO the destination
+// directory under its basename" semantics. `rename` has no multi-source form.
+// ok=false for the 2-operand form (cmakeRelocateSingle owns it) or any other
+// call.
+func cmakeRelocateMulti(call shadow.ExecuteProcessCall) ([]scriptRelocation, bool) {
+	op, operands, isE := cmakeECopyArgv(call)
+	if !isE || len(operands) < 3 {
+		return nil, false
+	}
+	if op != "copy" && op != "copy_if_different" {
+		return nil, false
+	}
+	destDir := operands[len(operands)-1]
+	out := make([]scriptRelocation, 0, len(operands)-1)
+	for _, src := range operands[:len(operands)-1] {
+		out = append(out, scriptRelocation{src: src, dst: path.Join(destDir, path.Base(filepath.ToSlash(src)))})
+	}
+	return out, true
+}
+
+// cmakeCopyDirectoryOperands reports a `cmake -E copy_directory[_if_different]
+// <srcdir> <destdir>` recursive tree copy, returning the raw src + dst dirs.
+// copy_directory enumerates no per-file operand — the recovery expands it
+// against the edge's DECLARED outputs (each declared output under destdir maps
+// to srcdir/<its relative path>). ok=false otherwise.
+func cmakeCopyDirectoryOperands(call shadow.ExecuteProcessCall) (srcDir, dstDir string, ok bool) {
+	op, operands, isE := cmakeECopyArgv(call)
+	if !isE || len(operands) != 2 {
 		return "", "", false
 	}
-	if argv[1] != "-E" || (argv[2] != "copy" && argv[2] != "copy_if_different" && argv[2] != "rename") {
+	if op != "copy_directory" && op != "copy_directory_if_different" {
 		return "", "", false
 	}
-	return argv[3], argv[4], true
+	return operands[0], operands[1], true
+}
+
+// addCopyDirRelocations expands a `cmake -E copy_directory <srcDir> <dstDir>`
+// into per-declared-output relocations: when dstDir anchors to a build-dir
+// directory, every declared output BELOW it maps to srcDir/<its path under
+// dstDir>. Declared outputs outside dstDir are left for another relocation to
+// claim (recoverTempDirToolRelocate later refuses if any stays unclaimed).
+func addCopyDirRelocations(relocate map[string]string, srcDir, dstDir string, anc execAnchors, declaredSet map[string]bool) {
+	dstDirRel, ok := executeProcessAnchorOutput(dstDir, anc)
+	if !ok {
+		return
+	}
+	for o := range declaredSet {
+		if rel, under := slashChildRel(o, dstDirRel); under {
+			relocate[o] = path.Join(srcDir, rel)
+		}
+	}
+}
+
+// slashChildRel returns child's path relative to parent (both slash paths) when
+// child is strictly BELOW parent. A parent of "." / "" treats every child as a
+// direct child (child itself). child == parent is not "below" (a directory
+// isn't its own file output), so ok=false there.
+func slashChildRel(child, parent string) (string, bool) {
+	if parent == "." || parent == "" {
+		return child, true
+	}
+	if child == parent {
+		return "", false
+	}
+	if strings.HasPrefix(child, parent+"/") {
+		return child[len(parent)+1:], true
+	}
+	return "", false
 }
 
 // recoverTempDirToolRelocate recovers the temp-dir-then-copy codegen shape that
@@ -107,6 +194,16 @@ func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []sha
 		c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))
 		if src, dst, ok := cmakeRelocateSingle(c); ok {
 			addReloc(src, dst)
+			continue
+		}
+		if pairs, ok := cmakeRelocateMulti(c); ok {
+			for _, p := range pairs {
+				addReloc(p.src, p.dst)
+			}
+			continue
+		}
+		if srcDir, dstDir, ok := cmakeCopyDirectoryOperands(c); ok {
+			addCopyDirRelocations(relocate, srcDir, dstDir, anc, declaredSet)
 		}
 	}
 	for _, r := range relocs {
@@ -187,6 +284,7 @@ func appendTempDirRelocations(cc *codegenContext, b *ninja.Build, buildDir strin
 		}
 		var sb strings.Builder
 		sb.WriteString(gen.GenruleCmd)
+		mkdirSeen := map[string]bool{}
 		for _, o := range declared {
 			src := relocate[o]
 			cwdRel, inside := relativeIfInsideRelaxed(toolWorkdir, src)
@@ -194,7 +292,8 @@ func appendTempDirRelocations(cc *codegenContext, b *ninja.Build, buildDir strin
 				cwdRel = path.Base(src)
 			}
 			dst := "$(RULEDIR)/" + o
-			if d := path.Dir(o); d != "." && d != "" {
+			if d := path.Dir(o); d != "." && d != "" && !mkdirSeen[d] {
+				mkdirSeen[d] = true
 				sb.WriteString(" && mkdir -p $(RULEDIR)/" + d)
 			}
 			sb.WriteString(" && cp " + cwdRel + " " + dst)
