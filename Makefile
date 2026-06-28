@@ -380,6 +380,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-cmake-script-tempdir-relocate-multicopy.sh \
 	scripts/meta-cmake-cmake-script-tempdir-relocate-copydir.sh \
 	scripts/meta-cmake-cmake-script-writeinplace.sh \
+	scripts/meta-cmake-out-of-tree-module-codegen.sh \
 	scripts/meta-cmake-cmake-script-tool-chain.sh \
 	scripts/meta-cmake-execute-process-unspecified-outs.sh \
 	scripts/meta-cmake-execute-process-dead-capture.sh \

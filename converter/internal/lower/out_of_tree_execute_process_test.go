@@ -105,6 +105,41 @@ func TestPartitionOutOfTreeExec_RelativeWorkingDirNotBuildRel(t *testing.T) {
 	}
 }
 
+// An out-of-tree cmake MODULE call (issued from neither the build dir nor the
+// prefix tree — a CMAKE_MODULE_PATH / system module) is confident noise on its
+// own, but when it drives the PROJECT's own codegen (its argv reads an in-tree
+// source / writes a build-dir output) it's the project's codegen merely ISSUED
+// from an out-of-tree helper: under best-effort it is RESCUED into the lift
+// (extracted to a regenerating genrule) rather than dropped-and-baked. A module
+// call with no project I/O stays the silent drop it always was (never noted).
+func TestPartitionOutOfTreeExec_ModuleProjectIORescue(t *testing.T) {
+	src, build := "/src", "/build"
+	// Issued from a module OUTSIDE src/build/prefix; argv writes a build-dir output
+	// from an in-tree tool — the project's own codegen.
+	withIO := ootCall("/opt/shared-cmake/GenValue.cmake", 1, "python3", "/src/tool.py", "/build/gen/value.c")
+	// Same out-of-tree class, but no project I/O — cmake's own machinery shape.
+	noIO := ootCall("/usr/share/cmake-4.0/Modules/Probe.cmake", 2, "cc", "-dumpversion")
+
+	// best-effort: the project-I/O module call is lifted; the no-I/O one stays a
+	// silent drop (not noted — else /usr/share/cmake-* probes would flood todos).
+	be := &codegenContext{Fidelity: convmode.FidelityBestEffort}
+	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{withIO, noIO}, src, build, "", nil, be)
+	if len(lift) != 1 || lift[0].Line != 1 {
+		t.Fatalf("best-effort: want the project-I/O module call lifted; got lift=%+v", lift)
+	}
+	if len(note) != 0 {
+		t.Fatalf("best-effort: a no-project-I/O module call must drop silently, not note; got note=%+v", note)
+	}
+
+	// strict: unrecognized + not-in-imports → neither lifted nor noted
+	// (faithful-or-fail; it stays a bake the bake-in dial accounts for).
+	strict := &codegenContext{Fidelity: convmode.FidelityStrict}
+	lift, note = partitionOutOfTreeExec([]shadow.ExecuteProcessCall{withIO, noIO}, src, build, "", nil, strict)
+	if len(lift) != 0 || len(note) != 0 {
+		t.Errorf("strict: unrecognized module codegen must not lift or note; got lift=%+v note=%+v", lift, note)
+	}
+}
+
 // CMakeFiles anywhere in the build-relative path is confident noise, even
 // nested under a subproject dir (cmake's per-subproject scratch) — neither
 // lifted nor noted.

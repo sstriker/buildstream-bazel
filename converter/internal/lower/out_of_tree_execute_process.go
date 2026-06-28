@@ -38,7 +38,12 @@ import (
 // because we don't know what to do must be accounted for. partitionOutOfTreeExec
 // splits the calls three ways:
 //
-//   - confident noise → dropped silently;
+//   - confident noise → dropped silently. cmake's try_compile / compiler-id
+//     scratch under <build>/CMakeFiles is always noise; a call issued from a
+//     cmake module OUTSIDE the build dir and prefix tree (CMAKE_MODULE_PATH /
+//     bundled /usr/share/cmake-*) is noise ONLY when it carries no project
+//     signal — one that drives the project's own codegen (project I/O /
+//     recognizer / imports tool, below) is rescued into the lift instead;
 //   - codemodel-source-backed build-dir subproject → LIFTED through the same
 //     recoverExecuteProcess machinery as an in-source-tree call (the codemodel
 //     confirms a real target backs it, so it gets a genrule/probe lift — or a
@@ -98,6 +103,17 @@ const (
 	// signalPrefixTree: the call issues from the synthesized find_package
 	// prefix tree (a package config file's probe).
 	signalPrefixTree outOfTreeExecSignal = "find-package-prefix-tree"
+	// signalOutOfTreeModule: the call issues from neither the build dir nor the
+	// prefix tree — a cmake module on CMAKE_MODULE_PATH outside the source root,
+	// a bundled /usr/share/cmake-* module, or another system path. On its own
+	// that's cmake machinery (confident noise), so such a call is NEVER noted;
+	// but when it carries a location-independent PROJECT signal (it reads an
+	// in-tree source / writes a build-dir output, a recognizer claims its tool,
+	// or the tool resolves to an imports label) it's the project's OWN codegen
+	// merely ISSUED from an out-of-tree helper — extractable to a regenerating
+	// genrule rather than baked. Lifted on that signal, dropped silently
+	// otherwise (the historical behavior for everything that reached here).
+	signalOutOfTreeModule outOfTreeExecSignal = "out-of-tree-module"
 )
 
 // outOfTreeExecNote is one out-of-tree execute_process call the converter
@@ -179,6 +195,14 @@ func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedSrcDir, r
 			// out-of-tree note. The operator mapping the tool into the manifest is
 			// the explicit signal to prefer that louder accounting.
 			lift = append(lift, c)
+			continue
+		}
+		if sig == signalOutOfTreeModule {
+			// An out-of-tree module / system-path call with no liftable project
+			// signal is the confident noise it always was (cmake's own module
+			// machinery): drop it silently rather than noting it, or the bundled
+			// /usr/share/cmake-* probes would flood the conversion-todos. Only the
+			// project-attributable ones (handled above) are rescued.
 			continue
 		}
 		// What reaches here is the dependency's own codegen (a prefix-tree call
@@ -334,9 +358,14 @@ func classifyOneOutOfTreeExec(file, workingDir, recordedBuildDir, prefixDir stri
 	if _, ok := buildRelAbs(prefixDir, file); ok {
 		return signalPrefixTree, true
 	}
-	// (5) Neither the build dir nor the prefix tree — a bundled cmake module
-	// (/usr/share/cmake-*) or other system path. Confident noise: silent.
-	return "", false
+	// (5) Neither the build dir nor the prefix tree — a cmake module on
+	// CMAKE_MODULE_PATH outside the source root, a bundled /usr/share/cmake-*
+	// module, or another system path. Not confident noise on its own: surface
+	// it as a module-signal call so the caller's location-INDEPENDENT project
+	// signals (project I/O, recognizer, imports tool) decide. A call with none
+	// of those is dropped silently there (the historical behavior); one that
+	// drives the project's own codegen from an out-of-tree helper is lifted.
+	return signalOutOfTreeModule, true
 }
 
 // hasScratchSegment reports whether a build-relative path lies under cmake's
