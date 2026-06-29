@@ -28,6 +28,40 @@ type fileGenerateOut struct {
 	RelOutput string // <rel>: build-dir-relative slash path; package-relative in the BUILD file
 }
 
+// fileGenerateOutputRel resolves one file(GENERATE) OUTPUT to the build-relative
+// path the recovered target declares. A relative OUTPUT anchors against the
+// registering scope's CMAKE_CURRENT_BINARY_DIR (cmake docs: "relative paths are
+// computed with respect to the value of CMAKE_CURRENT_BINARY_DIR") via the same
+// codemodel directory-scope walk configure_file uses (dirScopeRel). The result is
+// relative to THIS build dir, or — the CROSS-BOUNDARY shape — relative to an
+// ancestor (outer) build dir when a NESTED file(GENERATE) wrote its output UP
+// there (crossBoundaryOutputRel, parity with the genrule / standalone / bake
+// paths and configure_file). ok=false when a relative output has no resolvable
+// scope (offline runs without codemodel directories) or the output lands inside
+// no known build dir (a genuine outside-the-tree dest) — the caller skips it.
+// crossBoundary reports that rel was re-homed against an ancestor (outer) build
+// dir (the nested-wrote-UP shape), so the caller reads its bytes from the outer
+// tree; false for an ordinary in-build output (read only from this build dir).
+func fileGenerateOutputRel(outPath, callFile, recordedSrcDir, recordedBuildDir string, dirScopes []dirScope, cc *codegenContext) (rel string, crossBoundary, ok bool) {
+	if !filepath.IsAbs(outPath) {
+		if callFile == "" || recordedSrcDir == "" {
+			return "", false, false
+		}
+		relDir, ok := dirScopeRel(callFile, recordedSrcDir, dirScopes)
+		if !ok {
+			return "", false, false
+		}
+		outPath = filepath.Join(recordedBuildDir, relDir, outPath)
+	}
+	if r, inside := relativeIfInsideRelaxed(recordedBuildDir, outPath); inside {
+		return r, false, true
+	}
+	if r := crossBoundaryOutputRel(outPath, recordedBuildDir, cc); r != "" {
+		return r, true, true
+	}
+	return "", false, false
+}
+
 // recoverFileGenerate walks the trace's file(GENERATE) events
 // and emits one Bazel genrule per call. The shape mirrors
 // recoverConfigureFiles: cmake renders the file at generate-
@@ -128,32 +162,8 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 		}
 
 		for _, outPath := range outputs {
-			if !filepath.IsAbs(outPath) {
-				// A relative OUTPUT resolves against the registering
-				// directory scope's CMAKE_CURRENT_BINARY_DIR (cmake docs:
-				// "relative paths are computed with respect to the value of
-				// CMAKE_CURRENT_BINARY_DIR") — anchor it via the same
-				// codemodel directory-scope walk configure_file uses
-				// (dirScopeRel: deepest scope containing the call file,
-				// include() doesn't open a scope, BUILD mirror honored for
-				// custom-binary-dir add_subdirectory). Offline runs without
-				// codemodel directories keep the historical drop.
-				if call.File == "" || recordedSrcDir == "" {
-					continue
-				}
-				relDir, ok := dirScopeRel(call.File, recordedSrcDir, dirScopes)
-				if !ok {
-					continue
-				}
-				outPath = filepath.Join(recordedBuildDir, relDir, outPath)
-			}
-			rel, ok := relativeIfInsideRelaxed(recordedBuildDir, outPath)
+			rel, crossBoundary, ok := fileGenerateOutputRel(outPath, call.File, recordedSrcDir, recordedBuildDir, dirScopes, cc)
 			if !ok {
-				// Output landed outside the build dir — unusual
-				// for file(GENERATE) (the docs call out a relative
-				// path being resolved under the current binary dir,
-				// but an absolute path can in principle point
-				// anywhere). Drop silently; not a recovery target.
 				continue
 			}
 			if seenRel[rel] {
@@ -163,8 +173,10 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 			}
 			seenRel[rel] = true
 
-			body, err := os.ReadFile(filepath.Join(hostBuildDir, rel))
-			if err != nil {
+			// Read from the build tree that owns rel: THIS build's host dir,
+			// or (cross-boundary) an ancestor outer build dir.
+			body, found := readConfigureTimeOutput(rel, hostBuildDir, cc, crossBoundary)
+			if !found {
 				// Output not on disk — for CONDITION-gated calls
 				// whose condition evaluated false, cmake skips the
 				// write; for offline fixtures the stash may not

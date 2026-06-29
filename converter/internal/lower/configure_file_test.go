@@ -515,6 +515,52 @@ func TestRecoverConfigureFilesFromCalls_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRecoverConfigureFilesFromCalls_CrossBoundary pins G4: a NESTED
+// configure_file whose output landed UP in an ANCESTOR (outer) build tree (not
+// this nested build dir) is recovered via cc.OuterBuildDirs — cross-boundary
+// parity with the genrule / standalone / bake paths — instead of the historical
+// silent drop, with the bytes read from the owning outer dir. Without the
+// OuterBuildDirs thread (a non-nested convert) it stays dropped, so top-level
+// behavior is unchanged.
+func TestRecoverConfigureFilesFromCalls_CrossBoundary(t *testing.T) {
+	hostSrc := t.TempDir()
+	nestedBuild := t.TempDir()
+	outerBuild := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outerBuild, "gen"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outerBuild, "gen", "cfg.h"), []byte("body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.ConfigureFileCall{{
+		Input:  filepath.Join(hostSrc, "cfg.h.in"),
+		Output: filepath.Join(outerBuild, "gen", "cfg.h"), // up in the OUTER build tree
+	}}
+
+	cc := newCodegenContext()
+	cc.OuterBuildDirs = []string{outerBuild} // the ancestor chain ToIR threads
+	out, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, nestedBuild, nestedBuild, nil, false, nil, cc)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(out) != 1 || out[0].RelOutput != "gen/cfg.h" {
+		t.Fatalf("cross-boundary output not recovered: out=%v (want one entry, RelOutput gen/cfg.h)", out)
+	}
+	if name, ok := cc.OutToGenrule["gen/cfg.h"]; !ok || len(cc.Genrules) != 1 || name != cc.Genrules[0].Name {
+		t.Errorf("recovered producer not registered: OutToGenrule[gen/cfg.h]=%q Genrules=%d", name, len(cc.Genrules))
+	}
+
+	// No OuterBuildDirs (the top-level / non-nested case) → still dropped.
+	cc2 := newCodegenContext()
+	out2, err := recoverConfigureFilesFromCalls(calls, hostSrc, hostSrc, nestedBuild, nestedBuild, nil, false, nil, cc2)
+	if err != nil {
+		t.Fatalf("recover (no outer): %v", err)
+	}
+	if len(out2) != 0 {
+		t.Errorf("without OuterBuildDirs the cross-boundary output must drop (top-level unchanged); got %v", out2)
+	}
+}
+
 // TestRecoverConfigureFilesFromCalls_DefersToClaimedOutput pins the duplicate-
 // producer guard ([1]): when another lifter already claimed the output path —
 // most often execute_process's regenerating producer, which runs BEFORE
