@@ -1068,6 +1068,31 @@ trees, optional-feature deps, codegen instances). Each member's
   real lifts with zero new machinery.
 
 - **KindNativeRule outputs in --split-packages relocation.** The codegen-recognizer registry's native-rule substrate now participates in the OutToGenrule-keyed consumer wiring AND the nested-cmake merge re-home (producerOuts/applyNestedProducerReHome read the `out`/`outs` attrs generically). The split-packages emitter (emit/bazel/split.go) still keys producer-output placement/relocation on KindGenrule/KindWriteFile/KindCMakeConfigureFile, so a pkg_tar (or future http_file/proto) native rule re-homed into a sub-package wouldn't relocate its out. Generalize split's placement to the same kind-agnostic outputs accessor. Demand signal: a native-rule producer under --split-packages.
+- **Cross-boundary output anchoring for the execute_process recoveries.** The
+  cross-boundary re-home (`genSrcRelToOwningBuild` over `cc.OuterBuildDirs`, for a
+  NESTED lowering whose recovery writes an output UP into an ancestor build tree)
+  is wired into the genrule (`emitRecoveredGenrule`), standalone, bake, and — as
+  of the G4 sweep — `configure_file` / `file(GENERATE)` paths, but NOT the per-step
+  `execute_process` recoveries (`bakeBuildDirCopyOutput`, `liftCMakeETouch`,
+  `emitCopyGenrule`, `liftFileProducing`, `liftCMakeEConfigureFile`, the
+  argv-output classifiers). These funnel their output anchoring through the
+  `executeProcessAnchorOutput` chokepoint (execute_process.go), which only
+  relativizes against the local build dir and drops on failure — so a nested
+  sub-project's CONFIGURE-TIME `execute_process` (e.g. `cmake -E copy <src>
+  <OUTER_BUILD>/gen.c`) writing into the outer build tree is silently dropped, and
+  an outer consumer of that source hard-refuses (`custom command … resolved to an
+  empty string`, EXIT 1 — reproduced). The anchor + byte-read fallbacks are a small
+  chokepoint change (mirror G4: thread `OuterBuildDirs` into `execAnchors`,
+  `genSrcRelToOwningBuild` on the !ok branch, `readFirstExisting` over the outer
+  read-roots), but completing the END-TO-END flow also needs nested-producer →
+  OUTER-raw-consumer wiring (the producer is recovered in the nested lowering's own
+  `cc`; an outer target consuming the cross-boundary source isn't wired to it by
+  the current merge) — a sized piece, not just the chokepoint patch. Deferred
+  because no surveyed corpus member uses this shape: the superbuild fixtures all
+  generate via `add_custom_command` (which goes through the already-wired
+  standalone/genrule path), not configure-time `execute_process` writing
+  cross-boundary. Demand signal: a real project whose nested sub-project runs a
+  configure-time `execute_process` codegen into the parent build tree.
 - **Genex-probe language gate — genex-wrapped link deps.** The probe's language-conditional skip now walks the INTERFACE_LINK_LIBRARIES closure (_cmtb_iface_lang_gate), so a $<COMPILE_LANGUAGE>/$<LINK_LANGUAGE> gate on a transitively-linked dependency's interface is caught — not just the target's own raw value. The walk follows BARE target deps only; a dep wrapped in a genex link entry ($<LINK_ONLY:dep>, $<BUILD_INTERFACE:dep>) or a bare system lib isn't queried, so a gate reachable solely through such an entry could still diverge. Closing it needs genex-entry target extraction in the hook. Demand signal: an abort whose gated dep is reachable only via a genex link entry.
 - **Stage textual-include-of-SOURCE siblings (`#include "x.cu"` /
   `#include "x.c"`).** The sibling-header staging walk covers header
