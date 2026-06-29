@@ -360,7 +360,7 @@ func (cc *codegenContext) expandScriptCalls(scriptArg string, dArgs []string, cm
 	// source isn't under the recovered tool's WORKING_DIRECTORY is filtered out
 	// downstream by recoverTempDirToolRelocate's owns-check.
 	if relocs != nil {
-		for _, w := range shadow.ExtractFileWriterCalls(traceRaw, cmakeSrc) {
+		for _, w := range shadow.ExtractFileWriterCalls(traceRaw, cmakeSrc, "") {
 			if w.Op == "copy" || w.Op == "copy_file" {
 				for i := range w.Outputs {
 					if i < len(w.Sources) {
