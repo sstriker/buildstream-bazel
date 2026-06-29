@@ -74,7 +74,7 @@ func harvestNestedBuilds(ctx context.Context, a cli.Args, hostBuildDir string, r
 		// API reply, so the reply loaded below describes the SAME run
 		// as the trace. Failure degrades to the trace-less lowering,
 		// not to losing the lift.
-		traceRaw := runNestedTraceReconfigure(ctx, a, rel, nb)
+		traceRaw, cmakeVars := runNestedTraceReconfigure(ctx, a, rel, nb)
 		replyDir := filepath.Join(nb, ".cmake", "api", "v1", "reply")
 		r, err := fileapi.Load(replyDir)
 		if err != nil {
@@ -93,6 +93,7 @@ func harvestNestedBuilds(ctx context.Context, a cli.Args, hostBuildDir string, r
 			Graph:        g,
 			HostBuildDir: nb,
 			TraceRaw:     traceRaw,
+			CMakeVars:    cmakeVars,
 		}
 		harvestNestedDescendants(ctx, a, &input, rel, 1, visited)
 		out = append(out, input)
@@ -150,7 +151,7 @@ func harvestNestedDescendants(ctx context.Context, a cli.Args, parent *lower.Nes
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: staging File API queries into nested build %s failed (%v); skipping its lift.\n", childRel, err)
 			continue
 		}
-		traceRaw := runNestedTraceReconfigure(ctx, a, childRel, dir)
+		traceRaw, cmakeVars := runNestedTraceReconfigure(ctx, a, childRel, dir)
 		r, err := fileapi.Load(filepath.Join(dir, ".cmake", "api", "v1", "reply"))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: nested build %s produced no loadable File API reply (%v); staying unlifted.\n", childRel, err)
@@ -164,6 +165,7 @@ func harvestNestedDescendants(ctx context.Context, a cli.Args, parent *lower.Nes
 			Graph:        g,
 			HostBuildDir: dir,
 			TraceRaw:     traceRaw,
+			CMakeVars:    cmakeVars,
 		}
 		harvestNestedDescendants(ctx, a, &child, childRel, depth+1, visited)
 		parent.Children = append(parent.Children, child)
@@ -185,20 +187,31 @@ func canonicalBuildDir(dir string) string {
 }
 
 // runNestedTraceReconfigure runs the instrumented re-configure of one
-// nested build dir and reads the trace back. Soft on every failure
-// (nil trace → the nested lowering runs trace-less, exactly as before
-// this pass existed) — a nested project that re-configures
-// non-idempotently or rejects the re-run must not cost the lift.
-func runNestedTraceReconfigure(ctx context.Context, a cli.Args, rel, nb string) []byte {
+// nested build dir and reads the trace back, plus the nested build's OWN
+// captured cmake variable namespace (when --dump-vars is on; the
+// reconfigure injects the dump-vars hook). Soft on every failure (nil
+// trace → the nested lowering runs trace-less, exactly as before this
+// pass existed) — a nested project that re-configures non-idempotently
+// or rejects the re-run must not cost the lift. nil vars (capture off or
+// no dump produced) → the nested lowering runs with no cmake vars rather
+// than the outer project's (a nested build has its own namespace; the
+// outer's would mis-substitute @VAR@ / ${VAR} in nested configure_file /
+// file(GENERATE)).
+func runNestedTraceReconfigure(ctx context.Context, a cli.Args, rel, nb string) ([]byte, map[string]string) {
 	tracePath := filepath.Join(nb, "trace.jsonl")
-	if err := cmakerun.TraceReconfigure(ctx, nb, tracePath, a.PrefixDir, os.Stderr, os.Stderr); err != nil {
+	if err := cmakerun.TraceReconfigure(ctx, nb, tracePath, a.PrefixDir, a.DumpVars, os.Stderr, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: traced re-configure of nested build %s failed (%v); lowering it without a trace.\n", rel, err)
-		return nil
+		return nil, nil
 	}
 	raw, err := os.ReadFile(tracePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading nested build %s trace failed (%v); lowering it without a trace.\n", rel, err)
-		return nil
+		return nil, nil
 	}
-	return raw
+	vars, verr := cmakerun.ReadVarsDumpFromBuildDir(nb)
+	if verr != nil {
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: reading nested build %s variable dump failed (%v); lowering it without nested cmake vars.\n", rel, verr)
+		vars = nil
+	}
+	return raw, vars
 }

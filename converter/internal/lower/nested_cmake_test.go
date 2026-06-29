@@ -779,11 +779,11 @@ var nestedOptionsClass = map[string]string{
 	"BuildDir":          "perNested",
 	"TraceRaw":          "perNested",
 	"NestedBuilds":      "perNested",
+	"CMakeVars":         "perNested",
 
 	"LiftConfigureFile":                 "forward",
 	"Imports":                           "forward",
 	"BazelPackagePath":                  "forward",
-	"CMakeVars":                         "forward",
 	"Coverage":                          "forward",
 	"Todos":                             "forward",
 	"Warnings":                          "forward",
@@ -883,7 +883,7 @@ func TestNestedOptionsFor(t *testing.T) {
 	for i := 0; i < ot.NumField(); i++ {
 		setNonZeroField(ov.Field(i))
 	}
-	nb := NestedBuildInput{SrcDir: "/src/sub", HostBuildDir: "/b/sub"}
+	nb := NestedBuildInput{SrcDir: "/src/sub", HostBuildDir: "/b/sub", CMakeVars: map[string]string{"NESTED_ONLY": "1"}}
 
 	got := nestedOptionsFor(nb, outer, "/element/root")
 	gv := reflect.ValueOf(got)
@@ -891,6 +891,13 @@ func TestNestedOptionsFor(t *testing.T) {
 	// per-nested context comes from the NestedBuildInput, not the outer opts.
 	if got.HostSourceRoot != nb.SrcDir || got.BuildDir != nb.HostBuildDir || got.ElementSourceRoot != "/element/root" {
 		t.Errorf("per-nested fields wrong: HostSourceRoot=%q BuildDir=%q ElementSourceRoot=%q", got.HostSourceRoot, got.BuildDir, got.ElementSourceRoot)
+	}
+	// CMakeVars is the nested build's OWN namespace, not the outer's.
+	if !reflect.DeepEqual(got.CMakeVars, nb.CMakeVars) {
+		t.Errorf("CMakeVars should come from the nested build (%v), got %v", nb.CMakeVars, got.CMakeVars)
+	}
+	if reflect.DeepEqual(got.CMakeVars, outer.CMakeVars) {
+		t.Errorf("CMakeVars must NOT forward the outer project's namespace")
 	}
 	for i := 0; i < ot.NumField(); i++ {
 		name := ot.Field(i).Name
