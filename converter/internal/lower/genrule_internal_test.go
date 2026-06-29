@@ -7,6 +7,7 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/failure"
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
 func TestUsesCmakeScriptMode(t *testing.T) {
@@ -352,6 +353,99 @@ func TestRecoverGenrule_AnchorsSubdirOutputs(t *testing.T) {
 				t.Errorf("anchored=%v, want %v; cmd = %q", got, tc.anchored, cmd)
 			}
 		})
+	}
+}
+
+// TestRecoverGenrule_SiblingCppProto: a grpc-ONLY protoc command (--grpc_out,
+// no --cpp_out) whose output is CONSUMED AS A SOURCE — so it routes through the
+// per-target emitRecoveredGenrule path, not the standalone pass — lowers to a
+// cc_grpc_library REFERENCING the sibling cc_proto_library when a SIBLING
+// `protoc --cpp_out` for the same .proto exists in the graph, instead of a
+// generic genrule that would re-declare the cpp outputs. Pins finding G3[15]:
+// emitRecoveredGenrule must set CodegenCommand.SiblingCppProto (via the
+// cppProtoBasesFor cache), the same condition lowerStandaloneCustomCommands
+// uses — without it grpcOnlyRecognizer's match() (gated on sibling_cpp_proto)
+// never fires on this path and the byte-identical command degrades to a genrule.
+//
+// A focused unit test rather than a render gate: a faithful protoc fixture
+// drags in the @protobuf + @grpc BCR toolchains (the standalone path's
+// meta-cmake-protoc-grpc-recognize.sh gate already pays that cost), so pinning
+// the per-target wiring directly keeps the assertion hermetic.
+func TestRecoverGenrule_SiblingCppProto(t *testing.T) {
+	// Two CUSTOM_COMMAND edges over the SAME svc.proto: the sibling --cpp_out
+	// (produces svc.pb.{cc,h}) and the grpc-only --grpc_out (produces
+	// svc.grpc.pb.{cc,h}). recoverGenrule is called on the grpc output — the
+	// per-target path a compile target consuming svc.grpc.pb.cc as a source takes.
+	ninjaSrc := "rule CUSTOM_COMMAND\n  command = $COMMAND\n\n" +
+		"build /build/svc.pb.cc /build/svc.pb.h: CUSTOM_COMMAND /src/svc.proto\n" +
+		"  COMMAND = protoc --cpp_out=/build /src/svc.proto\n\n" +
+		"build /build/svc.grpc.pb.cc /build/svc.grpc.pb.h: CUSTOM_COMMAND /src/svc.proto\n" +
+		"  COMMAND = protoc --grpc_out=/build /src/svc.proto\n"
+	g, err := ninja.Parse(strings.NewReader(ninjaSrc), "", nil)
+	if err != nil {
+		t.Fatalf("ninja.Parse: %v", err)
+	}
+
+	// The cache accessor must surface the sibling --cpp_out's base from the graph.
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	if bases := cc.cppProtoBasesFor(g); !bases["svc"] {
+		t.Fatalf("cppProtoBasesFor should report the sibling --cpp_out base svc; got %v", bases)
+	}
+
+	_, name, err := cc.recoverGenrule("/build/svc.grpc.pb.cc", "/src", "/build", g)
+	if err != nil {
+		t.Fatalf("recoverGenrule: %v", err)
+	}
+
+	// The grpc-only command must have lowered to a cc_grpc_library native rule
+	// (referencing the sibling), NOT a generic genrule.
+	var grpc *ir.Target
+	for i := range cc.Genrules {
+		if cc.Genrules[i].NativeRule != nil && cc.Genrules[i].NativeRule.Kind == "cc_grpc_library" {
+			grpc = &cc.Genrules[i]
+			break
+		}
+	}
+	if grpc == nil {
+		t.Fatalf("expected a cc_grpc_library native rule referencing the sibling; got %+v", cc.Genrules)
+	}
+	// No genrule should have been emitted for the grpc edge (recognizer claimed
+	// it). The sibling cpp edge is a DIFFERENT edge and is not recovered here.
+	for i := range cc.Genrules {
+		if cc.Genrules[i].Kind == ir.KindGenrule {
+			t.Errorf("grpc-only edge should not emit a genrule; found %q", cc.Genrules[i].Name)
+		}
+	}
+	// recognized → OutToNativeConsumerDep wired (a #include of svc.grpc.pb.h
+	// deps on the grpc rule), OutToGenrule NOT set for the grpc outputs.
+	if _, ok := cc.OutToGenrule["svc.grpc.pb.cc"]; ok {
+		t.Errorf("recognized grpc rule must not register OutToGenrule for svc.grpc.pb.cc")
+	}
+	if dep := cc.OutToNativeConsumerDep["svc.grpc.pb.cc"]; dep == "" {
+		t.Errorf("recognized grpc rule should wire OutToNativeConsumerDep for svc.grpc.pb.cc; got %v", cc.OutToNativeConsumerDep)
+	}
+	_ = name
+
+	// Control: with NO sibling --cpp_out in the graph, the grpc-only command
+	// can't reference a sibling, so SiblingCppProto stays false and the command
+	// falls back to a generic genrule (recognizer declines).
+	noSiblingSrc := "rule CUSTOM_COMMAND\n  command = $COMMAND\n\n" +
+		"build /build/svc.grpc.pb.cc /build/svc.grpc.pb.h: CUSTOM_COMMAND /src/svc.proto\n" +
+		"  COMMAND = protoc --grpc_out=/build /src/svc.proto\n"
+	g2, err := ninja.Parse(strings.NewReader(noSiblingSrc), "", nil)
+	if err != nil {
+		t.Fatalf("ninja.Parse: %v", err)
+	}
+	cc2 := newCodegenContext()
+	cc2.RecognizeCodegen = true
+	if _, _, err := cc2.recoverGenrule("/build/svc.grpc.pb.cc", "/src", "/build", g2); err != nil {
+		t.Fatalf("recoverGenrule (no sibling): %v", err)
+	}
+	for i := range cc2.Genrules {
+		if cc2.Genrules[i].NativeRule != nil && cc2.Genrules[i].NativeRule.Kind == "cc_grpc_library" {
+			t.Errorf("without a sibling --cpp_out the grpc-only command must NOT lower to cc_grpc_library; got %+v", cc2.Genrules[i])
+		}
 	}
 }
 
