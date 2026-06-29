@@ -2,10 +2,37 @@ package cmakerun
 
 import (
 	"encoding/hex"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+// TestReadVarsDumpFromBuildDir: the nested-vars capture reads the dump
+// dump-vars.cmake wrote into the build dir (CMAKE_BINARY_DIR). Present →
+// parsed map; absent → (nil, nil) so a nested build with no dump degrades
+// to "no nested vars" rather than erroring.
+func TestReadVarsDumpFromBuildDir(t *testing.T) {
+	buildDir := t.TempDir()
+	body := hexLine("SUB_VALUE", "7") + hexLine("PROJECT_NAME", "sub")
+	if err := os.WriteFile(filepath.Join(buildDir, VarsDumpFilename), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadVarsDumpFromBuildDir(buildDir)
+	if err != nil {
+		t.Fatalf("ReadVarsDumpFromBuildDir: %v", err)
+	}
+	if want := (map[string]string{"SUB_VALUE": "7", "PROJECT_NAME": "sub"}); !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+
+	// A build dir with no dump → (nil, nil), the degrade-to-no-vars path.
+	got, err = ReadVarsDumpFromBuildDir(t.TempDir())
+	if err != nil || got != nil {
+		t.Errorf("absent dump should be (nil, nil); got (%v, %v)", got, err)
+	}
+}
 
 // hexLine renders a "<NAME>=<HEX>\n"-style dump line; used by the
 // parse tests so they don't have to spell out hex by hand.

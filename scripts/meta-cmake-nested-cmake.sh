@@ -122,10 +122,19 @@ lfail() {
 grep -qF 'cmake_configure_file(' "$lift_build" || lfail "lift tier didn't fire inside the nested lowering"
 grep -qF 'out = "subbuild/sub_config.h"' "$lift_build" || lfail "nested lift-tier out not re-homed under subbuild/"
 grep -qF 'template = "sub/sub_config.h.in"' "$lift_build" || lfail "nested lift-tier template not umbrella-re-anchored at the outer label root"
-grep -qF 'values = {"SUB_VALUE": "7"}' "$lift_build" || lfail "nested lift-tier values dict missing — the dynamic substitution payoff"
+# The nested lowering now substitutes the nested build's OWN captured
+# variable namespace (the dump-vars hook the traced re-configure injects),
+# not the outer project's. That makes the verify-pass (Substitute(full
+# nested namespace) == rendered) succeed, so the lift emits the full
+# byte-verified values dict — the SAME high-fidelity path a top-level
+# configure_file takes — rather than the minimal Extract fallback it was
+# forced onto when the nested values weren't threaded (G8). Assert the
+# project-defined value is present in the dict (cmake-version-robust: the
+# surrounding CMAKE_* entries vary by cmake version, SUB_VALUE doesn't).
+grep -qE '"SUB_VALUE": *"7"' "$lift_build" || lfail "nested lift-tier values dict missing SUB_VALUE=7 — nested-own vars not threaded into the nested configure_file lift"
 grep -qF 'out = "subbuild/subsubbuild/subsub_config.h"' "$lift_build" || lfail "grandchild lift-tier out not re-homed through the chain"
 grep -qF 'template = "sub/subsub/subsub_config.h.in"' "$lift_build" || lfail "grandchild lift-tier template not umbrella-re-anchored"
-grep -qF 'values = {"SUBSUB_VALUE": "11"}' "$lift_build" || lfail "grandchild lift-tier values dict missing"
+grep -qE '"SUBSUB_VALUE": *"11"' "$lift_build" || lfail "grandchild lift-tier values dict missing SUBSUB_VALUE=11 — nested-own vars not threaded through the chain"
 
 echo "ok  meta-cmake-nested-cmake: configure_file LIFT tier fires inside nested lowerings (chain depth 2 incl.)"
 

@@ -284,6 +284,18 @@ type NestedBuildInput struct {
 	// trace-less, recovering consumable outputs via the generic
 	// on-disk bakes only.
 	TraceRaw []byte
+	// CMakeVars is this nested build's OWN captured cmake variable
+	// namespace (the dump-vars hook the traced re-configure injected;
+	// see runNestedTraceReconfigure). nestedOptionsFor sets it as the
+	// nested lowering's Options.CMakeVars INSTEAD of forwarding the
+	// outer project's — a nested build has its own namespace, so the
+	// outer's values would mis-substitute @VAR@ / ${VAR} in nested
+	// configure_file / file(GENERATE). Nil when capture is off
+	// (--dump-vars=false), the cmake is below the 3.24 hook floor, or
+	// the re-configure produced no dump; the nested lowering then runs
+	// with no cmake vars (degrade to on-disk bakes / legacy genex)
+	// rather than the wrong outer ones.
+	CMakeVars map[string]string
 	// Children are this nested build's OWN nested builds (the
 	// superbuild-chain shape: the sub-project's configure runs a
 	// grandchild cmake), harvested by the driver's worklist from
@@ -622,6 +634,15 @@ func nestedOptionsFor(nb NestedBuildInput, opts Options, elementRoot string) Opt
 	n.BuildDir = nb.HostBuildDir
 	n.TraceRaw = nb.TraceRaw
 	n.NestedBuilds = nb.Children
+	// CMakeVars is the nested build's OWN namespace (captured by the
+	// dump-vars hook in the traced re-configure), NOT the outer
+	// project's — overriding the default-forward copy. A nested build
+	// configures separately, so forwarding the outer values would
+	// mis-substitute @VAR@ / ${VAR} in nested configure_file /
+	// file(GENERATE). nb.CMakeVars is nil when capture is off / produced
+	// no dump; the nested lowering then runs with no vars (on-disk bakes
+	// / legacy genex) rather than the wrong outer ones.
+	n.CMakeVars = nb.CMakeVars
 
 	// (2) Outer-SCOPED state — cleared so it can't cross-contaminate the
 	// nested run. Two kinds: pass-1 orchestration SINKS (the driver reads

@@ -285,18 +285,31 @@ func StageFileAPIQueries(buildDir string) error {
 }
 
 // TraceReconfigure re-runs an ALREADY-CONFIGURED build dir's configure
-// with trace instrumentation only: `cmake --trace-expand
+// with trace instrumentation: `cmake --trace-expand
 // --trace-format=json-v1 --trace-redirect=<trace> <buildDir>`. No -G /
-// -D / hook flags are passed — the warm cache carries the generator and
-// every cache decision of whoever configured the dir, which is exactly
-// the fidelity wanted when that was a PROJECT's own cmake invocation
-// (the nested-cmake lift's execute_process child) rather than Configure
-// above: replaying OUR defaults (-DCMAKE_BUILD_TYPE, -G Ninja) could
-// CHANGE the nested cache. File API queries already staged in the dir
-// are honored by this run like any other, so the reply refreshes too.
-// The cwd and env contracts match Configure (cwd = buildDir, scratch
-// HOME, PrefixDir on CMAKE_PREFIX_PATH).
-func TraceReconfigure(ctx context.Context, buildDir, tracePath, prefixDir string, stdout, stderr io.Writer) error {
+// build-affecting -D flags are passed — the warm cache carries the
+// generator and every cache decision of whoever configured the dir,
+// which is exactly the fidelity wanted when that was a PROJECT's own
+// cmake invocation (the nested-cmake lift's execute_process child)
+// rather than Configure above: replaying OUR defaults
+// (-DCMAKE_BUILD_TYPE, -G Ninja) could CHANGE the nested cache. File API
+// queries already staged in the dir are honored by this run like any
+// other, so the reply refreshes too. The cwd and env contracts match
+// Configure (cwd = buildDir, scratch HOME, PrefixDir on
+// CMAKE_PREFIX_PATH).
+//
+// dumpVars adds the ONE benign exception to the no-flags stance: the
+// dump-vars hook, injected via -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES (the
+// same non-build-affecting mechanism Configure uses), so the reconfigure
+// also writes this build's OWN variable namespace to
+// <buildDir>/cmake-to-bazel.vars.dump (read back via
+// ReadVarsDumpFromBuildDir). It captures a NESTED build's own vars
+// instead of forcing it to borrow the outer project's. The hook can't
+// change build decisions, and it self-limits: a nested project that sets
+// CMAKE_PROJECT_TOP_LEVEL_INCLUDES itself shadows our -D, so we simply
+// get no dump (the caller degrades to no nested vars) rather than
+// perturbing the project's own configure.
+func TraceReconfigure(ctx context.Context, buildDir, tracePath, prefixDir string, dumpVars bool, stdout, stderr io.Writer) error {
 	// Same caller-relative-path hazard as Configure: the child runs
 	// with cwd = buildDir, so absolutize against the CALLER's cwd
 	// first (TracePath especially — see Configure's note).
@@ -315,9 +328,16 @@ func TraceReconfigure(ctx context.Context, buildDir, tracePath, prefixDir string
 		return fmt.Errorf("cmakerun: stage home: %w", err)
 	}
 	defer os.RemoveAll(homeDir)
-	cmd := exec.CommandContext(ctx, "cmake",
-		"--trace-expand", "--trace-format=json-v1", "--trace-redirect="+tracePath,
-		buildDir)
+	args := []string{"--trace-expand", "--trace-format=json-v1", "--trace-redirect=" + tracePath}
+	if dumpVars {
+		dumpVarsPath := filepath.Join(buildDir, "cmake-to-bazel.dump-vars.cmake")
+		if werr := os.WriteFile(dumpVarsPath, dumpVarsCMake, 0o644); werr != nil {
+			return fmt.Errorf("cmakerun: stage dump-vars hook for reconfigure: %w", werr)
+		}
+		args = append(args, "-DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="+dumpVarsPath)
+	}
+	args = append(args, buildDir)
+	cmd := exec.CommandContext(ctx, "cmake", args...)
 	cmd.Dir = buildDir
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
@@ -736,6 +756,16 @@ func buildCmakeArgv(opts Options, dumpVarsPath, cmp0026ShimPath, probeGenexPath,
 // the in-process Reply.Vars directly.
 func ReadVarsDumpFromReplyDir(replyDir string) (map[string]string, error) {
 	return readVarsDump(filepath.Join(replyDir, VarsDumpFilename))
+}
+
+// ReadVarsDumpFromBuildDir loads cmake-to-bazel.vars.dump from a build
+// dir — where the dump-vars hook writes it (CMAKE_BINARY_DIR). Same
+// (nil, nil)-on-absent convention as readVarsDump. Used after a
+// TraceReconfigure(dumpVars=true) to pick up a nested build's OWN
+// variable namespace, so the nested lowering substitutes its own vars
+// rather than borrowing the outer project's.
+func ReadVarsDumpFromBuildDir(buildDir string) (map[string]string, error) {
+	return readVarsDump(filepath.Join(buildDir, VarsDumpFilename))
 }
 
 // readVarsDump parses the file dump-vars.cmake wrote. Missing
