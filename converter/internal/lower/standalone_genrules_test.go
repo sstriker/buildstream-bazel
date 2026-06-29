@@ -795,6 +795,30 @@ func TestTryStandaloneCmakeScriptCodegen_Gating(t *testing.T) {
 	}
 }
 
+// TestCoveredOuts_KindNativeRule pins the duplicate-producer guard ([19]): a
+// KindNativeRule producer's declared out/outs (the codegen-recognizer substrate —
+// pkg_tar from cmake -E tar, proto rules) must be covered, so when the same output
+// is also a ninja CUSTOM_COMMAND edge the standalone pass does NOT re-emit a second
+// genrule for it (Bazel rejects the duplicate generated file).
+func TestCoveredOuts_KindNativeRule(t *testing.T) {
+	existing := []ir.Target{{
+		Name: "archive",
+		Kind: ir.KindNativeRule,
+		NativeRule: &ir.NativeRuleSpec{
+			Attrs: []ir.NativeAttr{
+				{Name: "out", Str: "dist/archive.tar"},
+				{Name: "outs", List: []string{"gen/a.h", "gen/b.h"}},
+			},
+		},
+	}}
+	covered := coveredOuts(existing)
+	for _, want := range []string{"dist/archive.tar", "gen/a.h", "gen/b.h"} {
+		if !covered[want] {
+			t.Errorf("coveredOuts missing KindNativeRule output %q; got %v", want, covered)
+		}
+	}
+}
+
 // TestCodegenCheckpointRestore pins the all-or-nothing rollback: a checkpoint
 // captures the codegen consumer-wiring registries + Genrules length, and
 // restore undoes every mutation made after it (the contract a partial
