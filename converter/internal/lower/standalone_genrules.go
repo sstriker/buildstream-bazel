@@ -245,6 +245,36 @@ func reanchorCrossBoundaryOuts(outs []string, buildDir string, cc *codegenContex
 	return res
 }
 
+// reanchorStandaloneBuildDirCopy applies the cmd reanchors a STANDALONE genrule
+// shares with emitRecoveredGenrule's per-target path: the cross-boundary
+// outer-build-dir reanchor and the build-dir staging-copy reanchor. Both are
+// no-ops when cc is nil or the edge lacks the relevant shape, so an ordinary
+// standalone genrule is returned unchanged. The build-dir-copy reanchor's
+// returned tools are appended to the passed-in tools.
+func reanchorStandaloneBuildDirCopy(rawCmd, cmd string, srcs, outs, tools []string, cmakeSrc, buildDir, pkg string, cc *codegenContext) (string, []string, []string) {
+	if cc == nil {
+		return cmd, srcs, tools
+	}
+	// Cross-boundary tail: an output written into an ANCESTOR (outer) build tree
+	// carries that build dir's ABSOLUTE prefix in the raw cmd, which
+	// anchorGenruleOutputs (keyed on the build-relative declared out) can't reach.
+	// Rewrite the outer-build absolute prefix to $(RULEDIR)/. No-op when there are
+	// no ancestor builds. Mirrors emitRecoveredGenrule's reanchor.
+	cmd = reanchorOuterBuildDirsToRuledir(cmd, cc.OuterBuildDirs)
+	// Build-dir staging-copy: a standalone build-copy command that ran in a
+	// build-dir subdir of CONFIGURE-time-copied inputs (`cd <buildDir>/<sub> &&
+	// tool -I . <rel>` — grpc copies its .protos into <build>/protos/ at
+	// configure time and runs protoc from there) routes to the standalone pass
+	// when no cmake source consumes its output (add_custom_target-driven).
+	// Stripping the cd stranded the cwd-relative reads (`-I .`, `<rel>`);
+	// reanchorBuildDirCopyGenrule re-anchors them to the byte-identical
+	// source-tree inputs the genrule already carries, drops the producerless
+	// copies, and swaps a host protoc to @protobuf//:protoc. A no-op for an edge
+	// with no build-dir-copy shape.
+	cmd, srcs, copyTools := reanchorBuildDirCopyGenrule(rawCmd, cmd, srcs, outs, cmakeSrc, buildDir, pkg, cc)
+	return cmd, srcs, append(tools, copyTools...)
+}
+
 func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath string, artifactToName map[string]string, traceCtx standaloneTraceContext, filteredInternal map[string]string, cc *codegenContext) []ir.Target {
 	if g == nil {
 		return nil
@@ -516,15 +546,13 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// emitRecoveredGenrule (a derived-output tool would otherwise write
 		// to the exec-root cwd here).
 		rewrittenCmd = anchorGenruleOutputs(rewrittenCmd, outs)
-		// Cross-boundary tail: an output written into an ANCESTOR (outer) build
-		// tree carries that build dir's ABSOLUTE prefix in the raw cmd, which
-		// anchorGenruleOutputs (keyed on the build-relative declared out) can't
-		// reach. Rewrite the outer-build absolute prefix to $(RULEDIR)/ so the cmd
-		// writes the re-homed out (generated/x.c) under bazel-out. No-op when there
-		// are no ancestor builds. Mirrors emitRecoveredGenrule's reanchor.
-		if cc != nil {
-			rewrittenCmd = reanchorOuterBuildDirsToRuledir(rewrittenCmd, cc.OuterBuildDirs)
-		}
+		// Cross-boundary + build-dir-copy reanchors (parity with
+		// emitRecoveredGenrule): the outer-build-dir reanchor and the build-dir
+		// staging-copy reanchor (the grpc `cd <build>/protos && protoc -I .` shape
+		// that routes HERE when its output has no compile-source consumer). Both
+		// are no-ops when cc is nil / the edge lacks the shape. See
+		// reanchorStandaloneBuildDirCopy.
+		rewrittenCmd, srcs, tools = reanchorStandaloneBuildDirCopy(cmd, rewrittenCmd, srcs, outs, tools, cmakeSrc, buildDir, bazelPackagePath, cc)
 		// Response-file family (the VTK wrap-hierarchy shape): strip
 		// ninja depfile plumbing, then route generated-src references
 		// through $(location) (and the @BSB_GENDIR@ sed preamble for
