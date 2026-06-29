@@ -409,6 +409,53 @@ func TestPartitionOutOfTreeExec_ToolFromImportsLiftsUnderStrict(t *testing.T) {
 	}
 }
 
+// Gate alignment ([20]): the lift-routing gate must be no broader than the
+// lift's own eligibility. A RECOGNIZED build-dir codegen call that is
+// argvCodegenEligibleRelaxed-INELIGIBLE — it carries a WORKING_DIRECTORY or an
+// ERROR_VARIABLE — can never be lifted (every codegen rung in
+// recoverExecuteProcess declines on that eligibility), so routing it into the
+// lift would lose it (silently, for a dual-use probe-shaped call). It must
+// instead stay a NOTE (a surfaced out-of-tree conversion-todo).
+func TestPartitionOutOfTreeExec_IneligibleRecognizedStaysNote(t *testing.T) {
+	on := newCodegenContext()
+	on.RecognizeCodegen = true
+
+	// Eligible recognized build-dir codegen → LIFT (the baseline).
+	eligible := ootCall("/build/gen/CMakeLists.txt", 1, "protoc", "--cpp_out=.", "foo.proto")
+	if lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{eligible}, "/src", "/build", "/synth", nil, on); len(lift) != 1 || len(note) != 0 {
+		t.Fatalf("eligible recognized call should LIFT; got lift=%d note=%d", len(lift), len(note))
+	}
+
+	// Same recognized call but with a WORKING_DIRECTORY → ineligible → NOTE.
+	withWD := ootCall("/build/gen/CMakeLists.txt", 1, "protoc", "--cpp_out=.", "foo.proto")
+	withWD.WorkingDirectory = "/build/gen"
+	lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{withWD}, "/src", "/build", "/synth", nil, on)
+	if len(lift) != 0 || len(note) != 1 {
+		t.Fatalf("recognized-but-WORKING_DIRECTORY call must stay a NOTE, not lift; got lift=%d note=%+v", len(lift), note)
+	}
+	if note[0].Signal != signalBuildDirOther || !note[0].Recognized {
+		t.Errorf("ineligible recognized note should keep its build-dir signal + Recognized=true; got %+v", note[0])
+	}
+
+	// Same recognized call but capturing ERROR_VARIABLE → ineligible → NOTE.
+	withErrVar := ootCall("/build/gen/CMakeLists.txt", 1, "protoc", "--cpp_out=.", "foo.proto")
+	withErrVar.ErrorVariable = "ERR"
+	if lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{withErrVar}, "/src", "/build", "/synth", nil, on); len(lift) != 0 || len(note) != 1 {
+		t.Fatalf("recognized-but-ERROR_VARIABLE call must stay a NOTE, not lift; got lift=%d note=%+v", len(lift), note)
+	}
+
+	// Best-effort with an ineligible (WORKING_DIRECTORY) call: the
+	// fidelity-driven genrule fallback also can't take it, so it stays a NOTE
+	// rather than being routed into a lift that declines.
+	be := newCodegenContext()
+	be.Fidelity = convmode.FidelityBestEffort
+	beWD := ootCall("/build/gen/CMakeLists.txt", 1, "mygen", "--verbose")
+	beWD.WorkingDirectory = "/build/gen"
+	if lift, note := partitionOutOfTreeExec([]shadow.ExecuteProcessCall{beWD}, "/src", "/build", "/synth", nil, be); len(lift) != 0 || len(note) != 1 {
+		t.Fatalf("best-effort ineligible call must stay a NOTE, not lift; got lift=%d note=%+v", len(lift), note)
+	}
+}
+
 // A PURE prefix-tree call on the dependency's own staged files (no project I/O)
 // stays a note even with an imports tool — its inputs are convert-time staging,
 // absent at the consumer's build, so a lift would dangle.
