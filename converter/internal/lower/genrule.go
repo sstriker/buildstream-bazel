@@ -529,6 +529,46 @@ type codegenContext struct {
 	// consults both. See probe_literals.go.
 	LiteralProbeSink   *LiteralProbeSink
 	LiteralResolutions map[string]cmakerun.LiteralResolution
+
+	// cppProtoBasesCache memoizes protocCppOutputBases(ninja.CustomCommandEdges(g),
+	// g) — the set of .proto basenames a `protoc --cpp_out` call produces in this
+	// graph — so the per-target genrule recovery (emitRecoveredGenrule) can set
+	// CodegenCommand.SiblingCppProto without re-scanning EVERY ninja CUSTOM_COMMAND
+	// edge per recovered genrule (an O(edges) pre-scan that, called per recovery,
+	// would be O(edges²) over a project). The standalone path computes the same set
+	// once up front (lowerStandaloneCustomCommands); the per-target path lacked any
+	// pre-pass anchor, hence the lazy cache here. cppProtoBasesGraph is the graph
+	// sentinel: a recompute is forced only when the cache is consulted for a
+	// DIFFERENT *ninja.Graph (a nested lowering reusing the same cc), the
+	// conservative correctness guard since the basename set is graph-specific. See
+	// cppProtoBasesFor.
+	cppProtoBasesCache map[string]bool
+	cppProtoBasesGraph *ninja.Graph
+}
+
+// cppProtoBasesFor returns the set of .proto basenames a `protoc --cpp_out`
+// command produces in graph g — protocCppOutputBases over every CUSTOM_COMMAND
+// edge — computed once and cached on cc (keyed by the graph). Lets the per-target
+// emitRecoveredGenrule set SiblingCppProto with the SAME condition the standalone
+// path uses, without an O(edges²) re-scan across a project's recovered genrules.
+// A nil g (unit-shaped callers / no build graph) returns an empty set, so the
+// SiblingCppProto gate is a no-op. The cache is non-nil after the first non-nil-g
+// call even when the basename set is empty, so a project with no `protoc --cpp_out`
+// still scans only once.
+func (cc *codegenContext) cppProtoBasesFor(g *ninja.Graph) map[string]bool {
+	if g == nil {
+		return nil
+	}
+	if cc.cppProtoBasesGraph == g && cc.cppProtoBasesCache != nil {
+		return cc.cppProtoBasesCache
+	}
+	bases := protocCppOutputBases(ninja.CustomCommandEdges(g), g)
+	if bases == nil {
+		bases = map[string]bool{}
+	}
+	cc.cppProtoBasesCache = bases
+	cc.cppProtoBasesGraph = g
+	return cc.cppProtoBasesCache
 }
 
 // resolveLiteral attempts to resolve an arbitrary genex literal via
@@ -1131,6 +1171,20 @@ func (cc *codegenContext) emitRecoveredGenrule(b *ninja.Build, cmd, cmakeSrc, bu
 	// → the genrule unchanged.
 	recoCmd := codegenCommandFrom(preToolSwapCmd, srcs, outs, cc.BazelPackagePath)
 	recoCmd.ProtoDeps = protoImportLabels(recoCmd.Srcs, recoCmd.Outs, cmakeSrc, cc.BazelPackagePath)
+	// SiblingCppProto: a recovered grpc-ONLY protoc command (--grpc_out, no
+	// --cpp_out) whose sole .proto a SIBLING `protoc --cpp_out` already produces
+	// the cpp outputs for lowers to a cc_grpc_library REFERENCING that sibling's
+	// proto_library + cc_proto_library, instead of re-emitting (and
+	// double-producing) them. The SAME condition the standalone path uses
+	// (lowerStandaloneCustomCommands); without it the byte-identical command on
+	// THIS per-target path (output consumed as a source) never matched
+	// grpcOnlyRecognizer, since its match() gates on sibling_cpp_proto. The
+	// cppProtoBases pre-scan is cached on cc (cppProtoBasesFor) so the per-recovery
+	// lookup doesn't re-scan all edges. A no-op for non-proto commands (soleProtoInput
+	// "" → not set).
+	if p := soleProtoInput(recoCmd.Srcs); p != "" && cc.cppProtoBasesFor(g)[strings.TrimSuffix(filepath.Base(p), ".proto")] {
+		recoCmd.SiblingCppProto = true
+	}
 	tgts, recognized := recognizeOrGenrule(cc, recoCmd, gen)
 	cc.Genrules = append(cc.Genrules, tgts...)
 	cc.SeenBuilds[b] = name
