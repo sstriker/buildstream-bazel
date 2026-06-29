@@ -2166,6 +2166,17 @@ func coveredOuts(existing []ir.Target) map[string]bool {
 			if t.CCHash != nil && t.CCHash.OutHeader != "" {
 				covered[t.CCHash.OutHeader] = true
 			}
+		case ir.KindNativeRule:
+			// The codegen-recognizer registry substrate (pkg_tar from cmake -E
+			// tar, proto rules, …) declares its produced outputs via the native
+			// rule's out/outs attrs, not GenruleOuts. A recognized output can
+			// ALSO be a ninja CUSTOM_COMMAND edge (a cmake -E tar archive that's
+			// also a custom command), so — as for every producer kind above —
+			// missing it here would re-emit a second producer and Bazel rejects
+			// the duplicate. nativeRuleOuts is nil-safe.
+			for _, o := range nativeRuleOuts(t.NativeRule) {
+				covered[o] = true
+			}
 		}
 	}
 	return covered
