@@ -375,6 +375,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-defer-execute-process.sh \
 	scripts/meta-cmake-execute-process-argv-codegen.sh \
 	scripts/meta-cmake-cmake-script-tempdir-relocate.sh \
+	scripts/meta-cmake-cmake-script-tempdir-relocate-standalone.sh \
 	scripts/meta-cmake-cmake-script-tempdir-relocate-filecopy.sh \
 	scripts/meta-cmake-cmake-script-tempdir-relocate-rename.sh \
 	scripts/meta-cmake-cmake-script-tempdir-relocate-multicopy.sh \

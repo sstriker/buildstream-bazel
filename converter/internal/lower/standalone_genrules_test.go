@@ -770,25 +770,27 @@ func TestTryStandaloneCmakeScriptCodegen_Gating(t *testing.T) {
 	const scriptCmd = "cmake -P gen.cmake"
 	outs := []string{"foo.pb.cc"}
 
-	if base().tryStandaloneCmakeScriptCodegen("protoc --cpp_out=. foo.proto", "/s", "/b", outs) {
+	// nil b / g are safe: every case here short-circuits at the gate checks (or
+	// the empty-outs guard) before recoverCmakeScriptCodegen / SeenBuilds[b].
+	if base().tryStandaloneCmakeScriptCodegen(nil, "protoc --cpp_out=. foo.proto", "/s", "/b", outs, nil) {
 		t.Error("non-cmake-script cmd must decline (handled by the recognizer chokepoint, not the script path)")
 	}
 	off := base()
 	off.CMakeScriptTrace = false
-	if off.tryStandaloneCmakeScriptCodegen(scriptCmd, "/s", "/b", outs) {
+	if off.tryStandaloneCmakeScriptCodegen(nil, scriptCmd, "/s", "/b", outs, nil) {
 		t.Error("CMakeScriptTrace off must decline")
 	}
 	norec := base()
 	norec.RecognizeCodegen = false
-	if norec.tryStandaloneCmakeScriptCodegen(scriptCmd, "/s", "/b", outs) {
+	if norec.tryStandaloneCmakeScriptCodegen(nil, scriptCmd, "/s", "/b", outs, nil) {
 		t.Error("RecognizeCodegen off must decline")
 	}
 	nocmake := base()
 	nocmake.CMakeBinary = ""
-	if nocmake.tryStandaloneCmakeScriptCodegen(scriptCmd, "/s", "/b", outs) {
+	if nocmake.tryStandaloneCmakeScriptCodegen(nil, scriptCmd, "/s", "/b", outs, nil) {
 		t.Error("no cmake binary must decline")
 	}
-	if base().tryStandaloneCmakeScriptCodegen(scriptCmd, "/s", "/b", nil) {
+	if base().tryStandaloneCmakeScriptCodegen(nil, scriptCmd, "/s", "/b", nil, nil) {
 		t.Error("no declared outs must decline")
 	}
 }
