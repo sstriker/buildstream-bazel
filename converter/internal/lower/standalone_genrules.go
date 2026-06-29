@@ -201,6 +201,50 @@ func coveredOutsForStandalone(existing []ir.Target, cc *codegenContext) map[stri
 	return covered
 }
 
+// reanchorCrossBoundaryOuts maps each standalone-edge output that physically
+// lands in an ANCESTOR (outer) build tree — the cross-boundary nested-codegen
+// shape, where a nested UTILITY's custom command writes its generated source UP
+// into the outer build dir rather than its own — to its OWNING build-relative
+// form (genSrcRelToOwningBuild over cc.OuterBuildDirs). A nested-owned output
+// (under buildDir) or a path inside no known build dir is returned unchanged.
+//
+// This keeps the genrule's declared out hermetic ("generated/x.c") instead of
+// leaking the absolute convert-time build path; and because the owning-build
+// form carries no nested <buildRel>/ prefix, the nested-merge re-home leaves it
+// at the outer-package root where the outer consumer references it, and the
+// parent's build-dir bake defers to this regenerating producer (OutToGenrule).
+// No-op when there are no ancestor builds (the outer lowering), so the outer
+// path is byte-identical.
+func reanchorCrossBoundaryOuts(outs []string, buildDir string, cc *codegenContext) []string {
+	if cc == nil || len(cc.OuterBuildDirs) == 0 || buildDir == "" {
+		return outs
+	}
+	var res []string
+	changed := false
+	for _, o := range outs {
+		abs := o
+		if !filepath.IsAbs(abs) {
+			abs = filepath.Join(buildDir, filepath.FromSlash(o))
+		}
+		// A nested-owned output (under THIS build dir) keeps its existing form;
+		// only an output that escapes into an ancestor build tree re-homes.
+		if rel, ok := relativeIfInsideRelaxed(buildDir, abs); ok && !strings.HasPrefix(rel, "../") {
+			res = append(res, o)
+			continue
+		}
+		if owning := genSrcRelToOwningBuild(abs, buildDir, cc.OuterBuildDirs); owning != "" {
+			res = append(res, owning)
+			changed = true
+			continue
+		}
+		res = append(res, o)
+	}
+	if !changed {
+		return outs
+	}
+	return res
+}
+
 func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath string, artifactToName map[string]string, traceCtx standaloneTraceContext, filteredInternal map[string]string, cc *codegenContext) []ir.Target {
 	if g == nil {
 		return nil
@@ -282,6 +326,17 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// variable reference. The real (variable-free) output
 		// stays in the list and drives the genrule's outs / name.
 		outs = filterOutVarRefs(outs)
+		// CROSS-BOUNDARY nested codegen: in a nested lowering an output can land
+		// in an ANCESTOR (outer) build tree rather than this build dir — a nested
+		// UTILITY's custom command writing its generated source UP into the outer
+		// build dir (the consumer references it there). Resolve such an output to
+		// its OWNING (outer) build-relative form so the genrule declares a hermetic
+		// out (generated/x.c) instead of leaking the absolute convert-time path,
+		// and the parent's build-dir bake defers to this regenerating producer. A
+		// nested-owned / source-tree output is returned unchanged; a no-op when
+		// there are no ancestor builds (the outer lowering). Mirrors the per-target
+		// emitRecoveredGenrule path (genSrcRelToOwningBuild + the cmd reanchor below).
+		outs = reanchorCrossBoundaryOuts(outs, buildDir, cc)
 		// Sort for byte-stability and dedup.
 		sort.Strings(outs)
 		outs = dedupSorted(outs)
@@ -461,6 +516,15 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// emitRecoveredGenrule (a derived-output tool would otherwise write
 		// to the exec-root cwd here).
 		rewrittenCmd = anchorGenruleOutputs(rewrittenCmd, outs)
+		// Cross-boundary tail: an output written into an ANCESTOR (outer) build
+		// tree carries that build dir's ABSOLUTE prefix in the raw cmd, which
+		// anchorGenruleOutputs (keyed on the build-relative declared out) can't
+		// reach. Rewrite the outer-build absolute prefix to $(RULEDIR)/ so the cmd
+		// writes the re-homed out (generated/x.c) under bazel-out. No-op when there
+		// are no ancestor builds. Mirrors emitRecoveredGenrule's reanchor.
+		if cc != nil {
+			rewrittenCmd = reanchorOuterBuildDirsToRuledir(rewrittenCmd, cc.OuterBuildDirs)
+		}
 		// Response-file family (the VTK wrap-hierarchy shape): strip
 		// ninja depfile plumbing, then route generated-src references
 		// through $(location) (and the @BSB_GENDIR@ sed preamble for

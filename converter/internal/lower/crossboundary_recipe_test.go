@@ -40,6 +40,36 @@ func TestGenSrcRelToOwningBuild(t *testing.T) {
 	})
 }
 
+// TestReanchorCrossBoundaryOuts covers the standalone-path cross-boundary output
+// re-home: a nested standalone custom-command output that escapes into an
+// ANCESTOR (outer) build tree resolves to its owning-build-relative form (so the
+// genrule declares a hermetic out, not a leaked absolute path), while a
+// nested-owned output and a run with no ancestor builds stay byte-identical.
+func TestReanchorCrossBoundaryOuts(t *testing.T) {
+	const nested = "/tmp/cb/outer/codegen-build"
+	cc := &codegenContext{OuterBuildDirs: []string{"/tmp/cb/outer"}}
+
+	// A cross-boundary absolute out re-homes to the outer-relative form; a
+	// nested-owned out (relative or absolute under the nested build) is unchanged.
+	got := reanchorCrossBoundaryOuts(
+		[]string{"/tmp/cb/outer/generated/type_a.c", "int.tmp"}, nested, cc)
+	want := []string{"generated/type_a.c", "int.tmp"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("reanchorCrossBoundaryOuts = %v, want %v", got, want)
+	}
+
+	// No ancestor builds (the outer lowering): identity, same slice contents.
+	plain := []string{"gen/x.c"}
+	if out := reanchorCrossBoundaryOuts(plain, nested, &codegenContext{}); out[0] != "gen/x.c" || len(out) != 1 {
+		t.Errorf("no-ancestor reanchor must be identity; got %v", out)
+	}
+
+	// nil cc is tolerated (the standalone path runs with a nil cc in unit tests).
+	if out := reanchorCrossBoundaryOuts(plain, nested, nil); len(out) != 1 || out[0] != "gen/x.c" {
+		t.Errorf("nil-cc reanchor must be identity; got %v", out)
+	}
+}
+
 // TestReanchorOuterBuildDirsToRuledir covers rewriting an outer-build absolute
 // path prefix to $(RULEDIR) in a recovered genrule cmd — so a tool that names
 // its OUTER-build output dir absolutely writes where Bazel expects the declared
