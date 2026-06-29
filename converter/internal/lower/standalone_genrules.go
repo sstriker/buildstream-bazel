@@ -393,7 +393,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// cc.Genrules / cc.OutToGenrule / OutToNativeConsumerDep, which the caller
 		// harvests (cc.Genrules delta) and rewriteNativeRuleConsumers honors —
 		// both run after this pass.
-		if cc.tryStandaloneCmakeScriptCodegen(cmd, cmakeSrc, buildDir, outs) {
+		if cc.tryStandaloneCmakeScriptCodegen(b, cmd, cmakeSrc, buildDir, outs, g) {
 			continue
 		}
 
@@ -659,7 +659,7 @@ func codegenCommandFromArgv(argv, srcs, outs []string, pkg string) CodegenComman
 // to bake/raw as a unit. Gated like recoverCmakeScriptCodegen (RecognizeCodegen
 // + CMakeScriptTrace + a usable cmake); off → declines and the legacy bake/raw
 // paths handle the edge.
-func (cc *codegenContext) tryStandaloneCmakeScriptCodegen(cmd, cmakeSrc, buildDir string, outs []string) bool {
+func (cc *codegenContext) tryStandaloneCmakeScriptCodegen(b *ninja.Build, cmd, cmakeSrc, buildDir string, outs []string, g *ninja.Graph) bool {
 	if cc == nil || !cc.RecognizeCodegen || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || buildDir == "" || !usesCmakeScriptMode(cmd) {
 		return false
 	}
@@ -667,23 +667,27 @@ func (cc *codegenContext) tryStandaloneCmakeScriptCodegen(cmd, cmakeSrc, buildDi
 	if script == "" || len(outs) == 0 {
 		return false
 	}
-	calls := cc.expandCommandSources(script, extractCmakePDashArgs(cmd), cmakeSrc, buildDir)
-	if len(calls) == 0 {
-		return false
-	}
 	cp := cc.checkpointCodegen()
-	// Same shared recovery the per-target script path uses; nil cmakeVars/
-	// forwards (the script's own -D args drove the trace expansion).
-	recovered, _ := recoverExecuteProcess(calls, cmakeSrc, cmakeSrc, buildDir, buildDir, cc.LiftConfigureFile, nil, nil, nil, nil, cc)
-	covered := make(map[string]bool, len(recovered))
-	for _, o := range recovered {
-		covered[o.RelOutput] = true
-	}
+	_, hadSeen := cc.SeenBuilds[b]
+	// Run the SAME full recovery ladder the per-target path runs
+	// (recoverCmakeScriptCodegen: temp-dir-relocate -> tool-chain -> per-step
+	// execute_process -> traced-tool -> write-in-place), not only
+	// recoverExecuteProcess — so a STANDALONE `cmake -P` codegen gets every rung:
+	// a temp-dir-relocate / tool-chain / write-in-place / output-dir-flag tool is
+	// recovered as a regenerating producer instead of falling to the frozen bake
+	// or a /tmp-leaking genrule. The wrapper rungs register ALL of b's declared
+	// outs, so the all-or-nothing check below passes only when every output is
+	// claimed; a partial recovery rolls back so the edge bakes/raws as one unit.
+	cc.recoverCmakeScriptCodegen(b, cmd, script, cmakeSrc, buildDir, outs[0], g)
 	for _, o := range outs {
-		if !covered[o] {
-			// Partial recovery: roll back so the edge bakes/raws as one unit and
-			// no half-wired output is left behind.
+		if !cc.outputClaimed(o) {
 			cc.restoreCodegen(cp)
+			if !hadSeen {
+				// recoverCmakeScriptCodegen may have set SeenBuilds[b] (not covered
+				// by the codegen checkpoint, which is keyed by output path); undo it
+				// so a rolled-back partial leaves no half-claimed edge behind.
+				delete(cc.SeenBuilds, b)
+			}
 			return false
 		}
 	}
