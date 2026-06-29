@@ -521,6 +521,79 @@ func TestApplyNestedProducerReHome_ConfigureFileLift(t *testing.T) {
 	}
 }
 
+// TestApplyNestedProducerReHome_CCEmbedLift pins the matched-pair re-home
+// for the cc_embed LIFT tier (vtkEncodeString codegen): producerOuts must
+// surface CCEmbed.OutHeader + OutSource AND applyNestedProducerReHome must
+// re-anchor them under <buildRel>/ with the chain-composed rename — site (1)
+// without site (2) would materialize the .h/.cxx at the outer package root
+// under a collidable name (two nested builds emitting the same encoder
+// collide). Copy-on-write on the spec: the nested package's original must
+// not mutate.
+func TestApplyNestedProducerReHome_CCEmbedLift(t *testing.T) {
+	spec := &ir.CCEmbedSpec{
+		Symbol:    "vtkFoo",
+		OutHeader: "vtkFoo.h",
+		OutSource: "vtkFoo.cxx",
+	}
+	embed := ir.Target{
+		Name:    "gen_vtkFoo",
+		Kind:    ir.KindCCEmbed,
+		CCEmbed: spec,
+	}
+	got := producerOuts(&embed)
+	if len(got) != 2 || got[0] != "vtkFoo.h" || got[1] != "vtkFoo.cxx" {
+		t.Fatalf("producerOuts(embed) = %v, want [vtkFoo.h vtkFoo.cxx]", got)
+	}
+	rehome := map[string]string{
+		"vtkFoo.h":   "subbuild/vtkFoo.h",
+		"vtkFoo.cxx": "subbuild/vtkFoo.cxx",
+	}
+	applyNestedProducerReHome(&embed, rehome, "subbuild")
+	if embed.CCEmbed.OutHeader != "subbuild/vtkFoo.h" {
+		t.Errorf("embed OutHeader = %q, want subbuild/vtkFoo.h", embed.CCEmbed.OutHeader)
+	}
+	if embed.CCEmbed.OutSource != "subbuild/vtkFoo.cxx" {
+		t.Errorf("embed OutSource = %q, want subbuild/vtkFoo.cxx", embed.CCEmbed.OutSource)
+	}
+	if embed.Name != "subbuild_gen_vtkFoo" {
+		t.Errorf("embed name = %q, want chain-composed subbuild_gen_vtkFoo", embed.Name)
+	}
+	if spec.OutHeader != "vtkFoo.h" || spec.OutSource != "vtkFoo.cxx" {
+		t.Errorf("original spec mutated (OutHeader=%q OutSource=%q) — the re-home must copy-on-write", spec.OutHeader, spec.OutSource)
+	}
+}
+
+// TestApplyNestedProducerReHome_CCHashLift pins the matched-pair re-home for
+// the cc_hash LIFT tier (vtkHashSource codegen): producerOuts surfaces
+// CCHash.OutHeader AND applyNestedProducerReHome re-anchors it under
+// <buildRel>/ with the chain-composed rename. Copy-on-write on the spec.
+func TestApplyNestedProducerReHome_CCHashLift(t *testing.T) {
+	spec := &ir.CCHashSpec{
+		Algorithm: "SHA256",
+		OutHeader: "vtkBarHash.h",
+	}
+	hash := ir.Target{
+		Name:   "gen_vtkBarHash",
+		Kind:   ir.KindCCHash,
+		CCHash: spec,
+	}
+	got := producerOuts(&hash)
+	if len(got) != 1 || got[0] != "vtkBarHash.h" {
+		t.Fatalf("producerOuts(hash) = %v, want [vtkBarHash.h]", got)
+	}
+	rehome := map[string]string{"vtkBarHash.h": "subbuild/vtkBarHash.h"}
+	applyNestedProducerReHome(&hash, rehome, "subbuild")
+	if hash.CCHash.OutHeader != "subbuild/vtkBarHash.h" {
+		t.Errorf("hash OutHeader = %q, want subbuild/vtkBarHash.h", hash.CCHash.OutHeader)
+	}
+	if hash.Name != "subbuild_gen_vtkBarHash" {
+		t.Errorf("hash name = %q, want chain-composed subbuild_gen_vtkBarHash", hash.Name)
+	}
+	if spec.OutHeader != "vtkBarHash.h" {
+		t.Errorf("original spec mutated to %q — the re-home must copy-on-write", spec.OutHeader)
+	}
+}
+
 // TestNestedBuildFullyRecovered: a NOT-lifted nested build is "fully recovered"
 // (todo redundant) only when it's header-only AND every header was claimed; a
 // compiled artifact or an unclaimed header keeps it not-recovered (todo stands).
