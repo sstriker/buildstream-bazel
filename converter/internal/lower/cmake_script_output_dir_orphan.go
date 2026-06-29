@@ -225,24 +225,28 @@ func (cc *codegenContext) extractOutputDirOrphanTool(b *ninja.Build, script, cma
 	if chosen == nil {
 		return false // no tool writes the orphans (file(WRITE) literals) → bake
 	}
-	n := len(cc.Genrules)
-	seenBefore := cc.SeenBuilds[b]
+	// All-or-nothing checkpoint (the same shape tryStandaloneCmakeScriptCodegen
+	// uses): checkpointCodegen snapshots Genrules + OutToGenrule +
+	// OutToNativeConsumerDep + the recognizer/stamp maps, so restoreCodegen unwinds
+	// a recognizer match (OutToNativeConsumerDep) too, not just the genrule
+	// fallback. SeenBuilds is keyed by *ninja.Build (not an output path) so the
+	// checkpoint doesn't cover it — guard it separately: delete the key on rollback
+	// only if it was ABSENT before (writing back "" would leave a phantom
+	// present-with-empty-value entry a downstream `_, ok := SeenBuilds[b]` misreads).
+	cp := cc.checkpointCodegen()
+	_, hadSeen := cc.SeenBuilds[b]
 	_, name, err := cc.emitRecoveredGenrule(b, strings.Join(chosen, " "), cmakeSrc, buildDir, attributed[0], g, declaredOuts)
 	if err != nil {
 		return false
 	}
-	// All-or-nothing: every attributed orphan must be claimed, else the genrule
-	// covers only part of the set — roll back (genrules + the OutToGenrule entries
-	// this emit added + SeenBuilds) so the bake still covers the whole edge.
+	// Every attributed orphan must be claimed, else the genrule covers only part of
+	// the set — roll back so the bake still covers the whole edge.
 	for _, o := range attributed {
 		if !cc.outputClaimed(o) {
-			cc.Genrules = cc.Genrules[:n]
-			for _, d := range declaredOuts {
-				if cc.OutToGenrule[d] == name {
-					delete(cc.OutToGenrule, d)
-				}
+			cc.restoreCodegen(cp)
+			if !hadSeen {
+				delete(cc.SeenBuilds, b)
 			}
-			cc.SeenBuilds[b] = seenBefore
 			return false
 		}
 	}
