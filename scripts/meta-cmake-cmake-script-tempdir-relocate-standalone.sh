@@ -119,7 +119,10 @@ if ! (cd "$ws" && "$BZL" --output_user_root="$bz_cache" ${META_BAZEL_STARTUP_ARG
     sed 's/^/   /' "$work_dir/bazel.log"
     exit 1
 fi
-produced=$(find "$ws"/bazel-out -name value.h 2>/dev/null | head -1)
+# bazel-bin is a symlink into the output base; find needs -L to traverse a
+# symlinked START point (matching the sibling build gates, e.g.
+# meta-cmake-module-library.sh). value.h is a genrule output -> under bazel-bin.
+produced=$(find -L "$ws"/bazel-bin -name value.h 2>/dev/null | head -1)
 if [ -z "$produced" ] || ! grep -qF '#define GEN_VALUE 7' "$produced"; then
     echo "FAIL: the regenerated value.h is missing or has the wrong content"
     exit 1
