@@ -431,6 +431,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-standalone-flag-output-dir.sh \
 	scripts/meta-cmake-standalone-custom-command.sh \
 	scripts/meta-cmake-pertarget-depfile-codegen.sh \
+	scripts/meta-cmake-standalone-buildcopy.sh \
 	scripts/meta-cmake-prelink-stamp-byproduct.sh \
 	scripts/meta-cmake-target-event-inferred-output.sh \
 	scripts/meta-cmake-target-event-buildtree-recipe.sh \

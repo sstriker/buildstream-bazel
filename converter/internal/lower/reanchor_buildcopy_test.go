@@ -42,6 +42,49 @@ func TestReanchorBuildDirCopyGenrule(t *testing.T) {
 	}
 }
 
+// reanchorStandaloneBuildDirCopy wires reanchorBuildDirCopyGenrule into the
+// STANDALONE genrule path (parity with emitRecoveredGenrule): the build-dir copy
+// is dropped, the cwd-relative reads re-anchor to the source-tree twin, and the
+// copy reanchor's tools are appended to the passed-in tools.
+func TestReanchorStandaloneBuildDirCopy(t *testing.T) {
+	raw := "cd /b/staged && python3 /s/tools/gen.py --out=gens -I . data/x.txt"
+	rewritten := "python3 tools/gen.py --out=$(RULEDIR)/gens -I . data/x.txt"
+	srcs := []string{
+		"data/x.txt",        // source-tree twin
+		"staged/data/x.txt", // build-dir copy (producerless)
+		"tools/gen.py",      // codegen script (has a slash, kept)
+	}
+	outs := []string{"gens/x.gen.c"}
+	tools := []string{":pre"} // a tool the caller already lifted
+
+	cmd, kept, gotTools := reanchorStandaloneBuildDirCopy(
+		raw, rewritten, srcs, outs, tools, "", "/b", "elements/sbc", &codegenContext{})
+
+	wantCmd := "python3 elements/sbc/tools/gen.py --out=$(RULEDIR)/gens -I elements/sbc elements/sbc/data/x.txt"
+	if cmd != wantCmd {
+		t.Errorf("cmd:\n got  %q\n want %q", cmd, wantCmd)
+	}
+	if want := []string{"data/x.txt", "tools/gen.py"}; !reflect.DeepEqual(kept, want) {
+		t.Errorf("kept srcs = %v; want %v", kept, want)
+	}
+	// The pre-existing caller tool is preserved; this shape adds none of its own.
+	if want := []string{":pre"}; !reflect.DeepEqual(gotTools, want) {
+		t.Errorf("tools = %v; want %v", gotTools, want)
+	}
+}
+
+// nil cc → the helper is a pure no-op (the offline-replay/no-codegen-context
+// standalone path), returning its inputs unchanged.
+func TestReanchorStandaloneBuildDirCopy_NilCC(t *testing.T) {
+	raw := "cd /b/staged && python3 tools/gen.py -I . data/x.txt"
+	srcs := []string{"data/x.txt", "staged/data/x.txt"}
+	tools := []string{":pre"}
+	cmd, kept, gotTools := reanchorStandaloneBuildDirCopy(raw, raw, srcs, []string{"gens/x.gen.c"}, tools, "", "/b", "elements/sbc", nil)
+	if cmd != raw || !reflect.DeepEqual(kept, srcs) || !reflect.DeepEqual(gotTools, tools) {
+		t.Errorf("expected no-op; got cmd=%q kept=%v tools=%v", cmd, kept, gotTools)
+	}
+}
+
 // No build-dir-copy cd → untouched (the corpus norm).
 func TestReanchorBuildDirCopyGenrule_NoOp(t *testing.T) {
 	raw := "protoc --cpp_out=gens x.proto"
