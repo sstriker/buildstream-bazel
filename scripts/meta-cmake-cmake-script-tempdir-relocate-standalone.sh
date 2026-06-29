@@ -100,7 +100,12 @@ fi
 
 ws="$work_dir/ws"
 mkdir -p "$ws"
-cp "$fixture"/tool.py "$ws/"
+# Stage BOTH declared srcs: the recovered tool genrule conservatively keeps
+# gen.cmake (the cmake -P script, from the edge's DEPENDS) in srcs even though the
+# lifted cmd runs python3 tool.py and never references it. Bazel requires every
+# declared src to exist, so stage gen.cmake too or the genrule fails on a missing
+# input.
+cp "$fixture"/gen.cmake "$fixture"/tool.py "$ws/"
 cp "$build" "$ws/BUILD.bazel"
 cat > "$ws/MODULE.bazel" <<'EOF'
 module(name = "tdrs", version = "0.0.0")
