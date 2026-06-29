@@ -125,7 +125,9 @@ if ! (cd "$ws" && "$BZL" --output_user_root="$bz_cache" ${META_BAZEL_STARTUP_ARG
     sed 's/^/   /' "$work_dir/bazel.log"
     exit 1
 fi
-gen_c=$(find "$ws" -name x.gen.c -path '*bazel-out*' 2>/dev/null | head -1)
+# -L: bazel-out / bazel-ws are symlinks into the output base; find won't traverse
+# a symlinked path without it (the #754 gate bug; sibling gates use find -L too).
+gen_c=$(find -L "$ws" -name x.gen.c -path '*bazel-out*' 2>/dev/null | head -1)
 if [ -z "$gen_c" ] || ! grep -qF 'return 7' "$gen_c"; then
     echo "FAIL: recovered gen.c content wrong (expected 'return 7')"
     [ -n "$gen_c" ] && sed 's/^/   /' "$gen_c"
