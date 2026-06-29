@@ -1821,13 +1821,17 @@ func crossBoundaryOutputRel(output, recordedBuildDir string, cc *codegenContext)
 }
 
 // readConfigureTimeOutput reads a recovered configure-time output's bytes from
-// the build tree that OWNS it: THIS build's host dir first, then ancestor (outer)
-// build dirs — the cross-boundary byte-read mirror of crossBoundaryOutputRel.
-// OuterBuildDirs double as host read-roots, exactly as bakeCmakeScriptGenrule
+// the build tree that OWNS it. An in-build output (crossBoundary false) reads
+// ONLY from THIS build's host dir — byte-for-byte the pre-existing behavior, so a
+// CONDITION-gated-false / offline-missing output that isn't on disk here NOTEs or
+// drops rather than falling through to a same-rel file in an unrelated outer dir.
+// A CROSS-BOUNDARY output (crossBoundary true — its rel was re-homed against an
+// ancestor build dir by crossBoundaryOutputRel) also tries the ancestor (outer)
+// build dirs, which double as host read-roots exactly as bakeCmakeScriptGenrule
 // reads a cross-boundary gen source. found=false when no owning root has the file.
-func readConfigureTimeOutput(rel, hostBuildDir string, cc *codegenContext) ([]byte, bool) {
+func readConfigureTimeOutput(rel, hostBuildDir string, cc *codegenContext, crossBoundary bool) ([]byte, bool) {
 	roots := []string{hostBuildDir}
-	if cc != nil {
+	if crossBoundary && cc != nil {
 		roots = append(roots, cc.OuterBuildDirs...)
 	}
 	return readFirstExisting(roots, rel)

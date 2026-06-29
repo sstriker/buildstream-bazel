@@ -222,6 +222,7 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 			continue
 		}
 		rel, ok := relativeIfInsideRelaxed(recordedBuildDir, output)
+		crossBoundary := false
 		if !ok {
 			// Output landed outside THIS build dir. CROSS-BOUNDARY shape:
 			// a NESTED lowering's configure_file wrote it UP into an
@@ -234,6 +235,7 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 			if rel == "" {
 				continue
 			}
+			crossBoundary = true
 		}
 		if seenRel[rel] {
 			// Trace can record duplicate calls when cmake
@@ -245,7 +247,7 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 
 		// Read from the build tree that owns rel: THIS build's host dir, or
 		// (cross-boundary) an ancestor outer build dir.
-		body, found := readConfigureTimeOutput(rel, hostBuildDir, cc)
+		body, found := readConfigureTimeOutput(rel, hostBuildDir, cc, crossBoundary)
 		if !found {
 			// Configured output not on disk. OFFLINE (no live build dir):
 			// the fixture stash may not include every output → silent

@@ -39,24 +39,27 @@ type fileGenerateOut struct {
 // paths and configure_file). ok=false when a relative output has no resolvable
 // scope (offline runs without codemodel directories) or the output lands inside
 // no known build dir (a genuine outside-the-tree dest) — the caller skips it.
-func fileGenerateOutputRel(outPath, callFile, recordedSrcDir, recordedBuildDir string, dirScopes []dirScope, cc *codegenContext) (string, bool) {
+// crossBoundary reports that rel was re-homed against an ancestor (outer) build
+// dir (the nested-wrote-UP shape), so the caller reads its bytes from the outer
+// tree; false for an ordinary in-build output (read only from this build dir).
+func fileGenerateOutputRel(outPath, callFile, recordedSrcDir, recordedBuildDir string, dirScopes []dirScope, cc *codegenContext) (rel string, crossBoundary, ok bool) {
 	if !filepath.IsAbs(outPath) {
 		if callFile == "" || recordedSrcDir == "" {
-			return "", false
+			return "", false, false
 		}
 		relDir, ok := dirScopeRel(callFile, recordedSrcDir, dirScopes)
 		if !ok {
-			return "", false
+			return "", false, false
 		}
 		outPath = filepath.Join(recordedBuildDir, relDir, outPath)
 	}
-	if rel, ok := relativeIfInsideRelaxed(recordedBuildDir, outPath); ok {
-		return rel, true
+	if r, inside := relativeIfInsideRelaxed(recordedBuildDir, outPath); inside {
+		return r, false, true
 	}
-	if rel := crossBoundaryOutputRel(outPath, recordedBuildDir, cc); rel != "" {
-		return rel, true
+	if r := crossBoundaryOutputRel(outPath, recordedBuildDir, cc); r != "" {
+		return r, true, true
 	}
-	return "", false
+	return "", false, false
 }
 
 // recoverFileGenerate walks the trace's file(GENERATE) events
@@ -159,7 +162,7 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 		}
 
 		for _, outPath := range outputs {
-			rel, ok := fileGenerateOutputRel(outPath, call.File, recordedSrcDir, recordedBuildDir, dirScopes, cc)
+			rel, crossBoundary, ok := fileGenerateOutputRel(outPath, call.File, recordedSrcDir, recordedBuildDir, dirScopes, cc)
 			if !ok {
 				continue
 			}
@@ -172,7 +175,7 @@ func recoverFileGenerate(calls []shadow.FileGenerateCall, hostSrcDir, recordedSr
 
 			// Read from the build tree that owns rel: THIS build's host dir,
 			// or (cross-boundary) an ancestor outer build dir.
-			body, found := readConfigureTimeOutput(rel, hostBuildDir, cc)
+			body, found := readConfigureTimeOutput(rel, hostBuildDir, cc, crossBoundary)
 			if !found {
 				// Output not on disk — for CONDITION-gated calls
 				// whose condition evaluated false, cmake skips the
