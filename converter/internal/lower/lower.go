@@ -2101,6 +2101,15 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 		decodedExecuteProcesses = append(append([]shadow.ExecuteProcessCall(nil), decodedExecuteProcesses...), liftOOT...)
 	}
 	executeProcesses, executeProcessRefusals := recoverExecuteProcess(decodedExecuteProcesses, hostSrc, cmakeSrc, opts.BuildDir, cmakeBuild, opts.LiftConfigureFile, rescueVars, forwardedStampVars, opts.SetAssignments, opts.ParentScopeForwards, cc)
+	// OUTPUT_DIR consumed-orphan codegen: a `cmake -P <script>` edge whose ninja
+	// OUTPUT is only a `.cmake` stamp, while the REAL generated sources are an
+	// undeclared file(WRITE) side effect into a `-D<VAR>=<dir>` directory a compile
+	// target consumes. Runs HERE (pre-walk, after execute_process recovery has
+	// claimed what it can) so the attributed orphans land in cc.OutToGenrule before
+	// the target walk's generated-source lowering checks outputClaimed — closing
+	// the Tier-1 refusal it would otherwise hit. No-op unless --recognize-codegen
+	// + --cmake-script-trace + a usable cmake; declines safely on any ambiguity.
+	cc.recoverOutputDirOrphanEdges(g, cmakeSrc, cmakeBuild)
 	// Expand the stamp-var set through verbatim set(X ${Y}) copies the
 	// driver recovered from a non-expanded trace (empty in the single-pass
 	// default), so a configure_file referencing a copy of a VCS-stamp var
