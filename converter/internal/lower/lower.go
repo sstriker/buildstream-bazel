@@ -1802,6 +1802,37 @@ func genSrcRelToOwningBuild(abs, nestedBuild string, outerBuilds []string) strin
 	return ""
 }
 
+// crossBoundaryOutputRel resolves a configure-time extractor's output (an
+// absolute recorded path that did NOT relativize against THIS build dir) to the
+// build-relative form the recovered target declares — the CROSS-BOUNDARY shape
+// where a NESTED lowering's configure_file / file(GENERATE) wrote its output UP
+// into an ANCESTOR (outer) build tree rather than its own nested build dir. The
+// rel is relative to the owning OuterBuildDir (genSrcRelToOwningBuild over
+// cc.OuterBuildDirs). Empty when the output is inside no known build dir (a
+// genuine outside-the-tree dest the caller drops) OR at the top level (no
+// OuterBuildDirs) — so non-nested recoveries are unchanged. This is the
+// configure-time extractor's parity with the genrule / standalone / bake paths,
+// which already re-home cross-boundary outputs the same way.
+func crossBoundaryOutputRel(output, recordedBuildDir string, cc *codegenContext) string {
+	if cc == nil {
+		return ""
+	}
+	return genSrcRelToOwningBuild(output, recordedBuildDir, cc.OuterBuildDirs)
+}
+
+// readConfigureTimeOutput reads a recovered configure-time output's bytes from
+// the build tree that OWNS it: THIS build's host dir first, then ancestor (outer)
+// build dirs — the cross-boundary byte-read mirror of crossBoundaryOutputRel.
+// OuterBuildDirs double as host read-roots, exactly as bakeCmakeScriptGenrule
+// reads a cross-boundary gen source. found=false when no owning root has the file.
+func readConfigureTimeOutput(rel, hostBuildDir string, cc *codegenContext) ([]byte, bool) {
+	roots := []string{hostBuildDir}
+	if cc != nil {
+		roots = append(roots, cc.OuterBuildDirs...)
+	}
+	return readFirstExisting(roots, rel)
+}
+
 // nestedIncludedRecipes is the gate: the recipe rels this build may recover —
 // include()s, target_sources causal recipes, and ancestor includes — relativized
 // to THIS build's dir so only recipes physically inside it survive. A UTILITY

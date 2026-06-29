@@ -120,6 +120,52 @@ func TestRecoverFileGenerate_InputForm_Lifted(t *testing.T) {
 // call's Content field. The lifted cmake_configure_file spec
 // carries the body inline via Content (Template empty) and
 // emits the same cmake-codegen-lifted tag.
+// TestRecoverFileGenerate_CrossBoundary pins G4 for file(GENERATE): a NESTED
+// file(GENERATE) whose OUTPUT landed UP in an ANCESTOR (outer) build tree is
+// recovered via cc.OuterBuildDirs (bytes read from the owning outer dir) rather
+// than silently dropped. Without OuterBuildDirs (top-level) it stays dropped.
+func TestRecoverFileGenerate_CrossBoundary(t *testing.T) {
+	hostSrc := t.TempDir()
+	nestedBuild := t.TempDir()
+	outerBuild := t.TempDir()
+	template := "#define BANNER \"hi\"\n"
+	if err := os.WriteFile(filepath.Join(hostSrc, "banner.h.in"), []byte(template), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(outerBuild, "gen"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outerBuild, "gen", "banner.h"), []byte(template), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls := []shadow.FileGenerateCall{{
+		File:     filepath.Join(hostSrc, "CMakeLists.txt"),
+		Output:   filepath.Join(outerBuild, "gen", "banner.h"), // up in the OUTER build tree
+		Input:    filepath.Join(hostSrc, "banner.h.in"),
+		HasInput: true,
+	}}
+
+	cc := newCodegenContext()
+	cc.OuterBuildDirs = []string{outerBuild}
+	out, err := recoverFileGenerate(calls, hostSrc, hostSrc, nestedBuild, nestedBuild, "", nil, true, nil, nil, nil, cc)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if len(out) != 1 || out[0].RelOutput != "gen/banner.h" {
+		t.Fatalf("cross-boundary file(GENERATE) not recovered: %+v", out)
+	}
+
+	// No OuterBuildDirs (the top-level / non-nested case) → still dropped.
+	cc2 := newCodegenContext()
+	out2, err := recoverFileGenerate(calls, hostSrc, hostSrc, nestedBuild, nestedBuild, "", nil, true, nil, nil, nil, cc2)
+	if err != nil {
+		t.Fatalf("recover (no outer): %v", err)
+	}
+	if len(out2) != 0 {
+		t.Errorf("without OuterBuildDirs the cross-boundary file(GENERATE) must drop (top-level unchanged); got %+v", out2)
+	}
+}
+
 func TestRecoverFileGenerate_ContentForm_Lifted(t *testing.T) {
 	// file(GENERATE CONTENT) is verbatim emit — the Content
 	// string and rendered bytes match by construction (cmake's

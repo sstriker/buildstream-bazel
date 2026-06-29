@@ -223,10 +223,17 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 		}
 		rel, ok := relativeIfInsideRelaxed(recordedBuildDir, output)
 		if !ok {
-			// Output landed outside the build dir — unusual
-			// (configure_file with absolute non-build dest).
-			// Drop silently; not a recovery target.
-			continue
+			// Output landed outside THIS build dir. CROSS-BOUNDARY shape:
+			// a NESTED lowering's configure_file wrote it UP into an
+			// ancestor (outer) build tree — recover it relative to the
+			// owning OuterBuildDir (parity with the genrule / standalone /
+			// bake paths). Empty → a genuine outside-the-tree dest, drop
+			// silently as before. At the top level (no OuterBuildDirs) this
+			// stays empty, so non-nested behavior is unchanged.
+			rel = crossBoundaryOutputRel(output, recordedBuildDir, cc)
+			if rel == "" {
+				continue
+			}
 		}
 		if seenRel[rel] {
 			// Trace can record duplicate calls when cmake
@@ -236,18 +243,17 @@ func recoverConfigureFilesFromCalls(calls []shadow.ConfigureFileCall, hostSrcDir
 		}
 		seenRel[rel] = true
 
-		body, err := os.ReadFile(filepath.Join(hostBuildDir, rel))
-		if err != nil {
+		// Read from the build tree that owns rel: THIS build's host dir, or
+		// (cross-boundary) an ancestor outer build dir.
+		body, found := readConfigureTimeOutput(rel, hostBuildDir, cc)
+		if !found {
 			// Configured output not on disk. OFFLINE (no live build dir):
 			// the fixture stash may not include every output → silent
 			// degradation to the pre-trace shape. But in a LIVE convert
 			// (hostBuildDir set) the configure ran and the output should
 			// exist; a read failure is an UNCERTAIN drop of a file a
 			// consumer needs, so NOTE it (an unreadable-configure-output
-			// todo) rather than silently doing nothing. Reason is a fixed
-			// string — never err.Error(), which carries the per-run
-			// /tmp/convert-element-build-XXXX path and would break the
-			// byte-identical-report contract.
+			// todo) rather than silently doing nothing.
 			if hostBuildDir != "" && cc.UnreadableConfigureOutputs != nil {
 				cc.UnreadableConfigureOutputs[rel] = "configure_file"
 			}
