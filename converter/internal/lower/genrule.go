@@ -1096,6 +1096,20 @@ func (cc *codegenContext) emitRecoveredGenrule(b *ninja.Build, cmd, cmakeSrc, bu
 	var copyTools []string
 	rewrittenCmd, srcs, copyTools = reanchorBuildDirCopyGenrule(cmd, rewrittenCmd, srcs, outs, cmakeSrc, buildDir, cc.BazelPackagePath, cc)
 	tools = append(tools, copyTools...)
+	// Parity with the standalone-custom-command path (lowerStandaloneCustomCommands):
+	// a per-target-recovered codegen command can carry the same ninja depfile
+	// plumbing / generated-source references / response-file -I roots, so apply the
+	// same rewrites here. Without them, a consumed tablegen-style command keeps its
+	// `-MF x.d` / `cmake -E cmake_transform_depfile <abs-cmake>` segment (a host
+	// cmake the executor lacks), a generated-source read stays a bare build-dir
+	// path unresolvable from the exec-root cwd, and a `@<dir>/x.args` response file
+	// points at a sibling-generated file that isn't a declared input. Each is a
+	// no-op when the cmd carries no such construct, so the common genrule is
+	// unchanged.
+	rewrittenCmd = dropNinjaDepfilePlumbing(rewrittenCmd, outs)
+	rewrittenCmd = rewriteGeneratedSrcRefs(rewrittenCmd, srcs, cc)
+	srcs = append(srcs, responseFileGeneratedHdrs(srcs, cc, cc.BazelPackagePath)...)
+	srcs = append(srcs, responseFileSourceHdrGroups(srcs, cc, cc.BazelPackagePath, cmakeSrc)...)
 	gen := ir.Target{
 		Name:         name,
 		Kind:         ir.KindGenrule,
