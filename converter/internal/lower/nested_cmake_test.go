@@ -203,6 +203,41 @@ func TestRecoverNestedCMakeCall_SinkAndCompanions(t *testing.T) {
 	}
 }
 
+// An in-place reconfigure into the SAME build dir (the nested -B equals the
+// outer build dir) is NOT a sub-build under it. DetectNestedConfigures' abs
+// arm declines it (relativeIfInside resolves an equal path to ("", true), and
+// its r == "" guard skips it); recoverNestedCMakeCall must agree — without the
+// rel == "." guard it would resolve the equal path to "." via
+// relativeIfInsideRelaxed and RECORD it into the sink, leaving a dangling
+// nested-cmake-not-lifted todo keyed on "." the worklist never staged. Both
+// gates must decline.
+func TestRecoverNestedCMakeCall_EqualBuildDirDeclines(t *testing.T) {
+	anc := execAnchors{hostBuildDir: "/b", recordedBuildDir: "/b", hostSrcDir: "/s", recordedSrcDir: "/s"}
+	cc := newCodegenContext()
+	// Reconfigure of the outer build dir itself (-B == the outer build dir).
+	inPlace := shadow.ExecuteProcessCall{
+		File: "/s/CMakeLists.txt", Line: 4,
+		Commands: [][]string{{"cmake", "-S", "/s", "-B", "/b"}},
+	}
+	ref := recoverNestedCMakeCall(inPlace, anc, cc)
+	if ref == nil {
+		t.Fatal("equal-build-dir reconfigure must refuse, not record")
+	}
+	if _, recorded := cc.NestedConfigureSink["."]; recorded {
+		t.Errorf("equal-build-dir must NOT land in the sink keyed on \".\": %+v", cc.NestedConfigureSink)
+	}
+	if len(cc.NestedConfigureSink) != 0 {
+		t.Errorf("equal-build-dir must record nothing; sink = %+v", cc.NestedConfigureSink)
+	}
+
+	// Detection ignores the same shape: an abs -B equal to the build dir is not
+	// a grandchild sub-build, so DetectNestedConfigures stages nothing for it.
+	trace := []byte(`{"args":["COMMAND","cmake","-S","/b/src","-B","/b"],"cmd":"execute_process","file":"/b/CMakeLists.txt","line":5}` + "\n")
+	if got := DetectNestedConfigures(trace, "/b/src", "/b"); len(got) != 0 {
+		t.Errorf("detection must ignore an equal-build-dir reconfigure; got %v", got)
+	}
+}
+
 func TestEmitNestedCMakeTodos(t *testing.T) {
 	c := todos.New()
 	sink := map[string]string{"subbuild": "/src/sub"}

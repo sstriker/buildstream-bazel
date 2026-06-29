@@ -333,12 +333,22 @@ func recoverNestedCMakeCall(call shadow.ExecuteProcessCall, anc execAnchors, cc 
 	if !anchored {
 		rel, anchored = relativeArgvBuildRel(shape.buildDir)
 	}
-	if !anchored || rel == "" {
+	// rel == "." is the EQUAL-build-dir case: an in-place reconfigure into the
+	// SAME build dir, not a sub-build under it. executeProcessAnchorOutput
+	// resolves an equal abs path to "." (relativeIfInsideRelaxed), but
+	// DetectNestedConfigures' detection arm declines it (relativeIfInside
+	// returns ("", true), and its r == "" guard skips it), so the driver
+	// worklist never stages a grandchild reply for ".". Recording it here would
+	// leave a dangling nested-cmake-not-lifted todo keyed on "." that detection
+	// deliberately ignored and that lowerNestedBuilds can't lift (the build dir
+	// is itself, not a stageable subtree). Decline it in lockstep with detection
+	// — the empty-rel guard already covers relativeIfInside's equal-dir "".
+	if !anchored || rel == "" || rel == "." {
 		return &executeProcessRefusal{
 			File:   call.File,
 			Line:   call.Line,
 			Bucket: BucketNestedCMake,
-			Reason: "nested cmake " + shape.kind + " build dir " + shape.buildDir + " is not under the outer build dir; the nested-build lift can't stage or re-run it",
+			Reason: "nested cmake " + shape.kind + " build dir " + shape.buildDir + " is not under the outer build dir (or is the outer build dir itself); the nested-build lift can't stage or re-run it",
 			Argv:   formatExecuteProcessArgv(call),
 		}
 	}

@@ -165,7 +165,22 @@ func partitionOutOfTreeExec(calls []shadow.ExecuteProcessCall, recordedSrcDir, r
 		recognized := outOfTreeExecRecognized(c, cc)
 		projectIO := outOfTreeExecTouchesProjectIO(c, recordedSrcDir, recordedBuildDir)
 		toolFromImports := outOfTreeToolFromImports(c, cc)
-		if (sig == signalBuildDirOther || projectIO) && (recognized || toolFromImports || outOfTreeBestEffort(cc)) {
+		// Gate-alignment: every codegen rung the routed lift would try
+		// (liftRecognizedExecuteProcessCodegen, liftArgvFileProducing, the
+		// unspecified-output lift) declines unless the call is
+		// argvCodegenEligibleRelaxed — a single COMMAND, no WORKING_DIRECTORY /
+		// Environment / Timeout / InputFile / OutputFile / ERROR_VARIABLE. So a
+		// RECOGNIZED-but-ineligible call (one carrying e.g. a WORKING_DIRECTORY
+		// or ERROR_VARIABLE) routed here can NEVER be lifted: it lands in
+		// recoverExecuteProcess as a refusal at best, and — for a dual-use
+		// driver bucketed as a probe — vanishes in the probe no-output skip,
+		// neither lifted nor surfaced as an out-of-tree todo. Requiring the
+		// lift's own eligibility here keeps the routing gate no broader than the
+		// lift's: an ineligible recognized call falls through to the NOTE path
+		// (a surfaced conversion-todo) instead of being silently lost.
+		if (sig == signalBuildDirOther || projectIO) &&
+			(recognized || toolFromImports || outOfTreeBestEffort(cc)) &&
+			argvCodegenEligibleRelaxed(c) {
 			// A build-dir codegen call the codemodel didn't attribute sources to,
 			// or any out-of-tree call operating on the project's own I/O.
 			// RECOGNIZED → recoverExecuteProcess lifts it via the recognizer (the
