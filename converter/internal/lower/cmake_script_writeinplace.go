@@ -54,12 +54,14 @@ func (cc *codegenContext) recoverWriteInPlaceTool(b *ninja.Build, calls []shadow
 	// Substitute the traced tool argv for `cmake -P <script>` and reuse the shared
 	// emission (a recognized tool lowers to its native rule — relocation irrelevant;
 	// an unrecognized one to a genrule whose cwd output we relocate below).
-	if _, _, err := cc.emitRecoveredGenrule(b, strings.Join(toolArgv, " "), cmakeSrc, buildDir, relOut, g, nil); err != nil {
+	_, genName, err := cc.emitRecoveredGenrule(b, strings.Join(toolArgv, " "), cmakeSrc, buildDir, relOut, g, nil)
+	if err != nil {
 		return "", false
 	}
 	if !cc.outputClaimed(relOut) {
 		return "", false
 	}
+	cc.dropSubstitutedWrapperScriptSrc(genName)
 	if _, isGenrule := cc.OutToGenrule[relOut]; isGenrule {
 		appendTempDirRelocations(cc, b, buildDir, declared, relocate, toolWorkdir)
 	}

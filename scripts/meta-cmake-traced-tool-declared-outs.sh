@@ -65,6 +65,11 @@ grep -qF '"greeting.cpp"' "$b" || fail "genrule should declare greeting.cpp as a
 grep -qF -- '--out-dir=$(RULEDIR)' "$b" || fail "the output dir should be rewritten to \$(RULEDIR) (shared anchoring)" "$b"
 grep -qF '"greeting.def"' "$b" || fail "greeting.def should be a genrule src" "$b"
 grep -qF '"gen.sh"' "$b" || fail "gen.sh should be a genrule src" "$b"
+# The recovery SUBSTITUTED the real tool for `cmake -P gen_wrap.cmake`, so the
+# wrapper script (a DEPENDS input of the custom command, hence in the ninja edge
+# inputs genruleSrcs derives from) must NOT linger as a spurious genrule src —
+# the substituted tool never reads it. (G10.)
+grep -qF 'gen_wrap.cmake' "$b" && fail "the substituted-away cmake -P wrapper script must not remain a genrule src" "$b"
 # The genrule runs the tool directly — its cmd must NOT shell out to cmake -P.
 # (Match the cmd line specifically; the carried CMakeLists comment legitimately
 # mentions "cmake -P".)

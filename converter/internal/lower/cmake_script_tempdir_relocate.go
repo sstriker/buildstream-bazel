@@ -255,12 +255,14 @@ func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []sha
 	// irrelevant). emitRecoveredGenrule declares the edge's outs and registers
 	// relOut (OutToGenrule on the genrule fallback, OutToNativeConsumerDep on a
 	// recognizer match).
-	if _, _, err := cc.emitRecoveredGenrule(b, strings.Join(toolArgv, " "), cmakeSrc, buildDir, relOut, g, nil); err != nil {
+	_, genName, err := cc.emitRecoveredGenrule(b, strings.Join(toolArgv, " "), cmakeSrc, buildDir, relOut, g, nil)
+	if err != nil {
 		return "", false
 	}
 	if !cc.outputClaimed(relOut) {
 		return "", false
 	}
+	cc.dropSubstitutedWrapperScriptSrc(genName)
 	// Genrule fallback (not recognized): the tool ran with WORKING_DIRECTORY
 	// stripped, so it writes its outputs into the genrule's cwd under the SAME
 	// names they had in the tempdir; append a relocation of each to $(RULEDIR)/
