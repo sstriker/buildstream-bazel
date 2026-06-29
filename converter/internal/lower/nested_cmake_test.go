@@ -629,6 +629,93 @@ func TestApplyNestedProducerReHome_CCHashLift(t *testing.T) {
 	}
 }
 
+// TestApplyNestedProducerSpecReHome_ChainBareWiring pins G6 parts [11]+[12]:
+// a nested multi-edge codegen chain where stage B both CONSUMES stage A's
+// re-homed intermediate by a BARE token (not $(location …)) and creates its
+// own bare output DIRECTORY (`mkdir -p gen`, plus a bare outdir operand). The
+// re-home moves int.tmp -> codegen-build/int.tmp and gen/type_a.c ->
+// codegen-build/gen/type_a.c; both the bare intermediate ref and the bare
+// outdir must be rewired, while an already-$(RULEDIR)-anchored output path
+// follows the move (rewriteRuledirDir) without being double-anchored.
+func TestApplyNestedProducerSpecReHome_ChainBareWiring(t *testing.T) {
+	stageB := ir.Target{
+		Name:        "gen_type_a",
+		Kind:        ir.KindGenrule,
+		GenruleOuts: []string{"gen/type_a.c"},
+		Srcs:        []string{"int.tmp"},
+		// stage B: `mkdir -p gen` (bare outdir it creates) && run the tool on
+		// the bare intermediate, writing both into a bare `gen` operand and an
+		// already-$(RULEDIR)-anchored output path.
+		GenruleCmd: "mkdir -p gen && python3 codegen/stageB.py int.tmp gen $(RULEDIR)/gen/type_a.c",
+	}
+	rehome := map[string]string{
+		"int.tmp":      "codegen-build/int.tmp",
+		"gen/type_a.c": "codegen-build/gen/type_a.c",
+	}
+	applyNestedProducerReHome(&stageB, rehome, "codegen-build")
+
+	// [11] the bare intermediate ref became a $(location …) at the re-homed rel.
+	if strings.Contains(stageB.GenruleCmd, " int.tmp ") {
+		t.Errorf("bare int.tmp survived in cmd: %q", stageB.GenruleCmd)
+	}
+	if !strings.Contains(stageB.GenruleCmd, "$(location codegen-build/int.tmp)") {
+		t.Errorf("intermediate not rewired to $(location codegen-build/int.tmp): %q", stageB.GenruleCmd)
+	}
+	// The declared src label re-pointed too (else the genrule has a dangling input).
+	if stageB.Srcs[0] != "codegen-build/int.tmp" {
+		t.Errorf("src = %q, want codegen-build/int.tmp", stageB.Srcs[0])
+	}
+	// [12] both dir forms anchor under $(RULEDIR)/codegen-build/gen.
+	if !strings.Contains(stageB.GenruleCmd, "mkdir -p $(RULEDIR)/codegen-build/gen ") {
+		t.Errorf("bare `mkdir -p gen` not $(RULEDIR)-anchored to the re-homed dir: %q", stageB.GenruleCmd)
+	}
+	if !strings.Contains(stageB.GenruleCmd, " $(RULEDIR)/codegen-build/gen ") {
+		t.Errorf("bare outdir operand `gen` not $(RULEDIR)-anchored: %q", stageB.GenruleCmd)
+	}
+	// The already-anchored output path followed the move (rewriteRuledirDir),
+	// not double-anchored.
+	if !strings.Contains(stageB.GenruleCmd, "$(RULEDIR)/codegen-build/gen/type_a.c") {
+		t.Errorf("anchored output path did not follow the re-home: %q", stageB.GenruleCmd)
+	}
+	if strings.Contains(stageB.GenruleCmd, "$(RULEDIR)/$(RULEDIR)") {
+		t.Errorf("output dir double-anchored: %q", stageB.GenruleCmd)
+	}
+	// The declared out moved under <buildRel>/, and the rule renamed.
+	if stageB.GenruleOuts[0] != "codegen-build/gen/type_a.c" {
+		t.Errorf("out = %q, want codegen-build/gen/type_a.c", stageB.GenruleOuts[0])
+	}
+	if stageB.Name != "codegen-build_gen_type_a" {
+		t.Errorf("name = %q, want chain-composed codegen-build_gen_type_a", stageB.Name)
+	}
+}
+
+// TestApplyNestedProducerSpecReHome_NoChainNoChurn guards the tight-firing
+// contract: a producer that neither consumes a re-homed intermediate nor moves
+// an output dir (only its own out is re-homed in place) must see NO bare-token
+// or bare-dir rewriting — a bare word that merely matches an unrelated re-homed
+// src key but isn't this rule's input is left alone.
+func TestApplyNestedProducerSpecReHome_NoChainNoChurn(t *testing.T) {
+	// Re-home maps a same-dir out (no dir move) and a foreign intermediate this
+	// rule does NOT list in Srcs.
+	g := ir.Target{
+		Name:        "gen_plain",
+		Kind:        ir.KindGenrule,
+		GenruleOuts: []string{"out.c"},
+		GenruleCmd:  "python3 tool.py $(location in.in) $(RULEDIR)/out.c",
+	}
+	rehome := map[string]string{
+		"out.c":   "codegen-build/out.c",   // same dir ("") → no dir rewrite
+		"int.tmp": "codegen-build/int.tmp", // foreign; not in this rule's Srcs
+	}
+	applyNestedProducerReHome(&g, rehome, "codegen-build")
+	if g.GenruleCmd != "python3 tool.py $(location in.in) $(RULEDIR)/out.c" {
+		t.Errorf("cmd churned for a non-chain re-home: %q", g.GenruleCmd)
+	}
+	if g.GenruleOuts[0] != "codegen-build/out.c" {
+		t.Errorf("out = %q, want codegen-build/out.c", g.GenruleOuts[0])
+	}
+}
+
 // TestNestedBuildFullyRecovered: a NOT-lifted nested build is "fully recovered"
 // (todo redundant) only when it's header-only AND every header was claimed; a
 // compiled artifact or an unclaimed header keeps it not-recovered (todo stands).
