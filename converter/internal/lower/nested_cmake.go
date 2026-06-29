@@ -866,6 +866,40 @@ func rewriteRuledirDir(cmd, oldDir, newDir string) string {
 	return b.String()
 }
 
+// anchorBareReHomedDir rewrites a BARE in-nested output-dir operand (an oldDir
+// token NOT already prefixed by `$(RULEDIR)/`) to `$(RULEDIR)/<newDir>` at a
+// path-token boundary — the stage-creates-its-own-outdir shape (`mkdir -p gen`,
+// a bare `--out gen` operand) of a re-homed intermediate. Companion to
+// rewriteRuledirDir: that one re-anchors an ALREADY-`$(RULEDIR)`-prefixed dir
+// across the move; this one anchors the un-prefixed dir so it lands under
+// bazel-out/<buildRel>/… instead of the exec-root cwd. Whole-token only: the
+// byte before oldDir must be start, space, tab, or '=' (so it isn't a substring
+// of a longer path and an already-`$(RULEDIR)/`-prefixed occurrence — preceded
+// by '/' — is left for rewriteRuledirDir), and the byte after must be end,
+// space, tab, or '/'.
+func anchorBareReHomedDir(cmd, oldDir, newDir string) string {
+	if oldDir == "" || oldDir == "." {
+		return cmd
+	}
+	repl := "$(RULEDIR)/" + newDir
+	var b strings.Builder
+	for i := 0; i < len(cmd); {
+		if strings.HasPrefix(cmd[i:], oldDir) {
+			leftOK := i == 0 || cmd[i-1] == ' ' || cmd[i-1] == '\t' || cmd[i-1] == '='
+			j := i + len(oldDir)
+			rightOK := j == len(cmd) || cmd[j] == ' ' || cmd[j] == '\t' || cmd[j] == '/'
+			if leftOK && rightOK {
+				b.WriteString(repl)
+				i = j
+				continue
+			}
+		}
+		b.WriteByte(cmd[i])
+		i++
+	}
+	return b.String()
+}
+
 // applyNestedProducerReHome re-anchors one merged target against the
 // re-homes: a producer rule's outs gain the <buildRel>/ prefix and the
 // rule renames (two nested builds recovering the same-named rule must
@@ -931,9 +965,14 @@ func applyNestedProducerSpecReHome(t *ir.Target, rehome map[string]string, nameP
 			// $(RULEDIR)/<dir> (a tool that takes an outdir arg, e.g. the recipe
 			// gen_src recovery) must follow the re-home: the declared out moved
 			// gen/… -> <buildRel>/gen/…, so the cmd's $(RULEDIR)/gen must become
-			// $(RULEDIR)/<buildRel>/gen or it writes to the wrong place.
+			// $(RULEDIR)/<buildRel>/gen or it writes to the wrong place. The same
+			// move also has to fix a BARE in-nested output-dir operand the stage
+			// itself creates (a `mkdir -p gen` or bare outdir arg): un-anchored it
+			// writes under the exec-root cwd, not bazel-out/<buildRel>/… — anchor
+			// it to $(RULEDIR)/<newDir> (the re-homed dir) too. [G6 part 12]
 			if od, nd := slashDir(out), slashDir(newRel); od != nd {
 				t.GenruleCmd = rewriteRuledirDir(t.GenruleCmd, od, nd)
+				t.GenruleCmd = anchorBareReHomedDir(t.GenruleCmd, od, nd)
 			}
 			t.GenruleOuts[i] = newRel
 			renamed = true
@@ -946,11 +985,17 @@ func applyNestedProducerSpecReHome(t *ir.Target, rehome map[string]string, nameP
 	// writer-index cp lift declares a produced build-dir source in
 	// Srcs and bakes the same rel into its $(location …) token) —
 	// re-point both, or the merged rule references a label the
-	// outer package doesn't have.
+	// outer package doesn't have. The consumer may name the
+	// intermediate EITHER as $(location <old>) OR as a BARE path
+	// token (the multi-edge chain shape: stage B's cmd spells the
+	// stage-A intermediate by its bare old rel) — rewrite both forms
+	// to the re-homed label, or stage B reads a path Bazel never
+	// produced. [G6 part 11]
 	for i, src := range t.Srcs {
 		if newRel, ok := rehome[src]; ok {
 			t.Srcs[i] = newRel
 			t.GenruleCmd = strings.ReplaceAll(t.GenruleCmd, "$(location "+src+")", "$(location "+newRel+")")
+			t.GenruleCmd = replaceBareToken(t.GenruleCmd, src, "$(location "+newRel+")")
 		}
 	}
 	if renamed {
