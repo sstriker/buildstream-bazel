@@ -783,6 +783,29 @@ func producerOuts(t *ir.Target) []string {
 		// (and any future producer-outputs consumer) without a
 		// per-rule special case — the whole point of the substrate.
 		return nativeRuleOuts(t.NativeRule)
+	case ir.KindCCEmbed:
+		// The cc_embed lift (vtkEncodeString codegen) produces its
+		// .h + .cxx via CCEmbed.OutHeader / OutSource — equally
+		// nested-build-relative, like the configure_file Out. Mirror
+		// coveredOuts' accessors; the rename branch in
+		// applyNestedProducerReHome re-homes these (matched pair).
+		if t.CCEmbed != nil {
+			var outs []string
+			if t.CCEmbed.OutHeader != "" {
+				outs = append(outs, t.CCEmbed.OutHeader)
+			}
+			if t.CCEmbed.OutSource != "" {
+				outs = append(outs, t.CCEmbed.OutSource)
+			}
+			return outs
+		}
+	case ir.KindCCHash:
+		// The cc_hash lift (vtkHashSource codegen) produces its header
+		// via CCHash.OutHeader. Matched pair with the rename branch in
+		// applyNestedProducerReHome.
+		if t.CCHash != nil && t.CCHash.OutHeader != "" {
+			return []string{t.CCHash.OutHeader}
+		}
 	}
 	return nil
 }
@@ -847,52 +870,8 @@ func applyNestedProducerReHome(t *ir.Target, rehome map[string]string, namePrefi
 		applyNestedNativeRuleReHome(t, rehome, namePrefix)
 		return
 	}
-	if t.Kind == ir.KindWriteFile || t.Kind == ir.KindGenrule ||
-		(t.Kind == ir.KindCMakeConfigureFile && t.CMakeConfigureFile != nil) {
-		renamed := false
-		if newRel, ok := rehome[t.WriteFileOut]; ok {
-			t.WriteFileOut = newRel
-			renamed = true
-		}
-		for i, out := range t.GenruleOuts {
-			if newRel, ok := rehome[out]; ok {
-				// A recovered genrule whose cmd anchored its output DIRECTORY to
-				// $(RULEDIR)/<dir> (a tool that takes an outdir arg, e.g. the recipe
-				// gen_src recovery) must follow the re-home: the declared out moved
-				// gen/… -> <buildRel>/gen/…, so the cmd's $(RULEDIR)/gen must become
-				// $(RULEDIR)/<buildRel>/gen or it writes to the wrong place.
-				if od, nd := slashDir(out), slashDir(newRel); od != nd {
-					t.GenruleCmd = rewriteRuledirDir(t.GenruleCmd, od, nd)
-				}
-				t.GenruleOuts[i] = newRel
-				renamed = true
-			}
-		}
-		if t.Kind == ir.KindCMakeConfigureFile {
-			if newRel, ok := rehome[t.CMakeConfigureFile.Out]; ok {
-				// Copy-on-write: the spec pointer may be shared; the
-				// re-homed rule must not mutate the nested package's
-				// original.
-				spec := *t.CMakeConfigureFile
-				spec.Out = newRel
-				t.CMakeConfigureFile = &spec
-				renamed = true
-			}
-		}
-		// A producer can CONSUME another producer's re-homed out (the
-		// writer-index cp lift declares a produced build-dir source in
-		// Srcs and bakes the same rel into its $(location …) token) —
-		// re-point both, or the merged rule references a label the
-		// outer package doesn't have.
-		for i, src := range t.Srcs {
-			if newRel, ok := rehome[src]; ok {
-				t.Srcs[i] = newRel
-				t.GenruleCmd = strings.ReplaceAll(t.GenruleCmd, "$(location "+src+")", "$(location "+newRel+")")
-			}
-		}
-		if renamed {
-			t.Name = nestedProducerName(t, namePrefix)
-		}
+	if isNestedProducerKind(t) {
+		applyNestedProducerSpecReHome(t, rehome, namePrefix)
 		return
 	}
 	for i, s := range t.Srcs {
@@ -905,6 +884,106 @@ func applyNestedProducerReHome(t *ir.Target, rehome map[string]string, namePrefi
 			t.Hdrs[i] = newRel
 		}
 	}
+}
+
+// isNestedProducerKind reports whether t is a producer kind whose declared
+// outputs the spec-rename branch of the nested merge re-home re-anchors —
+// the matched pair to producerOuts (any kind producerOuts surfaces but this
+// predicate omits would map its out without ever applying it, materializing
+// the file at the outer package root under a collidable name).
+func isNestedProducerKind(t *ir.Target) bool {
+	switch t.Kind {
+	case ir.KindWriteFile, ir.KindGenrule:
+		return true
+	case ir.KindCMakeConfigureFile:
+		return t.CMakeConfigureFile != nil
+	case ir.KindCCEmbed:
+		return t.CCEmbed != nil
+	case ir.KindCCHash:
+		return t.CCHash != nil
+	}
+	return false
+}
+
+// applyNestedProducerSpecReHome re-anchors one producer target's declared
+// outputs under <buildRel>/ (per-kind, copy-on-write where the spec pointer
+// may be shared), re-points any producer-consumed re-homed srcs, and renames
+// the rule when anything moved. The caller has confirmed isNestedProducerKind.
+func applyNestedProducerSpecReHome(t *ir.Target, rehome map[string]string, namePrefix string) {
+	renamed := false
+	if newRel, ok := rehome[t.WriteFileOut]; ok {
+		t.WriteFileOut = newRel
+		renamed = true
+	}
+	for i, out := range t.GenruleOuts {
+		if newRel, ok := rehome[out]; ok {
+			// A recovered genrule whose cmd anchored its output DIRECTORY to
+			// $(RULEDIR)/<dir> (a tool that takes an outdir arg, e.g. the recipe
+			// gen_src recovery) must follow the re-home: the declared out moved
+			// gen/… -> <buildRel>/gen/…, so the cmd's $(RULEDIR)/gen must become
+			// $(RULEDIR)/<buildRel>/gen or it writes to the wrong place.
+			if od, nd := slashDir(out), slashDir(newRel); od != nd {
+				t.GenruleCmd = rewriteRuledirDir(t.GenruleCmd, od, nd)
+			}
+			t.GenruleOuts[i] = newRel
+			renamed = true
+		}
+	}
+	if reHomeNestedSpecOuts(t, rehome) {
+		renamed = true
+	}
+	// A producer can CONSUME another producer's re-homed out (the
+	// writer-index cp lift declares a produced build-dir source in
+	// Srcs and bakes the same rel into its $(location …) token) —
+	// re-point both, or the merged rule references a label the
+	// outer package doesn't have.
+	for i, src := range t.Srcs {
+		if newRel, ok := rehome[src]; ok {
+			t.Srcs[i] = newRel
+			t.GenruleCmd = strings.ReplaceAll(t.GenruleCmd, "$(location "+src+")", "$(location "+newRel+")")
+		}
+	}
+	if renamed {
+		t.Name = nestedProducerName(t, namePrefix)
+	}
+}
+
+// reHomeNestedSpecOuts re-anchors the predeclared outputs carried on a
+// producer's typed spec (configure_file Out, cc_embed OutHeader/OutSource,
+// cc_hash OutHeader) — copy-on-write so the nested package's original spec
+// isn't mutated. Reports whether any output moved.
+func reHomeNestedSpecOuts(t *ir.Target, rehome map[string]string) bool {
+	switch t.Kind {
+	case ir.KindCMakeConfigureFile:
+		if newRel, ok := rehome[t.CMakeConfigureFile.Out]; ok {
+			spec := *t.CMakeConfigureFile
+			spec.Out = newRel
+			t.CMakeConfigureFile = &spec
+			return true
+		}
+	case ir.KindCCEmbed:
+		hdr, hok := rehome[t.CCEmbed.OutHeader]
+		src, sok := rehome[t.CCEmbed.OutSource]
+		if hok || sok {
+			spec := *t.CCEmbed
+			if hok {
+				spec.OutHeader = hdr
+			}
+			if sok {
+				spec.OutSource = src
+			}
+			t.CCEmbed = &spec
+			return true
+		}
+	case ir.KindCCHash:
+		if newRel, ok := rehome[t.CCHash.OutHeader]; ok {
+			spec := *t.CCHash
+			spec.OutHeader = newRel
+			t.CCHash = &spec
+			return true
+		}
+	}
+	return false
 }
 
 // applyNestedNativeRuleReHome re-anchors a KindNativeRule producer's
