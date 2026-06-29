@@ -399,6 +399,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-module-library.sh \
 	scripts/meta-cmake-shared-soversion.sh \
 	scripts/meta-cmake-build-dir-source-bake.sh \
+	scripts/meta-cmake-build-tree-recipe-file-copy.sh \
 	scripts/meta-cmake-file-download-http.sh \
 	scripts/meta-cmake-cc-hash.sh \
 	scripts/meta-cmake-todos-coverage.sh \

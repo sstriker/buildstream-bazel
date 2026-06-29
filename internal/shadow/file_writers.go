@@ -26,10 +26,40 @@ type FileWriterCall struct {
 }
 
 // ExtractFileWriterCalls walks an EXPANDED trace and returns the file()
-// writer calls from the project's own tree (cmake's modules write
-// plenty of bookkeeping; sourceRoot gating mirrors the sibling
-// extractors). Unmodeled variants decline per call (a declined writer
-// just leaves the on-disk bake as that path's recovery):
+// writer calls that are part of the project's intent. Two buckets, mirroring
+// the projectIO-rescue split execute_process gained in PR #752
+// (converter/internal/lower/out_of_tree_execute_process.go:
+// partitionOutOfTreeExec / outOfTreeExecTouchesProjectIO) and the
+// build-tree-aware inProjectScope gate the sibling output-bearing extractors
+// (classifyConfigureFile / classifyFileGenerate / classifyFileRename) use:
+//
+//	[13] IN-PROJECT (source tree OR build tree): a writer ISSUED from the
+//	     project — a CMakeLists, or a generated+include()d recipe `.cmake`
+//	     under the build dir (excluding cmake's try_compile scratch under
+//	     <build>/CMakeFiles). A build-tree-issued file(COPY) recipe is real
+//	     project intent; gating it on the strict source-tree check alone (the
+//	     prior behavior) dropped it to a frozen on-disk bake instead of a
+//	     regenerating cp-genrule — the same build-tree gap inProjectScope
+//	     closed for configure_file.
+//	[14] OUT-OF-TREE + projectIO RESCUE: a writer ISSUED from a cmake module
+//	     on CMAKE_MODULE_PATH / a find_package prefix tree (outside both the
+//	     source and build trees) but that TOUCHES the project's own I/O — it
+//	     writes a build-dir OUTPUT or copies an in-source-tree SOURCE. Whose
+//	     DATA the writer processes is project intent even when the helper that
+//	     ISSUED it lives out of tree, exactly like an out-of-tree
+//	     execute_process driving a tool on the project's own files. Such a
+//	     writer is rescued (so an out-of-tree-module file(WRITE) of a
+//	     project header lifts) rather than silently dropped. A purely
+//	     out-of-tree writer with no project I/O (a module's own bookkeeping)
+//	     stays dropped — the historical behavior for everything that reached
+//	     the strict gate.
+//
+// buildRoot == "" falls back to the source-tree-only gate (no build-tree or
+// projectIO rescue), preserving the prior behavior for callers — the
+// non-expanded warm pass and script re-traces — that don't supply one.
+//
+// Unmodeled variants decline per call (a declined writer just leaves the
+// on-disk bake as that path's recovery):
 //   - file(COPY … FILES_MATCHING/PATTERN/REGEX …) filters contents;
 //   - file(TOUCH_NOCREATE) creates nothing;
 //   - file(DOWNLOAD <url>) with no destination file.
@@ -38,23 +68,90 @@ type FileWriterCall struct {
 // memoized; the per-event walk is linear and re-runs per lower pass).
 // Folding it into DecodeTrace's single dispatched walk is the known
 // next step if trace-walk count ever shows up in profiles.
-func ExtractFileWriterCalls(traceRaw []byte, sourceRoot string) []FileWriterCall {
+func ExtractFileWriterCalls(traceRaw []byte, sourceRoot, buildRoot string) []FileWriterCall {
 	if sourceRoot != "" {
 		sourceRoot = filepath.Clean(sourceRoot)
+	}
+	if buildRoot != "" {
+		buildRoot = filepath.Clean(buildRoot)
 	}
 	var out []FileWriterCall
 	for _, ev := range ParseTrace(traceRaw) {
 		if !strings.EqualFold(ev.Cmd, "file") || len(ev.Args) < 2 {
 			continue
 		}
-		if sourceRoot != "" && !inSourceTree(ev.File, sourceRoot) {
+		call, ok := classifyFileWriter(ev)
+		if !ok {
 			continue
 		}
-		if call, ok := classifyFileWriter(ev); ok {
-			out = append(out, call)
+		if sourceRoot != "" && !keepFileWriterCall(ev.File, call, sourceRoot, buildRoot) {
+			continue
 		}
+		out = append(out, call)
 	}
 	return out
+}
+
+// keepFileWriterCall decides whether one classified writer is project intent.
+// [13] in-project (source OR build tree, less try_compile scratch) — the same
+// inProjectScope gate the sibling output-bearing extractors use; OR [14] an
+// out-of-tree writer that touches the project's own I/O (projectIO rescue,
+// mirroring outOfTreeExecTouchesProjectIO). See ExtractFileWriterCalls.
+func keepFileWriterCall(file string, call FileWriterCall, sourceRoot, buildRoot string) bool {
+	if inProjectScope(file, sourceRoot, buildRoot) {
+		return true
+	}
+	// The out-of-tree projectIO rescue ([14]) is active only when a build root
+	// is supplied — the main converter path. buildRoot == "" keeps the strict
+	// source-tree-only gate for callers (the non-expanded warm pass, script
+	// re-traces) that intentionally don't pass one.
+	if buildRoot == "" {
+		return false
+	}
+	return writerTouchesProjectIO(call, sourceRoot, buildRoot)
+}
+
+// writerTouchesProjectIO reports whether a writer's outputs or copy sources
+// land under the project's source tree or build dir — the location-independent
+// signal that an out-of-tree-issued writer is the PROJECT's own I/O (it writes
+// a build-dir output, or copies an in-source-tree file). Mirrors lower's
+// outOfTreeExecTouchesProjectIO: the issuing site says WHERE the call was
+// written; the I/O says WHOSE data it processes. The downstream writer index
+// (build_dir_writer_lift.go) only keeps build-dir outputs and verifies the
+// composed bytes against the on-disk file before emitting, so a rescued
+// out-of-tree writer that doesn't actually back a consumed build-dir path is
+// inert — the rescue only ever UPGRADES a path that would otherwise bake.
+//
+// A path under <build>/CMakeFiles is cmake's own try_compile / compiler-id
+// scratch (never a project build input), so it does NOT count as project I/O —
+// the same exclusion inProjectScope applies to a scratch-ISSUED call (and
+// hasScratchSegment applies to out-of-tree execute_process operands).
+func writerTouchesProjectIO(call FileWriterCall, sourceRoot, buildRoot string) bool {
+	for _, p := range call.Outputs {
+		if pathIsProjectIO(p, sourceRoot, buildRoot) {
+			return true
+		}
+	}
+	for _, p := range call.Sources {
+		if pathIsProjectIO(p, sourceRoot, buildRoot) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathIsProjectIO reports whether the absolute path p lies inside the source
+// tree or build dir but NOT in cmake's <build>/CMakeFiles scratch. The
+// whole-component prefix match reuses inSourceTree (the same check applied to
+// a call's issuing file); an empty root never matches.
+func pathIsProjectIO(p, sourceRoot, buildRoot string) bool {
+	if inSourceTree(p, sourceRoot) {
+		return true
+	}
+	if inSourceTree(p, buildRoot) {
+		return !strings.Contains(p[len(buildRoot):], "/CMakeFiles/")
+	}
+	return false
 }
 
 // classifyFileWriter parses one file() event into a writer call.

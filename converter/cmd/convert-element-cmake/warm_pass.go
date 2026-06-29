@@ -187,7 +187,7 @@ func readStampSets(plainTrace, sourceRoot string, wr *warmRecovery) bool {
 	// the re-lower can wire it to live workspace-status. Harvested
 	// independently of the set-copies (a project may have one without
 	// the other).
-	writers := shadow.ExtractFileWriterCalls(raw, sourceRoot)
+	writers := shadow.ExtractFileWriterCalls(raw, sourceRoot, "")
 	wr.fileWriterTemplates = writers
 	if len(sets) == 0 && len(forwards) == 0 && len(writers) == 0 {
 		return false

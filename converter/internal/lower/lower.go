@@ -1357,7 +1357,13 @@ func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) 
 		decodedTargetSourcesCalls = shadow.ExtractTargetSourcesCalls(opts.TraceRaw)
 		decodedAddCustomTargets = decoded.AddCustomTargets
 		decodedAddDependencies = decoded.AddDependencies
-		decodedFileWriters = shadow.ExtractFileWriterCalls(opts.TraceRaw, cmakeSrcForTrace)
+		// Pass the recorded build root (same frame as the trace's event files) so
+		// a build-tree-issued file(COPY/WRITE) recipe — and an out-of-tree-module
+		// writer that touches the project's own I/O — is recovered as a
+		// regenerating producer, not dropped to a frozen on-disk bake. Mirrors
+		// the build-tree-aware DecodeWithBuild gate the sibling output-bearing
+		// extractors already use.
+		decodedFileWriters = shadow.ExtractFileWriterCalls(opts.TraceRaw, cmakeSrcForTrace, r.Codemodel.Paths.Build)
 		// Phase 1 task 3 extension — HEADER_FILE_ONLY routing.
 		// Build the per-source path lookup once so the per-target
 		// source walk can reclassify .h-only sources from srcs
