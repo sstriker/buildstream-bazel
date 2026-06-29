@@ -1,9 +1,36 @@
 package lower
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 )
+
+// TestPrecreateOutputDirOrphanDirs pins the file-vs-dir heuristic the tool-driven
+// extract needs: the OUTPUT_DIR (`-DOUTPUT_DIR=<dir>`, no extension) is created as
+// a directory so a tool the script runs into it doesn't fail on a missing dir,
+// while a FILE cache arg (`-DMANIFEST=<...>.cmake`) must NOT be MkdirAll'd into a
+// directory (that would block the script's file(WRITE) of the manifest).
+func TestPrecreateOutputDirOrphanDirs(t *testing.T) {
+	buildDir := t.TempDir()
+	cc := newCodegenContext()
+	b := &ninja.Build{Outputs: []string{filepath.Join(buildDir, "gen", "manifest.cmake")}}
+	dArgs := []string{
+		"-DOUTPUT_DIR=" + filepath.Join(buildDir, "gen"),
+		"-DMANIFEST=" + filepath.Join(buildDir, "gen", "manifest.cmake"),
+	}
+	cc.precreateOutputDirOrphanDirs(b, dArgs, buildDir, buildDir)
+
+	if st, err := os.Stat(filepath.Join(buildDir, "gen")); err != nil || !st.IsDir() {
+		t.Errorf("OUTPUT_DIR gen/ should be created as a dir (err=%v)", err)
+	}
+	if st, err := os.Stat(filepath.Join(buildDir, "gen", "manifest.cmake")); err == nil && st.IsDir() {
+		t.Errorf("the -DMANIFEST file path must NOT be created as a directory")
+	}
+}
 
 // TestUnclaimedConsumedOrphans pins the demand-side set: consumed build-dir
 // sources MINUS anything a ninja edge produces MINUS anything already claimed —
