@@ -3,7 +3,62 @@ package lower
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
+
+func TestDropSubstitutedWrapperScriptSrc(t *testing.T) {
+	// A tool-shape recovery substituted `cmake -P gen.cmake` for the real tool, but
+	// genruleSrcs still carries the now-dead wrapper script. The drop removes the
+	// unreferenced `.cmake` while keeping the real source the cmd reads.
+	cc := &codegenContext{Genrules: []ir.Target{{
+		Name:       "gen_foo_c",
+		Kind:       ir.KindGenrule,
+		GenruleCmd: "mygen $(location in.def) $(RULEDIR)/foo.c",
+		Srcs:       []string{"CMakeFiles/gen.cmake", "in.def"},
+	}}}
+	cc.dropSubstitutedWrapperScriptSrc("gen_foo_c")
+	if got := cc.Genrules[0].Srcs; len(got) != 1 || got[0] != "in.def" {
+		t.Fatalf("wrapper drop = %v, want [in.def]", got)
+	}
+
+	// A `.cmake` the cmd DOES reference is kept (a real tool reading a config).
+	cc2 := &codegenContext{Genrules: []ir.Target{{
+		Name:       "gen_bar",
+		Kind:       ir.KindGenrule,
+		GenruleCmd: "mytool --config $(location keep.cmake) out",
+		Srcs:       []string{"keep.cmake"},
+	}}}
+	cc2.dropSubstitutedWrapperScriptSrc("gen_bar")
+	if got := cc2.Genrules[0].Srcs; len(got) != 1 || got[0] != "keep.cmake" {
+		t.Fatalf("referenced .cmake should be kept, got %v", got)
+	}
+
+	// A recognized native rule (no genrule by that name) is a no-op, not a panic.
+	cc3 := &codegenContext{Genrules: []ir.Target{{Name: "lib", Kind: ir.KindCCLibrary, Srcs: []string{"x.cmake"}}}}
+	cc3.dropSubstitutedWrapperScriptSrc("lib")
+	if got := cc3.Genrules[0].Srcs; len(got) != 1 || got[0] != "x.cmake" {
+		t.Fatalf("non-genrule should be untouched, got %v", got)
+	}
+}
+
+func TestGenruleCmdReferencesSrc(t *testing.T) {
+	cases := []struct {
+		cmd, src string
+		want     bool
+	}{
+		{"mygen $(location in.def) out", "in.def", true},
+		{"mytool $(execpath gen.cmake)", "gen.cmake", true},
+		{"sh CMakeFiles/gen.cmake", "CMakeFiles/gen.cmake", true}, // bare path
+		{"run gen.cmake", "sub/gen.cmake", true},                  // basename match
+		{"mygen $(location in.def) out", "CMakeFiles/dead.cmake", false},
+	}
+	for _, c := range cases {
+		if got := genruleCmdReferencesSrc(c.cmd, c.src); got != c.want {
+			t.Errorf("genruleCmdReferencesSrc(%q, %q) = %v, want %v", c.cmd, c.src, got, c.want)
+		}
+	}
+}
 
 func TestArgvFlagValue(t *testing.T) {
 	cases := map[string]string{

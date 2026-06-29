@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
@@ -82,12 +83,14 @@ func (cc *codegenContext) recoverTracedToolCommand(b *ninja.Build, calls []shado
 	// shared emission. emitRecoveredGenrule declares the edge's outs, so relOut
 	// is registered (OutToGenrule, or OutToNativeConsumerDep on a recognizer
 	// match); confirm that before claiming success.
-	if _, _, err := cc.emitRecoveredGenrule(b, strings.Join(chosen, " "), cmakeSrc, buildDir, relOut, g, nil); err != nil {
+	_, genName, err := cc.emitRecoveredGenrule(b, strings.Join(chosen, " "), cmakeSrc, buildDir, relOut, g, nil)
+	if err != nil {
 		return "", false
 	}
 	if !cc.outputClaimed(relOut) {
 		return "", false
 	}
+	cc.dropSubstitutedWrapperScriptSrc(genName)
 	return cc.SeenBuilds[b], true
 }
 
@@ -110,6 +113,57 @@ func argvWritesToDir(argv []string, dir string, anc execAnchors) bool {
 		}
 	}
 	return false
+}
+
+// dropSubstitutedWrapperScriptSrc removes the `cmake -P <script>` WRAPPER script
+// from a tool-shape recovery's emitted genrule srcs. The tool-shape recoveries
+// (recoverTracedToolCommand / recoverWriteInPlaceTool / recoverTempDirToolRelocate)
+// SUBSTITUTE the real tool argv for `cmake -P <script>` and reuse
+// emitRecoveredGenrule, but that derives srcs from the ninja edge's inputs
+// (genruleSrcs), which still list the now-unused `.cmake` script the wrapper ran.
+// The substituted tool is never cmake (argvToolLiftable excludes it) and
+// emitRecoveredGenrule never sees a `cmake -P` cmd (recoverGenrule routes those to
+// recoverCmakeScriptGenrule), so any `.cmake` src the genrule's cmd does not
+// reference is the dead wrapper script — a spurious input that bloats the genrule
+// and forces a needless re-run trigger. Drop it.
+//
+// Scoped to the emitted genrule (looked up by name): a no-op when the emission
+// recognized a native rule instead (no genrule by that name) or the genrule
+// carries no unreferenced `.cmake` src. Conservative — a `.cmake` the cmd DOES
+// reference (a real tool that reads a `.cmake` config by path) is kept.
+func (cc *codegenContext) dropSubstitutedWrapperScriptSrc(genName string) {
+	if genName == "" {
+		return
+	}
+	for i := range cc.Genrules {
+		g := &cc.Genrules[i]
+		if g.Name != genName || g.Kind != ir.KindGenrule {
+			continue
+		}
+		kept := g.Srcs[:0:0]
+		for _, s := range g.Srcs {
+			if strings.HasSuffix(strings.ToLower(s), ".cmake") && !genruleCmdReferencesSrc(g.GenruleCmd, s) {
+				continue
+			}
+			kept = append(kept, s)
+		}
+		g.Srcs = kept
+		return
+	}
+}
+
+// genruleCmdReferencesSrc reports whether a genrule cmd uses the src `s` — as a
+// $(location)/$(execpath) expansion, a bare path occurrence, or its basename. A
+// src the cmd never names can't be consumed by the (already-substituted) tool, so
+// the wrapper-script drop treats an unreferenced `.cmake` as dead.
+func genruleCmdReferencesSrc(cmd, s string) bool {
+	if strings.Contains(cmd, "$(location "+s+")") || strings.Contains(cmd, "$(execpath "+s+")") {
+		return true
+	}
+	if strings.Contains(cmd, s) {
+		return true
+	}
+	return strings.Contains(cmd, path.Base(s))
 }
 
 // argvFlagValue returns the value of a `-flag=value` token, or the token itself
