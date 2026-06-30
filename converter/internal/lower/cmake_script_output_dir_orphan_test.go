@@ -32,6 +32,34 @@ func TestPrecreateOutputDirOrphanDirs(t *testing.T) {
 	}
 }
 
+// TestPrecreateOutputDirOrphanDirs_CrossBoundary pins the satellite shape: the
+// OUTPUT_DIR lives in an OUTER build tree (a project(NONE) satellite's
+// `-DOUTPUT_DIR=<OUTER_BUILD>/gen`), NOT under the satellite's own build dir. The
+// pre-create guard must accept the outer roots (cc.OuterBuildDirs) — otherwise it
+// refuses to create the dir and the standalone re-trace's tool fails on a missing
+// dir whenever the real build hasn't already materialized it. A path outside
+// every build tree is still left alone.
+func TestPrecreateOutputDirOrphanDirs_CrossBoundary(t *testing.T) {
+	satBuildDir := t.TempDir()
+	outerBuildDir := t.TempDir()
+	outsideDir := t.TempDir()
+	cc := newCodegenContext()
+	cc.OuterBuildDirs = []string{outerBuildDir}
+	b := &ninja.Build{Outputs: []string{filepath.Join(outerBuildDir, "gen", "manifest.cmake")}}
+	dArgs := []string{
+		"-DOUTPUT_DIR=" + filepath.Join(outerBuildDir, "gen"), // cross-boundary OUTPUT_DIR
+		"-DSTRAY=" + filepath.Join(outsideDir, "nope"),        // outside every build tree
+	}
+	cc.precreateOutputDirOrphanDirs(b, dArgs, satBuildDir, satBuildDir)
+
+	if st, err := os.Stat(filepath.Join(outerBuildDir, "gen")); err != nil || !st.IsDir() {
+		t.Errorf("cross-boundary OUTPUT_DIR <outer>/gen should be created as a dir (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "nope")); err == nil {
+		t.Errorf("a dir outside every build tree must NOT be pre-created")
+	}
+}
+
 // TestUnclaimedConsumedOrphans pins the demand-side set: consumed build-dir
 // sources MINUS anything a ninja edge produces MINUS anything already claimed —
 // the only orphans the OUTPUT_DIR attribution may declare.

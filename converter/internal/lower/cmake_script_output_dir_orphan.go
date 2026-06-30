@@ -321,14 +321,33 @@ func (cc *codegenContext) orphanOnDisk(o, buildDir string) bool {
 	return false
 }
 
-// precreateOutputDirOrphanDirs creates, under buildDir, the directories a
-// standalone re-trace of the script needs to exist UP FRONT: the edge's stamp
-// outputs' dirs and any `-D<VAR>=<build-subdir>` directory the cache args carry
-// (the OUTPUT_DIR is handed to the script that way). The real custom command runs
-// a sibling `cmake -E make_directory` COMMAND before the `cmake -P`, which the
-// standalone re-trace doesn't — so a tool the script runs into OUTPUT_DIR would
-// fail on the missing dir. Only paths that anchor under buildDir are created.
+// precreateOutputDirOrphanDirs creates the directories a standalone re-trace of
+// the script needs to exist UP FRONT: the edge's stamp outputs' dirs and any
+// `-D<VAR>=<build-subdir>` directory the cache args carry (the OUTPUT_DIR is
+// handed to the script that way). The real custom command runs a sibling
+// `cmake -E make_directory` COMMAND before the `cmake -P`, which the standalone
+// re-trace doesn't — so a tool the script runs into OUTPUT_DIR would fail on the
+// missing dir. Only paths that anchor under buildDir OR an ancestor (outer) build
+// dir are created: the CROSS-BOUNDARY satellite shape hands the script an
+// OUTPUT_DIR in the OUTER build tree (`-DOUTPUT_DIR=<OUTER_BUILD>/gen`), so the
+// guard must accept the outer roots too or the re-trace's tool fails on a missing
+// dir whenever the real build hasn't already materialized it.
 func (cc *codegenContext) precreateOutputDirOrphanDirs(b *ninja.Build, dArgs []string, cmakeSrc, buildDir string) {
+	// insideAnyBuildRoot reports whether abs anchors under buildDir or one of the
+	// ancestor build dirs (relaxed, non-"." / non-"../"), the precondition for
+	// pre-creating it. A path the script writes outside every build tree is not
+	// an OUTPUT_DIR the orphan attribution owns, so it is left alone.
+	insideAnyBuildRoot := func(abs string) bool {
+		for _, root := range append([]string{buildDir}, cc.OuterBuildDirs...) {
+			if root == "" {
+				continue
+			}
+			if rel, ok := relativeIfInsideRelaxed(root, abs); ok && rel != "." && !strings.HasPrefix(rel, "../") {
+				return true
+			}
+		}
+		return false
+	}
 	mkUnderBuild := func(p string) {
 		if p == "" {
 			return
@@ -336,7 +355,7 @@ func (cc *codegenContext) precreateOutputDirOrphanDirs(b *ninja.Build, dArgs []s
 		if !filepath.IsAbs(p) {
 			p = filepath.Join(buildDir, filepath.FromSlash(p))
 		}
-		if rel, ok := relativeIfInsideRelaxed(buildDir, p); ok && rel != "." && !strings.HasPrefix(rel, "../") {
+		if insideAnyBuildRoot(p) {
 			_ = os.MkdirAll(p, 0o755)
 		}
 	}
