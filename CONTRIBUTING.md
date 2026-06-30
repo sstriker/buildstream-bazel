@@ -190,6 +190,30 @@ build half locally.
   ```
   Tests + scripts auto-detect `/etc/ssl/certs/java/cacerts`
   and pass it via `--host_jvm_args`.
+
+  **Proxied-egress sandboxes (Claude Code on the web).** When an
+  egress proxy TLS-intercepts all HTTPS with a custom CA, the
+  system store `/etc/ssl/certs/java/cacerts` only trusts that CA
+  if `ca-certificates-java` ran *after* the CA was installed — on
+  a stale base image it didn't, so bazel's bundled JVM PKIX-fails
+  on every `github.com` tarball fetch:
+  ```
+  TLS error: (certificate_unknown) PKIX path building failed …
+  rules_cc-0.2.17.tar.gz
+  ```
+  This is **not a flake** — writing it off as one masks real
+  bazel-build-half failures (e.g. a render-OK BUILD that doesn't
+  link). The proxy ships a ready truststore that *does* trust its
+  CA and points every JVM tool at it via `JAVA_TOOL_OPTIONS` —
+  but **bazel ignores `JAVA_TOOL_OPTIONS`**. The session-start
+  hook (`.claude/hooks/session-start.sh`) closes the gap: it
+  parses the `trustStore` / password / type out of
+  `JAVA_TOOL_OPTIONS` (no hardcoded path) and re-passes them to
+  bazel via `~/.bazelrc`'s `startup --host_jvm_args`, preferring
+  that proxy store over the system one. To exercise a build half
+  by hand when the hook hasn't run, set
+  `META_BAZEL_STARTUP_ARGS` to the same
+  `--host_jvm_args=-Djavax.net.ssl.trustStore=…` triple.
 - **`cmake` + `ninja`** — needed only by:
   - The converter's own `-tags=e2e` Go tests
     (`e2e-{hello-world, fmt, cmake-consumer, toolchain-skip, fidelity, fidelity-fmt}`)

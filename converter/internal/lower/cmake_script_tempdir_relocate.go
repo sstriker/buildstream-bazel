@@ -178,7 +178,7 @@ func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []sha
 		return "", false
 	}
 
-	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir}
+	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir, outerBuildDirs: cc.OuterBuildDirs}
 	// Harvest the relocations whose dst anchors to a declared output, mapping
 	// declaredOut -> raw relocation source. All forms share (src, dst) semantics:
 	//   - `cmake -E copy[_if_different]|rename <src> <dst>` (an execute_process), and

@@ -142,11 +142,32 @@ fi
 egress_cas=$(ls /usr/local/share/ca-certificates/egress-gateway-ca-*.crt \
                 /usr/local/share/ca-certificates/swp-ca-*.crt 2>/dev/null || true)
 if [ -n "$egress_cas" ]; then
-  # Truststore: prefer the system Java store. Debian's ca-certificates-java
-  # folds the egress CAs into it while keeping the public roots, and it's the
-  # same store scripts/run-fidelity.sh already points bazel at. Fall back to a
-  # minimal store built from the egress CA files via keytool.
-  if [ -r /etc/ssl/certs/java/cacerts ]; then
+  # Truststore selection, most-trustworthy first. bsb_trust_type/bsb_trust_pass
+  # carry the store TYPE + password (a PKCS12 store needs the type passed).
+  bsb_trust_type=""
+  bsb_trust_pass="changeit"
+  # (0) The egress proxy's OWN truststore, as it authoritatively declares it in
+  # JAVA_TOOL_OPTIONS — the proxy builds a store with the egress CA already
+  # imported and points every JVM tool at it via that env var. But bazel IGNORES
+  # JAVA_TOOL_OPTIONS, so we re-pass the SAME store/password/type via
+  # --host_jvm_args. Prefer it: it is GUARANTEED to trust the egress CA, whereas
+  # the system store below only does if ca-certificates-java ran AFTER the egress
+  # CA was installed — when it didn't (e.g. a stale base image), bazel PKIX-fails
+  # on every github.com fetch, a "certificate_unknown" download error that
+  # masquerades as a flake. Derived from the env (no hardcoded path), so it
+  # tracks whatever the proxy set and is a clean no-op where JAVA_TOOL_OPTIONS
+  # carries no trustStore.
+  bsb_jto_ts=$(printf '%s\n' ${JAVA_TOOL_OPTIONS:-} | sed -n 's/^-Djavax\.net\.ssl\.trustStore=\(..*\)$/\1/p' | head -1)
+  if [ -n "$bsb_jto_ts" ] && [ -r "$bsb_jto_ts" ]; then
+    bsb_trust="$bsb_jto_ts"
+    bsb_trust_type=$(printf '%s\n' ${JAVA_TOOL_OPTIONS:-} | sed -n 's/^-Djavax\.net\.ssl\.trustStoreType=\(..*\)$/\1/p' | head -1)
+    bsb_jto_pass=$(printf '%s\n' ${JAVA_TOOL_OPTIONS:-} | sed -n 's/^-Djavax\.net\.ssl\.trustStorePassword=\(..*\)$/\1/p' | head -1)
+    [ -n "$bsb_jto_pass" ] && bsb_trust_pass="$bsb_jto_pass"
+  # (1) The system Java store. Debian's ca-certificates-java folds the egress CAs
+  # into it while keeping the public roots, and it's the same store
+  # scripts/run-fidelity.sh already points bazel at. Fall back to a minimal store
+  # built from the egress CA files via keytool.
+  elif [ -r /etc/ssl/certs/java/cacerts ]; then
     bsb_trust="/etc/ssl/certs/java/cacerts"
   elif command -v keytool >/dev/null 2>&1; then
     # Build into a temp keystore (same dir as the target, so the publish is an
@@ -196,7 +217,7 @@ if [ -n "$egress_cas" ]; then
         cat >> "$bsb_rc_tmp" <<RC && mv -f "$bsb_rc_tmp" "$bsb_rc" || bsb_rc_ok=0
 # >>> bsb-egress >>>
 common --registry=https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/main
-startup --host_jvm_args=-Djavax.net.ssl.trustStore=$bsb_trust --host_jvm_args=-Djavax.net.ssl.trustStorePassword=changeit
+startup --host_jvm_args=-Djavax.net.ssl.trustStore=$bsb_trust --host_jvm_args=-Djavax.net.ssl.trustStorePassword=$bsb_trust_pass${bsb_trust_type:+ --host_jvm_args=-Djavax.net.ssl.trustStoreType=$bsb_trust_type}
 # <<< bsb-egress <<<
 RC
       fi

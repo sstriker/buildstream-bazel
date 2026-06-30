@@ -40,7 +40,7 @@ func (cc *codegenContext) recoverToolChain(b *ninja.Build, calls []shadow.Execut
 	if !ok {
 		return "", false
 	}
-	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir}
+	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir, outerBuildDirs: cc.OuterBuildDirs}
 	stages, ok := cc.chainStages(calls, anc)
 	if !ok {
 		return "", false

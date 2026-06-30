@@ -170,13 +170,14 @@ type execAnchors struct {
 	recordedSrcDir   string
 	hostBuildDir     string
 	recordedBuildDir string
+	outerBuildDirs   []string
 }
 
 func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, recordedSrcDir, hostBuildDir, recordedBuildDir string, liftEnabled bool, cmakeVars map[string]string, forwardedStampVars map[string]bool, setAssignments []shadow.SetAssignment, parentScopeForwards []shadow.ParentScopeForward, cc *codegenContext) ([]executeProcessOut, []executeProcessRefusal) {
 	if len(calls) == 0 {
 		return nil, nil
 	}
-	anc := execAnchors{hostSrcDir: hostSrcDir, recordedSrcDir: recordedSrcDir, hostBuildDir: hostBuildDir, recordedBuildDir: recordedBuildDir}
+	anc := execAnchors{hostSrcDir: hostSrcDir, recordedSrcDir: recordedSrcDir, hostBuildDir: hostBuildDir, recordedBuildDir: recordedBuildDir, outerBuildDirs: cc.OuterBuildDirs}
 	// ONE preprocessed view for EVERY consumer: dead captures cleared
 	// and cmake -E wrappers normalized up front, so the unspecified-
 	// outputs PLAN, the stamp prescan, and the dispatch loop all see
@@ -811,8 +812,8 @@ func bakeBuildDirCopyOutput(op, dst string, anc execAnchors, cc *codegenContext)
 	if cc.outputClaimed(dstRel) {
 		return []string{dstRel}, true
 	}
-	rendered, err := os.ReadFile(filepath.Join(anc.hostBuildDir, dstRel))
-	if err != nil {
+	rendered, found := readFirstExisting(append([]string{anc.hostBuildDir}, anc.outerBuildDirs...), dstRel)
+	if !found {
 		return nil, false
 	}
 	name := executeProcessGenruleName(dstRel)
@@ -2059,7 +2060,13 @@ func executeProcessAnchorOutput(p string, anc execAnchors) (string, bool) {
 	if !filepath.IsAbs(p) {
 		return "", false
 	}
-	return relativeIfInsideRelaxed(anc.recordedBuildDir, p)
+	if rel, ok := relativeIfInsideRelaxed(anc.recordedBuildDir, p); ok {
+		return rel, true
+	}
+	if rel := genSrcRelToOwningBuild(p, anc.recordedBuildDir, anc.outerBuildDirs); rel != "" {
+		return rel, true
+	}
+	return "", false
 }
 
 // executeProcessAnchorSource tries to resolve a recorded

@@ -58,7 +58,7 @@ func (cc *codegenContext) recoverTracedToolCommand(b *ninja.Build, calls []shado
 	if !inDeclared {
 		return "", false
 	}
-	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir}
+	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir, outerBuildDirs: cc.OuterBuildDirs}
 	var chosen []string
 	for _, raw := range calls {
 		c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))

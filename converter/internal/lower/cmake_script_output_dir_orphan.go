@@ -341,7 +341,7 @@ func (cc *codegenContext) tracedScriptWriteDirs(scriptArg string, dArgs []string
 	if err != nil {
 		return nil
 	}
-	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir}
+	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir, outerBuildDirs: cc.OuterBuildDirs}
 	dirs := map[string]bool{}
 	// addFileDir adds the PARENT dir of a written FILE (a file(WRITE) / configure_file
 	// output lands IN its parent dir).
