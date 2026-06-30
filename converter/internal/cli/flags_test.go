@@ -573,8 +573,13 @@ func TestParse_FidelityMasterDial(t *testing.T) {
 	if d.BakeIn != "" {
 		t.Errorf("unset --fidelity must leave --bake-in at its default, got %q", d.BakeIn)
 	}
+	if d.CMakeScriptTrace {
+		t.Errorf("unset --fidelity must NOT auto-enable --cmake-script-trace")
+	}
 
-	// Explicit strict: lifts on + bake-in=reject ("be faithful or fail").
+	// Explicit strict: lifts on + bake-in=reject ("be faithful or fail"). Strict
+	// leaves --cmake-script-trace OFF — no convert-time execution of the project's
+	// build-time scripts (the convert stays hermetic).
 	s := parse("--fidelity", "strict")
 	if !s.RecognizeCodegen || !s.LiftDerivedCodegen || !s.ToolConventions {
 		t.Errorf("explicit strict should enable the staging-free lifts: %+v", s)
@@ -582,8 +587,13 @@ func TestParse_FidelityMasterDial(t *testing.T) {
 	if s.BakeIn != "reject" {
 		t.Errorf("explicit strict should derive --bake-in=reject, got %q", s.BakeIn)
 	}
+	if s.CMakeScriptTrace {
+		t.Errorf("strict must NOT enable --cmake-script-trace (keep the convert hermetic)")
+	}
 
-	// Explicit best-effort: lifts on, bakes stay warn (default), exec-fallback on.
+	// Explicit best-effort: lifts on, bakes stay warn (default), exec-fallback on,
+	// AND --cmake-script-trace on (the staging-free, soundness-gated re-trace
+	// recovery — "faithful where sound, else fall back").
 	b := parse("--fidelity", "best-effort")
 	if !b.RecognizeCodegen || !b.LiftDerivedCodegen || !b.ToolConventions {
 		t.Errorf("best-effort should enable the staging-free lifts: %+v", b)
@@ -593,6 +603,9 @@ func TestParse_FidelityMasterDial(t *testing.T) {
 	}
 	if !b.UnsupportedExecuteProcessFallback {
 		t.Errorf("best-effort should enable the execute-process fallback")
+	}
+	if !b.CMakeScriptTrace {
+		t.Errorf("best-effort should enable --cmake-script-trace (staging-free re-trace recovery)")
 	}
 
 	// Explicit individual flags override the dial.

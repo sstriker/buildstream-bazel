@@ -684,11 +684,12 @@ func codegenCommandFromArgv(argv, srcs, outs []string, pkg string) CodegenComman
 // producers off the cc.Genrules delta) ONLY when EVERY declared edge output was
 // recovered. A PARTIAL recovery is rolled back via a codegen checkpoint so it
 // leaves no dangling consumer-wiring registrations, and the edge falls through
-// to bake/raw as a unit. Gated like recoverCmakeScriptCodegen (RecognizeCodegen
-// + CMakeScriptTrace + a usable cmake); off → declines and the legacy bake/raw
-// paths handle the edge.
+// to bake/raw as a unit. Gated like recoverCmakeScriptCodegen (CMakeScriptTrace
+// + a usable cmake; RecognizeCodegen not required — it only upgrades a recovered
+// tool to its native rule, recognizeOrGenrule gates that internally); off →
+// declines and the legacy bake/raw paths handle the edge.
 func (cc *codegenContext) tryStandaloneCmakeScriptCodegen(b *ninja.Build, cmd, cmakeSrc, buildDir string, outs []string, g *ninja.Graph) bool {
-	if cc == nil || !cc.RecognizeCodegen || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || buildDir == "" || !usesCmakeScriptMode(cmd) {
+	if cc == nil || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || buildDir == "" || !usesCmakeScriptMode(cmd) {
 		return false
 	}
 	script := extractCmakeScriptPath(cmd)

@@ -780,11 +780,11 @@ func TestTryStandaloneCmakeScriptCodegen_Gating(t *testing.T) {
 	if off.tryStandaloneCmakeScriptCodegen(nil, scriptCmd, "/s", "/b", outs, nil) {
 		t.Error("CMakeScriptTrace off must decline")
 	}
-	norec := base()
-	norec.RecognizeCodegen = false
-	if norec.tryStandaloneCmakeScriptCodegen(nil, scriptCmd, "/s", "/b", outs, nil) {
-		t.Error("RecognizeCodegen off must decline")
-	}
+	// RecognizeCodegen is deliberately NOT a gate here: with --cmake-script-trace
+	// alone the recovery still fires (emitting a genrule; RecognizeCodegen only
+	// upgrades it to a native rule via recognizeOrGenrule). So there is no
+	// "RecognizeCodegen off must decline" case — that path now re-traces the
+	// script, which needs a real edge/graph and is covered by the render gates.
 	nocmake := base()
 	nocmake.CMakeBinary = ""
 	if nocmake.tryStandaloneCmakeScriptCodegen(nil, scriptCmd, "/s", "/b", outs, nil) {
