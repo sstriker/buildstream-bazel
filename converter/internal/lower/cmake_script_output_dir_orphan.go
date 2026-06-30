@@ -116,7 +116,7 @@ func (cc *codegenContext) recoverOutputDirOrphans(b *ninja.Build, cmd, cmakeSrc,
 	// carry (the OUTPUT_DIR is passed as such a cache arg). Mirrors the ladder's
 	// recoverCmakeScriptCodegen pre-create; harmless for the file(WRITE) shape.
 	cc.precreateOutputDirOrphanDirs(b, dArgs, cmakeSrc, buildDir)
-	writeDirs := cc.tracedScriptWriteDirs(script, dArgs, cmakeSrc, buildDir)
+	writeDirs, _ := cc.tracedScriptWriteDirs(script, dArgs, cmakeSrc, buildDir)
 	if len(writeDirs) == 0 {
 		return
 	}
@@ -124,6 +124,7 @@ func (cc *codegenContext) recoverOutputDirOrphans(b *ninja.Build, cmd, cmakeSrc,
 	// ATTRIBUTE: an orphan whose parent dir is one this edge writes into, and
 	// which the re-trace materialized on disk under the build dir (corroboration).
 	var attributed []string
+	attributedDirs := map[string]bool{}
 	for _, o := range orphans {
 		if !writeDirs[path.Dir(o)] {
 			continue
@@ -132,17 +133,21 @@ func (cc *codegenContext) recoverOutputDirOrphans(b *ninja.Build, cmd, cmakeSrc,
 			continue // the re-trace didn't actually produce it — don't claim it
 		}
 		attributed = append(attributed, o)
+		attributedDirs[path.Dir(o)] = true
 	}
 	if len(attributed) == 0 {
 		return
 	}
 
-	// Over-attribution guard: if ANY OTHER `cmake -P` edge's traced writes target
-	// one of this edge's write dirs, the orphan ownership is ambiguous — decline
-	// rather than guess which edge produces the shared-dir source. Checked only
-	// once we have an attribution candidate (the re-trace of every other script
-	// edge is the costly step; skip it when this edge owns nothing).
-	if cc.otherScriptEdgeWritesTo(b, cmd, writeDirs, edges, g, cmakeSrc, buildDir) {
+	// Over-attribution guard: if ANY OTHER `cmake -P` edge DEFINITELY writes into a
+	// dir one of THIS edge's attributed orphans lives in, the orphan ownership is
+	// ambiguous — decline rather than guess which edge produces the shared-dir
+	// source. The basis is the attributed orphans' actual dirs (not the wide write
+	// set), compared against each other edge's PRIMARY write dirs, so two edges
+	// writing into DISTINCT subdirs of a shared parent don't phantom-contend on the
+	// parent. Checked only once we have an attribution candidate (the re-trace of
+	// every other script edge is the costly step; skip it when this edge owns nothing).
+	if cc.otherScriptEdgeWritesTo(b, cmd, attributedDirs, edges, g, cmakeSrc, buildDir) {
 		return
 	}
 
@@ -403,15 +408,27 @@ func (cc *codegenContext) precreateOutputDirOrphanDirs(b *ninja.Build, dArgs []s
 // ignored — the orphan attribution only owns sources a compile target consumes
 // from a build SUBDIR. Empty when the trace fails or the script writes nothing
 // build-dir-local.
-func (cc *codegenContext) tracedScriptWriteDirs(scriptArg string, dArgs []string, cmakeSrc, buildDir string) map[string]bool {
+//
+// Returns TWO sets. `dirs` is the wide ATTRIBUTION set above (operand + its
+// parent for tool argvs, since a file operand's writes land in the parent).
+// `primary` is the narrower set of dirs the script DEFINITELY writes into —
+// file(WRITE)/configure_file parents and tool operands themselves, but NOT the
+// speculative parent-of-a-tool-operand. The over-attribution guard uses
+// `primary`: when several `cmake -P` edges each target a DISTINCT subdir of a
+// shared parent (`gen/a`, `gen/b`), the speculative `gen` parent the wide set
+// adds to every edge would be a PHANTOM overlap firing the guard against all of
+// them; `primary` keeps only the real targets, so disjoint subdirs don't
+// contend.
+func (cc *codegenContext) tracedScriptWriteDirs(scriptArg string, dArgs []string, cmakeSrc, buildDir string) (dirs, primary map[string]bool) {
 	traceRaw, err := TraceCmakeScript(context.Background(), cc.CMakeBinary, scriptArg, dArgs, "")
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir, outerBuildDirs: cc.OuterBuildDirs}
-	dirs := map[string]bool{}
+	dirs = map[string]bool{}
+	primary = map[string]bool{}
 	// addFileDir adds the PARENT dir of a written FILE (a file(WRITE) / configure_file
-	// output lands IN its parent dir).
+	// output lands IN its parent dir). A definite write → both sets.
 	addFileDir := func(abs string) {
 		rel, ok := executeProcessAnchorOutput(abs, anc)
 		if !ok || rel == "" {
@@ -419,11 +436,15 @@ func (cc *codegenContext) tracedScriptWriteDirs(scriptArg string, dArgs []string
 		}
 		if dir := path.Dir(rel); dir != "." && dir != "" {
 			dirs[dir] = true
+			primary[dir] = true
 		}
 	}
 	// addArgvDir adds a build-subdir a tool argv NAMES: the operand itself when it
 	// resolves to a build-subdir (the OUTPUT_DIR-is-a-dir case), and its parent
 	// when the operand is a file within a build-subdir (the file-in-OUTPUT_DIR case).
+	// The operand is a real target → both sets; its parent is SPECULATIVE (only the
+	// real write dir if the operand is a file) → attribution set only, so it can't
+	// phantom-fire the over-attribution guard for sibling subdirs.
 	addArgvDir := func(abs string) {
 		rel, ok := executeProcessAnchorOutput(abs, anc)
 		if !ok || rel == "" {
@@ -431,6 +452,7 @@ func (cc *codegenContext) tracedScriptWriteDirs(scriptArg string, dArgs []string
 		}
 		if rel != "." {
 			dirs[rel] = true
+			primary[rel] = true
 		}
 		if dir := path.Dir(rel); dir != "." && dir != "" {
 			dirs[dir] = true
@@ -465,16 +487,20 @@ func (cc *codegenContext) tracedScriptWriteDirs(scriptArg string, dArgs []string
 			}
 		}
 	}
-	return dirs
+	return dirs, primary
 }
 
 // otherScriptEdgeWritesTo reports whether any OTHER `cmake -P` custom-command
-// edge (≠ self) writes into one of dirs — the over-attribution guard. When two
-// script edges both target the same OUTPUT_DIR, attributing a shared-dir orphan
-// to either is a guess, so the caller declines. Re-traces each candidate script
-// edge (bounded: only cmake -P edges, and only until the first overlap is
-// found). A non-script edge, or a script whose re-trace fails / writes
-// elsewhere, can't contend, so it doesn't trigger the guard.
+// edge (≠ self) DEFINITELY writes into one of `dirs` (the attributed orphans'
+// dirs) — the over-attribution guard. When two script edges both write into the
+// same dir an orphan lives in, attributing it to either is a guess, so the caller
+// declines. The comparison uses each other edge's PRIMARY write dirs (real
+// targets, not the speculative parent-of-a-tool-operand), so edges writing into
+// DISTINCT subdirs of a shared parent do not phantom-contend on that parent.
+// Re-traces each candidate script edge (bounded: only cmake -P edges, and only
+// until the first overlap is found). A non-script edge, or a script whose
+// re-trace fails / writes elsewhere, can't contend, so it doesn't trigger the
+// guard.
 func (cc *codegenContext) otherScriptEdgeWritesTo(self *ninja.Build, selfCmd string, dirs map[string]bool, edges []*ninja.Build, g *ninja.Graph, cmakeSrc, buildDir string) bool {
 	for _, e := range edges {
 		if e == self {
@@ -492,8 +518,8 @@ func (cc *codegenContext) otherScriptEdgeWritesTo(self *ninja.Build, selfCmd str
 		if script == "" || script == "<unknown-script>" {
 			continue
 		}
-		other := cc.tracedScriptWriteDirs(script, extractCmakePDashArgs(cmd), cmakeSrc, buildDir)
-		for d := range other {
+		_, otherPrimary := cc.tracedScriptWriteDirs(script, extractCmakePDashArgs(cmd), cmakeSrc, buildDir)
+		for d := range otherPrimary {
 			if dirs[d] {
 				return true
 			}
