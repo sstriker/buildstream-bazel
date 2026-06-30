@@ -4,6 +4,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
@@ -154,8 +155,30 @@ func slashChildRel(child, parent string) (string, bool) {
 // producer) instead of frozen-baking. Declines (→ recoverExecuteProcess handles
 // the calls as before, frozen-bake included) unless every gate below holds, so
 // it never regresses a shape it doesn't fully own.
-func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []shadow.ExecuteProcessCall, relocs []scriptRelocation, cmakeSrc, buildDir, relOut string, g *ninja.Graph) (string, bool) {
-	declared := genruleOuts(b, buildDir)
+// tempDirRelocateDeclared resolves the relocation-destination set
+// recoverTempDirToolRelocate works against. For the standalone edge (override
+// nil) it's the edge's own ninja-declared outputs, and emitOverride stays nil so
+// the emitted genrule names itself from the edge (unchanged behavior). When an
+// override is supplied it becomes BOTH the destination set and the genrule's
+// declared outs.
+func tempDirRelocateDeclared(b *ninja.Build, buildDir string, override []string) (declared, emitOverride []string) {
+	if len(override) == 0 {
+		return genruleOuts(b, buildDir), nil
+	}
+	declared = append([]string(nil), override...)
+	sort.Strings(declared)
+	declared = dedupSorted(declared)
+	return declared, declared
+}
+
+// declaredOverride (optional, nil for the standalone edge) replaces the edge's
+// own ninja-declared outputs as the relocation-destination set + the emitted
+// genrule's declared outs. The OUTPUT_DIR consumed-orphan caller passes the
+// ATTRIBUTED ORPHANS here: the orphan edge declares only its stamp, while the
+// relocations target the OUTPUT_DIR orphans a compile target consumes, so the
+// orphans — not the stamp — are the destinations this recovery must account for.
+func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []shadow.ExecuteProcessCall, relocs []scriptRelocation, cmakeSrc, buildDir, relOut string, g *ninja.Graph, declaredOverride []string) (string, bool) {
+	declared, emitOverride := tempDirRelocateDeclared(b, buildDir, declaredOverride)
 	if len(declared) == 0 {
 		return "", false
 	}
@@ -255,7 +278,7 @@ func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []sha
 	// irrelevant). emitRecoveredGenrule declares the edge's outs and registers
 	// relOut (OutToGenrule on the genrule fallback, OutToNativeConsumerDep on a
 	// recognizer match).
-	_, genName, err := cc.emitRecoveredGenrule(b, strings.Join(toolArgv, " "), cmakeSrc, buildDir, relOut, g, nil)
+	_, genName, err := cc.emitRecoveredGenrule(b, strings.Join(toolArgv, " "), cmakeSrc, buildDir, relOut, g, emitOverride)
 	if err != nil {
 		return "", false
 	}

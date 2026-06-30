@@ -211,7 +211,7 @@ func (cc *codegenContext) extractOutputDirOrphanTool(b *ninja.Build, script, cma
 			return false
 		}
 	}
-	calls, _ := cc.expandCommandSourcesAndRelocations(script, dArgs, cmakeSrc, buildDir)
+	calls, relocs := cc.expandCommandSourcesAndRelocations(script, dArgs, cmakeSrc, buildDir)
 	if len(calls) == 0 {
 		return false
 	}
@@ -236,6 +236,18 @@ func (cc *codegenContext) extractOutputDirOrphanTool(b *ninja.Build, script, cma
 		chosen = c.Commands[0]
 	}
 	if chosen == nil {
+		// No tool writes DIRECTLY into the orphans' dir. Before falling through to
+		// the byte-bake, try the TEMP-DIR-THEN-COPY wrapper shape: a tool runs with
+		// WORKING_DIRECTORY=<tmp> (its argv names the tempdir, not OUTPUT_DIR — so
+		// the direct-write scan above can't see it) and a `cmake -E copy`/`rename` or
+		// `file(COPY)`/`file(RENAME)` relocation moves its output into OUTPUT_DIR.
+		// recoverTempDirToolRelocate already recovers this for standalone edges from
+		// (calls + relocs); drive it with the ATTRIBUTED ORPHANS as the relocation
+		// destinations (the orphan edge declares only its stamp). Checkpoint so a
+		// partial claim rolls back to the bake.
+		if cc.recoverOutputDirOrphanTempDirRelocate(b, calls, relocs, cmakeSrc, buildDir, attributed, g) {
+			return true
+		}
 		return false // no tool writes the orphans (file(WRITE) literals) → bake
 	}
 	// All-or-nothing checkpoint (the same shape tryStandaloneCmakeScriptCodegen
@@ -268,6 +280,35 @@ func (cc *codegenContext) extractOutputDirOrphanTool(b *ninja.Build, script, cma
 	// cleanup the tool-shape recoveries apply, G10).
 	cc.dropSubstitutedWrapperScriptSrc(name)
 	return true
+}
+
+// recoverOutputDirOrphanTempDirRelocate drives recoverTempDirToolRelocate for the
+// OUTPUT_DIR orphan caller: the attributed orphans are the relocation
+// destinations (the orphan edge declares only its stamp, so genruleOuts(b) is the
+// wrong destination set). Wraps the call in an all-or-nothing checkpoint — if the
+// recovery doesn't end up claiming EVERY attributed orphan (a partial relocation
+// map, an ambiguous tool, …), roll back so the caller's byte-bake still covers the
+// whole edge. Returns true only when all attributed orphans are claimed.
+func (cc *codegenContext) recoverOutputDirOrphanTempDirRelocate(b *ninja.Build, calls []shadow.ExecuteProcessCall, relocs []scriptRelocation, cmakeSrc, buildDir string, attributed []string, g *ninja.Graph) bool {
+	cp := cc.checkpointCodegen()
+	_, hadSeen := cc.SeenBuilds[b]
+	if _, ok := cc.recoverTempDirToolRelocate(b, calls, relocs, cmakeSrc, buildDir, attributed[0], g, attributed); ok {
+		allClaimed := true
+		for _, o := range attributed {
+			if !cc.outputClaimed(o) {
+				allClaimed = false
+				break
+			}
+		}
+		if allClaimed {
+			return true
+		}
+	}
+	cc.restoreCodegen(cp)
+	if !hadSeen {
+		delete(cc.SeenBuilds, b)
+	}
+	return false
 }
 
 // unclaimedConsumedOrphans returns the consumed build-dir sources (codemodel
