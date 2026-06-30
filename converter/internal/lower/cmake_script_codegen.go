@@ -269,7 +269,7 @@ func (cc *codegenContext) recordNestedConfiguresFromScript(scriptArg string, dAr
 		return false
 	}
 	calls := cc.expandCommandSources(scriptArg, dArgs, cmakeSrc, buildDir)
-	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir}
+	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir, outerBuildDirs: cc.OuterBuildDirs}
 	recorded := false
 	for _, c := range calls {
 		c = normalizeCMakeECall(clearDeadCaptures(c, cc.DeadCaptureVars))

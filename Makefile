@@ -390,6 +390,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-execute-process-cmake-e-wrappers.sh \
 	scripts/meta-cmake-e-tar-create.sh \
 	scripts/meta-cmake-nested-cmake.sh \
+	scripts/meta-cmake-nested-exec-crossboundary.sh \
 	scripts/meta-cmake-nested-cmake-workdir.sh \
 	scripts/meta-cmake-superbuild-hashed-recipe.sh \
 	scripts/meta-cmake-superbuild-crossboundary-recipe.sh \

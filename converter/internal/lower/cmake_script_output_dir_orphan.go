@@ -187,7 +187,7 @@ func (cc *codegenContext) tracedScriptWriteDirs(scriptArg string, dArgs []string
 	if err != nil {
 		return nil
 	}
-	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir}
+	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir, outerBuildDirs: cc.OuterBuildDirs}
 	dirs := map[string]bool{}
 	addOutput := func(abs string) {
 		rel, ok := executeProcessAnchorOutput(abs, anc)

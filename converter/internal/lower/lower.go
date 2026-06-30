@@ -4103,6 +4103,21 @@ func elideBuildDirOnlySource(irt *ir.Target, src fileapi.TargetSource, i int, st
 	}
 	rel, inside := relativeIfInside(cmakeBuild, src.Path)
 	if !inside {
+		// CROSS-BOUNDARY: a NESTED target's src lives in an ANCESTOR (outer)
+		// build tree — a cross-boundary execute_process / add_custom_command
+		// codegen wrote it UP there (not under this nested build dir). Re-home
+		// it to the owning OuterBuildDir-relative form and run the SAME recovery
+		// ladder: the producer the nested lowering recovered registered the
+		// output under that rel (the matching anchor fallback in
+		// executeProcessAnchorOutput / genSrcRelToOwningBuild), so
+		// recoverOrElideBuildDirSource's outputClaimed wires it as a generated
+		// source instead of dropping it as a missing absolute path. Empty at the
+		// top level (no OuterBuildDirs) → behavior unchanged.
+		if r := genSrcRelToOwningBuild(src.Path, cmakeBuild, lc.cc.OuterBuildDirs); r != "" {
+			rel, inside = r, true
+		}
+	}
+	if !inside {
 		return false
 	}
 	recoverOrElideBuildDirSource(irt, src, rel, i, st, inCG, lc)

@@ -11,6 +11,31 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
 
+// TestExecuteProcessAnchorOutput_CrossBoundary pins the cross-boundary fallback:
+// a NESTED lowering's execute_process output written UP into an ancestor (outer)
+// build tree re-homes to the owning OuterBuildDir-relative form instead of
+// dropping, the same way the genrule / configure_file / file(GENERATE) paths do.
+// At the top level (no outerBuildDirs) an out-of-build-dir output still drops.
+func TestExecuteProcessAnchorOutput_CrossBoundary(t *testing.T) {
+	nested := "/b/outer/subbuild"
+	anc := execAnchors{recordedBuildDir: nested, outerBuildDirs: []string{"/b/outer"}}
+
+	if rel, ok := executeProcessAnchorOutput("/b/outer/subbuild/x.c", anc); !ok || rel != "x.c" {
+		t.Errorf("in-nested output = (%q,%v), want (x.c,true)", rel, ok)
+	}
+	if rel, ok := executeProcessAnchorOutput("/b/outer/gen_cross.c", anc); !ok || rel != "gen_cross.c" {
+		t.Errorf("cross-boundary output = (%q,%v), want (gen_cross.c,true)", rel, ok)
+	}
+	// Top level (no outerBuildDirs) → an out-of-build-dir output still drops.
+	if _, ok := executeProcessAnchorOutput("/b/outer/gen_cross.c", execAnchors{recordedBuildDir: nested}); ok {
+		t.Error("top-level (no outerBuildDirs) must drop an output outside the build dir")
+	}
+	// A path under no known build dir drops even with outerBuildDirs.
+	if _, ok := executeProcessAnchorOutput("/elsewhere/x.c", anc); ok {
+		t.Error("a path outside all known build dirs must drop")
+	}
+}
+
 // TestRecoverExecuteProcess_LiftCMakeETouch asserts the cmake
 // -E touch lift: the call is removed from the refusal set and
 // surfaces as one ir.Target{KindGenrule} on cc.Genrules with

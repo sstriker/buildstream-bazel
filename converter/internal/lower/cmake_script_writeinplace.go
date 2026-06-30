@@ -37,7 +37,7 @@ func (cc *codegenContext) recoverWriteInPlaceTool(b *ninja.Build, calls []shadow
 	if !ok {
 		return "", false
 	}
-	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir}
+	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir, outerBuildDirs: cc.OuterBuildDirs}
 
 	toolArgv, toolWorkdir, ok := cc.writeInPlaceProducer(calls, anc, outsParent)
 	if !ok {
