@@ -224,6 +224,13 @@ func (cc *codegenContext) extractOutputDirOrphanTool(b *ninja.Build, script, cma
 	var chosen []string
 	for _, raw := range calls {
 		c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))
+		// A `cmake -E copy[_if_different]|rename|copy_directory` whose destination is
+		// OUTPUT_DIR is a RELOCATION, not the generator — skip it so it isn't emitted
+		// as the producer (a broken genrule copying a tempdir file nothing generates).
+		// The temp-dir-relocate path below recovers the real tool behind it.
+		if isCmakeRelocationCall(c) {
+			continue
+		}
 		if !argvCodegenEligibleRelaxed(c) || !argvToolLiftable(c.Commands[0][0], anc, cc) {
 			continue
 		}
