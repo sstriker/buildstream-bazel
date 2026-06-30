@@ -16,7 +16,15 @@ func TestClassifyHostCodegenTool(t *testing.T) {
 		wantAbs, ok bool
 	}{
 		{"basename tool", "gen.sh greeting.in $(RULEDIR)/greeting.c", "gen.sh", false, true},
-		{"interpreter", "python3 scripts/gen.py -o $(RULEDIR)/out.c", "python3", false, true},
+		{"interpreter relative script", "python3 scripts/gen.py -o $(RULEDIR)/out.c", "python3", false, true},
+		// An ABSOLUTE interpreter script is the real tool (a prefix-resident
+		// codegen.py needs the imports.json entry, not python3) → classify the
+		// script, Actionable.
+		{"interpreter absolute script", "python3 /opt/prefix/share/codegen.py -o $(RULEDIR)/out.c", "codegen.py", true, true},
+		{"interpreter flag then absolute script", "python3 -B /opt/prefix/share/gen.py", "gen.py", true, true},
+		{"perl absolute script", "perl /opt/prefix/bin/xxd.pl in out", "xxd.pl", true, true},
+		// Inline code has no script file → stays interpreter-flagged.
+		{"interpreter inline code", `python3 -c import x`, "python3", false, true},
 		{"absolute host path", "/opt/host/bin/protoc --cpp_out=. foo.proto", "protoc", true, true},
 		{"cd-prefixed", "cd sub && flatc --cpp x.fbs", "flatc", false, true},
 		{"hermeticized execpath", "$(execpath //:gen_tool) in out", "", false, false},
@@ -58,6 +66,30 @@ func TestNoteHostCodegenTool_PrefixAnchoring(t *testing.T) {
 	}
 	if n.Path != "/opt/prefix/bin/foogen" {
 		t.Errorf("path = %q, want anchored /opt/prefix/bin/foogen (no ephemeral synth-prefix)", n.Path)
+	}
+}
+
+// TestNoteHostCodegenTool_InterpreterScript: an interpreted PREFIX tool
+// (`python3 <prefix>/codegen.py`) records the SCRIPT — not the interpreter — as
+// the host codegen tool needing the imports.json entry, prefix-anchored and
+// Actionable. Without the interpreter peel the note would land on python3 (a
+// PATH-resolved Improvement), hiding the script that actually needs mapping.
+func TestNoteHostCodegenTool_InterpreterScript(t *testing.T) {
+	cc := newCodegenContext()
+	cc.HostPrefixDir = "/tmp/convert-run-7f3a/synth-prefix"
+	noteHostCodegenTool(cc, ir.Target{
+		Name:       "gen_x",
+		GenruleCmd: "python3 /tmp/convert-run-7f3a/synth-prefix/share/codegen.py --out $(RULEDIR)/x.c",
+	})
+	if len(cc.HostCodegenTools) != 1 {
+		t.Fatalf("want 1 note, got %d", len(cc.HostCodegenTools))
+	}
+	n := cc.HostCodegenTools[0]
+	if !n.Prefix || !n.Absolute || n.Driver != "codegen.py" {
+		t.Fatalf("note = %+v, want prefix+absolute codegen.py (the SCRIPT, not python3)", n)
+	}
+	if n.Path != "/opt/prefix/share/codegen.py" {
+		t.Errorf("path = %q, want anchored /opt/prefix/share/codegen.py", n.Path)
 	}
 }
 

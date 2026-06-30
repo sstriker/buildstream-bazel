@@ -96,11 +96,44 @@ func classifyHostCodegenTool(genruleCmd string) (rawTok, driver string, absolute
 	if strings.ContainsAny(tok, "=(){}$`\"'") {
 		return "", "", false, false
 	}
+	// A known script interpreter (python/perl/ruby/node) running an ABSOLUTE
+	// script: the SCRIPT, not the interpreter, is the real host codegen tool — a
+	// prefix-resident codegen.py needs the imports.json entry (and is Actionable),
+	// not python3. Redirect classification to the script so the todo + import
+	// suggestion land on it. A RELATIVE script keeps flagging the interpreter (the
+	// script is an in-tree src; the bare interpreter is the non-hermetic driver),
+	// and inline code (`python3 -c …`) has no script and stays interpreter-flagged.
+	if interpreterDrivers[executeProcessDriverBasename(tok)] {
+		if script, found := interpreterScriptToken(fields[1:]); found &&
+			filepath.IsAbs(script) && !strings.ContainsAny(script, "=(){}$`\"'") {
+			tok = script
+		}
+	}
 	base := filepath.Base(tok)
 	if base == "" || base == "." || base == "unknown" || benignGenruleDriver[base] {
 		return "", "", false, false
 	}
 	return tok, base, filepath.IsAbs(tok), true
+}
+
+// interpreterScriptToken returns the first non-flag token after a script
+// interpreter — the script the interpreter runs — skipping interpreter flags
+// (`python -B gen.py`, `perl -w x.pl`). An inline-code / stdin form
+// (`-c` / `-e` / `--eval` / `-`) has no script file and returns found=false.
+// Mirrors codegenRecognitionDriver's peel, but returns the raw token (the path),
+// not the basename, so the caller can test absoluteness + anchor it.
+func interpreterScriptToken(rest []string) (string, bool) {
+	for _, a := range rest {
+		switch {
+		case a == "-c" || a == "-e" || a == "--eval" || a == "-":
+			return "", false
+		case strings.HasPrefix(a, "-"):
+			continue
+		default:
+			return a, true
+		}
+	}
+	return "", false
 }
 
 // noteHostCodegenTool records a recovered genrule fallback whose driver is an
