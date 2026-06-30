@@ -45,6 +45,27 @@ func cmakeECopyArgv(call shadow.ExecuteProcessCall) (op string, operands []strin
 	return argv[2], argv[3:], true
 }
 
+// isCmakeRelocationCall reports whether call is a `cmake -E copy|copy_if_different
+// |rename|copy_directory[_if_different]` invocation — a RELOCATION (it moves files
+// a generator already produced), NOT a codegen tool. The OUTPUT_DIR orphan
+// direct-write scan must skip these: a `cmake -E copy_if_different <tmp>/x …
+// <OUTPUT_DIR>` whose destination IS the orphans' dir otherwise looks like a tool
+// that writes into OUTPUT_DIR, and gets emitted as the producer — a broken
+// genrule that copies a tempdir file the recovered rule never generates. The
+// temp-dir-relocate path recognizes the same call as a relocation and recovers
+// the real generator behind it instead.
+func isCmakeRelocationCall(call shadow.ExecuteProcessCall) bool {
+	op, _, ok := cmakeECopyArgv(call)
+	if !ok {
+		return false
+	}
+	switch op {
+	case "copy", "copy_if_different", "rename", "copy_directory", "copy_directory_if_different":
+		return true
+	}
+	return false
+}
+
 // cmakeRelocateSingle reports a single-file `cmake -E copy|copy_if_different|
 // rename <src> <dst>` relocation (the 2-operand form), returning the raw src +
 // dst. `rename` (an atomic move — the write-to-tempfile-then-rename idiom) maps
