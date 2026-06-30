@@ -387,6 +387,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-output-dir-orphan-multi.sh \
 	scripts/meta-cmake-output-dir-orphan-tempdir.sh \
 	scripts/meta-cmake-output-dir-orphan-ecopy.sh \
+	scripts/meta-cmake-output-dir-orphan-copy-workdir.sh \
 	scripts/meta-cmake-out-of-tree-module-codegen.sh \
 	scripts/meta-cmake-cmake-script-tool-chain.sh \
 	scripts/meta-cmake-execute-process-unspecified-outs.sh \
