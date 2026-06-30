@@ -34,10 +34,13 @@ import (
 // declared-output rungs re-derive their output set from genruleOuts(b) = the
 // stamp only. So neither sees the orphan sources.
 //
-// Gated on RecognizeCodegen + CMakeScriptTrace + a usable cmake (the script
-// re-trace's opt-in) — off → no-op, today's behavior holds.
+// Gated on CMakeScriptTrace + a usable cmake (the script re-trace's opt-in) — off
+// → no-op, today's behavior holds. RecognizeCodegen is NOT required: it only
+// upgrades a recovered tool to its native rule; without it the orphan producer is
+// still extracted/baked, closing the refusal rather than gating it behind the
+// genrule→native upgrade.
 func (cc *codegenContext) recoverOutputDirOrphanEdges(g *ninja.Graph, cmakeSrc, buildDir string) {
-	if cc == nil || g == nil || !cc.RecognizeCodegen || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || buildDir == "" {
+	if cc == nil || g == nil || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || buildDir == "" {
 		return
 	}
 	if len(cc.ConsumedBuildRel) == 0 {

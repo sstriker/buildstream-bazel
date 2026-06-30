@@ -43,11 +43,14 @@ const maxScriptRecursionDepth = 8
 // is among the recovered outputs; otherwise the caller falls through to
 // bake / runner / refuse, so the wrapper case is never worse than today.
 //
-// Opt-in + offline-safe: gated on RecognizeCodegen + CMakeScriptTrace + a usable
-// cmake. Re-running the script (and its nested scripts) carries the same
-// side-effect risk documented on TraceCmakeScript / --cmake-script-trace; with
-// the flag off (or cmake absent) this declines and the legacy script paths handle
-// the edge. The on-disk corroboration in the output-producing lifts is the
+// Opt-in + offline-safe: gated on CMakeScriptTrace + a usable cmake (the
+// re-trace capability). RecognizeCodegen is NOT required — it only UPGRADES a
+// recovered tool from a genrule to its native rule (recognizeOrGenrule gates that
+// internally), so with --cmake-script-trace alone this still recovers a genrule /
+// bake rather than refusing. Re-running the script (and its nested scripts)
+// carries the same side-effect risk documented on TraceCmakeScript /
+// --cmake-script-trace; with the flag off (or cmake absent) this declines and the
+// legacy script paths handle the edge. The on-disk corroboration in the output-producing lifts is the
 // backstop: a tool whose output isn't the real buildDir fails the stat and
 // declines, rather than mis-emitting.
 //
@@ -57,7 +60,7 @@ const maxScriptRecursionDepth = 8
 // its script, so such a call records into the sink too late to lift and falls
 // through to refuse — never worse than today. See ROADMAP for that residual.
 func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptArg, cmakeSrc, buildDir, relOut string, g *ninja.Graph) (string, bool) {
-	if cc == nil || !cc.RecognizeCodegen || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || buildDir == "" {
+	if cc == nil || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || buildDir == "" {
 		return "", false
 	}
 	if scriptArg == "" {
@@ -156,12 +159,13 @@ func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptA
 // command's `cmd` is a `cmake -P <script>` whose re-trace reveals a nested
 // `cmake -S … -B …` configure — recording it into NestedConfigureSink as a side
 // effect so the warm-pass/pass-2 lift handles it. The standalone path then skips
-// emitting a (broken) `cmake -P` genrule for the edge. Gated on RecognizeCodegen
-// + CMakeScriptTrace + a usable cmake (the script re-trace's opt-in). cmd is
+// emitting a (broken) `cmake -P` genrule for the edge. Gated on CMakeScriptTrace
+// + a usable cmake (the script re-trace's opt-in; RecognizeCodegen not required —
+// detecting a nested configure is orthogonal to the genrule→native upgrade). cmd is
 // already normalized to the real `cmake -P` by the caller (realCmakeCommandForEdge),
 // so a generated dispatch wrapper is unwrapped before we get here. nil-safe.
 func (cc *codegenContext) standaloneScriptDrivesNestedConfigure(cmd, cmakeSrc, buildDir string) bool {
-	if cc == nil || !cc.RecognizeCodegen || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || !usesCmakeScriptMode(cmd) {
+	if cc == nil || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || !usesCmakeScriptMode(cmd) {
 		return false
 	}
 	return cc.recordNestedConfiguresFromScript(extractCmakeScriptPath(cmd), extractCmakePDashArgs(cmd), cmakeSrc, buildDir)

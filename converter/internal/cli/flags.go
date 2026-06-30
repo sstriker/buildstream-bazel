@@ -905,7 +905,7 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.BoolVar(&a.Verify, "verify", false, "after lowering, cross-check the IR against compile_commands.json; surface -D/-I drops and adds as stderr warnings (does not fail the run)")
 	fs.StringVar(&a.VerifyReport, "verify-report", "", "write the structured verify Report (JSON) here; implies --verify")
 	fs.StringVar(&a.CMakeScriptRunner, "cmake-script-runner", "", "Bazel label of a target that behaves like cmake (supports `<runner> -P <script.cmake> [-D ...]`). When set, add_custom_command(... cmake -P <script> ...) shapes lift to a genrule invoking the runner at build time. Off by default; only operators who stage the tool opt in. Soundness caveats apply: scripts with hardcoded absolute paths (configure_file-derived) won't resolve under Bazel's sandbox; parameter-driven scripts work cleanly.")
-	fs.BoolVar(&a.CMakeScriptTrace, "cmake-script-trace", false, "actually run the cmake -P script under `cmake --trace --trace-format=json-v1 -P <script>` at convert time, using the converter's own cmake (the configure binary) — no build-time runner is involved. Drives two paths: the trace-based codegen recovery (with --recognize-codegen, re-traces the script, recognizes the real tool like protoc, and lowers it to a native rule — no runner), and the runner-genrule fallback (auto-augments the genrule's srcs from the trace's read paths and refuses with a structured diagnostic when the script touches paths Bazel's sandbox can't reproduce). Off by default — convert-time execution carries side-effect risk; opt in after reading docs/design/conversion-architecture.md's convert-time platform coupling note. Does NOT require --cmake-script-runner; that label is only needed for the build-time genrule fallback.")
+	fs.BoolVar(&a.CMakeScriptTrace, "cmake-script-trace", false, "actually run the cmake -P script under `cmake --trace --trace-format=json-v1 -P <script>` at convert time, using the converter's own cmake (the configure binary) — no build-time runner is involved. Enabled implicitly by --fidelity=best-effort (staging-free + soundness-gated), explicit otherwise. Drives two paths: the trace-based codegen recovery (re-traces the script and recovers its outputs as a self-contained genrule/bake; with --recognize-codegen it additionally UPGRADES a recognized tool like protoc to its native rule — no runner), and the runner-genrule fallback (auto-augments the genrule's srcs from the trace's read paths and refuses with a structured diagnostic when the script touches paths Bazel's sandbox can't reproduce). Off by default — convert-time execution carries side-effect risk; opt in after reading docs/design/conversion-architecture.md's convert-time platform coupling note. Does NOT require --cmake-script-runner; that label is only needed for the build-time genrule fallback.")
 	fs.BoolVar(&a.CMakeScriptBake, "cmake-script-bake", false, "run the cmake -P script at convert time, capture the declared output bytes, and emit genrules that materialize them via base64-decode. Closes the script-hardcoded-absolute-paths gap by resolving paths at convert time. Trade-off: outputs are convert-time-baked and don't auto-refresh on upstream input change — operator re-runs convert. Same warning shape as the legacy configure_file capture (warnConvertTimeBaking post-pass picks up the cmake-codegen-cmake-script-bake tag). Off by default.")
 	fs.BoolVar(&a.LiftCCEmbed, "lift-cc-embed", false, "recognize a custom command running a known file-embedding cmake -P encoder (VTK's vtkEncodeString) and lower it to the native cc_embed rule (//tools:cc-embed) — the converted project needs no cmake at build time. Faithful (the symbol name + runtime value are preserved). Off by default; requires the consuming project to stage //tools:cc-embed (like the runner). The Bazel-native end-state for the embed-file-as-C-array codegen idiom (docs/research/codegen-idiom-coverage.md).")
 	fs.BoolVar(&a.LiftCCHash, "lift-cc-hash", false, "recognize a custom command running a known file-hashing cmake -P script (VTK's vtkHashSource) and lower it to the native cc_hash rule (//tools:cc-hash) — the converted project needs no cmake at build time, and the digest recomputes on input change (unlike --cmake-script-bake). Faithful (the #define name + digest are preserved). Off by default; requires the consuming project to stage //tools:cc-hash. The Bazel-native end-state for the hash-a-file-into-a-header codegen idiom (docs/research/codegen-idiom-coverage.md).")
@@ -1025,11 +1025,18 @@ func applyOperatorDials(a Args, fs *flag.FlagSet, stderr io.Writer) (Args, int) 
 	//   strict      = "I'm sure: be faithful or fail"  → lifts on + reject bakes
 	//   best-effort = "I'm not sure: faithful where sound, else fall back"
 	//                 → lifts on + bakes warn (+ the exec-process fallback above)
-	// An explicit individual flag always wins over the dial-derived value. Only
-	// the STAGING-FREE lifts are auto-enabled (recognize-codegen,
-	// lift-derived-codegen, tool-conventions); the tool-staging lifts
-	// (--lift-configure-file/-download/-cc-embed/-cc-hash, --cmake-script-*) stay
-	// explicit, since they need the downstream envelope to stage their tool.
+	// An explicit individual flag always wins over the dial-derived value. The
+	// STAGING-FREE lifts are auto-enabled for both levels (recognize-codegen,
+	// lift-derived-codegen, tool-conventions). The tool-staging lifts
+	// (--lift-configure-file/-download/-cc-embed/-cc-hash, --cmake-script-runner/
+	// -bake) stay explicit — they need the downstream envelope to stage their
+	// build-time tool. --cmake-script-trace is the exception in that family: it is
+	// STAGING-FREE (re-runs the script at CONVERT time, no build-time runner, and
+	// its recoveries — extract genrule / bake / native rule — are self-contained),
+	// and it is internally soundness-gated (refuses a script that touches paths the
+	// sandbox can't reproduce). So best-effort enables it — "faithful where sound,
+	// else fall back" — while strict leaves it OFF, keeping the convert hermetic
+	// (no convert-time execution of the project's build-time scripts).
 	// (Flipping the UNSET default to engage this combo corpus-wide is gated on a
 	// survey byte-sweep — see ROADMAP.)
 	if explicit["fidelity"] {
@@ -1041,6 +1048,9 @@ func applyOperatorDials(a Args, fs *flag.FlagSet, stderr io.Writer) (Args, int) 
 		}
 		if !explicit["tool-conventions"] {
 			a.ToolConventions = true
+		}
+		if fidelity == convmode.FidelityBestEffort && !explicit["cmake-script-trace"] {
+			a.CMakeScriptTrace = true
 		}
 		if fidelity == convmode.FidelityStrict && !explicit["bake-in"] {
 			a.BakeIn = string(convmode.BakeInReject)
