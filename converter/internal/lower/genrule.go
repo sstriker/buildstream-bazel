@@ -119,6 +119,14 @@ type codegenContext struct {
 	// $(RULEDIR). Empty at the top level.
 	OuterBuildDirs []string
 
+	// OuterConsumedBuildRel are the ANCESTOR (outer) projects' CONSUMED build-dir
+	// sources, threaded via Options.OuterConsumedBuildRel (outer-build-relative
+	// keys). Supplies the DEMAND side for the cross-boundary satellite OUTPUT_DIR
+	// orphan recovery: a project(NONE) satellite owns the `cmake -P` edge but
+	// consumes nothing itself, so recoverOutputDirOrphanEdges attributes the
+	// orphans the OUTER project consumes. Empty at the top level.
+	OuterConsumedBuildRel []string
+
 	// OutputToCustomCommand indexes the add_custom_command trace records by their
 	// OUTPUT/BYPRODUCT paths (keyed in both raw trace and build-relative form via
 	// outputKeyForms), for recovering the REAL command when a ninja edge is a

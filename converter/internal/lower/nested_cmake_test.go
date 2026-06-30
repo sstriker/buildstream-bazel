@@ -812,6 +812,7 @@ var nestedOptionsClass = map[string]string{
 	"OuterRecipeIncludes":               "forward",
 	"OuterTargetSources":                "forward",
 	"OuterBuildDirs":                    "forward",
+	"OuterConsumedBuildRel":             "forward",
 
 	"HostPrefixDir":          "drop",
 	"CTest":                  "drop",

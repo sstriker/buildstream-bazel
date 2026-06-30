@@ -112,6 +112,19 @@ type Options struct {
 	// $(RULEDIR). Empty at the top level.
 	OuterBuildDirs []string
 
+	// OuterConsumedBuildRel carries the ANCESTOR (outer) projects' CONSUMED
+	// build-dir sources (cc.ConsumedBuildRel, build-relative to the OWNING outer
+	// build), accumulated down each nesting level. The cross-boundary
+	// SATELLITE-codegen shape: a nested satellite (project(NONE), no targets of its
+	// own) owns a `cmake -P` OUTPUT_DIR-orphan edge that writes a source the OUTER
+	// project consumes. The satellite's own ConsumedBuildRel is empty, so its
+	// orphan pass has the edge but no demand; threading the outer's consumed set
+	// supplies it, so the satellite attributes the outer-consumed orphan,
+	// re-homes it to the owning OuterBuildDir, and the merge wires it to the outer
+	// consumer. Keys are outer-build-relative (the form the outer consumer + the
+	// cross-boundary write-dir detection use). Empty at the top level.
+	OuterConsumedBuildRel []string
+
 	// HostPrefixDir, when set, is the absolute on-disk path to the
 	// synthesized prefix tree cmake configured against (CMAKE_PREFIX_PATH).
 	// Codemodel link.commandFragments paths anchored at this dir are
@@ -2024,6 +2037,20 @@ type recoveredArtifacts struct {
 	findPkgAttrib    *findPackageAttrib
 }
 
+// seedConsumedDemand populates cc.ConsumedBuildRel (the codegen demand: the
+// build-dir sources a compile target consumes) once. ToIR calls it BEFORE the
+// nested lift so lowerNestedBuilds can thread THIS build's demand down to a
+// nested satellite as OuterConsumedBuildRel — the satellite owns the `cmake -P`
+// edge but consumes nothing itself (project(NONE)), so without the outer demand
+// its orphan pass has nothing to attribute. recoverConfigureTimeArtifacts calls
+// it again later (it runs AFTER the nested lift); the nil guard makes the second
+// call reuse the first's result rather than re-deriving it.
+func (cc *codegenContext) seedConsumedDemand(r *fileapi.Reply, cmakeBuild string) {
+	if cc.ConsumedBuildRel == nil {
+		cc.ConsumedBuildRel = consumedBuildDirSources(r, cmakeBuild)
+	}
+}
+
 // recoverConfigureTimeArtifacts runs the configure-time recovery family —
 // execute_process (with stamp propagation + structured refusals),
 // configure_file, file(GENERATE) — and builds the genex target facts and
@@ -2123,7 +2150,11 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 	// from the codemodel, minus anything a ninja edge produces, are the
 	// orphans only configure-time codegen can explain.
 	cc.NinjaOuts = ninjaOutputSet(g)
-	cc.ConsumedBuildRel = consumedBuildDirSources(r, cmakeBuild)
+	// ToIR seeds cc.ConsumedBuildRel before the nested lift (so the outer demand
+	// threads into a nested satellite); reuse it here rather than re-deriving. The
+	// orphan pass below also reads cc.OuterBuildDirs / cc.OuterConsumedBuildRel —
+	// both already set by ToIR (this recovery runs after that assignment).
+	cc.seedConsumedDemand(r, cmakeBuild)
 	// Out-of-tree execute_process calls the lift's inSourceTree filter
 	// dropped: route the codemodel-source-backed build-dir subprojects into
 	// the SAME lift machinery as in-tree calls (so they get a genrule/probe
@@ -3074,7 +3105,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	cc.LiftCCEmbed = opts.LiftCCEmbed
 	cc.LiftCCHash = opts.LiftCCHash
 	cc.CMakeBinary, cc.Warnings = lookupCmakeBinary(), opts.Warnings
-	cc.OutputToCustomCommand, cc.IncludeCalls, cc.TargetSourcesCalls, cc.OuterRecipeIncludes, cc.OuterTargetSources, cc.OuterBuildDirs = buildOutputToCustomCommand(tf.decodedAddCustomCommands, opts.BuildDir), tf.decodedIncludes, tf.decodedTargetSourcesCalls, opts.OuterRecipeIncludes, opts.OuterTargetSources, opts.OuterBuildDirs
+	cc.OutputToCustomCommand, cc.IncludeCalls, cc.TargetSourcesCalls, cc.OuterRecipeIncludes, cc.OuterTargetSources, cc.OuterBuildDirs, cc.OuterConsumedBuildRel = buildOutputToCustomCommand(tf.decodedAddCustomCommands, opts.BuildDir), tf.decodedIncludes, tf.decodedTargetSourcesCalls, opts.OuterRecipeIncludes, opts.OuterTargetSources, opts.OuterBuildDirs, opts.OuterConsumedBuildRel
 	cc.LiteralProbeSink = opts.LiteralProbeSink
 	cc.LiteralResolutions = opts.LiteralResolutions
 	// Parallel pre-warm of the cmake -P script bakes: with the bake opted
@@ -3096,7 +3127,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		cc.NestedConfigureSink = opts.NestedConfigureSink
 	}
 	cc.CaptureRefusalSink, cc.DeadCaptureVars = opts.CaptureRefusalSink, opts.DeadCaptureVars
-	nestedOuts, err := lowerNestedBuilds(pkg, opts, cc, hostSrc)
+	nestedOuts, err := lowerNestedBuilds(pkg, opts, cc, hostSrc, r, cmakeBuild)
 	if err != nil {
 		return nil, err
 	}

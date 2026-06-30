@@ -443,8 +443,15 @@ func accumulateTargetSources(inherited []shadow.TargetSourcesCall, cc *codegenCo
 // graph) so outer `-I <build>/<nested>` consumers resolve them. Returns
 // the baked rels for the same consumer attribution executeProcess lifts
 // get (targetBuildIncs prefix-matching in lowerTarget).
-func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSrc string) ([]executeProcessOut, error) {
+func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSrc string, r *fileapi.Reply, cmakeBuild string) ([]executeProcessOut, error) {
 	var outs []executeProcessOut
+	// Seed THIS build's consumed-orphan demand BEFORE accumulating it onto the
+	// ancestor chain below: cc.ConsumedBuildRel is otherwise not computed until the
+	// configure-time recovery, which runs AFTER this nested lift. Without the seed
+	// a nested satellite receives an empty OuterConsumedBuildRel and its orphan
+	// pass has nothing to attribute (the satellite owns the `cmake -P` edge but
+	// consumes nothing itself).
+	cc.seedConsumedDemand(r, cmakeBuild)
 	// Thread THIS build's recipe `.cmake` include()s / target_sources recipes —
 	// accumulated onto any inherited from ancestors — into the nested lowerings, so
 	// a nested build's UTILITY-produced recipe that an OUTER configure include()s
@@ -458,6 +465,19 @@ func lowerNestedBuilds(pkg *ir.Package, opts Options, cc *codegenContext, hostSr
 	// shape). nestedOptionsFor then plainly forwards the accumulated chain.
 	if opts.BuildDir != "" {
 		opts.OuterBuildDirs = append(append([]string(nil), opts.OuterBuildDirs...), opts.BuildDir)
+	}
+	// Accumulate THIS (outer) build's CONSUMED build-dir sources onto the ancestor
+	// demand chain, so a nested satellite's OUTPUT_DIR orphan pass — which has the
+	// `cmake -P` edge but no demand of its own (project(NONE) consumes nothing) —
+	// can attribute the orphan the OUTER project consumes. cc.ConsumedBuildRel was
+	// just seeded above (seedConsumedDemand), so it's available here. Keys are this
+	// build's build-relative form.
+	if len(cc.ConsumedBuildRel) > 0 {
+		acc := append([]string(nil), opts.OuterConsumedBuildRel...)
+		for src := range cc.ConsumedBuildRel {
+			acc = append(acc, src)
+		}
+		opts.OuterConsumedBuildRel = acc
 	}
 	for _, nb := range opts.NestedBuilds {
 		nestedPkg, nestedStatus, err := lowerOneNestedBuild(nb, opts, hostSrc)

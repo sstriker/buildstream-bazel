@@ -43,8 +43,8 @@ func (cc *codegenContext) recoverOutputDirOrphanEdges(g *ninja.Graph, cmakeSrc, 
 	if cc == nil || g == nil || !cc.CMakeScriptTrace || cc.CMakeBinary == "" || buildDir == "" {
 		return
 	}
-	if len(cc.ConsumedBuildRel) == 0 {
-		return // no demand side — nothing a consumer needs a producer for
+	if len(cc.ConsumedBuildRel) == 0 && len(cc.OuterConsumedBuildRel) == 0 {
+		return // no demand side — nothing a consumer (local OR outer) needs a producer for
 	}
 	edges := ninja.CustomCommandEdges(g)
 	for _, b := range edges {
@@ -128,7 +128,7 @@ func (cc *codegenContext) recoverOutputDirOrphans(b *ninja.Build, cmd, cmakeSrc,
 		if !writeDirs[path.Dir(o)] {
 			continue
 		}
-		if st, err := os.Stat(filepath.Join(buildDir, filepath.FromSlash(o))); err != nil || st.IsDir() {
+		if !cc.orphanOnDisk(o, buildDir) {
 			continue // the re-trace didn't actually produce it — don't claim it
 		}
 		attributed = append(attributed, o)
@@ -210,7 +210,12 @@ func (cc *codegenContext) extractOutputDirOrphanTool(b *ninja.Build, script, cma
 	if len(calls) == 0 {
 		return false
 	}
-	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir}
+	// outerBuildDirs lets argvWritesToDir anchor a CROSS-BOUNDARY OUTPUT_DIR: a
+	// nested satellite's tool writes into `<OUTER_BUILD>/<outsParent>`, which only
+	// resolves to outsParent ("gen") once the outer build dirs are known. Without
+	// it the cross-boundary tool argv looks like it writes outside the build tree
+	// and the extract declines to a bake (the satellite's regression).
+	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir, outerBuildDirs: cc.OuterBuildDirs}
 	var chosen []string
 	for _, raw := range calls {
 		c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))
@@ -263,17 +268,57 @@ func (cc *codegenContext) extractOutputDirOrphanTool(b *ninja.Build, script, cma
 // unclaimedConsumedOrphans returns the consumed build-dir sources (codemodel
 // demand) that no ninja edge produces (cc.NinjaOuts) and no earlier recovery
 // already claimed (cc.outputClaimed) — the orphan set the OUTPUT_DIR attribution
-// draws from. Sorted for deterministic emission.
+// draws from. Sorted and deduped for deterministic emission.
+//
+// Demand has TWO sources, so a satellite sub-project whose `cmake -P` edges
+// produce sources the OUTER project consumes can still attribute them:
+//
+//   - cc.ConsumedBuildRel — the LOCAL demand (a compile target in THIS cmake
+//     build consumes the source). Keys are relative to THIS build dir.
+//   - cc.OuterConsumedBuildRel — the CROSS-BOUNDARY demand threaded down from the
+//     outer project (an outer compile target consumes a source THIS nested edge
+//     produces into the outer build tree). Keys are relative to the OUTER build
+//     dir; the on-disk corroboration in recoverOutputDirOrphans resolves them
+//     against cc.OuterBuildDirs.
 func (cc *codegenContext) unclaimedConsumedOrphans() []string {
-	var out []string
-	for o := range cc.ConsumedBuildRel {
+	seen := map[string]bool{}
+	add := func(o string) {
 		if cc.NinjaOuts[o] || cc.outputClaimed(o) {
-			continue
+			return
 		}
+		seen[o] = true
+	}
+	for o := range cc.ConsumedBuildRel {
+		add(o)
+	}
+	for _, o := range cc.OuterConsumedBuildRel {
+		add(o)
+	}
+	out := make([]string, 0, len(seen))
+	for o := range seen {
 		out = append(out, o)
 	}
 	sort.Strings(out)
 	return out
+}
+
+// orphanOnDisk corroborates that a re-trace materialized the consumed orphan o
+// as a regular file — the same on-disk check the declared-output rungs use,
+// extended to be CROSS-BOUNDARY. A local orphan lands under buildDir; a
+// cross-boundary orphan (one an outer target consumes) lands under an OUTER
+// build dir, since the satellite's `cmake -P` writes into `<OUTER_BUILD>/...`.
+// Try buildDir first, then each cc.OuterBuildDirs root.
+func (cc *codegenContext) orphanOnDisk(o, buildDir string) bool {
+	roots := append([]string{buildDir}, cc.OuterBuildDirs...)
+	for _, root := range roots {
+		if root == "" {
+			continue
+		}
+		if st, err := os.Stat(filepath.Join(root, filepath.FromSlash(o))); err == nil && !st.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 // precreateOutputDirOrphanDirs creates, under buildDir, the directories a
