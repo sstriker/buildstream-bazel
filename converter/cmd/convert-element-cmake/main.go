@@ -581,6 +581,25 @@ func loadConversionInputs(a cli.Args, r *fileapi.Reply, ninjaPath, hostBuildDir 
 	}, nil
 }
 
+// maybeDeferNestedAbort decides whether a pass-1 lowering refusal should be
+// DEFERRED rather than surfaced now. It is deferrable when two-pass is on, a
+// host build dir exists, and configure-time NESTED cmake builds are pending
+// (nestedSink filled): the producer of the refused generated source may live in
+// a sub-build the warm pass hasn't harvested yet — the cross-boundary
+// satellite-codegen shape, where a project(NONE) satellite's `cmake -P` writes a
+// source the OUTER project consumes (no producer edge exists in the outer graph
+// at pass 1). nestedSink is filled before the refusal returns (nested-configure
+// detection runs in the configure-time recovery, ahead of the target walk that
+// refuses). On a deferrable abort it returns (err, nil) — stash the error as the
+// deferred abort and clear the live error so the warm pass + pass-2 re-lower can
+// run; otherwise it returns (nil, err) unchanged.
+func maybeDeferNestedAbort(err error, a cli.Args, hostBuildDir string, nestedSink map[string]string) (deferred, live error) {
+	if err != nil && a.TwoPassGenex && hostBuildDir != "" && len(nestedSink) > 0 {
+		return err, nil
+	}
+	return nil, err
+}
+
 // runLowerPasses runs the lowering pipeline: pass 1, the conditional warm
 // genex and stamp-indirection second passes, and the per-config bake fold.
 // The in fields destructure into run()'s original local names so the pass
@@ -715,6 +734,12 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	// threaded into the re-lifts so the forwarded value lifts to stamp_values
 	// rather than baking.
 	var recoveredStampForwards []shadow.ParentScopeForward
+	// deferredNestedAbort holds a pass-1 refusal we chose to defer because
+	// configure-time nested cmake builds are pending — their warm-pass harvest +
+	// the pass-2 re-lower may produce the source the refusal was about (the
+	// cross-boundary satellite-codegen shape). Re-surfaced after the warm pass if
+	// no usable package materialized.
+	var deferredNestedAbort error
 	pkg, err := runToIR(literalSink, nil, nil, nil)
 	if err != nil {
 		// A pass-1 abort on a forwarded stamp (git_describe() helper return,
@@ -746,6 +771,12 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 				fmt.Fprintf(os.Stderr, "convert-element-cmake: recovered pass-1 capture abort via the dead-capture analysis (%d silencing capture(s) cleared).\n", len(dead))
 			}
 		}
+		// A pass-1 abort while configure-time NESTED cmake builds are pending is
+		// DEFERRABLE — see maybeDeferNestedAbort. Defer to the warm pass + pass-2
+		// re-lower below; if pass-2 still can't produce the source the refusal
+		// re-surfaces (via err2, or the deferredNestedAbort re-raise when no warm
+		// round recovered).
+		deferredNestedAbort, err = maybeDeferNestedAbort(err, a, hostBuildDir, nestedSink)
 		if err != nil {
 			return nil, err
 		}
@@ -798,6 +829,14 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 			}
 			pkg = pkg3
 		}
+	}
+	// Deferred pass-1 abort with no usable package: the warm pass harvested no
+	// nested build (or it produced nothing), so the refused generated source's
+	// producer never materialized from a sub-build — surface the original refusal
+	// rather than proceeding with a nil package. (When the warm pass DID re-lower,
+	// a still-unresolved source already surfaced via err2/err3 above.)
+	if deferredNestedAbort != nil && pkg == nil {
+		return nil, deferredNestedAbort
 	}
 
 	// Per-config bake fold (conditional, cold): a multi-config configure runs
