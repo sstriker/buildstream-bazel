@@ -102,7 +102,7 @@ func (cc *codegenContext) recoverCmakeScriptCodegen(b *ninja.Build, cmd, scriptA
 	// claim supersedes the frozen copy-bake (bakeBuildDirCopyOutput, which then
 	// defers to the existing claim). Declines for any other shape →
 	// recoverExecuteProcess handles the calls unchanged.
-	if name, ok := cc.recoverTempDirToolRelocate(b, calls, relocs, cmakeSrc, buildDir, relOut, g); ok {
+	if name, ok := cc.recoverTempDirToolRelocate(b, calls, relocs, cmakeSrc, buildDir, relOut, g, nil); ok {
 		cc.SeenBuilds[b] = name
 		return name, true
 	}
