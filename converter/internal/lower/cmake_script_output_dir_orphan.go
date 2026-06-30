@@ -6,6 +6,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 	"github.com/sstriker/buildstream-bazel/internal/shadow"
@@ -103,6 +104,15 @@ func (cc *codegenContext) recoverOutputDirOrphans(b *ninja.Build, cmd, cmakeSrc,
 	// `-D` args carry its absolute path), which both reveals the write dirs AND
 	// puts the orphan bytes on disk for corroboration.
 	dArgs := extractCmakePDashArgs(cmd)
+	// Pre-create the OUTPUT_DIR before the standalone re-trace. The real custom
+	// command runs a sibling `cmake -E make_directory <OUTPUT_DIR>` COMMAND first,
+	// which the standalone `cmake -P` re-trace does NOT — so a TOOL the script
+	// runs into OUTPUT_DIR (`sh gen.sh <dir>`) would fail on the missing dir,
+	// truncating the trace and leaving the orphans unmaterialized. Create the
+	// stamp outputs' dirs and any `-D<VAR>=<build-subdir>` directory the args
+	// carry (the OUTPUT_DIR is passed as such a cache arg). Mirrors the ladder's
+	// recoverCmakeScriptCodegen pre-create; harmless for the file(WRITE) shape.
+	cc.precreateOutputDirOrphanDirs(b, dArgs, cmakeSrc, buildDir)
 	writeDirs := cc.tracedScriptWriteDirs(script, dArgs, cmakeSrc, buildDir)
 	if len(writeDirs) == 0 {
 		return
@@ -144,6 +154,18 @@ func (cc *codegenContext) recoverOutputDirOrphans(b *ninja.Build, cmd, cmakeSrc,
 	declaredOuts = dedupSorted(declaredOuts)
 
 	n := len(cc.Genrules)
+	// EXTRACT over BAKE: if the script writes the orphans with a real TOOL (an
+	// execute_process the script ran into OUTPUT_DIR), recover a REGENERATING
+	// genrule that re-runs that tool — higher fidelity than freezing the bytes.
+	// Declines for the file(WRITE) literal shape (no tool writes the orphans),
+	// which then falls through to the byte bake below — correct for cmake-op
+	// writes (no tool to extract).
+	if cc.extractOutputDirOrphanTool(b, script, cmakeSrc, buildDir, dArgs, attributed, declaredOuts, g) {
+		for i := n; i < len(cc.Genrules); i++ {
+			cc.Genrules[i].Tags = append(cc.Genrules[i].Tags, "cmake-codegen-output-dir-orphan")
+		}
+		return
+	}
 	if _, _, ok := bakeCmakeScriptGenrule(cc, b, cmd, script, buildDir, g, declaredOuts); !ok {
 		// A failed bake may have registered SOME outputs before hitting a missing
 		// one; roll the appended genrules back so a partial leaves no half-emitted
@@ -156,6 +178,83 @@ func (cc *codegenContext) recoverOutputDirOrphans(b *ninja.Build, cmd, cmakeSrc,
 	for i := n; i < len(cc.Genrules); i++ {
 		cc.Genrules[i].Tags = append(cc.Genrules[i].Tags, "cmake-codegen-output-dir-orphan")
 	}
+}
+
+// extractOutputDirOrphanTool recovers the OUTPUT_DIR orphan codegen as a
+// REGENERATING tool genrule (extract over bake): when a SINGLE liftable tool
+// call in the re-traced script writes into the orphans' directory (a python3 /
+// protoc / sh the script ran into OUTPUT_DIR), substitute that tool argv for
+// `cmake -P <script>` and emit a genrule declaring the attributed orphans (+ the
+// edge's stamp) via emitRecoveredGenrule's outsOverride — which anchors the
+// tool's OUTPUT_DIR to $(RULEDIR) and registers each declared out in
+// cc.OutToGenrule. Returns true on success.
+//
+// Declines (→ caller bakes, never worse than before) when: the orphans don't
+// share one parent dir (the single-writer selection needs the OUTPUT_DIR), the
+// re-trace yields no calls, NO liftable tool writes into the orphans' dir (the
+// file(WRITE) literal shape — there is no tool to extract, so the bake is the
+// right answer), more than one does (ambiguous), or the emit didn't end up
+// claiming every attributed orphan (all-or-nothing — rolled back so the bake
+// still covers the whole set).
+func (cc *codegenContext) extractOutputDirOrphanTool(b *ninja.Build, script, cmakeSrc, buildDir string, dArgs, attributed, declaredOuts []string, g *ninja.Graph) bool {
+	outsParent := path.Dir(attributed[0])
+	for _, o := range attributed {
+		if path.Dir(o) != outsParent {
+			return false
+		}
+	}
+	calls, _ := cc.expandCommandSourcesAndRelocations(script, dArgs, cmakeSrc, buildDir)
+	if len(calls) == 0 {
+		return false
+	}
+	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir}
+	var chosen []string
+	for _, raw := range calls {
+		c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))
+		if !argvCodegenEligibleRelaxed(c) || !argvToolLiftable(c.Commands[0][0], anc, cc) {
+			continue
+		}
+		if !argvWritesToDir(c.Commands[0], outsParent, anc) {
+			continue
+		}
+		if chosen != nil {
+			return false // ambiguous producer — bake rather than guess
+		}
+		chosen = c.Commands[0]
+	}
+	if chosen == nil {
+		return false // no tool writes the orphans (file(WRITE) literals) → bake
+	}
+	// All-or-nothing checkpoint (the same shape tryStandaloneCmakeScriptCodegen
+	// uses): checkpointCodegen snapshots Genrules + OutToGenrule +
+	// OutToNativeConsumerDep + the recognizer/stamp maps, so restoreCodegen unwinds
+	// a recognizer match (OutToNativeConsumerDep) too, not just the genrule
+	// fallback. SeenBuilds is keyed by *ninja.Build (not an output path) so the
+	// checkpoint doesn't cover it — guard it separately: delete the key on rollback
+	// only if it was ABSENT before (writing back "" would leave a phantom
+	// present-with-empty-value entry a downstream `_, ok := SeenBuilds[b]` misreads).
+	cp := cc.checkpointCodegen()
+	_, hadSeen := cc.SeenBuilds[b]
+	_, name, err := cc.emitRecoveredGenrule(b, strings.Join(chosen, " "), cmakeSrc, buildDir, attributed[0], g, declaredOuts)
+	if err != nil {
+		return false
+	}
+	// Every attributed orphan must be claimed, else the genrule covers only part of
+	// the set — roll back so the bake still covers the whole edge.
+	for _, o := range attributed {
+		if !cc.outputClaimed(o) {
+			cc.restoreCodegen(cp)
+			if !hadSeen {
+				delete(cc.SeenBuilds, b)
+			}
+			return false
+		}
+	}
+	// The substituted tool replaced `cmake -P <script>`, so the wrapper `.cmake`
+	// (a DEPENDS input genruleSrcs carried) is now a dead src — drop it (the same
+	// cleanup the tool-shape recoveries apply, G10).
+	cc.dropSubstitutedWrapperScriptSrc(name)
+	return true
 }
 
 // unclaimedConsumedOrphans returns the consumed build-dir sources (codemodel
@@ -174,14 +273,69 @@ func (cc *codegenContext) unclaimedConsumedOrphans() []string {
 	return out
 }
 
+// precreateOutputDirOrphanDirs creates, under buildDir, the directories a
+// standalone re-trace of the script needs to exist UP FRONT: the edge's stamp
+// outputs' dirs and any `-D<VAR>=<build-subdir>` directory the cache args carry
+// (the OUTPUT_DIR is handed to the script that way). The real custom command runs
+// a sibling `cmake -E make_directory` COMMAND before the `cmake -P`, which the
+// standalone re-trace doesn't — so a tool the script runs into OUTPUT_DIR would
+// fail on the missing dir. Only paths that anchor under buildDir are created.
+func (cc *codegenContext) precreateOutputDirOrphanDirs(b *ninja.Build, dArgs []string, cmakeSrc, buildDir string) {
+	mkUnderBuild := func(p string) {
+		if p == "" {
+			return
+		}
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(buildDir, filepath.FromSlash(p))
+		}
+		if rel, ok := relativeIfInsideRelaxed(buildDir, p); ok && rel != "." && !strings.HasPrefix(rel, "../") {
+			_ = os.MkdirAll(p, 0o755)
+		}
+	}
+	for _, o := range genruleOuts(b, buildDir) {
+		mkUnderBuild(path.Dir(o)) // the stamp's dir — typically IS the OUTPUT_DIR
+	}
+	for _, d := range dArgs {
+		eq := strings.IndexByte(d, '=')
+		if eq < 0 {
+			continue
+		}
+		v := d[eq+1:]
+		// Always create the value's PARENT (safe whether the value is a dir or a
+		// file). Create the value ITSELF as a dir only when it has no file
+		// extension — an OUTPUT_DIR (`gen`) vs a file arg (`manifest.cmake`): a
+		// MkdirAll on a file path would create a DIRECTORY where the script then
+		// can't write the file, truncating the trace.
+		mkUnderBuild(filepath.Dir(v))
+		if path.Ext(filepath.ToSlash(v)) == "" {
+			mkUnderBuild(v)
+		}
+	}
+}
+
 // tracedScriptWriteDirs re-traces a `cmake -P <script>` and returns the set of
-// build-relative DIRECTORIES its file() writers + configure_file outputs land
-// in — the "OUTPUT_DIR" detected from where the writes ACTUALLY go (not a
-// hardcoded variable name). Each write target is an absolute path (the trace is
-// expanded); anchored under buildDir and reduced to its parent dir. A write that
-// anchors outside the build dir (or to the build root itself) is ignored — the
-// orphan attribution only owns sources a compile target consumes from a build
-// SUBDIR. Empty when the trace fails or the script writes nothing build-dir-local.
+// build-relative DIRECTORIES the script's writes land in — the "OUTPUT_DIR"
+// detected from where the writes ACTUALLY go (not a hardcoded variable name).
+// Two write channels:
+//
+//   - cmake-level writes — file(WRITE/APPEND/…) + configure_file outputs. Each
+//     target is an absolute path reduced to its PARENT dir (the file lands in
+//     that dir).
+//   - TOOL writes — the script's execute_process tool argvs. A tool the script
+//     runs (python3 / protoc / sh) writes its outputs into a directory it's
+//     handed as an operand (an OUTPUT_DIR), which the cmake trace records only as
+//     the argv, not as a file write. So each build-subdir an execute_process
+//     argv NAMES is a candidate write dir (the operand itself when it IS a dir,
+//     and its parent when the operand is a file in that dir). The downstream
+//     attribution gates this — an orphan is claimed only when it's under such a
+//     dir AND the re-trace materialized it on disk — so naming a dir the tool
+//     merely reads from can't over-attribute (a read input isn't an unclaimed
+//     consumed orphan).
+//
+// A write that anchors outside the build dir (or to the build root itself) is
+// ignored — the orphan attribution only owns sources a compile target consumes
+// from a build SUBDIR. Empty when the trace fails or the script writes nothing
+// build-dir-local.
 func (cc *codegenContext) tracedScriptWriteDirs(scriptArg string, dArgs []string, cmakeSrc, buildDir string) map[string]bool {
 	traceRaw, err := TraceCmakeScript(context.Background(), cc.CMakeBinary, scriptArg, dArgs, "")
 	if err != nil {
@@ -189,30 +343,59 @@ func (cc *codegenContext) tracedScriptWriteDirs(scriptArg string, dArgs []string
 	}
 	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir}
 	dirs := map[string]bool{}
-	addOutput := func(abs string) {
+	// addFileDir adds the PARENT dir of a written FILE (a file(WRITE) / configure_file
+	// output lands IN its parent dir).
+	addFileDir := func(abs string) {
 		rel, ok := executeProcessAnchorOutput(abs, anc)
 		if !ok || rel == "" {
 			return
 		}
-		dir := path.Dir(rel)
-		if dir == "." || dir == "" {
-			return // the build root itself — too coarse to own a consumed orphan
+		if dir := path.Dir(rel); dir != "." && dir != "" {
+			dirs[dir] = true
 		}
-		dirs[dir] = true
 	}
+	// addArgvDir adds a build-subdir a tool argv NAMES: the operand itself when it
+	// resolves to a build-subdir (the OUTPUT_DIR-is-a-dir case), and its parent
+	// when the operand is a file within a build-subdir (the file-in-OUTPUT_DIR case).
+	addArgvDir := func(abs string) {
+		rel, ok := executeProcessAnchorOutput(abs, anc)
+		if !ok || rel == "" {
+			return
+		}
+		if rel != "." {
+			dirs[rel] = true
+		}
+		if dir := path.Dir(rel); dir != "." && dir != "" {
+			dirs[dir] = true
+		}
+	}
+	dec := shadow.Decode(traceRaw, cmakeSrc, nil)
 	// file(WRITE/APPEND/TOUCH/COPY/COPY_FILE) writers. cmakeSrc as sourceRoot,
 	// buildDir as buildRoot so a build-tree-issued (generated+include()d) recipe
 	// writer is kept (the [13]/[14] in-project + projectIO gate).
 	for _, w := range shadow.ExtractFileWriterCalls(traceRaw, cmakeSrc, buildDir) {
 		for _, o := range w.Outputs {
-			addOutput(o)
+			addFileDir(o)
 		}
 	}
 	// configure_file outputs (the COPYONLY / template-substituted file copy a
 	// script can use to emit a generated source).
-	for _, c := range shadow.Decode(traceRaw, cmakeSrc, nil).ConfigFiles {
+	for _, c := range dec.ConfigFiles {
 		if c.Output != "" {
-			addOutput(c.Output)
+			addFileDir(c.Output)
+		}
+	}
+	// execute_process tool argvs — the tool-driven OUTPUT_DIR channel. Both in-tree
+	// and out-of-tree calls (the script may run a tool from anywhere); every
+	// build-subdir an argv operand names is a candidate.
+	for _, calls := range [][]shadow.ExecuteProcessCall{dec.ExecuteProcesses, dec.OutOfTreeExecuteProcesses} {
+		for _, c := range calls {
+			if len(c.Commands) == 0 {
+				continue
+			}
+			for _, a := range c.Commands[0][1:] {
+				addArgvDir(stripArgvPathPrefix(argvFlagValue(a)))
+			}
 		}
 	}
 	return dirs
