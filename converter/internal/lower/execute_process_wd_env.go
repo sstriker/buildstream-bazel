@@ -155,11 +155,17 @@ func pipelineHasStampOrProbeStage(call shadow.ExecuteProcessCall) bool {
 		}
 		argv = stripped
 		// Also peel bare shell wrappers (env / taskset / nice / … via
-		// realExecuteProcessDriver) so a wrapped stamp like `env GIT_DIR=… git
-		// describe | head` classifies by its REAL driver (git), not the wrapper —
-		// the same peel the non-pipeline classification path applies.
-		driver := realExecuteProcessDriver(argv)
-		if stampDrivers[driver] || strongProbeDrivers[driver] || executeProcessRunsHostDetectionScript(argv) {
+		// stripWrapperPrefix) so BOTH the driver classification and the
+		// host-detection-script check see the real command: `env GIT_DIR=… git
+		// describe | head` is the git stamp it wraps, and `env sh config.guess |
+		// head` is the config.guess probe it wraps (else a wrapped probe with
+		// OUTPUT_FILE would mis-lift as file-producing → host leakage).
+		peeled := stripWrapperPrefix(argv)
+		if len(peeled) == 0 {
+			peeled = argv
+		}
+		driver := executeProcessDriverBasename(peeled[0])
+		if stampDrivers[driver] || strongProbeDrivers[driver] || executeProcessRunsHostDetectionScript(peeled) {
 			return true
 		}
 	}
