@@ -203,7 +203,9 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 		if outDir != "" {
 			rel = filepath.ToSlash(filepath.Join(outDir, d))
 		}
-		if st, err := os.Stat(filepath.Join(anc.hostBuildDir, filepath.FromSlash(rel))); err != nil || st.IsDir() {
+		// Corroborate across the outer build dirs too: a cross-boundary codegen
+		// tool's derived outputs land under an OUTER build tree, not hostBuildDir.
+		if _, ok := fileUnderBuildRoots(rel, anc.hostBuildDir, anc.outerBuildDirs); !ok {
 			return nil, false
 		}
 		rels = append(rels, rel)
@@ -317,13 +319,20 @@ func discoverCodegenOutDirFiles(outDir string, anc execAnchors, cc *codegenConte
 	if outDir == "" || outDir == "." || anc.hostBuildDir == "" {
 		return nil
 	}
-	root := filepath.Join(anc.hostBuildDir, filepath.FromSlash(outDir))
+	// The out dir may live in an OUTER build tree (cross-boundary codegen): find
+	// the OWNING root, walk under it, and relativize against it — walking the local
+	// hostBuildDir/outDir would find nothing and discover no outputs.
+	owner, ok := dirUnderBuildRoots(outDir, anc.hostBuildDir, anc.outerBuildDirs)
+	if !ok {
+		return nil
+	}
+	root := filepath.Join(owner, filepath.FromSlash(outDir))
 	var rels []string
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		buildRel, ok := relativeIfInsideRelaxed(anc.hostBuildDir, p)
+		buildRel, ok := relativeIfInsideRelaxed(owner, p)
 		if !ok || cc.NinjaOuts[buildRel] || cc.outputClaimed(buildRel) {
 			return nil
 		}
@@ -454,8 +463,9 @@ func classifyArgvOutputs(argv []string, anc execAnchors, cc *codegenContext) (ma
 		if cc.outputClaimed(rel) {
 			continue
 		}
-		st, err := os.Stat(filepath.Join(anc.hostBuildDir, filepath.FromSlash(rel)))
-		if err != nil || st.IsDir() {
+		// The anchored rel can be OUTER-relative (a cross-boundary output the tool
+		// wrote into an ancestor build tree); corroborate across the outer roots.
+		if _, ok := fileUnderBuildRoots(rel, anc.hostBuildDir, anc.outerBuildDirs); !ok {
 			return nil, false
 		}
 		outs[i] = rel

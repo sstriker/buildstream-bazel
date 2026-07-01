@@ -395,6 +395,20 @@ func fileUnderBuildRoots(rel, buildDir string, outerDirs []string) (root string,
 	return "", false
 }
 
+// dirUnderBuildRoots is fileUnderBuildRoots for a DIRECTORY: it returns the first
+// corroboration root (buildDir, then each outer build dir) under which rel exists
+// as a directory. Used by the codegen out-dir walk, whose OUTPUT_DIR may live in
+// an outer build tree cross-boundary — the walk must then enumerate under the
+// OWNING root and relativize against it, not the local build dir.
+func dirUnderBuildRoots(rel, buildDir string, outerDirs []string) (root string, ok bool) {
+	for _, r := range buildCorroborationRoots(buildDir, outerDirs) {
+		if st, err := os.Stat(filepath.Join(r, filepath.FromSlash(rel))); err == nil && st.IsDir() {
+			return r, true
+		}
+	}
+	return "", false
+}
+
 // precreateOutputDirOrphanDirs creates the directories a standalone re-trace of
 // the script needs to exist UP FRONT: the edge's stamp outputs' dirs and any
 // `-D<VAR>=<build-subdir>` directory the cache args carry (the OUTPUT_DIR is
