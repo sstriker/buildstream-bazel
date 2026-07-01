@@ -1,7 +1,6 @@
 package lower
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -88,7 +87,7 @@ func liftCmakeScriptGenrule(cc *codegenContext, b *ninja.Build, cmd, scriptArg, 
 	// reads fail at action time with a Bazel sandbox miss.
 	tags := []string{"cmake-codegen-cmake-script-lift"}
 	if cc.CMakeScriptTrace && cc.CMakeBinary != "" {
-		traceRaw, err := TraceCmakeScript(context.Background(), cc.CMakeBinary, scriptArg, dArgs, "")
+		traceRaw, err := cc.traceCmakeScriptCached(scriptArg, dArgs, "")
 		if err != nil {
 			return "", fmt.Sprintf("cmake --trace -P %s failed: %v — convert-time trace required for --cmake-script-trace; rerun without it (sandbox miss may occur at Bazel build time) or fix the script", scriptArg, err), false
 		}

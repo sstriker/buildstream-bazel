@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -494,6 +495,19 @@ type codegenContext struct {
 	// caller (main.go); empty disables the trace step.
 	CMakeBinary string
 
+	// scriptTraceCache memoizes `cmake -P <script>` trace runs
+	// (traceCmakeScriptCached) keyed on (scriptPath, dArgs, workDir) — the tuple
+	// that fully determines the trace's output AND its on-disk side effects. The
+	// same script edge is otherwise re-traced many times over: the OUTPUT_DIR
+	// orphan pass traces it for its write dirs AND again for its tool calls; the
+	// over-attribution guard re-traces every OTHER edge per edge (O(N²)); and the
+	// per-target / standalone / nested passes each re-trace it. Caching collapses
+	// all of those to ONE subprocess per unique tuple. Safe because `cmake -P` is
+	// deterministic and idempotent: the first trace materializes the script's
+	// writes under the build dir (for on-disk corroboration); a cache hit skips
+	// the subprocess, but those files are already on disk.
+	scriptTraceCache map[string]scriptTraceResult
+
 	// Warnings is the io.Writer the script lift's sysroot-path
 	// notice writes to. Mirrors lower.Options.Warnings; the
 	// codegenContext copies it so the lift can fire warnings
@@ -673,7 +687,48 @@ func newCodegenContext() *codegenContext {
 		NestedLifted:               map[string]bool{},
 		BuildDirHdrWalked:          map[string]bool{},
 		BuildDirBakedHdrs:          map[string]string{},
+		scriptTraceCache:           map[string]scriptTraceResult{},
 	}
+}
+
+// scriptTraceResult is one memoized `cmake -P` trace: the raw trace bytes and
+// the run's error (a failed trace is cached too, so a script that fails to trace
+// isn't re-run at every call site).
+type scriptTraceResult struct {
+	raw []byte
+	err error
+}
+
+// traceCmakeScriptFn is the trace primitive traceCmakeScriptCached routes
+// through — a package var so a test can count actual subprocess invocations and
+// assert the memo dedupes. Production always uses TraceCmakeScript.
+var traceCmakeScriptFn = TraceCmakeScript
+
+// traceCmakeScriptCached runs TraceCmakeScript for (scriptPath, dArgs, workDir),
+// memoized on cc.scriptTraceCache so each unique tuple is traced ONCE per convert
+// run. The tuple fully determines both the trace output and the on-disk side
+// effects (`cmake -P` is deterministic + idempotent), so a cache hit is
+// byte-identical to a re-run — see the scriptTraceCache field doc. A nil cc /
+// nil cache falls back to an uncached trace (unit-shaped callers).
+func (cc *codegenContext) traceCmakeScriptCached(scriptPath string, dArgs []string, workDir string) ([]byte, error) {
+	if cc == nil || cc.scriptTraceCache == nil {
+		return traceCmakeScriptFn(context.Background(), cc.cmakeBinaryOrEmpty(), scriptPath, dArgs, workDir)
+	}
+	key := scriptPath + "\x00" + strings.Join(dArgs, "\x00") + "\x00" + workDir
+	if r, ok := cc.scriptTraceCache[key]; ok {
+		return r.raw, r.err
+	}
+	raw, err := traceCmakeScriptFn(context.Background(), cc.CMakeBinary, scriptPath, dArgs, workDir)
+	cc.scriptTraceCache[key] = scriptTraceResult{raw: raw, err: err}
+	return raw, err
+}
+
+// cmakeBinaryOrEmpty returns cc.CMakeBinary, or "" for a nil cc.
+func (cc *codegenContext) cmakeBinaryOrEmpty() string {
+	if cc == nil {
+		return ""
+	}
+	return cc.CMakeBinary
 }
 
 // adoptIncludedRecipeOutput attributes a consumed-but-unproduced GENERATED

@@ -1,7 +1,6 @@
 package lower
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -341,7 +340,7 @@ func (cc *codegenContext) expandScriptCalls(scriptArg string, dArgs []string, cm
 	}
 	visited[key] = true
 
-	traceRaw, err := TraceCmakeScript(context.Background(), cc.CMakeBinary, scriptArg, dArgs, "")
+	traceRaw, err := cc.traceCmakeScriptCached(scriptArg, dArgs, "")
 	if err != nil {
 		return nil
 	}
