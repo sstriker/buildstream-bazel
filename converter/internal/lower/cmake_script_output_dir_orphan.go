@@ -223,18 +223,12 @@ func (cc *codegenContext) extractOutputDirOrphanTool(b *ninja.Build, script, cma
 	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir, outerBuildDirs: cc.OuterBuildDirs}
 	var chosen []string
 	for _, raw := range calls {
-		c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))
-		// A `cmake -E copy[_if_different]|rename|copy_directory` whose destination is
-		// OUTPUT_DIR is a RELOCATION, not the generator — skip it so it isn't emitted
-		// as the producer (a broken genrule copying a tempdir file nothing generates).
-		// The temp-dir-relocate path below recovers the real tool behind it.
-		if isCmakeRelocationCall(c) {
-			continue
-		}
-		if !argvCodegenEligibleRelaxed(c) || !argvToolLiftable(c.Commands[0][0], anc, cc) {
-			continue
-		}
-		if !argvWritesToDir(c.Commands[0], outsParent, anc) {
+		// producerCandidate bundles the relocation skip (a `cmake -E copy … OUTPUT_DIR`
+		// is a relocation, not the generator) + argvCodegenEligibleRelaxed + liftable.
+		// Site test: the tool writes DIRECTLY into the orphans' dir. The temp-dir-
+		// relocate path below recovers a tool that instead writes to a tempdir.
+		c, cand := cc.producerCandidate(raw, anc, argvCodegenEligibleRelaxed)
+		if !cand || !argvWritesToDir(c.Commands[0], outsParent, anc) {
 			continue
 		}
 		if chosen != nil {

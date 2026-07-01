@@ -102,11 +102,14 @@ func writeInPlaceDeclared(b *ninja.Build, buildDir, relOut string) (declared []s
 // ambiguous producer; don't guess). Returns the tool argv + its working dir.
 func (cc *codegenContext) writeInPlaceProducer(calls []shadow.ExecuteProcessCall, anc execAnchors, outsParent string) (argv []string, workdir string, ok bool) {
 	for _, raw := range calls {
-		c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))
-		if c.WorkingDirectory == "" || !argvStructurallyLiftableInWrapper(c) {
-			continue
-		}
-		if !argvToolLiftable(c.Commands[0][0], anc, cc) {
+		// producerCandidate bundles the cmake -E relocation skip + eligibility +
+		// liftable. WITHOUT the relocation skip a relocation with its
+		// WORKING_DIRECTORY set to the outputs' dir (`cmake -E copy … WORKING_DIRECTORY <outsParent>`)
+		// shares that dir and gets counted as a producer.
+		c, cand := cc.producerCandidate(raw, anc, argvStructurallyLiftableInWrapper)
+		// Site test: the tool's WORKING_DIRECTORY IS the declared outputs' dir (it
+		// writes them there by basename with no argv-named output).
+		if !cand || c.WorkingDirectory == "" {
 			continue
 		}
 		wdRel, anchored := executeProcessAnchorOutput(c.WorkingDirectory, anc)

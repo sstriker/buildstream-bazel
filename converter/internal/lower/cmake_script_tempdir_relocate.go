@@ -66,6 +66,50 @@ func isCmakeRelocationCall(call shadow.ExecuteProcessCall) bool {
 	return false
 }
 
+// producerCandidate normalizes raw (dead-capture cleared, cmake -E env/chdir
+// unwrapped) and reports whether the result is a relocation-SAFE, liftable tool
+// candidate for a SELECT-ONE producer scan inside a re-traced `cmake -P` wrapper.
+// It bundles the two gates EVERY such scan must share so a new scan can't forget
+// them:
+//
+//   - the `cmake -E copy[_if_different]|rename|copy_directory[_if_different]`
+//     RELOCATION exclusion (isCmakeRelocationCall) — a relocation is already
+//     harvested as a relocation;
+//     it is never the generator, and left in the candidate set it gets mis-picked
+//     as the producer (or forces a spurious "ambiguous producer" decline → bake);
+//   - argvToolLiftable — argv[0] must be a re-runnable tool (not a build-dir
+//     artifact). NB argvToolLiftable does NOT exclude cmake, so the relocation
+//     skip above is what keeps a `cmake -E copy` out.
+//
+// `eligible` is the caller's STRUCTURAL predicate — argvCodegenEligibleRelaxed for
+// the no-WORKING_DIRECTORY scans, argvStructurallyLiftableInWrapper for the
+// WORKING_DIRECTORY-carrying ones — the one axis that legitimately differs per
+// site. The caller keeps its own write-LOCATION test (argvWritesToDir into the
+// outputs' dir, or WORKING_DIRECTORY == that dir, or WD holds the relocation
+// sources). Returns the normalized call for that test. This is the single home
+// of the relocation invariant: fold-all scans (chainStages) deliberately do NOT
+// use it — a copy is a legitimate `cp` stage there.
+func (cc *codegenContext) producerCandidate(raw shadow.ExecuteProcessCall, anc execAnchors, eligible func(shadow.ExecuteProcessCall) bool) (shadow.ExecuteProcessCall, bool) {
+	c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))
+	if isCmakeRelocationCall(c) {
+		return c, false
+	}
+	// Validate the command SHAPE before the injected eligibility predicate, so
+	// producerCandidate doesn't rely on every future `eligible` being defensive
+	// against a malformed (empty Commands) call, and argvToolLiftable's argv[0]
+	// index below is safe.
+	if len(c.Commands) != 1 || len(c.Commands[0]) == 0 {
+		return c, false
+	}
+	if !eligible(c) {
+		return c, false
+	}
+	if !argvToolLiftable(c.Commands[0][0], anc, cc) {
+		return c, false
+	}
+	return c, true
+}
+
 // cmakeRelocateSingle reports a single-file `cmake -E copy|copy_if_different|
 // rename <src> <dst>` relocation (the 2-operand form), returning the raw src +
 // dst. `rename` (an atomic move — the write-to-tempfile-then-rename idiom) maps
@@ -303,14 +347,10 @@ func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []sha
 // direct-write scan applies. ok=false when none qualifies or more than one does.
 func (cc *codegenContext) findSingleTempDirTool(calls []shadow.ExecuteProcessCall, relocate map[string]string, anc execAnchors) (argv []string, workdir string, ok bool) {
 	for _, raw := range calls {
-		c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))
-		if isCmakeRelocationCall(c) {
-			continue
-		}
-		if c.WorkingDirectory == "" || !argvStructurallyLiftableInWrapper(c) {
-			continue
-		}
-		if !argvToolLiftable(c.Commands[0][0], anc, cc) {
+		c, cand := cc.producerCandidate(raw, anc, argvStructurallyLiftableInWrapper)
+		// Site test: the tool must have run in a tempdir (WORKING_DIRECTORY set)
+		// that holds every relocation source.
+		if !cand || c.WorkingDirectory == "" {
 			continue
 		}
 		owns := true
