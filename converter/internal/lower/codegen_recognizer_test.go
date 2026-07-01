@@ -84,6 +84,129 @@ func TestLiftRecognizedExecuteProcess_FeedsDiscoveredOutputs(t *testing.T) {
 	}
 }
 
+// stdoutGenRecognizer models a STDOUT generator: a tool whose sole output is the
+// captured stdout (execute_process OUTPUT_FILE), no --*_out dir. It echoes the
+// converter's single DiscoveredOutput (the anchored OUTPUT_FILE basename) as its
+// DerivedOutput and emits a genrule redirecting the tool's stdout to it.
+type stdoutGenRecognizer struct{}
+
+func (stdoutGenRecognizer) Name() string                  { return "test-stdout-gen" }
+func (stdoutGenRecognizer) Match(cmd CodegenCommand) bool { return cmd.Driver == "sgen" }
+func (stdoutGenRecognizer) Lower(cmd CodegenCommand) (CodegenResult, error) {
+	return CodegenResult{
+		DerivedOutputs: cmd.DiscoveredOutputs,
+		ConsumerDeps:   []string{":sgen_rule"},
+		Targets: []ir.Target{{
+			Name: "sgen_rule", Kind: ir.KindGenrule,
+			GenruleOuts: cmd.DiscoveredOutputs,
+			GenruleCmd:  "sgen $(SRCS) > $@",
+		}},
+	}, nil
+}
+
+// TestLiftRecognizedFileProducing_StdoutGenerator: an OUTPUT_FILE-bearing
+// execute_process running a recognized STDOUT generator lifts to the recognizer's
+// native rule (keyed on the captured OUTPUT_FILE as the output authority) rather
+// than liftFileProducing's raw-host genrule — the last execute_process producer
+// site to gain recognition.
+func TestLiftRecognizedFileProducing_StdoutGenerator(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	writeTree(t, hostSrc, "in.x", "spec\n")
+	writeTree(t, hostBuild, "gen/out.h", "H") // the configure ran the tool → OUTPUT_FILE on disk
+	call := argvCall(hostSrc, "sgen", filepath.Join(hostSrc, "in.x"))
+	call.OutputFile = filepath.Join(hostBuild, "gen/out.h")
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	cc.ExtraRecognizers = []CodegenRecognizer{stdoutGenRecognizer{}}
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("refusals: %+v", refusals)
+	}
+	if len(outs) != 1 || outs[0].RelOutput != "gen/out.h" {
+		t.Fatalf("recognizer should claim the OUTPUT_FILE gen/out.h; got %+v", outs)
+	}
+	if len(cc.Genrules) != 1 || cc.Genrules[0].Name != "sgen_rule" {
+		t.Fatalf("the stdout generator's native rule should be emitted; got %+v", cc.Genrules)
+	}
+}
+
+// TestLiftRecognizedFileProducing_Declines: without --recognize-codegen, and for
+// an unrecognized tool, the OUTPUT_FILE call falls through to liftFileProducing's
+// raw-host genrule (byte-identical to today) — the recognition attempt is
+// strictly additive.
+func TestLiftRecognizedFileProducing_Declines(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	writeTree(t, hostSrc, "in.x", "spec\n")
+	writeTree(t, hostBuild, "gen/out.h", "H")
+	mk := func() shadow.ExecuteProcessCall {
+		c := argvCall(hostSrc, "sgen", filepath.Join(hostSrc, "in.x"))
+		c.OutputFile = filepath.Join(hostBuild, "gen/out.h")
+		return c
+	}
+
+	// Flag off: no recognition, but the raw-host hoist still produces the output.
+	ccOff := newCodegenContext()
+	ccOff.ExtraRecognizers = []CodegenRecognizer{stdoutGenRecognizer{}}
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{mk()}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, ccOff)
+	if len(refusals) != 0 || len(outs) != 1 || outs[0].RelOutput != "gen/out.h" {
+		t.Fatalf("flag-off must still hoist the OUTPUT_FILE via liftFileProducing; outs=%+v refusals=%+v", outs, refusals)
+	}
+	if len(ccOff.Genrules) != 1 || ccOff.Genrules[0].Name == "sgen_rule" {
+		t.Fatalf("flag-off must NOT emit the recognizer's rule; got %+v", ccOff.Genrules)
+	}
+
+	// Flag on but no matching recognizer: same raw-host fallback.
+	ccNoMatch := newCodegenContext()
+	ccNoMatch.RecognizeCodegen = true // no ExtraRecognizers registered
+	outs, _ = recoverExecuteProcess([]shadow.ExecuteProcessCall{mk()}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, ccNoMatch)
+	if len(outs) != 1 || outs[0].RelOutput != "gen/out.h" || ccNoMatch.Genrules[0].Name == "sgen_rule" {
+		t.Fatalf("no-match must fall through to the raw-host hoist; outs=%+v gen=%+v", outs, ccNoMatch.Genrules)
+	}
+}
+
+// fixedOutRecognizer models a tool that derives a FIXED output from convention
+// (like protoc naming foo.pb.cc from foo.proto), IGNORING DiscoveredOutputs — so
+// its derived output does NOT correspond to a captured OUTPUT_FILE.
+type fixedOutRecognizer struct{}
+
+func (fixedOutRecognizer) Name() string                  { return "test-fixed-out" }
+func (fixedOutRecognizer) Match(cmd CodegenCommand) bool { return cmd.Driver == "ddr" }
+func (fixedOutRecognizer) Lower(CodegenCommand) (CodegenResult, error) {
+	return CodegenResult{
+		DerivedOutputs: []string{"derived.h"},
+		Targets:        []ir.Target{{Name: "ddr_rule", Kind: ir.KindGenrule, GenruleOuts: []string{"derived.h"}}},
+	}, nil
+}
+
+// TestLiftRecognizedFileProducing_DirToolWithLogDeclines: a dir-output tool that
+// merely captures a stdout LOG via OUTPUT_FILE must NOT be recognized through the
+// OUTPUT_FILE path — its derived outputs anchor under the log's dir but live
+// elsewhere (its real --*_out dir), so they fail on-disk corroboration and the
+// call falls through to liftFileProducing's raw-host hoist of the log.
+func TestLiftRecognizedFileProducing_DirToolWithLogDeclines(t *testing.T) {
+	hostSrc, hostBuild := t.TempDir(), t.TempDir()
+	writeTree(t, hostSrc, "in.x", "spec\n")
+	writeTree(t, hostBuild, "log.txt", "ran\n") // the OUTPUT_FILE log exists on disk
+	// NB: "derived.h" is deliberately NOT on disk under the log's dir.
+	call := argvCall(hostSrc, "ddr", filepath.Join(hostSrc, "in.x"))
+	call.OutputFile = filepath.Join(hostBuild, "log.txt")
+	cc := newCodegenContext()
+	cc.RecognizeCodegen = true
+	cc.ExtraRecognizers = []CodegenRecognizer{fixedOutRecognizer{}}
+	outs, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, hostSrc, hostSrc, hostBuild, hostBuild, true, nil, nil, nil, nil, cc)
+	if len(refusals) != 0 {
+		t.Fatalf("refusals: %+v", refusals)
+	}
+	// Falls through to the raw-host hoist: the LOG is the declared output, the
+	// recognizer's rule is NOT emitted (its derived output didn't corroborate).
+	if len(outs) != 1 || outs[0].RelOutput != "log.txt" {
+		t.Fatalf("dir+log tool must fall through to hoist the OUTPUT_FILE log; got %+v", outs)
+	}
+	if len(cc.Genrules) != 1 || cc.Genrules[0].Name == "ddr_rule" {
+		t.Fatalf("the recognizer's rule must NOT be emitted for the dir+log shape; got %+v", cc.Genrules)
+	}
+}
+
 // TestRecognizeOrGenrule_DedupsSameInputAcrossOutDirs: the SAME input run into
 // two output dirs is ONE canonical native rule — the second invocation reuses it
 // (no duplicate target) and wires its outputs to the existing consumer dep.
