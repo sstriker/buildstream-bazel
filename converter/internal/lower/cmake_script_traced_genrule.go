@@ -125,11 +125,11 @@ func argvWritesToDir(argv []string, dir string, anc execAnchors) bool {
 // SUBSTITUTE the real tool argv for `cmake -P <script>` and reuse
 // emitRecoveredGenrule, but that derives srcs from the ninja edge's inputs
 // (genruleSrcs), which still list the now-unused `.cmake` script the wrapper ran.
-// The invariant this relies on: the substituted cmd is the REAL generator argv the
-// tool-shape scan selected — it is what REPLACED the `cmake -P <wrapper>`, so it
-// never names the wrapper, and producerCandidate skipped any `cmake -E` relocation,
-// so it is a real tool, not a cmake helper. (Note argvToolLiftable does NOT itself
-// exclude cmake — a bare `cmake` passes it; the relocation skip is what keeps
+// The invariant this relies on: the substituted cmd is the tool argv the scan
+// selected, which REPLACED the `cmake -P <wrapper>` invocation — so it never names
+// the wrapper `.cmake`. (producerCandidate additionally excludes `cmake -E`
+// relocation helpers from selection; and note argvToolLiftable does NOT itself
+// exclude cmake — a bare `cmake` passes it, so the relocation skip is what keeps
 // `cmake -E copy` out.) So any `.cmake` src the substituted cmd does not reference
 // is the dead wrapper script — a spurious input that bloats the genrule and forces
 // a needless re-run trigger. Drop it.

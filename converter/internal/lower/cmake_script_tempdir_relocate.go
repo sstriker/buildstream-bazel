@@ -94,7 +94,14 @@ func (cc *codegenContext) producerCandidate(raw shadow.ExecuteProcessCall, anc e
 	if isCmakeRelocationCall(c) {
 		return c, false
 	}
-	if !eligible(c) || len(c.Commands) != 1 || len(c.Commands[0]) == 0 {
+	// Validate the command SHAPE before the injected eligibility predicate, so
+	// producerCandidate doesn't rely on every future `eligible` being defensive
+	// against a malformed (empty Commands) call, and argvToolLiftable's argv[0]
+	// index below is safe.
+	if len(c.Commands) != 1 || len(c.Commands[0]) == 0 {
+		return c, false
+	}
+	if !eligible(c) {
 		return c, false
 	}
 	if !argvToolLiftable(c.Commands[0][0], anc, cc) {
