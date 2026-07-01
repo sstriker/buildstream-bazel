@@ -1,7 +1,6 @@
 package lower
 
 import (
-	"context"
 	"os"
 	"path"
 	"path/filepath"
@@ -47,6 +46,28 @@ func (cc *codegenContext) recoverOutputDirOrphanEdges(g *ninja.Graph, cmakeSrc, 
 		return // no demand side — nothing a consumer (local OR outer) needs a producer for
 	}
 	edges := ninja.CustomCommandEdges(g)
+	// Pre-create EVERY `cmake -P` edge's OUTPUT_DIR up front, before any trace.
+	// Each edge is traced from two sites — its own recovery pass AND the
+	// over-attribution guard's cross-edge re-traces (otherScriptEdgeWritesTo) —
+	// and a tool the script runs into a not-yet-created OUTPUT_DIR fails, TRUNCATING
+	// the trace. The main pass pre-creates before its own trace, but the guard did
+	// not, so the two sites could trace the same edge under DIFFERENT preconditions
+	// and get different results. That's harmless when every trace re-runs, but the
+	// trace memo (traceCmakeScriptCached) caches the FIRST result per (script,dArgs)
+	// — so a guard trace that ran before the edge's dir existed would poison the
+	// edge's own pass. Creating all dirs up front makes the precondition uniform, so
+	// every trace of a given edge yields the same (full) result and the memo is sound.
+	for _, b := range edges {
+		cmd, ok := ninja.CommandFor(g, b)
+		if !ok || cmd == "" {
+			continue
+		}
+		cmd = cc.realCmakeCommandForEdge(b, cmd, buildDir)
+		if !usesCmakeScriptMode(cmd) {
+			continue
+		}
+		cc.precreateOutputDirOrphanDirs(b, extractCmakePDashArgs(cmd), cmakeSrc, buildDir)
+	}
 	for _, b := range edges {
 		cmd, ok := ninja.CommandFor(g, b)
 		if !ok || cmd == "" {
@@ -515,7 +536,7 @@ func (cc *codegenContext) precreateOutputDirOrphanDirs(b *ninja.Build, dArgs []s
 // them; `primary` keeps only the real targets, so disjoint subdirs don't
 // contend.
 func (cc *codegenContext) tracedScriptWriteDirs(scriptArg string, dArgs []string, cmakeSrc, buildDir string) (dirs, primary map[string]bool) {
-	traceRaw, err := TraceCmakeScript(context.Background(), cc.CMakeBinary, scriptArg, dArgs, "")
+	traceRaw, err := cc.traceCmakeScriptCached(scriptArg, dArgs, "")
 	if err != nil {
 		return nil, nil
 	}
