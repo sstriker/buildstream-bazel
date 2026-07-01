@@ -9,6 +9,50 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/ninja"
 )
 
+// TestFileAndDirUnderBuildRoots pins the shared cross-boundary corroboration
+// helpers: a generated output/dir is found under the LOCAL build dir OR any outer
+// build dir (buildDir first), fileUnderBuildRoots matches only a non-directory and
+// dirUnderBuildRoots only a directory, and the owning root is returned so a caller
+// can relativize against it.
+func TestFileAndDirUnderBuildRoots(t *testing.T) {
+	buildDir := t.TempDir()
+	outer := t.TempDir()
+	// A file cross-boundary under the outer root, and a dir under the outer root.
+	if err := os.MkdirAll(filepath.Join(outer, "gen"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outer, "gen", "foo.c"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A local file under buildDir (buildDir wins the ordering).
+	if err := os.WriteFile(filepath.Join(buildDir, "local.c"), []byte("y"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Cross-boundary file: found, owning root is the outer dir.
+	if root, ok := fileUnderBuildRoots("gen/foo.c", buildDir, []string{outer}); !ok || root != outer {
+		t.Errorf("fileUnderBuildRoots(gen/foo.c) = (%q,%v), want (%q,true)", root, ok, outer)
+	}
+	// Local file: found under buildDir (checked first).
+	if root, ok := fileUnderBuildRoots("local.c", buildDir, []string{outer}); !ok || root != buildDir {
+		t.Errorf("fileUnderBuildRoots(local.c) = (%q,%v), want (%q,true)", root, ok, buildDir)
+	}
+	// Without the outer root, the cross-boundary file is NOT found (the pre-fix bug).
+	if _, ok := fileUnderBuildRoots("gen/foo.c", buildDir, nil); ok {
+		t.Error("fileUnderBuildRoots without outer roots must miss the cross-boundary file")
+	}
+	// A directory is not a file; a file is not a directory.
+	if _, ok := fileUnderBuildRoots("gen", buildDir, []string{outer}); ok {
+		t.Error("fileUnderBuildRoots must not match a directory")
+	}
+	if root, ok := dirUnderBuildRoots("gen", buildDir, []string{outer}); !ok || root != outer {
+		t.Errorf("dirUnderBuildRoots(gen) = (%q,%v), want (%q,true)", root, ok, outer)
+	}
+	if _, ok := dirUnderBuildRoots("gen/foo.c", buildDir, []string{outer}); ok {
+		t.Error("dirUnderBuildRoots must not match a regular file")
+	}
+}
+
 // TestPrecreateOutputDirOrphanDirs pins the file-vs-dir heuristic the tool-driven
 // extract needs: the OUTPUT_DIR (`-DOUTPUT_DIR=<dir>`, no extension) is created as
 // a directory so a tool the script runs into it doesn't fail on a missing dir,
