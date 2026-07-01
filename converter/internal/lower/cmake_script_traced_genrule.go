@@ -61,13 +61,17 @@ func (cc *codegenContext) recoverTracedToolCommand(b *ninja.Build, calls []shado
 	anc := execAnchors{hostSrcDir: cmakeSrc, recordedSrcDir: cmakeSrc, hostBuildDir: buildDir, recordedBuildDir: buildDir, outerBuildDirs: cc.OuterBuildDirs}
 	var chosen []string
 	for _, raw := range calls {
-		c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))
-		if !argvCodegenEligibleRelaxed(c) || !argvToolLiftable(c.Commands[0][0], anc, cc) {
+		// producerCandidate bundles the cmake -E relocation skip + eligibility +
+		// liftable. WITHOUT the relocation skip a `cmake -E copy a b <outsParent>`
+		// (multi-source / copy_directory into the declared dir) passes argvWritesToDir
+		// and gets mis-picked as the generator, or forces a spurious ambiguous decline.
+		c, cand := cc.producerCandidate(raw, anc, argvCodegenEligibleRelaxed)
+		if !cand {
 			continue
 		}
-		// The producer is the call that writes into the declared outputs' parent
-		// directory (build root or a build SUBDIR) — a `--out=<dir>` flag value
-		// or a bare positional dir anchoring to outsParent.
+		// Site test: the producer writes into the declared outputs' parent directory
+		// (build root or a build SUBDIR) — a `--out=<dir>` flag value or a bare
+		// positional dir anchoring to outsParent.
 		if !argvWritesToDir(c.Commands[0], outsParent, anc) {
 			continue
 		}
@@ -121,11 +125,14 @@ func argvWritesToDir(argv []string, dir string, anc execAnchors) bool {
 // SUBSTITUTE the real tool argv for `cmake -P <script>` and reuse
 // emitRecoveredGenrule, but that derives srcs from the ninja edge's inputs
 // (genruleSrcs), which still list the now-unused `.cmake` script the wrapper ran.
-// The substituted tool is never cmake (argvToolLiftable excludes it) and
-// emitRecoveredGenrule never sees a `cmake -P` cmd (recoverGenrule routes those to
-// recoverCmakeScriptGenrule), so any `.cmake` src the genrule's cmd does not
-// reference is the dead wrapper script — a spurious input that bloats the genrule
-// and forces a needless re-run trigger. Drop it.
+// The substituted tool is never a `cmake -P` script — emitRecoveredGenrule never
+// sees a `cmake -P` cmd (recoverGenrule routes those to recoverCmakeScriptGenrule),
+// and the tool-shape scans skip `cmake -E` relocation calls (producerCandidate)
+// so the substituted argv is a real generator, not a cmake helper. (Note
+// argvToolLiftable does NOT itself exclude cmake — a bare `cmake` passes it; the
+// relocation skip is what keeps `cmake -E copy` out.) So any `.cmake` src the
+// genrule's cmd does not reference is the dead wrapper script — a spurious input
+// that bloats the genrule and forces a needless re-run trigger. Drop it.
 //
 // Scoped to the emitted genrule (looked up by name): a no-op when the emission
 // recognized a native rule instead (no genrule by that name) or the genrule
