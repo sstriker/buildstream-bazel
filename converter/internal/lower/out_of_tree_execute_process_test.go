@@ -1,6 +1,7 @@
 package lower
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -199,6 +200,25 @@ func TestEmitOutOfTreeExecuteProcessTodos_GroupingAndNormalize(t *testing.T) {
 		if strings.Contains(a.Construct, "/b/") {
 			t.Errorf("build dir leaked into construct: %q", a.Construct)
 		}
+	}
+}
+
+// A RECOGNIZED interpreter-led tool (`python3 gen.py`) is recognized by the
+// SCRIPT (codegenRecognitionDriver peels the interpreter), so the todo's
+// recognized_tools label must name gen.py, not the interpreter python3.
+func TestEmitOutOfTreeExecuteProcessTodos_RecognizedInterpreterLabelsScript(t *testing.T) {
+	c := todos.New()
+	notes := []outOfTreeExecNote{
+		{File: "/synth/FooConfig.cmake", Line: 1, Argv: []string{"python3", "gen.py", "--out", "x"}, Signal: signalPrefixTree, Recognized: true},
+	}
+	emitOutOfTreeExecuteProcessTodos(c, notes, "/src", "/b", "/synth")
+	rep := c.Report(todos.Preamble{}, "")
+	if len(rep.Todos) != 1 {
+		t.Fatalf("want 1 todo; got %d", len(rep.Todos))
+	}
+	got := fmt.Sprint(rep.Todos[0].Evidence["recognized_tools"])
+	if !strings.Contains(got, "gen.py") || strings.Contains(got, "python3") {
+		t.Errorf("recognized_tools = %v, want the SCRIPT (gen.py) not the interpreter (python3)", got)
 	}
 }
 

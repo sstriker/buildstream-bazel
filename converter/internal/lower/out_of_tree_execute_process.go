@@ -515,7 +515,11 @@ func emitOutOfTreeExecuteProcessTodos(c *todos.Collector, notes []outOfTreeExecN
 			if !n.Recognized || len(n.Argv) == 0 {
 				continue
 			}
-			if t := executeProcessDriverBasename(n.Argv[0]); t != "" && !seenTool[t] {
+			// Key on the RECOGNIZED driver — the same peel the recognizer used
+			// (codegenRecognitionDriver): an interpreter-led tool (`python3 gen.py`)
+			// is recognized by the SCRIPT (gen.py), so the todo must name gen.py, not
+			// the interpreter. "" (inline code) skips.
+			if t, _ := codegenRecognitionDriver(n.Argv); t != "" && !seenTool[t] {
 				seenTool[t] = true
 				recognizedTools = append(recognizedTools, t)
 			}

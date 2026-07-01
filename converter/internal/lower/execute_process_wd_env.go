@@ -154,7 +154,11 @@ func pipelineHasStampOrProbeStage(call shadow.ExecuteProcessCall) bool {
 			return true
 		}
 		argv = stripped
-		driver := executeProcessDriverBasename(argv[0])
+		// Also peel bare shell wrappers (env / taskset / nice / … via
+		// realExecuteProcessDriver) so a wrapped stamp like `env GIT_DIR=… git
+		// describe | head` classifies by its REAL driver (git), not the wrapper —
+		// the same peel the non-pipeline classification path applies.
+		driver := realExecuteProcessDriver(argv)
 		if stampDrivers[driver] || strongProbeDrivers[driver] || executeProcessRunsHostDetectionScript(argv) {
 			return true
 		}

@@ -112,6 +112,21 @@ func TestRecoverExecuteProcess_Pipeline(t *testing.T) {
 		}
 	})
 
+	t.Run("bare-wrapped-stamp-stage-classifies", func(t *testing.T) {
+		// A stamp stage behind a bare `env` wrapper: the pipeline check must peel
+		// the wrapper (realExecuteProcessDriver) to see the git stamp, not classify
+		// the stage driver as `env`.
+		call := shadow.ExecuteProcessCall{
+			File:       "/src/CMakeLists.txt",
+			Line:       12,
+			Commands:   [][]string{{"env", "GIT_DIR=/x/.git", "git", "describe"}, {"head", "-1"}},
+			OutputFile: "/build/ver.h",
+		}
+		if v := Classify(call); v.Bucket != BucketStamp {
+			t.Fatalf("bare-wrapped stamp-stage pipeline must classify BucketStamp, got %v (%s)", v.Bucket, v.Reason)
+		}
+	})
+
 	t.Run("results-variable-refuses", func(t *testing.T) {
 		call := shadow.ExecuteProcessCall{
 			File:            "/src/CMakeLists.txt",
