@@ -112,6 +112,36 @@ func TestRecoverExecuteProcess_Pipeline(t *testing.T) {
 		}
 	})
 
+	t.Run("bare-wrapped-stamp-stage-classifies", func(t *testing.T) {
+		// A stamp stage behind a bare `env` wrapper: the pipeline check must peel
+		// the wrapper (realExecuteProcessDriver) to see the git stamp, not classify
+		// the stage driver as `env`.
+		call := shadow.ExecuteProcessCall{
+			File:       "/src/CMakeLists.txt",
+			Line:       12,
+			Commands:   [][]string{{"env", "GIT_DIR=/x/.git", "git", "describe"}, {"head", "-1"}},
+			OutputFile: "/build/ver.h",
+		}
+		if v := Classify(call); v.Bucket != BucketStamp {
+			t.Fatalf("bare-wrapped stamp-stage pipeline must classify BucketStamp, got %v (%s)", v.Bucket, v.Reason)
+		}
+	})
+
+	t.Run("bare-wrapped-host-detection-stays-probe", func(t *testing.T) {
+		// `env sh config.guess | head` with OUTPUT_FILE: the wrapper must be peeled
+		// so the host-detection script is seen — else the probe pipeline mis-lifts
+		// as file-producing and leaks the host environment.
+		call := shadow.ExecuteProcessCall{
+			File:       "/src/CMakeLists.txt",
+			Line:       14,
+			Commands:   [][]string{{"env", "sh", "/x/config.guess"}, {"head", "-1"}},
+			OutputFile: "/build/triple.h",
+		}
+		if v := Classify(call); v.Bucket != BucketProbe {
+			t.Fatalf("bare-wrapped host-detection pipeline must classify BucketProbe, got %v (%s)", v.Bucket, v.Reason)
+		}
+	})
+
 	t.Run("results-variable-refuses", func(t *testing.T) {
 		call := shadow.ExecuteProcessCall{
 			File:            "/src/CMakeLists.txt",

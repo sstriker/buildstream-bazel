@@ -667,7 +667,16 @@ func Classify(call shadow.ExecuteProcessCall) ClassifyResult {
 	// chaining as a Bazel rule, and a non-probe/stamp pipeline may
 	// produce a real artifact we'd otherwise silently drop.
 	if len(call.Commands) > 1 {
-		return classifyMultiCommandPipeline(call, driver, argv)
+		// Peel a bare shell wrapper off stage 0 so `env GIT_DIR=… git describe |
+		// head` classifies by its REAL driver (git), not `env`, and pass the PEELED
+		// argv so classifyMultiCommandPipeline's executeProcessRunsHostDetectionScript
+		// check also sees through the wrapper (`env sh config.guess | head` is the
+		// config.guess probe). The same peel the single-command path uses.
+		pArgv := stripWrapperPrefix(argv)
+		if len(pArgv) == 0 {
+			pArgv = argv
+		}
+		return classifyMultiCommandPipeline(call, executeProcessDriverBasename(pArgv[0]), pArgv)
 	}
 
 	// cmake -E builtin recognition first — overrides stamp /
