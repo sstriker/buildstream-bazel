@@ -232,19 +232,14 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 			subPkg = dir
 		}
 	}
-	emit, consumer, ok := cc.dedupRecognizedRule(cmd, res, subPkg)
+	// The execute_process output authority is the recognizer's DERIVED outputs,
+	// anchored+corroborated into rels above (cmake records none) — wire consumers
+	// on those. Shared emission tail with the custom-command path.
+	emit, ok := cc.emitRecognizedRule(cmd, res, subPkg, rels)
 	if !ok {
 		// A DIFFERENT input already owns one of these names here; let the generic
 		// argv / unspecified-output lift emit an output-path-named genrule instead.
 		return nil, false
-	}
-	if consumer != "" {
-		for _, rel := range rels {
-			cc.OutToNativeConsumerDep[rel] = consumer
-			if cc.OutToNativeConsumerPkg != nil {
-				cc.OutToNativeConsumerPkg[rel] = subPkg
-			}
-		}
 	}
 	if len(emit) == 0 {
 		// Deduped against the same input's earlier invocation (a different output
@@ -252,27 +247,7 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 		return rels, true
 	}
 	cc.appendExecProcGenrule(emit...)
-	recordExecProcNativePlacement(cc, emit, subPkg)
 	return rels, true
-}
-
-// recordExecProcNativePlacement records the sub-package for the native rules a
-// recognized execute_process call emitted: per-target on NativeRuleSpec.SubPackage
-// (the split's authoritative source — the pointer is shared with the appended
-// cc.Genrules entry, so it reaches the split) and, for the common unique-name
-// case, the legacy name-keyed cc.NativeRuleSubPackage map. No-op at the root.
-func recordExecProcNativePlacement(cc *codegenContext, emit []ir.Target, subPkg string) {
-	if subPkg == "" {
-		return
-	}
-	for _, t := range emit {
-		if t.NativeRule != nil {
-			t.NativeRule.SubPackage = subPkg
-		}
-		if cc.NativeRuleSubPackage != nil {
-			cc.NativeRuleSubPackage[t.Name] = subPkg
-		}
-	}
 }
 
 // buildDirInputOperands returns the build-relative argv operands that anchor

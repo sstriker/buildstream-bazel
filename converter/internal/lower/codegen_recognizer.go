@@ -206,28 +206,18 @@ func recognizeOrGenrule(cc *codegenContext, cmd CodegenCommand, fallback ir.Targ
 		noteHostCodegenTool(cc, fallback)
 		return []ir.Target{fallback}, false
 	}
-	emit, consumer, ok := cc.dedupRecognizedRule(cmd, res, nativeRuleSubPkg(res, cmd))
+	// The custom-command output authority is cmake's RECORDED outputs (cmd.Outs):
+	// wire consumers on those. Placement is the recognizer's SubPackage / the
+	// output's dir (nativeRuleSubPkg).
+	emit, ok := cc.emitRecognizedRule(cmd, res, nativeRuleSubPkg(res, cmd), cmd.Outs)
 	if !ok {
 		// A DIFFERENT input already owns one of these target names in this package
 		// — emitting would be a duplicate. Fall back to the generic genrule.
 		noteHostCodegenTool(cc, fallback)
 		return []ir.Target{fallback}, false
 	}
-	if cc.OutToNativeConsumerDep != nil && consumer != "" {
-		subPkg := nativeRuleSubPkg(res, cmd)
-		for _, o := range cmd.Outs {
-			cc.OutToNativeConsumerDep[o] = consumer
-			if cc.OutToNativeConsumerPkg != nil {
-				cc.OutToNativeConsumerPkg[o] = subPkg
-			}
-		}
-	}
-	if len(emit) == 0 {
-		// Deduped against the same input's earlier invocation (a different output
-		// dir): outputs wired above; the rule's already emitted + placed.
-		return nil, true
-	}
-	recordNativeRulePlacement(cc, res, cmd)
+	// emit is nil when deduped against the same input's earlier invocation
+	// (outputs already wired, rule already placed) — the caller appends nothing.
 	return emit, true
 }
 
@@ -326,11 +316,55 @@ func nativeRuleSubPkg(res CodegenResult, cmd CodegenCommand) string {
 	return dir
 }
 
+// emitRecognizedRule is the shared recognizer-emission tail both codegen
+// front-ends converge on once a recognizer has MATCHED a command:
+// recognizeOrGenrule (the custom-command / per-target path) and
+// liftRecognizedExecuteProcessCodegen (the execute_process path). It dedups the
+// native rule(s) against an identical earlier invocation, wires each output to
+// the rule's consumer label, and records the rule's sub-package placement.
+// Returns the targets the caller should append (nil when deduped against a prior
+// invocation) and ok=false when a DIFFERENT input already owns one of the rule
+// names in subPkg — the caller then falls back to the generic genrule.
+//
+// The two front-ends differ only in their inputs, which is exactly why this tail
+// is shared rather than reimplemented per family (the recognizer-routing sieve):
+//
+//   - outs is the output set consumers are wired on — cmake's RECORDED Outs on
+//     the custom-command path, the anchored+corroborated DERIVED outputs on the
+//     execute_process path (where cmake records none).
+//   - subPkg is the package the rule(s) land in — the recognizer's SubPackage /
+//     the output's dir on the custom-command path, the derived outputs' dir on
+//     the execute_process path.
+//
+// Centralizing this keeps a fix to dedup / placement / consumer-wiring applying
+// to both families at once instead of drifting between two copies.
+func (cc *codegenContext) emitRecognizedRule(cmd CodegenCommand, res CodegenResult, subPkg string, outs []string) (emit []ir.Target, ok bool) {
+	emit, consumer, ok := cc.dedupRecognizedRule(cmd, res, subPkg)
+	if !ok {
+		return nil, false
+	}
+	if cc.OutToNativeConsumerDep != nil && consumer != "" {
+		for _, o := range outs {
+			cc.OutToNativeConsumerDep[o] = consumer
+			if cc.OutToNativeConsumerPkg != nil {
+				cc.OutToNativeConsumerPkg[o] = subPkg
+			}
+		}
+	}
+	if len(emit) == 0 {
+		// Deduped against the same input's earlier invocation (a different output
+		// dir): outputs wired above; the rule's already emitted + placed.
+		return nil, true
+	}
+	recordNativeRulePlacement(cc, emit, subPkg)
+	return emit, true
+}
+
 // recordNativeRulePlacement records the package each native target lands in. The
 // recognizer names the rule + sets srcs by basename, so the rule must land in
 // the package owning the .proto for the basename to resolve and cross-package
-// imports to line up. Prefers the recognizer's SubPackage (the .proto's own dir
-// — correct even under a rebased --proto_path); falls back to the output's dir.
+// imports to line up (subPkg is the .proto's own dir — correct even under a
+// rebased --proto_path — or the output's dir). No-op at the element root.
 //
 // Placement is carried PER-TARGET on NativeRuleSpec.SubPackage, not (only) in
 // the name-keyed cc.NativeRuleSubPackage map: two distinct same-basename inputs
@@ -338,17 +372,16 @@ func nativeRuleSubPkg(res CodegenResult, cmd CodegenCommand) string {
 // the flat map can hold only one, but the per-target field keeps both. The map
 // is still populated (it seeds Package.SubPackages + the split's package set for
 // the common unique-name case); the split partition prefers the per-target field.
-func recordNativeRulePlacement(cc *codegenContext, res CodegenResult, cmd CodegenCommand) {
-	dir := nativeRuleSubPkg(res, cmd)
-	if dir == "" {
+func recordNativeRulePlacement(cc *codegenContext, emit []ir.Target, subPkg string) {
+	if subPkg == "" {
 		return
 	}
-	for _, t := range res.Targets {
+	for _, t := range emit {
 		if t.NativeRule != nil {
-			t.NativeRule.SubPackage = dir
+			t.NativeRule.SubPackage = subPkg
 		}
 		if cc.NativeRuleSubPackage != nil {
-			cc.NativeRuleSubPackage[t.Name] = dir
+			cc.NativeRuleSubPackage[t.Name] = subPkg
 		}
 	}
 }
