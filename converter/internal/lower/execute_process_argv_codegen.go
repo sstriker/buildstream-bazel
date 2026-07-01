@@ -243,7 +243,8 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 	}
 	if len(emit) == 0 {
 		// Deduped against the same input's earlier invocation (a different output
-		// dir): the rule's emitted; this dir's outputs are wired to it above.
+		// dir): the rule's emitted; this dir's outputs are wired to it above (when
+		// the recognizer supplied a consumer label).
 		return rels, true
 	}
 	cc.appendExecProcGenrule(emit...)

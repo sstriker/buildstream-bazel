@@ -353,7 +353,8 @@ func (cc *codegenContext) emitRecognizedRule(cmd CodegenCommand, res CodegenResu
 	}
 	if len(emit) == 0 {
 		// Deduped against the same input's earlier invocation (a different output
-		// dir): outputs wired above; the rule's already emitted + placed.
+		// dir): outputs wired above (when the recognizer supplied a consumer
+		// label); the rule's already emitted + placed.
 		return nil, true
 	}
 	recordNativeRulePlacement(cc, emit, subPkg)
