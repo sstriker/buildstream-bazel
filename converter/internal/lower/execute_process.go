@@ -740,7 +740,7 @@ func liftCMakeETouch(paths []string, anc execAnchors, cc *codegenContext) ([]str
 			continue
 		}
 		name := executeProcessGenruleName(rel)
-		cc.Genrules = append(cc.Genrules, ir.Target{
+		cc.appendExecProcGenrule(ir.Target{
 			Name:        name,
 			Kind:        ir.KindGenrule,
 			GenruleCmd:  `mkdir -p "$$(dirname "$@")" && touch "$@"`,
@@ -817,7 +817,7 @@ func bakeBuildDirCopyOutput(op, dst string, anc execAnchors, cc *codegenContext)
 		return nil, false
 	}
 	name := executeProcessGenruleName(dstRel)
-	cc.Genrules = append(cc.Genrules, bakeFileTarget(name, dstRel, rendered, cmakeETags(op)))
+	cc.appendExecProcGenrule(bakeFileTarget(name, dstRel, rendered, cmakeETags(op)))
 	cc.OutToGenrule[dstRel] = name
 	return []string{dstRel}, true
 }
@@ -918,7 +918,7 @@ func emitCopyGenrule(what, tagOp, src, dst string, anc execAnchors, cc *codegenC
 		return []string{dstRel}, "", true
 	}
 	name := executeProcessGenruleName(dstRel)
-	cc.Genrules = append(cc.Genrules, ir.Target{
+	cc.appendExecProcGenrule(ir.Target{
 		Name:        name,
 		Kind:        ir.KindGenrule,
 		Srcs:        []string{srcRel},
@@ -1422,7 +1422,7 @@ func liftCpFile(realSrcRel, dst, dstRel string, cc *codegenContext) ([]string, s
 		return []string{outRel}, "", true
 	}
 	name := executeProcessGenruleName(outRel)
-	cc.Genrules = append(cc.Genrules, ir.Target{
+	cc.appendExecProcGenrule(ir.Target{
 		Name:        name,
 		Kind:        ir.KindGenrule,
 		Srcs:        []string{realSrcRel},
@@ -1522,7 +1522,7 @@ func emitDirCopyGenrule(real, realSrcRel, dstRel, subPrefix, op string, anc exec
 			filepath.ToSlash(filepath.Dir(pr.out)), pr.src, pr.out))
 	}
 	name := executeProcessGenruleName(outs[0])
-	cc.Genrules = append(cc.Genrules, ir.Target{
+	cc.appendExecProcGenrule(ir.Target{
 		Name:        name,
 		Kind:        ir.KindGenrule,
 		Srcs:        srcs,
@@ -1756,7 +1756,7 @@ func liftCMakeEConfigureFile(args []string, anc execAnchors, liftEnabled bool, c
 
 	name := executeProcessGenruleName(dstRel)
 	target := buildCMakeEConfigureFileGenrule(name, srcRel, dstRel, template, rendered, liftEnabled, cmakeVars, cc.StampVars)
-	cc.Genrules = append(cc.Genrules, target)
+	cc.appendExecProcGenrule(target)
 	cc.OutToGenrule[dstRel] = name
 	return []string{dstRel}, "", true
 }
@@ -1975,7 +1975,7 @@ func liftFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *code
 	}
 
 	name := executeProcessGenruleName(dstRel)
-	cc.Genrules = append(cc.Genrules, ir.Target{
+	cc.appendExecProcGenrule(ir.Target{
 		Name:        name,
 		Kind:        ir.KindGenrule,
 		Srcs:        srcs,

@@ -131,7 +131,7 @@ func liftArgvFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *
 	sort.Strings(tags)
 
 	name := executeProcessGenruleName(rels[0])
-	cc.Genrules = append(cc.Genrules, ir.Target{
+	cc.appendExecProcGenrule(ir.Target{
 		Name:        name,
 		Kind:        ir.KindGenrule,
 		Srcs:        srcs,
@@ -251,7 +251,7 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 		// dir): the rule's emitted; this dir's outputs are wired to it above.
 		return rels, true
 	}
-	cc.Genrules = append(cc.Genrules, emit...)
+	cc.appendExecProcGenrule(emit...)
 	recordExecProcNativePlacement(cc, emit, subPkg)
 	return rels, true
 }

@@ -75,11 +75,24 @@ var benignGenruleDriver = map[string]bool{
 // shell assignment / substitution / subshell — the scratch-dir workdir shapes).
 func classifyHostCodegenTool(genruleCmd string) (rawTok, driver string, absolute, ok bool) {
 	c := strings.TrimSpace(genruleCmd)
-	// Strip a leading `cd <dir> && ` (the recovered cwd anchor).
-	if strings.HasPrefix(c, "cd ") {
-		if i := strings.Index(c, " && "); i > 0 {
-			c = strings.TrimSpace(c[i+4:])
+	// Peel the recovered scaffolding prologue — a leading chain of `cd <dir>`
+	// and `mkdir -p <dir>` segments joined by ` && ` — so classification sees
+	// the real driver, not the cwd/output-dir setup. The execute_process
+	// file-producing lifts prepend `mkdir -p "$$(dirname "$@")" && <tool>`, and
+	// the argv/dir lifts prepend one or more `mkdir -p <dir> && ` segments; a
+	// bare `cd <dir> && <tool>` (the custom-command cwd anchor) peels the same
+	// way. Stops at the first non-prologue segment (the tool), which the fields
+	// check below then classifies.
+	for {
+		seg, rest, found := strings.Cut(c, " && ")
+		if !found {
+			break
 		}
+		if f := strings.Fields(seg); len(f) > 0 && (f[0] == "cd" || f[0] == "mkdir") {
+			c = strings.TrimSpace(rest)
+			continue
+		}
+		break
 	}
 	fields := strings.Fields(c)
 	if len(fields) == 0 {
@@ -168,6 +181,26 @@ func noteHostCodegenTool(cc *codegenContext, fallback ir.Target) {
 		}
 	}
 	cc.HostCodegenTools = append(cc.HostCodegenTools, note)
+}
+
+// appendExecProcGenrule is the execute_process producer family's single
+// emission seam: it fires noteHostCodegenTool for each recovered target, then
+// appends them to cc.Genrules. The custom-command family already surfaces an
+// un-hermeticized host codegen driver as a `host-codegen-tool` conversion-todo
+// through recognizeOrGenrule; the execute_process family emits its genrules
+// directly, so without this seam an `execute_process(COMMAND python /abs/gen.py
+// …)` recovery would drive the raw host tool with no diagnostic. Routing every
+// family producer site through here gives that diagnostic parity and keeps a
+// future producer site from silently re-opening the gap — the sieve we stop
+// plugging one hole at a time. The note is a safe no-op on the family's
+// hermeticized ($(execpath)/$(location)), native-rule (empty GenruleCmd), and
+// benign (cmake -E / cp / mkdir / bake) targets — only a raw host driver
+// records — so the benign / recognized sites route through unchanged.
+func (cc *codegenContext) appendExecProcGenrule(gens ...ir.Target) {
+	for _, g := range gens {
+		noteHostCodegenTool(cc, g)
+	}
+	cc.Genrules = append(cc.Genrules, gens...)
 }
 
 // emitHostCodegenToolTodos folds the recorded un-hermeticized host-tool

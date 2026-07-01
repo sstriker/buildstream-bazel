@@ -369,7 +369,7 @@ func liftDirOperandOutputs(call shadow.ExecuteProcessCall, dirRel string, anc ex
 	tags := append(fileProducingTags(driver), "cmake-codegen-execute-process-dir-outs")
 	sort.Strings(tags)
 	name := executeProcessGenruleName(rels[0])
-	cc.Genrules = append(cc.Genrules, ir.Target{
+	cc.appendExecProcGenrule(ir.Target{
 		Name:        name,
 		Kind:        ir.KindGenrule,
 		Srcs:        srcs,
@@ -536,7 +536,7 @@ func liftDerivedOutputsRerun(call shadow.ExecuteProcessCall, orphans []string, a
 	tags := append(fileProducingTags(driver), "cmake-codegen-execute-process-derived-rerun")
 	sort.Strings(tags)
 	name := executeProcessGenruleName(rels[0])
-	cc.Genrules = append(cc.Genrules, ir.Target{
+	cc.appendExecProcGenrule(ir.Target{
 		Name:        name,
 		Kind:        ir.KindGenrule,
 		Srcs:        srcs,
@@ -626,7 +626,7 @@ func bakeDerivedOutputs(call shadow.ExecuteProcessCall, orphans []string, anc ex
 			continue
 		}
 		name := executeProcessGenruleName(rel)
-		cc.Genrules = append(cc.Genrules, bakeFileTarget(name, rel, body, tags))
+		cc.appendExecProcGenrule(bakeFileTarget(name, rel, body, tags))
 		cc.OutToGenrule[rel] = name
 		rels = append(rels, rel)
 	}

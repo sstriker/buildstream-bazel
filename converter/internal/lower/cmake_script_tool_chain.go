@@ -71,7 +71,7 @@ func (cc *codegenContext) recoverToolChain(b *ninja.Build, calls []shadow.Execut
 		Tags:        []string{"cmake-codegen", "cmake-codegen-tool-chain"},
 		Visibility:  []string{"//visibility:private"},
 	}
-	cc.Genrules = append(cc.Genrules, gen)
+	cc.appendExecProcGenrule(gen)
 	cc.SeenBuilds[b] = gen.Name
 	for _, o := range declared {
 		cc.OutToGenrule[o] = gen.Name
