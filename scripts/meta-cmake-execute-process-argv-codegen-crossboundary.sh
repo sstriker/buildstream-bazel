@@ -29,6 +29,12 @@ if ! command -v sort >/dev/null 2>&1; then
     echo "skip: sort not on PATH"
     exit 0
 fi
+# The fixture's outer CMakeLists configures the satellite with `cmake -G Ninja`,
+# so the nested configure (run during convert) needs ninja on PATH.
+if ! command -v ninja >/dev/null 2>&1; then
+    echo "skip: ninja not on PATH"
+    exit 0
+fi
 
 bin_dir="$repo_root/build/bin"
 mkdir -p "$bin_dir"
