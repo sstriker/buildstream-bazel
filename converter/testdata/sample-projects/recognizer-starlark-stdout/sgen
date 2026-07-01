@@ -1,0 +1,3 @@
+#!/bin/sh
+# STDOUT generator: emit a header defining GEN_VALUE from the spec's first line.
+printf '#define GEN_VALUE %s\n' "$(head -1 "$1")"

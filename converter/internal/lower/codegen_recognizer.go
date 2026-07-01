@@ -343,7 +343,26 @@ func (cc *codegenContext) emitRecognizedRule(cmd CodegenCommand, res CodegenResu
 	if !ok {
 		return nil, false
 	}
-	if cc.OutToNativeConsumerDep != nil && consumer != "" {
+	// A recognizer can emit a raw GENRULE (a stdout generator via the genrule(...)
+	// Starlark builtin) instead of a native rule. A genrule has no CcInfo to hang a
+	// consumer deps edge on — its outputs are consumed by FILENAME (the consumer
+	// keeps the generated file in its srcs and Bazel resolves it to the genrule),
+	// exactly like the generic recovered-genrule path. So wire those outs through
+	// OutToGenrule, not the strip-and-dep OutToNativeConsumerDep. A native rule
+	// (proto_library, …) provides CcInfo and keeps the deps-edge wiring.
+	genruleProducer := ""
+	for _, t := range res.Targets {
+		if t.Kind == ir.KindGenrule {
+			genruleProducer = t.Name
+			break
+		}
+	}
+	switch {
+	case genruleProducer != "" && cc.OutToGenrule != nil:
+		for _, o := range outs {
+			cc.OutToGenrule[o] = genruleProducer
+		}
+	case cc.OutToNativeConsumerDep != nil && consumer != "":
 		for _, o := range outs {
 			cc.OutToNativeConsumerDep[o] = consumer
 			if cc.OutToNativeConsumerPkg != nil {

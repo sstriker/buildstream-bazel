@@ -435,6 +435,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-host-codegen-tool.sh \
 	scripts/meta-cmake-tool-convention.sh \
 	scripts/meta-cmake-protoc-grpc-recognize.sh \
+	scripts/meta-cmake-recognizer-starlark-stdout.sh \
 	scripts/meta-cmake-protoc-cmake-script-wrapper.sh \
 	scripts/meta-cmake-protoc-cmake-script-wrapper-nested.sh \
 	scripts/meta-cmake-protoc-cmake-script-wrapper-standalone.sh \

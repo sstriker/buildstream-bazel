@@ -4,7 +4,87 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
+
+// stdoutGenStar is an operator recognizer for a STDOUT generator (`sgen in > out`)
+// — a tool with no native Bazel rule, so lower() returns a genrule(...) rather
+// than a native_rule(...). It supplies the OUTPUT_FILE basename (fed as
+// cmd.discovered_outputs on the execute_process path) as both the genrule out and
+// the derived output.
+const stdoutGenStar = `
+def match(cmd):
+    return cmd.driver == "sgen"
+
+def lower(cmd):
+    out = cmd.discovered_outputs[0]
+    return result(
+        targets = [
+            genrule(
+                name = "sgen_gen",
+                cmd = "$(location //tools:sgen) $(SRCS) > $@",
+                outs = [out],
+                srcs = cmd.srcs,
+                tools = ["//tools:sgen"],
+            ),
+        ],
+        consumer_deps = [":sgen_gen"],
+        derived_outputs = [out],
+    )
+`
+
+// TestStarlarkRecognizer_GenruleBuiltin pins the genrule(...) builtin: an operator
+// recognizer for a stdout generator lowers to an ir.KindGenrule target carrying
+// the cmd / outs / srcs / tools it declared.
+func TestStarlarkRecognizer_GenruleBuiltin(t *testing.T) {
+	r := loadStarFromString(t, "sgen.star", stdoutGenStar)
+	cmd := CodegenCommand{Driver: "sgen", Srcs: []string{"in.x"}, DiscoveredOutputs: []string{"out.h"}}
+	if !r.Match(cmd) {
+		t.Fatal("expected Match to claim sgen")
+	}
+	res, err := r.Lower(cmd)
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	if len(res.Targets) != 1 {
+		t.Fatalf("want 1 target, got %d", len(res.Targets))
+	}
+	g := res.Targets[0]
+	if g.Kind != ir.KindGenrule || g.Name != "sgen_gen" {
+		t.Fatalf("want a KindGenrule named sgen_gen, got kind=%v name=%q", g.Kind, g.Name)
+	}
+	if g.GenruleCmd != "$(location //tools:sgen) $(SRCS) > $@" {
+		t.Errorf("cmd = %q", g.GenruleCmd)
+	}
+	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "out.h" {
+		t.Errorf("outs = %v, want [out.h]", g.GenruleOuts)
+	}
+	if len(g.Srcs) != 1 || g.Srcs[0] != "in.x" {
+		t.Errorf("srcs = %v, want [in.x]", g.Srcs)
+	}
+	if len(g.GenruleTools) != 1 || g.GenruleTools[0] != "//tools:sgen" {
+		t.Errorf("tools = %v, want [//tools:sgen]", g.GenruleTools)
+	}
+	if len(res.DerivedOutputs) != 1 || res.DerivedOutputs[0] != "out.h" {
+		t.Errorf("derived = %v, want [out.h]", res.DerivedOutputs)
+	}
+}
+
+// TestStarlarkRecognizer_GenruleRequiresOuts: a genrule(...) with no outs is a
+// declaration error (surfaced from lower()).
+func TestStarlarkRecognizer_GenruleRequiresOuts(t *testing.T) {
+	src := `
+def match(cmd):
+    return True
+def lower(cmd):
+    return result(targets = [genrule(name = "g", cmd = "x > $@", outs = [])], derived_outputs = ["x"])
+`
+	r := loadStarFromString(t, "bad.star", src)
+	if _, err := r.Lower(CodegenCommand{Driver: "t"}); err == nil {
+		t.Fatal("a genrule with no outs must error")
+	}
+}
 
 const protocStar = `
 def match(cmd):

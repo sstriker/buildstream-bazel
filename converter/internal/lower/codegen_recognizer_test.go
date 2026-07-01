@@ -231,8 +231,10 @@ func TestRecognizeOrGenrule_DedupsSameInputAcrossOutDirs(t *testing.T) {
 	if len(t2) != 0 {
 		t.Errorf("the SAME input in a second out dir must NOT re-emit a duplicate rule; got %+v", t2)
 	}
-	if cc.OutToNativeConsumerDep["gen2/a.h"] != "mygen_rule" {
-		t.Errorf("the deduped invocation's output should wire to the existing rule; got %q", cc.OutToNativeConsumerDep["gen2/a.h"])
+	// mygen_rule is a KindGenrule, so its outputs wire by FILENAME (OutToGenrule),
+	// not the CcInfo deps edge (OutToNativeConsumerDep) — a genrule has no CcInfo.
+	if cc.OutToGenrule["gen2/a.h"] != "mygen_rule" {
+		t.Errorf("the deduped invocation's output should wire to the existing genrule; got %q", cc.OutToGenrule["gen2/a.h"])
 	}
 }
 
