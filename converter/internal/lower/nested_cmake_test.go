@@ -828,6 +828,7 @@ var nestedOptionsClass = map[string]string{
 	"ConfigureLog":           "drop",
 	"LiteralProbeSink":       "drop",
 	"LiteralResolutions":     "drop",
+	"TraceFactsCache":        "drop", // outer-element trace memo; nested carries its own trace
 }
 
 // TestNestedOptionsForClassification forces every Options field to carry an
