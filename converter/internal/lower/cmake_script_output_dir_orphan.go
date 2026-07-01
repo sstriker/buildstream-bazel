@@ -356,16 +356,43 @@ func (cc *codegenContext) unclaimedConsumedOrphans() []string {
 // build dir, since the satellite's `cmake -P` writes into `<OUTER_BUILD>/...`.
 // Try buildDir first, then each cc.OuterBuildDirs root.
 func (cc *codegenContext) orphanOnDisk(o, buildDir string) bool {
-	roots := append([]string{buildDir}, cc.OuterBuildDirs...)
-	for _, root := range roots {
-		if root == "" {
-			continue
-		}
-		if st, err := os.Stat(filepath.Join(root, filepath.FromSlash(o))); err == nil && !st.IsDir() {
-			return true
+	_, ok := fileUnderBuildRoots(o, buildDir, cc.OuterBuildDirs)
+	return ok
+}
+
+// buildCorroborationRoots returns the ordered on-disk roots a build-relative
+// generated path may live under: the LOCAL build dir first, then each ancestor
+// (outer) build dir. A CROSS-BOUNDARY generated output — a nested/satellite
+// sub-build writing UP into an outer build tree — lives under an outer root, so
+// any on-disk corroboration (does the trace's declared output exist?) or byte
+// read must walk all of them, not just buildDir. Empty roots are dropped.
+func buildCorroborationRoots(buildDir string, outerDirs []string) []string {
+	roots := make([]string, 0, 1+len(outerDirs))
+	if buildDir != "" {
+		roots = append(roots, buildDir)
+	}
+	for _, d := range outerDirs {
+		if d != "" {
+			roots = append(roots, d)
 		}
 	}
-	return false
+	return roots
+}
+
+// fileUnderBuildRoots reports the first corroboration root (buildDir, then each
+// outer build dir) under which rel exists as a NON-DIRECTORY (a produced output
+// file — the same "exists and isn't a dir" test the declared-output rungs and the
+// original orphanOnDisk use; a symlink to a generated file counts), ok=false if
+// none. The single home of the "does this generated output exist on disk, local
+// OR cross-boundary" check — the corroboration every tool-shape recovery does
+// before claiming an output, generalized to the outer build tree.
+func fileUnderBuildRoots(rel, buildDir string, outerDirs []string) (root string, ok bool) {
+	for _, r := range buildCorroborationRoots(buildDir, outerDirs) {
+		if st, err := os.Stat(filepath.Join(r, filepath.FromSlash(rel))); err == nil && !st.IsDir() {
+			return r, true
+		}
+	}
+	return "", false
 }
 
 // precreateOutputDirOrphanDirs creates the directories a standalone re-trace of

@@ -1,7 +1,6 @@
 package lower
 
 import (
-	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -258,7 +257,11 @@ func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []sha
 		if path.Dir(o) != outsParent {
 			return "", false // v1: the declared outputs share one directory
 		}
-		if st, err := os.Stat(filepath.Join(buildDir, filepath.FromSlash(o))); err != nil || st.IsDir() {
+		// Corroborate across the outer build dirs too: for the OUTPUT_DIR-orphan
+		// caller, `declared` is the attributed CROSS-BOUNDARY orphans that
+		// orphanOnDisk just confirmed under an OUTER build tree — re-checking them
+		// against buildDir alone would miss them and bail to the byte-bake.
+		if _, ok := fileUnderBuildRoots(o, buildDir, cc.OuterBuildDirs); !ok {
 			return "", false // declared output the trace didn't actually produce
 		}
 	}
