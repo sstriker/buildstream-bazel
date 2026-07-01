@@ -240,6 +240,15 @@ func recoverExecuteProcess(calls []shadow.ExecuteProcessCall, hostSrcDir, record
 			}
 			collect(rels)
 		case BucketFileProducing:
+			// A recognized codegen tool whose sole output is the captured stdout
+			// (OUTPUT_FILE) lifts to its native rule — the last execute_process
+			// producer site to gain recognition. Declines (flag-off, no match, or a
+			// dir-output tool that merely carries an OUTPUT_FILE log) fall through to
+			// the raw-host hoist below, byte-identical.
+			if rels, lifted := liftRecognizedFileProducing(call, anc, cc); lifted {
+				collect(rels)
+				continue
+			}
 			rels, reason, ok := liftFileProducing(call, anc, cc)
 			if !ok {
 				unsupported = append(unsupported, executeProcessRefusal{

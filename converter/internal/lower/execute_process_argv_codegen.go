@@ -167,24 +167,95 @@ func liftRecognizedExecuteProcessCodegen(call shadow.ExecuteProcessCall, anc exe
 	if driver == "" {
 		return nil, false
 	}
+	// The configure already ran, so the tool's outputs exist on disk under its
+	// output dir (`--*_out=DIR`). Discover them (outDir-relative) and feed the
+	// recognizer: a tool that derives outputs from input CONTENTS can't predict
+	// them from a naming convention, so it returns this set (or a subset/transform)
+	// as DerivedOutputs.
+	outDir := argvCodegenOutDir(argv, anc)
+	discovered := discoverCodegenOutDirFiles(outDir, anc, cc)
+	return cc.recognizeExecProcCodegen(driver, recArgs, execArgvSourceInputs(recArgs, anc), discovered, outDir, anc)
+}
+
+// liftRecognizedFileProducing tries the codegen recognizers on an OUTPUT_FILE-
+// bearing execute_process call — the BucketFileProducing shape liftFileProducing
+// otherwise hoists to a raw-host genrule, the last execute_process producer site
+// that skipped recognition. It handles the STDOUT-GENERATOR shape: a recognized
+// tool whose sole output is the captured stdout (`OUTPUT_FILE`), no `--*_out`
+// dir. The anchored OUTPUT_FILE is the output authority — its dir is the outDir
+// and its basename the single discovered output, so the same recognizer core
+// (anchor + on-disk corroboration + shared emission tail) applies. An operator
+// recognizer (--recognizers) matching such a tool emits its native rule (e.g. a
+// genrule redirecting the tool's stdout to $@); the built-in protoc/grpc
+// recognizers key on `--*_out` and won't match here, so this is inert for them.
+//
+// Declines (→ caller's liftFileProducing, byte-identical) unless RecognizeCodegen
+// is on, the call is the plain single-command stdout-capture shape (no
+// WORKING_DIRECTORY / ENVIRONMENT / INPUT_FILE / ERROR_VARIABLE / multi-command),
+// the OUTPUT_FILE anchors under a build dir, and a recognizer claims the tool with
+// a derived set that corroborates against the anchored OUTPUT_FILE on disk (a
+// dir-output tool that merely carries an OUTPUT_FILE log derives outputs UNDER its
+// --*_out dir, not the log's dir, so it fails corroboration and declines cleanly).
+func liftRecognizedFileProducing(call shadow.ExecuteProcessCall, anc execAnchors, cc *codegenContext) ([]string, bool) {
+	if cc == nil || !cc.RecognizeCodegen || anc.hostBuildDir == "" {
+		return nil, false
+	}
+	// The plain stdout-capture shape only: an OUTPUT_FILE, one command, and none of
+	// the modifiers the OUTPUT_FILE=output-authority assumption doesn't model.
+	if len(call.Commands) != 1 || len(call.Commands[0]) < 1 || call.OutputFile == "" ||
+		call.WorkingDirectory != "" || len(call.Environment) > 0 || call.Timeout != "" ||
+		call.InputFile != "" || call.ErrorVariable != "" {
+		return nil, false
+	}
+	outRel, ok := executeProcessAnchorOutput(execFileFieldAbs(call.OutputFile, "", anc), anc)
+	if !ok || outRel == "" || outRel == "." {
+		return nil, false
+	}
+	driver, recArgs := codegenRecognitionDriver(call.Commands[0])
+	if driver == "" {
+		return nil, false
+	}
+	// The OUTPUT_FILE is the tool's single captured output: its dir is the outDir
+	// (the frame the recognizer's DerivedOutputs anchor under) and its basename the
+	// lone discovered output.
+	outDir := path.Dir(outRel)
+	if outDir == "." {
+		outDir = ""
+	}
+	return cc.recognizeExecProcCodegen(driver, recArgs, execArgvSourceInputs(recArgs, anc), []string{path.Base(outRel)}, outDir, anc)
+}
+
+// execArgvSourceInputs returns the source-tree-anchored operands among a tool's
+// post-driver args — the recovered `.proto` / `.x` inputs — as package-relative
+// slash paths. Shared by both recognizer entries.
+func execArgvSourceInputs(recArgs []string, anc execAnchors) []string {
 	var srcs []string
 	for _, a := range recArgs {
 		if rel, ok := executeProcessAnchorSource(stripArgvPathPrefix(a), anc); ok && rel != "" && rel != "." {
 			srcs = append(srcs, rel)
 		}
 	}
-	// outs aren't known until the recognizer supplies them (execute_process
-	// records none), so the proto_path root can't be recovered here — resolve
-	// imports under the source root (the standard layout). A rebased
-	// --proto_path via execute_process declines earlier / falls back; the
-	// custom-command paths carry the full proto_path handling.
+	return srcs
+}
+
+// recognizeExecProcCodegen is the shared recognizer core both execute_process
+// entries converge on: given the recovered driver + post-driver args + source
+// inputs, the DISCOVERED output set (output-dir-relative), and the outDir the
+// derived outputs anchor under, it runs the recognizers and, on a corroborated
+// match, emits the native rule via the shared emission tail (emitRecognizedRule).
+// The two entries differ only in the output authority they supply — the
+// `--*_out=DIR` discovery (liftRecognizedExecuteProcessCodegen) vs the captured
+// OUTPUT_FILE (liftRecognizedFileProducing) — which is exactly why the core is
+// parameterized on (discovered, outDir) rather than reimplemented per shape.
+// Returns (rels, true) when a native rule was emitted (or idempotently deduped),
+// (nil, false) to decline to the caller's genrule fallback.
+func (cc *codegenContext) recognizeExecProcCodegen(driver string, recArgs, srcs, discovered []string, outDir string, anc execAnchors) ([]string, bool) {
+	// outs aren't known until the recognizer supplies them (execute_process records
+	// none), so the proto_path root can't be recovered here — resolve imports under
+	// the source root (the standard layout). A rebased --proto_path via
+	// execute_process declines earlier / falls back; the custom-command paths carry
+	// the full proto_path handling.
 	protoDeps := protoImportLabels(srcs, nil, anc.hostSrcDir, cc.BazelPackagePath)
-	// The configure already ran, so the tool's outputs exist on disk under its
-	// output dir. Discover them (outDir-relative) and feed the recognizer: a tool
-	// that derives outputs from input CONTENTS can't predict them from a naming
-	// convention, so it returns this set (or a subset/transform) as DerivedOutputs.
-	outDir := argvCodegenOutDir(argv, anc)
-	discovered := discoverCodegenOutDirFiles(outDir, anc, cc)
 	// Complete input identity for dedup: source inputs PLUS build-dir input
 	// operands (a generated input — produced by another rule — that this tool
 	// consumes), excluding the call's own output-dir subtree. Without this, two
