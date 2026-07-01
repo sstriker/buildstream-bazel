@@ -294,8 +294,9 @@ func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []sha
 
 // findSingleTempDirTool returns the ONE liftable generator tool among calls
 // whose WORKING_DIRECTORY holds every relocation source — the tempdir it wrote
-// into. A `cmake -E copy[_if_different]|rename|copy_directory` is a RELOCATION
-// (already harvested into relocate), not the generator, so it's skipped here:
+// into. A `cmake -E copy[_if_different]|rename|copy_directory[_if_different]` is
+// a RELOCATION (already harvested into relocate), not the generator, so it's
+// skipped here (isCmakeRelocationCall):
 // when the copy shares the tool's WORKING_DIRECTORY it otherwise passes every
 // gate (cmake is liftable, its operands resolve inside the tempdir) and would
 // look like a SECOND producer → ambiguous → decline → bake. Same filter the
