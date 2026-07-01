@@ -153,3 +153,98 @@ func TestRecoverOutputDirOrphanEdges_GateOff(t *testing.T) {
 			len(cc.Genrules), len(cc.OutToGenrule))
 	}
 }
+
+// TestAttributesOrphanDir pins the OUTPUT_DIR attribution constraint that closes
+// the parent-expansion leak: an orphan is attributable only when its dir is in
+// the edge's traced write set AND — when the edge names explicit -D OUTPUT_DIRs —
+// lives UNDER one of those, never the speculative PARENT the traced set adds for a
+// dir operand (addArgvDir). With no -D-named output dir it falls back to the
+// traced set unchanged.
+func TestAttributesOrphanDir(t *testing.T) {
+	// The leak shape: OUTPUT_DIR is the nested hash subdir; the traced write set
+	// carries BOTH it and its speculative parent (the shared component dir).
+	writeDirs := map[string]bool{
+		"src/comp/gen-h1": true, // the real OUTPUT_DIR (a tool/copy operand)
+		"src/comp":        true, // the speculative parent addArgvDir added (the leak)
+	}
+	outputDirs := map[string]bool{"src/comp/gen-h1": true}
+
+	// Codegen directly under the -D OUTPUT_DIR: attributed.
+	if !attributesOrphanDir("src/comp/gen-h1", writeDirs, outputDirs) {
+		t.Error("an orphan under the -D OUTPUT_DIR must be attributed")
+	}
+	// A non-codegen file directly under the shared component dir (the leak): the
+	// pre-fix behavior attributed it (writeDirs carries the parent); the constraint
+	// screens it out.
+	if attributesOrphanDir("src/comp", writeDirs, outputDirs) {
+		t.Error("the speculative parent dir must NOT be attributed (the over-attribution leak)")
+	}
+	// A dir outside the traced write set: never attributed (writeDirs precondition).
+	if attributesOrphanDir("src/other", writeDirs, outputDirs) {
+		t.Error("a dir outside the traced write set must not be attributed")
+	}
+	// No -D-named output dir → fall back to the traced write set unchanged (a shape
+	// that writes to a hardcoded build path with no -D OUTPUT_DIR keeps working).
+	if !attributesOrphanDir("src/comp", writeDirs, nil) {
+		t.Error("with no -D output dir, attribution falls back to the traced write set")
+	}
+}
+
+// TestDirWithinAny: exact match and nested-under match are within; a proper
+// ANCESTOR (the speculative parent) and a same-prefix sibling are not.
+func TestDirWithinAny(t *testing.T) {
+	set := map[string]bool{"a/b": true}
+	for _, d := range []string{"a/b", "a/b/c", "a/b/c/d"} {
+		if !dirWithinAny(d, set) {
+			t.Errorf("%q should be within {a/b}", d)
+		}
+	}
+	for _, d := range []string{"a", "a/bb", "x", "."} {
+		if dirWithinAny(d, set) {
+			t.Errorf("%q should NOT be within {a/b}", d)
+		}
+	}
+}
+
+// TestOutputDirArgSet: a -D<VAR>=<value> cache arg is collected iff its value
+// anchors to a build-subdir (local OR outer build tree) that exists ON DISK as a
+// directory — var-name-agnostic, and robust to a DOTTED dir name. A file-valued
+// arg (on disk as a file), a source path, a scalar, an out-of-tree path, and a
+// no-`=` arg are all ignored.
+func TestOutputDirArgSet(t *testing.T) {
+	buildDir, outer := t.TempDir(), t.TempDir()
+	// Materialize the OUTPUT_DIRs (as the re-trace/precreate would): a nested hash
+	// dir, an outer build subdir, a temp dir, and a DOTTED dir name.
+	for _, d := range []string{"gen/comp/gen-h1", "_relocate_tmp", "gen/foo.pb-abc"} {
+		if err := os.MkdirAll(filepath.Join(buildDir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(outer, "gen/x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A file-valued arg exists on disk as a FILE (the script wrote the manifest).
+	if err := os.WriteFile(filepath.Join(buildDir, "gen/out.cmake"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cc := newCodegenContext()
+	cc.OuterBuildDirs = []string{outer}
+	dArgs := []string{
+		"-DOUTPUT_DIR=" + filepath.Join(buildDir, "gen/comp/gen-h1"), // build subdir → collected
+		"-DDOTTED=" + filepath.Join(buildDir, "gen/foo.pb-abc"),      // dotted dir → collected
+		"-DXDIR=" + filepath.Join(outer, "gen/x"),                    // outer build subdir → collected
+		"-DTMP=" + filepath.Join(buildDir, "_relocate_tmp"),          // build subdir → collected
+		"-DTOOL=/w/src/tool.py",                                      // source path (not on disk here) → ignored
+		"-DMANIFEST=" + filepath.Join(buildDir, "gen/out.cmake"),     // on disk as a FILE → ignored
+		"-DLEVEL=3",                // scalar → ignored
+		"-DELSEWHERE=/tmp/outside", // out-of-tree → ignored
+		"-DNOEQ",                   // no '=' → ignored
+	}
+	got := cc.outputDirArgSet(dArgs, buildDir)
+	want := map[string]bool{
+		"gen/comp/gen-h1": true, "gen/foo.pb-abc": true, "gen/x": true, "_relocate_tmp": true,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("outputDirArgSet = %v, want %v", got, want)
+	}
+}

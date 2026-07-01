@@ -121,19 +121,31 @@ func (cc *codegenContext) recoverOutputDirOrphans(b *ninja.Build, cmd, cmakeSrc,
 		return
 	}
 
-	// ATTRIBUTE: an orphan whose parent dir is one this edge writes into, and
-	// which the re-trace materialized on disk under the build dir (corroboration).
+	// The edge's -D<VAR>=<dir> cache args name its exact OUTPUT_DIR(s) — the
+	// hash-suffixed subdir the temp-dir-then-copy shape writes into. Use them to
+	// CONSTRAIN attribution below: the traced write set adds a dir operand's
+	// PARENT speculatively (addArgvDir, for the file-in-OUTPUT_DIR case), which
+	// over-claims non-codegen files sitting directly under a SHARED component dir
+	// when the OUTPUT_DIR is nested (parent = component dir, not the build root).
+	// The -D-named dir is the exact target, so restricting to it drops the leak.
+	outputDirs := cc.outputDirArgSet(dArgs, buildDir)
+
+	// ATTRIBUTE: an orphan whose parent dir is one this edge writes into (and,
+	// when the edge names explicit OUTPUT_DIRs, is UNDER one of those — not the
+	// speculative parent), and which the re-trace materialized on disk under the
+	// build dir (corroboration).
 	var attributed []string
 	attributedDirs := map[string]bool{}
 	for _, o := range orphans {
-		if !writeDirs[path.Dir(o)] {
+		d := path.Dir(o)
+		if !attributesOrphanDir(d, writeDirs, outputDirs) {
 			continue
 		}
 		if !cc.orphanOnDisk(o, buildDir) {
 			continue // the re-trace didn't actually produce it — don't claim it
 		}
 		attributed = append(attributed, o)
-		attributedDirs[path.Dir(o)] = true
+		attributedDirs[d] = true
 	}
 	if len(attributed) == 0 {
 		return
@@ -571,6 +583,72 @@ func (cc *codegenContext) tracedScriptWriteDirs(scriptArg string, dArgs []string
 		}
 	}
 	return dirs, primary
+}
+
+// outputDirArgSet returns the build-relative directories the edge's `-D` cache
+// args NAME — a `-D<VAR>=<value>` whose value anchors to a build-subdir (local
+// or outer build tree) AND exists ON DISK as a directory. The temp-dir-then-copy
+// shape hands the script its exact hash-suffixed OUTPUT_DIR that way
+// (`-DOUTPUT_DIR=<build>/gen/comp/<hash>`), so this is the authoritative,
+// trace-independent statement of where the edge writes its codegen — used to
+// CONSTRAIN attribution against the parent-expansion leak the traced write set
+// carries. Var-name-agnostic: keyed on the value, not on a hardcoded `OUTPUT_DIR`
+// spelling (the `-D` var is project-specific). The on-disk DIRECTORY test (the
+// re-trace + precreateOutputDirOrphanDirs materialized the OUTPUT_DIR) is the
+// robust, extension-agnostic filter — a file-valued arg (`-DMANIFEST=out.cmake`,
+// on disk as a file), a source path (`-DTOOL=x.py`), and a scalar all fail it,
+// while a dotted dir name (`foo.pb-<hash>`) passes. Empty when the edge names no
+// such dir arg — attribution then falls back to the traced write set unchanged.
+func (cc *codegenContext) outputDirArgSet(dArgs []string, buildDir string) map[string]bool {
+	anc := execAnchors{recordedBuildDir: buildDir, outerBuildDirs: cc.OuterBuildDirs}
+	out := map[string]bool{}
+	for _, d := range dArgs {
+		eq := strings.IndexByte(d, '=')
+		if eq < 0 {
+			continue
+		}
+		rel, ok := executeProcessAnchorOutput(stripArgvPathPrefix(d[eq+1:]), anc)
+		if !ok || rel == "" || rel == "." {
+			continue
+		}
+		if _, isDir := dirUnderBuildRoots(rel, buildDir, cc.OuterBuildDirs); !isDir {
+			continue // a file-valued / source / scalar arg is not an output dir
+		}
+		out[rel] = true
+	}
+	return out
+}
+
+// attributesOrphanDir reports whether an orphan living in directory d is
+// attributable to an edge whose traced writes cover writeDirs and whose `-D`
+// cache args name outputDirs. writeDirs remains the precondition (the edge must
+// actually write there), so this can only NARROW attribution, never widen it.
+// When the edge names explicit OUTPUT_DIRs, an orphan must live UNDER one of them
+// — dropping the speculative PARENT the traced write set adds for a dir operand
+// (addArgvDir), which otherwise over-claims files sitting directly under a shared
+// component dir. With no `-D`-named output dir (a shape that doesn't pass one),
+// fall back to the traced write set unchanged (today's behavior).
+func attributesOrphanDir(d string, writeDirs, outputDirs map[string]bool) bool {
+	if !writeDirs[d] {
+		return false
+	}
+	if len(outputDirs) == 0 {
+		return true
+	}
+	return dirWithinAny(d, outputDirs)
+}
+
+// dirWithinAny reports whether build-relative dir d is one of set OR nested under
+// one of set (an OUTPUT_DIR the edge names, or a subdir the codegen writes into
+// beneath it). A proper ANCESTOR of a set member (the speculative parent) is NOT
+// within — that's the leak dirWithinAny screens out.
+func dirWithinAny(d string, set map[string]bool) bool {
+	for od := range set {
+		if d == od || strings.HasPrefix(d, od+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // otherScriptEdgeWritesTo reports whether any OTHER `cmake -P` custom-command
