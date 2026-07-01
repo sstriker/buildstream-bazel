@@ -210,6 +210,52 @@ func TestRecognizeCodegen_CppAndGrpcOnlySameProtoBothEmit(t *testing.T) {
 	}
 }
 
+// TestEmitRecognizedRule_SharedTail pins the contract of the recognizer-emission
+// tail both front-ends now share (recognizeOrGenrule for custom-commands,
+// liftRecognizedExecuteProcessCodegen for execute_process): it wires consumers
+// on the OUTS the caller passes (cmake-recorded on the custom-command path,
+// derived+corroborated on the execute_process path), records placement on the
+// caller's SUBPKG (name-map + per-target), dedups an identical re-invocation to
+// nil emit (wiring the new outs to the same consumer), and returns ok=false when
+// a DIFFERENT input collides on a rule name.
+func TestEmitRecognizedRule_SharedTail(t *testing.T) {
+	cc := newCodegenContext()
+	res := CodegenResult{
+		ConsumerDeps: []string{":r"},
+		Targets:      []ir.Target{{Name: "r", Kind: ir.KindNativeRule, NativeRule: &ir.NativeRuleSpec{Kind: "x"}}},
+	}
+	cmd := CodegenCommand{Driver: "mygen", Srcs: []string{"in.x"}}
+
+	emit, ok := cc.emitRecognizedRule(cmd, res, "gen", []string{"gen/a.h"})
+	if !ok || len(emit) != 1 || emit[0].Name != "r" {
+		t.Fatalf("first invocation emits the rule; ok=%v emit=%+v", ok, emit)
+	}
+	if cc.OutToNativeConsumerDep["gen/a.h"] != "r" {
+		t.Errorf("consumer wired on the passed outs; got %q", cc.OutToNativeConsumerDep["gen/a.h"])
+	}
+	if cc.NativeRuleSubPackage["r"] != "gen" || emit[0].NativeRule.SubPackage != "gen" {
+		t.Errorf("placement recorded on subPkg (map=%q, per-target=%q); want gen/gen",
+			cc.NativeRuleSubPackage["r"], emit[0].NativeRule.SubPackage)
+	}
+
+	// Same input again (a second out dir): dedups to nil emit, wires the new out
+	// to the existing consumer.
+	emit2, ok2 := cc.emitRecognizedRule(cmd, res, "gen2", []string{"gen2/a.h"})
+	if !ok2 || len(emit2) != 0 {
+		t.Fatalf("same-input re-invocation dedups to nil emit; ok=%v emit=%+v", ok2, emit2)
+	}
+	if cc.OutToNativeConsumerDep["gen2/a.h"] != "r" {
+		t.Errorf("deduped invocation wires its out to the existing consumer; got %q", cc.OutToNativeConsumerDep["gen2/a.h"])
+	}
+
+	// A DIFFERENT input colliding on the same rule name in the same subPkg → the
+	// caller must fall back (ok=false), not emit a load-breaking duplicate.
+	other := CodegenCommand{Driver: "mygen", Srcs: []string{"other.x"}}
+	if _, ok3 := cc.emitRecognizedRule(other, res, "gen", []string{"gen/b.h"}); ok3 {
+		t.Fatal("different input colliding on the rule name must return ok=false")
+	}
+}
+
 // TestRecognizeOrGenrule_FidelityMismatch: a recognizer that MATCHES the tool
 // but whose derived outputs disagree with cmake's recorded ones refuses (a loud
 // build-time stub) under --fidelity=strict, and falls back to the genrule under
