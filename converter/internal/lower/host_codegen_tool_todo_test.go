@@ -36,13 +36,21 @@ func TestExecProcHostToolNote_SeamWiring(t *testing.T) {
 	t.Run("benign-copy-does-not-note", func(t *testing.T) {
 		// A cmake -E copy lifts to a `cp` genrule (benign) — the seam fires the
 		// note but classifyHostCodegenTool filters the benign driver, so nothing
-		// records.
+		// records. Assert the lift actually happened (no refusal, a genrule
+		// emitted) so this proves the seam path ran and filtered — not that the
+		// call silently refused and never reached appendExecProcGenrule.
 		call := shadow.ExecuteProcessCall{
 			File: "/src/CMakeLists.txt", Line: 5,
 			Commands: [][]string{{"cmake", "-E", "copy", "/src/a.txt", "/build/b.txt"}},
 		}
 		cc := newCodegenContext()
-		recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("expected the cmake -E copy to lift, got refusals: %+v", refusals)
+		}
+		if len(cc.Genrules) != 1 {
+			t.Fatalf("expected exactly one cp genrule through the seam, got %d: %+v", len(cc.Genrules), cc.Genrules)
+		}
 		if len(cc.HostCodegenTools) != 0 {
 			t.Fatalf("benign cmake -E copy must not surface a host-codegen-tool note, got %+v", cc.HostCodegenTools)
 		}
