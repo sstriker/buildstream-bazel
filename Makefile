@@ -386,6 +386,7 @@ RENDER_GATES = \
 	scripts/meta-cmake-output-dir-orphan-tool.sh \
 	scripts/meta-cmake-output-dir-orphan-satellite.sh \
 	scripts/meta-cmake-output-dir-orphan-satellite-tempdir.sh \
+	scripts/meta-cmake-output-dir-orphan-satellite-multiedge.sh \
 	scripts/meta-cmake-output-dir-orphan-multi.sh \
 	scripts/meta-cmake-output-dir-orphan-tempdir.sh \
 	scripts/meta-cmake-output-dir-orphan-ecopy.sh \
