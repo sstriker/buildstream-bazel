@@ -380,10 +380,12 @@ func buildCorroborationRoots(buildDir string, outerDirs []string) []string {
 }
 
 // fileUnderBuildRoots reports the first corroboration root (buildDir, then each
-// outer build dir) under which rel exists as a REGULAR FILE (not a directory),
-// ok=false if none. The single home of the "does this generated output exist on
-// disk, local OR cross-boundary" check — the corroboration every tool-shape
-// recovery does before claiming an output, generalized to the outer build tree.
+// outer build dir) under which rel exists as a NON-DIRECTORY (a produced output
+// file — the same "exists and isn't a dir" test the declared-output rungs and the
+// original orphanOnDisk use; a symlink to a generated file counts), ok=false if
+// none. The single home of the "does this generated output exist on disk, local
+// OR cross-boundary" check — the corroboration every tool-shape recovery does
+// before claiming an output, generalized to the outer build tree.
 func fileUnderBuildRoots(rel, buildDir string, outerDirs []string) (root string, ok bool) {
 	for _, r := range buildCorroborationRoots(buildDir, outerDirs) {
 		if st, err := os.Stat(filepath.Join(r, filepath.FromSlash(rel))); err == nil && !st.IsDir() {
