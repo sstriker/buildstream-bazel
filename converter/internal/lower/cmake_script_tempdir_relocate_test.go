@@ -125,10 +125,10 @@ func TestAddCopyDirRelocations(t *testing.T) {
 // wrapper artifacts) while keeping the live-consumer gates (stderr capture,
 // output-file, timeout).
 // TestProducerCandidate pins the shared invariant every select-one producer scan
-// now inherits: a `cmake -E copy|rename|copy_directory` relocation is NEVER a
-// candidate (the skip lives here, not re-typed per site), a real liftable tool
-// passes, the eligibility predicate is honored, and a build-dir-anchored tool is
-// rejected.
+// now inherits: a `cmake -E copy[_if_different]|rename|copy_directory[_if_different]`
+// relocation is NEVER a candidate (the skip lives here, not re-typed per site), a
+// real liftable tool passes, the eligibility predicate is honored, and a
+// build-dir-anchored tool (an argv[0] that resolves to a build output) is rejected.
 func TestProducerCandidate(t *testing.T) {
 	cc := newCodegenContext()
 	anc := execAnchors{}
@@ -136,13 +136,14 @@ func TestProducerCandidate(t *testing.T) {
 	reloc := shadow.ExecuteProcessCall{Commands: [][]string{{"cmake", "-E", "copy_if_different", "a", "b", "dst"}}}
 	renameC := shadow.ExecuteProcessCall{Commands: [][]string{{"cmake", "-E", "rename", "a", "b"}}}
 	copyDir := shadow.ExecuteProcessCall{Commands: [][]string{{"cmake", "-E", "copy_directory", "s", "d"}}}
+	copyDirIf := shadow.ExecuteProcessCall{Commands: [][]string{{"cmake", "-E", "copy_directory_if_different", "s", "d"}}}
 	tool := shadow.ExecuteProcessCall{Commands: [][]string{{"python3", "gen.py", "-o", "out.c"}}}
 	noArg := shadow.ExecuteProcessCall{Commands: [][]string{{"python3"}}}
 
 	// Relocations are rejected under BOTH eligibility predicates — the skip is
 	// unconditional and independent of WORKING_DIRECTORY.
 	for _, elig := range []func(shadow.ExecuteProcessCall) bool{argvCodegenEligibleRelaxed, argvStructurallyLiftableInWrapper} {
-		for _, c := range []shadow.ExecuteProcessCall{reloc, renameC, copyDir} {
+		for _, c := range []shadow.ExecuteProcessCall{reloc, renameC, copyDir, copyDirIf} {
 			if _, ok := cc.producerCandidate(c, anc, elig); ok {
 				t.Errorf("a cmake -E relocation must never be a producer candidate: %v", c.Commands[0])
 			}
@@ -163,6 +164,14 @@ func TestProducerCandidate(t *testing.T) {
 	// The eligibility predicate is honored: a no-arg command fails the structural gate.
 	if _, ok := cc.producerCandidate(noArg, anc, argvCodegenEligibleRelaxed); ok {
 		t.Error("a no-arg command must fail the eligibility gate")
+	}
+	// A build-dir-anchored tool (a configure-BUILT generator living under the build
+	// dir) is rejected: argvToolLiftable can't re-run it, so producerCandidate must
+	// filter it. Needs an anc with a build dir the argv[0] resolves under.
+	buildAnc := execAnchors{hostBuildDir: "/b", recordedBuildDir: "/b"}
+	anchoredTool := shadow.ExecuteProcessCall{Commands: [][]string{{"/b/gen/mytool", "-o", "out.c"}}}
+	if _, ok := cc.producerCandidate(anchoredTool, buildAnc, argvCodegenEligibleRelaxed); ok {
+		t.Error("a build-dir-anchored tool must be rejected (argvToolLiftable)")
 	}
 }
 

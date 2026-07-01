@@ -72,8 +72,9 @@ func isCmakeRelocationCall(call shadow.ExecuteProcessCall) bool {
 // It bundles the two gates EVERY such scan must share so a new scan can't forget
 // them:
 //
-//   - the `cmake -E copy|rename|copy_directory` RELOCATION exclusion
-//     (isCmakeRelocationCall) — a relocation is already harvested as a relocation;
+//   - the `cmake -E copy[_if_different]|rename|copy_directory[_if_different]`
+//     RELOCATION exclusion (isCmakeRelocationCall) — a relocation is already
+//     harvested as a relocation;
 //     it is never the generator, and left in the candidate set it gets mis-picked
 //     as the producer (or forces a spurious "ambiguous producer" decline → bake);
 //   - argvToolLiftable — argv[0] must be a re-runnable tool (not a build-dir
