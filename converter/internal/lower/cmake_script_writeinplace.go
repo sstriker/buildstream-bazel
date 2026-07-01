@@ -103,8 +103,9 @@ func writeInPlaceDeclared(b *ninja.Build, buildDir, relOut string) (declared []s
 func (cc *codegenContext) writeInPlaceProducer(calls []shadow.ExecuteProcessCall, anc execAnchors, outsParent string) (argv []string, workdir string, ok bool) {
 	for _, raw := range calls {
 		// producerCandidate bundles the cmake -E relocation skip + eligibility +
-		// liftable. WITHOUT the relocation skip a `cmake -E copy … WORKING_DIRECTORY
-		// <outsParent>` shares the outputs' dir and gets counted as a producer.
+		// liftable. WITHOUT the relocation skip a relocation with its
+		// WORKING_DIRECTORY set to the outputs' dir (`cmake -E copy … WORKING_DIRECTORY <outsParent>`)
+		// shares that dir and gets counted as a producer.
 		c, cand := cc.producerCandidate(raw, anc, argvStructurallyLiftableInWrapper)
 		// Site test: the tool's WORKING_DIRECTORY IS the declared outputs' dir (it
 		// writes them there by basename with no argv-named output).
