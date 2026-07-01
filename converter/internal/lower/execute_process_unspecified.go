@@ -187,7 +187,9 @@ func argvDirOperands(argv []string, anc execAnchors) []string {
 		if !ok || !usableUnspecOutDir(rel) {
 			continue
 		}
-		if st, err := os.Stat(filepath.Join(anc.hostBuildDir, filepath.FromSlash(rel))); err == nil && st.IsDir() {
+		// The dir operand may be in an OUTER build tree (cross-boundary): check
+		// across the outer build dirs, not just the local one.
+		if _, ok := dirUnderBuildRoots(rel, anc.hostBuildDir, anc.outerBuildDirs); ok {
 			out = append(out, rel)
 		}
 	}
@@ -314,12 +316,19 @@ func liftUnspecifiedOutputs(ci int, call shadow.ExecuteProcessCall, anc execAnch
 func liftDirOperandOutputs(call shadow.ExecuteProcessCall, dirRel string, anc execAnchors, cc *codegenContext) ([]string, bool) {
 	var rels []string
 	registered := 0
-	root := filepath.Join(anc.hostBuildDir, filepath.FromSlash(dirRel))
+	// The dir operand may live in an OUTER build tree (cross-boundary): walk under
+	// its OWNING root and relativize against it. A dir under no root defaults to the
+	// local build dir (walking a missing path finds nothing → declines below).
+	owner, found := dirUnderBuildRoots(dirRel, anc.hostBuildDir, anc.outerBuildDirs)
+	if !found {
+		owner = anc.hostBuildDir
+	}
+	root := filepath.Join(owner, filepath.FromSlash(dirRel))
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
-		if rel, ok := relativeIfInsideRelaxed(anc.hostBuildDir, p); ok {
+		if rel, ok := relativeIfInsideRelaxed(owner, p); ok {
 			if !cc.NinjaOuts[rel] {
 				if cc.outputClaimed(rel) {
 					registered++
