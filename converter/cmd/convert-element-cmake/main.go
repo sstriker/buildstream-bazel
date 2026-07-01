@@ -604,6 +604,14 @@ func maybeDeferNestedAbort(err error, a cli.Args, hostBuildDir string, nestedSin
 // genex and stamp-indirection second passes, and the per-config bake fold.
 // The in fields destructure into run()'s original local names so the pass
 // bodies read exactly as they did inline.
+// resetPerPass clears the per-pass report collectors before each ToIR pass so a
+// warm re-lower's report reflects only the final pass, not accumulated duplicates.
+func resetPerPass(rs ...interface{ Reset() }) {
+	for _, r := range rs {
+		r.Reset()
+	}
+}
+
 func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *convertInputs, hostBuildDir string, cmakeVars map[string]string, rec *phaseRecorder) (*ir.Package, error) {
 	g, imports, prefixAbs := in.g, in.imports, in.prefixAbs
 	testRegistry, traceRaw, hostBuildOrReply := in.testRegistry, in.traceRaw, in.hostBuildOrReply
@@ -652,6 +660,7 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	if err != nil {
 		return nil, err
 	}
+	traceFactsCache := lower.NewTraceFactsCache() // parse the trace once across this element's ToIR passes
 	runToIR := func(sink *lower.LiteralProbeSink, resolutions map[string]cmakerun.LiteralResolution, setAssignments []shadow.SetAssignment, parentScopeForwards []shadow.ParentScopeForward) (*ir.Package, error) {
 		// Time every lowering invocation into the one phase bucket: ToIR
 		// runs 2-3x (pass 1 + warm re-lowers), and their sum is the
@@ -665,9 +674,7 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 		// rather than accumulating duplicate entries across passes (a
 		// nested-cmake project that runs the warm second pass would
 		// otherwise double-count every outer rejection / coverage finding).
-		todosCollector.Reset()
-		rejections.Reset()
-		coverageCollector.Reset()
+		resetPerPass(todosCollector, rejections, coverageCollector)
 		downloadRepos = downloadRepos[:0]
 		return lower.ToIR(r, g, lower.Options{
 			HostSourceRoot:                    a.SourceRoot,
@@ -681,6 +688,7 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 			Imports:                           imports,
 			CTest:                             testRegistry,
 			TraceRaw:                          traceRaw,
+			TraceFactsCache:                   traceFactsCache,
 			LiftConfigureFile:                 a.LiftConfigureFile,
 			LiftDownload:                      a.LiftDownload,
 			DownloadRepos:                     &downloadRepos,

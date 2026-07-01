@@ -687,6 +687,12 @@ func nestedOptionsFor(nb NestedBuildInput, opts Options, elementRoot string) Opt
 	n.ConfigureLog = nil
 	n.LiteralProbeSink = nil
 	n.LiteralResolutions = nil
+	// The nested build carries its OWN trace (n.TraceRaw = nb.TraceRaw above), so
+	// the outer element's trace-facts memo must not cross over — it would return
+	// the OUTER project's parsed facts for the NESTED trace. Drop it; the nested
+	// lowering parses its own trace (and, being single-pass here, gains nothing
+	// from a cache anyway).
+	n.TraceFactsCache = nil
 
 	return n
 }

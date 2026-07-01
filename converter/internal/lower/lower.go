@@ -177,6 +177,17 @@ type Options struct {
 	// codemodel-only behavior matches pre-trace lower output.
 	TraceRaw []byte
 
+	// TraceFactsCache, when non-nil, memoizes the parseTraceFacts result across
+	// an element's warm re-lower passes (pass 1 → the genex / stamp / nested /
+	// capture recovery re-lowers). parseTraceFacts is a PURE function of the
+	// pass-invariant trace bytes + reply, but it walks the whole trace ~5× (one
+	// Decode plus four Extract passes), so a multi-pass convert of a large,
+	// genex-heavy project re-parsed the trace on every pass. Sharing one cache
+	// (NewTraceFactsCache) across the passes parses it once. Nil (unit-shaped or
+	// nested-lowering callers, which carry a DIFFERENT trace) decodes each call —
+	// byte-identical to before.
+	TraceFactsCache *TraceFactsCache
+
 	// SetAssignments carries verbatim `set(X ${Y})` variable copies
 	// recovered from a NON-EXPANDED trace (shadow.ExtractSetAssignments),
 	// supplied by the driver's warm second-configure pass. ToIR walks
@@ -1184,6 +1195,31 @@ type traceFacts struct {
 // parseTraceFacts runs the one-shot trace pre-parse (plus the
 // backtrace-first link-keyword recovery) for ToIR. Body and rationale
 // comments are verbatim from ToIR's original inline section.
+// TraceFactsCache memoizes the pure parseTraceFacts result so an element's warm
+// re-lower passes parse the (invariant) trace bytes once instead of once per
+// pass. Construct with NewTraceFactsCache and share the pointer across the ToIR
+// calls for ONE element + trace; the cached traceFacts is treated read-only by
+// every consumer (verified: decodedTrace and the derived maps are never mutated
+// downstream), so reuse is byte-identical to re-parsing.
+type TraceFactsCache struct{ tf *traceFacts }
+
+// NewTraceFactsCache returns an empty cache to thread through Options.TraceFactsCache.
+func NewTraceFactsCache() *TraceFactsCache { return &TraceFactsCache{} }
+
+// parseTraceFactsCached returns the memoized parseTraceFacts result, parsing on
+// the first call and reusing it on the warm re-lower passes. With no cache
+// (opts.TraceFactsCache == nil) it parses every call, unchanged.
+func parseTraceFactsCached(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) traceFacts {
+	if c := opts.TraceFactsCache; c != nil {
+		if c.tf == nil {
+			tf := parseTraceFacts(r, cfg, opts)
+			c.tf = &tf
+		}
+		return *c.tf
+	}
+	return parseTraceFacts(r, cfg, opts)
+}
+
 func parseTraceFacts(r *fileapi.Reply, cfg fileapi.Configuration, opts Options) traceFacts {
 	knownTargets := map[string]bool{}
 	for _, tref := range cfg.Targets {
@@ -3074,7 +3110,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 	}
 	cfg := r.Codemodel.Configurations[0]
 
-	tf := parseTraceFacts(r, cfg, opts)
+	tf := parseTraceFactsCached(r, cfg, opts)
 	privateIncludeDirs, publicIncludeDirs, includeDirsGlobal := tf.privateIncludeDirs, tf.publicIncludeDirs, tf.includeDirsGlobal
 	defineSymbols, traceLinkLibs, traceLinkScope := tf.defineSymbols, tf.traceLinkLibs, tf.traceLinkScope
 	platformConditionalSrcs, platformConditionalSrcsToAdd := tf.platformConditionalSrcs, tf.platformConditionalSrcsToAdd
