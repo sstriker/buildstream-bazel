@@ -263,34 +263,8 @@ func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []sha
 
 	// Find the single liftable tool whose WORKING_DIRECTORY holds the copy
 	// sources (the tempdir it wrote into). >1 such tool is ambiguous.
-	var toolArgv []string
-	var toolWorkdir string
-	for _, raw := range calls {
-		c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))
-		if c.WorkingDirectory == "" || !argvStructurallyLiftableInWrapper(c) {
-			continue
-		}
-		if !argvToolLiftable(c.Commands[0][0], anc, cc) {
-			continue
-		}
-		// The tool's working dir must contain every relocation source.
-		owns := true
-		for _, src := range relocate {
-			if _, inside := relativeIfInsideRelaxed(c.WorkingDirectory, src); !inside {
-				owns = false
-				break
-			}
-		}
-		if !owns {
-			continue
-		}
-		if toolArgv != nil {
-			return "", false // ambiguous producer
-		}
-		toolArgv = c.Commands[0]
-		toolWorkdir = c.WorkingDirectory
-	}
-	if toolArgv == nil {
+	toolArgv, toolWorkdir, ok := cc.findSingleTempDirTool(calls, relocate, anc)
+	if !ok {
 		return "", false
 	}
 
@@ -316,6 +290,46 @@ func (cc *codegenContext) recoverTempDirToolRelocate(b *ninja.Build, calls []sha
 		appendTempDirRelocations(cc, b, buildDir, declared, relocate, toolWorkdir)
 	}
 	return cc.SeenBuilds[b], true
+}
+
+// findSingleTempDirTool returns the ONE liftable generator tool among calls
+// whose WORKING_DIRECTORY holds every relocation source — the tempdir it wrote
+// into. A `cmake -E copy[_if_different]|rename|copy_directory[_if_different]` is
+// a RELOCATION (already harvested into relocate), not the generator, so it's
+// skipped here (isCmakeRelocationCall):
+// when the copy shares the tool's WORKING_DIRECTORY it otherwise passes every
+// gate (cmake is liftable, its operands resolve inside the tempdir) and would
+// look like a SECOND producer → ambiguous → decline → bake. Same filter the
+// direct-write scan applies. ok=false when none qualifies or more than one does.
+func (cc *codegenContext) findSingleTempDirTool(calls []shadow.ExecuteProcessCall, relocate map[string]string, anc execAnchors) (argv []string, workdir string, ok bool) {
+	for _, raw := range calls {
+		c := normalizeCMakeECall(clearDeadCaptures(raw, cc.DeadCaptureVars))
+		if isCmakeRelocationCall(c) {
+			continue
+		}
+		if c.WorkingDirectory == "" || !argvStructurallyLiftableInWrapper(c) {
+			continue
+		}
+		if !argvToolLiftable(c.Commands[0][0], anc, cc) {
+			continue
+		}
+		owns := true
+		for _, src := range relocate {
+			if _, inside := relativeIfInsideRelaxed(c.WorkingDirectory, src); !inside {
+				owns = false
+				break
+			}
+		}
+		if !owns {
+			continue
+		}
+		if argv != nil {
+			return nil, "", false // ambiguous producer
+		}
+		argv = c.Commands[0]
+		workdir = c.WorkingDirectory
+	}
+	return argv, workdir, argv != nil
 }
 
 // appendTempDirRelocations rewrites the just-emitted genrule's cmd to copy each
