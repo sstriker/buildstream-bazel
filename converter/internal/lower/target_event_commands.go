@@ -150,7 +150,7 @@ func lowerTargetEventCommands(calls []shadow.TargetEventCommandCall, cc *codegen
 			// line, not declared via BYPRODUCTS.
 			tags = append(tags, "cmake-codegen-target-event-inferred-output")
 		}
-		cc.Genrules = append(cc.Genrules, ir.Target{
+		cc.appendExecProcGenrule(ir.Target{
 			Name:         name,
 			Kind:         ir.KindGenrule,
 			GenruleCmd:   cmd,

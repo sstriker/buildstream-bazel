@@ -62,7 +62,7 @@ func liftCMakeETarCreate(args []string, anc execAnchors, cc *codegenContext) ([]
 		spec.Attrs = append(spec.Attrs, ir.NativeAttr{Name: "extension", Str: ext})
 	}
 	spec.Attrs = append(spec.Attrs, ir.NativeAttr{Name: "visibility", List: []string{"//visibility:private"}})
-	cc.Genrules = append(cc.Genrules, ir.Target{
+	cc.appendExecProcGenrule(ir.Target{
 		Name:       name,
 		Kind:       ir.KindNativeRule,
 		NativeRule: spec,

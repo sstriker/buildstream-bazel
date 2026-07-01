@@ -6,7 +6,48 @@ import (
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/todos"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/shadow"
 )
+
+// TestExecProcHostToolNote_SeamWiring proves the execute_process producer
+// family routes its emissions through appendExecProcGenrule: an
+// un-hermeticized host tool driving an OUTPUT_FILE lift now surfaces a
+// host-codegen-tool note — the diagnostic parity the custom-command family
+// already gets through recognizeOrGenrule — while a benign cmake -E copy
+// records nothing. Before the seam these genrules appended straight to
+// cc.Genrules, so the host driver went undiagnosed.
+func TestExecProcHostToolNote_SeamWiring(t *testing.T) {
+	t.Run("host-tool-output-file-notes", func(t *testing.T) {
+		call := shadow.ExecuteProcessCall{
+			File: "/src/CMakeLists.txt", Line: 3,
+			Commands:   [][]string{{"mygen", "--emit"}},
+			OutputFile: "/build/gen.h",
+		}
+		cc := newCodegenContext()
+		_, refusals := recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
+		if len(refusals) != 0 {
+			t.Fatalf("expected lift: %+v", refusals)
+		}
+		if len(cc.HostCodegenTools) != 1 || cc.HostCodegenTools[0].Driver != "mygen" {
+			t.Fatalf("execute_process host tool must surface a host-codegen-tool note, got %+v", cc.HostCodegenTools)
+		}
+	})
+
+	t.Run("benign-copy-does-not-note", func(t *testing.T) {
+		// A cmake -E copy lifts to a `cp` genrule (benign) — the seam fires the
+		// note but classifyHostCodegenTool filters the benign driver, so nothing
+		// records.
+		call := shadow.ExecuteProcessCall{
+			File: "/src/CMakeLists.txt", Line: 5,
+			Commands: [][]string{{"cmake", "-E", "copy", "/src/a.txt", "/build/b.txt"}},
+		}
+		cc := newCodegenContext()
+		recoverExecuteProcess([]shadow.ExecuteProcessCall{call}, "/src", "/src", "", "/build", false, nil, nil, nil, nil, cc)
+		if len(cc.HostCodegenTools) != 0 {
+			t.Fatalf("benign cmake -E copy must not surface a host-codegen-tool note, got %+v", cc.HostCodegenTools)
+		}
+	})
+}
 
 func TestClassifyHostCodegenTool(t *testing.T) {
 	cases := []struct {
@@ -27,6 +68,13 @@ func TestClassifyHostCodegenTool(t *testing.T) {
 		{"interpreter inline code", `python3 -c import x`, "python3", false, true},
 		{"absolute host path", "/opt/host/bin/protoc --cpp_out=. foo.proto", "protoc", true, true},
 		{"cd-prefixed", "cd sub && flatc --cpp x.fbs", "flatc", false, true},
+		// The execute_process file-producing lift prepends a `mkdir -p …` prologue
+		// before the driver — peel it so the tool, not the scaffolding, classifies.
+		{"mkdir-prologue", `mkdir -p "$$(dirname "$@")" && gen.sh in > "$@"`, "gen.sh", false, true},
+		{"multi-mkdir-prologue", `mkdir -p "$(RULEDIR)/a" && mkdir -p "$(RULEDIR)/b" && flatc x.fbs`, "flatc", false, true},
+		{"mkdir-then-cd-prologue", `mkdir -p w && cd w && perl /opt/prefix/bin/gen.pl`, "gen.pl", true, true},
+		// A cmake -E / cp behind the prologue stays benign (no note).
+		{"mkdir-prologue-benign", `mkdir -p "$$(dirname "$@")" && cp "$(location a)" "$@"`, "", false, false},
 		{"hermeticized execpath", "$(execpath //:gen_tool) in out", "", false, false},
 		{"hermeticized location", "$(location :tool) in out", "", false, false},
 		{"benign cmake -E", "cmake -E copy a b", "", false, false},
