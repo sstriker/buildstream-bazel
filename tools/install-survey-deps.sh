@@ -158,8 +158,11 @@ install_grpc_buildbox_system_deps() {
   command -v apt-get >/dev/null 2>&1 || { log "WARNING: no apt-get; grpc/buildbox system deps unavailable"; return 1; }
   log "installing grpc/buildbox system deps (c-ares, OpenSSL, zlib, protoc+grpc plugin, uuid, tomlplusplus)"
   _apt='apt-get'
-  [ "$(id -u)" -eq 0 ] || _apt='sudo apt-get'
-  DEBIAN_FRONTEND=noninteractive $_apt update -qq >&2 2>/dev/null || true
+  if [ "$(id -u)" -ne 0 ]; then
+    command -v sudo >/dev/null 2>&1 || { log "WARNING: not root and no sudo; cannot apt-install grpc/buildbox system deps"; return 1; }
+    _apt='sudo apt-get'
+  fi
+  DEBIAN_FRONTEND=noninteractive $_apt update -qq >/dev/null 2>&1 || true
   if DEBIAN_FRONTEND=noninteractive $_apt install -y --no-install-recommends \
        libc-ares-dev libssl-dev zlib1g-dev protobuf-compiler protobuf-compiler-grpc \
        libgrpc++-dev uuid-dev libtomlplusplus-dev >&2; then
