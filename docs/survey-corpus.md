@@ -193,7 +193,8 @@ failure. Fresh numbers for members not previously stamped: `llvm` `0/172/1/6`,
   bare convert doesn't wire.
 - **`buildbox`** — needs the external remote-execution-api protos
   (`remote_execution.proto` not found).
-- `mbedtls` / `re2` are `skip(convert)` (same configure prerequisites as above).
+- `mbedtls` / `re2` **CONVERT FAILED** (the artifact's term; the build lens never
+  runs — same configure prerequisites as the convertibility failures above).
 
 **Symbol fidelity: PASS (all deltas benign) for all 8 members that built AND carry
 a `.symfidelity` conf** — `brotli` `catch2` `glog` `libevent` `libpng` `libxml2`
