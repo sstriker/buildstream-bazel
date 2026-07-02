@@ -16,7 +16,8 @@ import (
 // — a tool with no native Bazel rule, so lower() returns a genrule(...) rather
 // than a native_rule(...). It supplies the OUTPUT_FILE basename (fed as
 // cmd.discovered_outputs on the execute_process path) as both the genrule out and
-// the derived output.
+// the derived output. A genrule's outputs are consumed BY FILENAME (OutToGenrule),
+// so consumer_deps is left empty — a deps edge onto the genrule would be wrong.
 const stdoutGenStar = `
 def match(cmd):
     return cmd.driver == "sgen"
@@ -33,7 +34,6 @@ def lower(cmd):
                 tools = ["//tools:sgen"],
             ),
         ],
-        consumer_deps = [":sgen_gen"],
         derived_outputs = [out],
     )
 `
