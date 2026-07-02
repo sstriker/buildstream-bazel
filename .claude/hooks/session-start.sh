@@ -198,6 +198,23 @@ if [ -n "$egress_cas" ]; then
   fi
   if [ -n "$bsb_trust" ]; then
     bsb_rc="$HOME/.bazelrc"
+    # Mirror rewrite for the egress sandbox. The egress policy lets BCR resolve
+    # (raw.githubusercontent.com) but 403s the github RELEASE / codeload archives
+    # the modules point at (rules_cc, abseil, …), so a bare `bazel build` fails to
+    # fetch even with the registry+truststore set. The GCS `bazel-mirror` bucket
+    # is allowed (200) and serves the SAME archives byte-for-byte (so bazel's
+    # integrity hashes still verify), so a downloader-config `rewrite` retargets
+    # every github/codeload download at the mirror. This is egress-ONLY (hence
+    # inside the $bsb_trust guard): CI reaches github directly and must not be
+    # rewritten. Written to a stable cache path; a write failure just omits the
+    # downloader line below (egress registry+truststore still apply).
+    bsb_mirror_cfg="${BSB_BAZEL_MIRROR_CFG:-$HOME/.cache/bazel-mirror-downloader.cfg}"
+    mkdir -p "$(dirname "$bsb_mirror_cfg")" 2>/dev/null || true
+    # ^-anchored so the github.com rule can't also match inside codeload.github.com
+    # (which has its own rule). $1 is the rewrite backreference (literal here).
+    { printf 'rewrite ^github.com/(.*) storage.googleapis.com/bazel-mirror/github.com/$1\n'
+      printf 'rewrite ^codeload.github.com/(.*) storage.googleapis.com/bazel-mirror/codeload.github.com/$1\n'
+    } > "$bsb_mirror_cfg" 2>/dev/null || bsb_mirror_cfg=""
     # Update ~/.bazelrc atomically. Build the new contents in a temp file in
     # the same dir (so publishing is an atomic rename): the current rc minus
     # any prior managed block, a trailing newline so the marker starts on its
@@ -218,12 +235,17 @@ if [ -n "$egress_cas" ]; then
 # >>> bsb-egress >>>
 common --registry=https://raw.githubusercontent.com/bazelbuild/bazel-central-registry/main
 startup --host_jvm_args=-Djavax.net.ssl.trustStore=$bsb_trust --host_jvm_args=-Djavax.net.ssl.trustStorePassword=$bsb_trust_pass${bsb_trust_type:+ --host_jvm_args=-Djavax.net.ssl.trustStoreType=$bsb_trust_type}
+${bsb_mirror_cfg:+common --experimental_downloader_config=$bsb_mirror_cfg}
 # <<< bsb-egress <<<
 RC
       fi
     fi
     if [ "$bsb_rc_ok" = 1 ]; then
-      log "bazel egress configured: BCR via GitHub mirror + JVM truststore ($bsb_trust)"
+      if [ -n "$bsb_mirror_cfg" ]; then
+        log "bazel egress configured: BCR + GitHub→GCS mirror rewrite + JVM truststore ($bsb_trust)"
+      else
+        log "bazel egress configured: BCR via GitHub mirror + JVM truststore ($bsb_trust)"
+      fi
     else
       rm -f "$bsb_rc_tmp" 2>/dev/null || true
       log "bazel egress: could not update $bsb_rc; left it unchanged"
@@ -259,6 +281,14 @@ fi
 # out the same way rather than inherit this gate-tuned default.
 bsb_disk_cache="${BSB_BAZEL_DISK_CACHE:-$HOME/.cache/bazel-disk}"
 mkdir -p "$bsb_disk_cache" 2>/dev/null || true
+# The repository cache is content-addressed (keyed on each download's declared
+# hash) and, like the disk cache, workspace-path-independent — so a module archive
+# fetched (through the egress mirror above) by one staged gate workspace is reused
+# by every later one instead of re-downloaded. Unlike the disk cache it stores only
+# the small SOURCE archives (not action outputs), so it carries no survey
+# disk-doubling penalty and stays UNCONDITIONAL. Override with BSB_BAZEL_REPO_CACHE.
+bsb_repo_cache="${BSB_BAZEL_REPO_CACHE:-$HOME/.cache/bazel-repos}"
+mkdir -p "$bsb_repo_cache" 2>/dev/null || true
 bsb_cache_rc="$HOME/.bazelrc"
 # Same atomic update idiom as the egress block: rebuild in a temp file (drop
 # any prior managed block, ensure a trailing newline, append a fresh block)
@@ -275,15 +305,16 @@ if [ -n "$bsb_cache_rc_tmp" ]; then
     cat >> "$bsb_cache_rc_tmp" <<RC && mv -f "$bsb_cache_rc_tmp" "$bsb_cache_rc" || bsb_cache_rc_ok=0
 # >>> bsb-cache >>>
 common --disk_cache=$bsb_disk_cache
+common --repository_cache=$bsb_repo_cache
 # <<< bsb-cache <<<
 RC
   fi
 fi
 if [ "$bsb_cache_rc_ok" = 1 ]; then
-  log "bazel disk cache configured: $bsb_disk_cache (shared across gate workspaces)"
+  log "bazel caches configured: disk_cache=$bsb_disk_cache repository_cache=$bsb_repo_cache (shared across gate workspaces)"
 else
   rm -f "$bsb_cache_rc_tmp" 2>/dev/null || true
-  log "bazel disk cache: could not update $bsb_cache_rc; left it unchanged"
+  log "bazel caches: could not update $bsb_cache_rc; left it unchanged"
 fi
 
 # --- buildifier (default) ------------------------------------------------
