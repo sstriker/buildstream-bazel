@@ -1,0 +1,55 @@
+# Full corpus survey - 2026-07-02
+# Converter: 6a1da82 (post #769-#789 streak; the #789 genrule builtin is operator-only, no corpus effect).
+# Harness:   scripts/run-survey.sh with the converter commit stamp (#790); Bazel egress via the GitHub->GCS
+#            mirror + repository_cache (#791) -- which is what unblocked the build + fidelity lenses at all.
+# Scope:     Phase A convert-only for ALL 30 (convertibility lenses: rej/idiom/cov/todos). Phase B build +
+#            compile-db + symbol + ELF fidelity for the 18 non-large. The 12 largest are convert-only
+#            (build + symbol/ELF fidelity skipped per request; they self-gate on a green build anyway).
+# symbol-fidelity: nm exported symbols, cmake .a vs bazel .a. PASS = every delta benign (fortify/stack-protector).
+# compile-db:      report-only per-TU compile-commands diff. m=TUs matched; inc/def/std = TUs with include/
+#                  define/-std frame deltas. The inc '.'-dir and std-frame deltas are known benign compile-db
+#                  noise (cmake adds CMAKE_CURRENT_{SOURCE,BINARY}_DIR to -I; -std framed differently), not build-blocking.
+
+project         rej  idiom  cov  todo  build  symbol-fidelity          compile-db             note
+--------------------------------------------------------------------------------------------------
+fmt               0     48    0     0   FAIL  -                        m=29,inc=0,def=0,std=29 
+zlib              0      0    0     0     ok  PASS(both=105,benign=5)  m=17,inc=17,def=0,std=0 
+spdlog            0      0    0     0     ok  PASS(both=1404,benign=9) m=32,inc=0,def=0,std=0 
+nlohmann-json     0      0    0     0     ok  -                        -                      
+catch2            0      0    0     0     ok  PASS(both=2021,benign=12) m=107,inc=107,def=0,std=107 
+libpng            0      0    0    12     ok  PASS(both=406,benign=6)  m=24,inc=1,def=0,std=0 
+googletest        0      0    0     0   FAIL  -                        m=4,inc=0,def=0,std=4  
+boost-core        0      0    0     0     ok  -                        -                      
+zstd              1      3    0     7     ok  -                        m=0,inc=0,def=0,std=0  
+libevent          0      5    0     3     ok  PASS(both=417,benign=9)  m=66,inc=17,def=0,std=0 
+libxml2           0      0    0     1     ok  PASS(both=1505,benign=12) m=52,inc=52,def=0,std=0 
+brotli            0      0    0     1     ok  PASS(both=11,benign=0)   m=36,inc=0,def=1,std=0 
+mbedtls           -      -    -     -      -  -                        -                      CONVERT FAILED: bare configure fails (needs tests/programs OFF)
+glog              1     30    0     7     ok  PASS(both=513,benign=11) m=20,inc=20,def=0,std=20 
+glm               0      0    0     2     ok  -                        m=186,inc=186,def=0,std=186 
+cryptoauthlib     3      3    0   378     ok  -                        m=173,inc=173,def=65,std=0 
+buildbox          0     14    0     1   FAIL  -                        m=121,inc=121,def=0,std=0 
+re2               -      -    -     -      -  -                        -                      CONVERT FAILED: needs find_package(absl)
+abseil            0      0    0   210      -  -                        -                      LARGE: convert-only
+protobuf          0      8    0     0      -  -                        -                      LARGE: convert-only
+curl              0      1    0     4      -  -                        -                      LARGE: convert-only
+eigen             0      0    0     3      -  -                        -                      LARGE: convert-only
+sdl               0      6    0     5      -  -                        -                      LARGE: convert-only
+grpc              -      -    -     -      -  -                        -                      CONVERT FAILED: needs find_package(Protobuf) [LARGE]
+llvm              0    172    1     6      -  -                        -                      LARGE: convert-only
+vtk               0    346    2   878      -  -                        -                      LARGE: convert-only
+bde               1      0    7     4      -  -                        -                      LARGE: convert-only
+cutlass           -      -    -     -      -  -                        -                      CONVERT FAILED: needs CUDA nvcc (BSB_PROVISION_CUDA) [LARGE]
+cuda-samples      -      -    -     -      -  -                        -                      CONVERT FAILED: needs CUDA nvcc (BSB_PROVISION_CUDA) [LARGE]
+openblas          0      0    0     3      -  -                        -                      LARGE: convert-only
+
+FINDINGS / build failures (non-large, honest):
+  fmt        build FAIL: test posix-mock-test.cc does #include "../src/os.cc"; that sibling source isn't staged
+             into the test target, so gcc can't find it. The fmt LIBRARY compiles clean; only this test target
+             fails. New signal vs the table's build 'ok' (the 403 previously hid the //... test build) -- a real
+             follow-up: stage the relatively-source-included file onto the test.
+  googletest build FAIL: standalone //... needs its own gmock/gtest dep graph the bare convert doesn't wire.
+  buildbox   build FAIL: needs the external remote-execution-api protos (remote_execution.proto not found).
+SYMBOL FIDELITY: PASS (all-benign deltas) for all 8 members that built AND carry a .symfidelity conf --
+  brotli catch2 glog libevent libpng libxml2 spdlog zlib. i.e. the converted Bazel static archive exports the
+  SAME symbols as cmake's, modulo fortify/stack-protector wrappers. First time this is confirmable (needed the build).

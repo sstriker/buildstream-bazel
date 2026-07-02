@@ -150,12 +150,56 @@ the streak:
 
 `mbedtls` **was attempted in this run but its bare configure fails** (its
 tests/programs must be turned off first) — so it produced no convertibility
-numbers, not a regression. **Not attempted here** (need per-member conf or a
-warm-Bazel box the repo-scoped proxy can't give): the medium/large members
-(`abseil` `protobuf` `curl` `eigen` `sdl` `grpc` `llvm` `vtk` `bde` `cutlass`
-`cuda-samples` `openblas`), and the **build / fidelity / intent** lenses (the
-Bazel deps `403` behind the proxy). Those await a full uniform rerun on a capable
-box, which the commit stamp will attribute per row.
+numbers, not a regression. The medium/large members and the **build / fidelity**
+lenses were out of reach on 2026-07-01 (Bazel deps `403` behind the proxy); the
+full run below (2026-07-02) delivers them after the egress mirror fix.
+
+### Full survey (2026-07-02)
+
+The Bazel egress mirror + `--repository_cache` (landed in the SessionStart hook)
+unblocked the previously-`403`-gated fetch, so this is the **first run to
+exercise the build + fidelity lenses across the corpus** — not just the
+convertibility columns. Converter `6a1da82` (post-#769–#789; the #789 genrule
+builtin is operator-only, no corpus effect). Full output:
+[`survey-artifacts/full-survey-2026-07-02.txt`](survey-artifacts/full-survey-2026-07-02.txt).
+
+**Scope.** Phase A: convert-only for **all 30** (convertibility lenses). Phase B:
+**build + compile-db + symbol + ELF fidelity** for the **18 non-large**. The 12
+largest (`abseil` `protobuf` `curl` `eigen` `sdl` `grpc` `llvm` `vtk` `bde`
+`cutlass` `cuda-samples` `openblas`) stay **convert-only** (build + symbol/ELF
+skipped by request; they self-gate on a green build anyway).
+
+**Convertibility (all 30): 25 clean, 5 environmental failures** — none a converter
+regression: `cutlass`/`cuda-samples` need `nvcc` (opt-in `BSB_PROVISION_CUDA`);
+`re2` needs `find_package(absl)` and `grpc` needs `find_package(Protobuf)` (external
+deps that resolve in-graph, not standalone); `mbedtls` is the documented bare-configure
+failure. Fresh numbers for members not previously stamped: `llvm` `0/172/1/6`,
+`vtk` `0/346/2/878`, `abseil` `0/0/0/210`, `protobuf` `0/8/0/0`, `cryptoauthlib`
+`3/3/0/378`, `bde` `1/0/7/4`, `sdl` `0/6/0/5`.
+
+**Build lens (18 non-large): 12 green** — `zlib` `spdlog` `nlohmann-json` `catch2`
+`libpng` `boost-core` `zstd` `libevent` `libxml2` `brotli` `glog` `glm`
+`cryptoauthlib`. Failures (honest, and only now visible with the build unblocked):
+- **`fmt`** — the *library* compiles clean; its `//...` build fails only on the
+  test `posix-mock-test.cc`, which does `#include "../src/os.cc"` — that sibling
+  source isn't staged onto the test target. **New signal vs the table's build
+  `ok`** (the `403` hid the `//...` test build); a real follow-up (stage the
+  relatively-source-included file onto the test), not a convertibility regression.
+- **`googletest`** — standalone `//...` needs its own gmock/gtest dep graph the
+  bare convert doesn't wire.
+- **`buildbox`** — needs the external remote-execution-api protos
+  (`remote_execution.proto` not found).
+- `mbedtls` / `re2` are `skip(convert)` (same configure prerequisites as above).
+
+**Symbol fidelity: PASS (all deltas benign) for all 8 members that built AND carry
+a `.symfidelity` conf** — `brotli` `catch2` `glog` `libevent` `libpng` `libxml2`
+`spdlog` `zlib`. That is, the converted Bazel static archive **exports the same
+symbols as cmake's**, modulo fortify/stack-protector wrappers (e.g. `zlib`
+`both=105 benign=5`, `libxml2` `both=1505 benign=12`, `catch2` `both=2021
+benign=12`). This is the first time symbol fidelity is confirmable at all (it
+needs the green build the `403` used to block). Compile-db fidelity is recorded
+report-only (the `.`-include-dir and `-std`-framing per-TU deltas are the known
+benign compile-db noise, not build-blocking).
 
 ## What a survey is checking for (the three lenses)
 
