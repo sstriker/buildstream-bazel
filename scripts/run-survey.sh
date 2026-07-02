@@ -155,15 +155,46 @@ fi
 # `go build` can't run (no Go toolchain on PATH).
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 converter="$repo_root/build/bin/convert-element-cmake"
+# converter_from_source is 1 when this run's converter is compiled from the
+# CURRENT checkout (go build or go run) — the only case where stamping the git
+# commit is honest. 0 when we fall back to a prebuilt binary of UNKNOWN
+# provenance (it may predate the checkout's HEAD), so the commit stamp would lie.
 if command -v go >/dev/null 2>&1 && \
    ( cd "$repo_root" && go build -o "$converter" ./converter/cmd/convert-element-cmake ); then
+    converter_from_source=1
     run_converter() { "$converter" "$@"; }
 elif [ -x "$converter" ]; then
     echo "warning: 'go build' unavailable or failed; using existing (possibly stale) $converter" >&2
+    converter_from_source=0
     run_converter() { "$converter" "$@"; }
-else
-    echo "note: $converter not built and 'go build' failed; using 'go run' (slower)." >&2
+elif command -v go >/dev/null 2>&1; then
+    # go is present but `go build -o` failed (e.g. a read-only build/bin) — `go run`
+    # compiles to its own cache, so it still works and is still FROM SOURCE.
+    echo "note: 'go build -o' failed but Go is present; using 'go run' (slower)." >&2
+    converter_from_source=1
     run_converter() { ( cd "$repo_root" && go run ./converter/cmd/convert-element-cmake "$@" ); }
+else
+    echo "error: no converter binary at $converter and no Go toolchain to build one." >&2
+    echo "       Install Go, or run 'make converter' where Go is available, then re-run." >&2
+    exit 1
+fi
+
+# The converter commit every row in THIS run was produced with — stamped into the
+# summary so a survey snapshot is attributable to an exact converter (and rows
+# refreshed at different commits stay honest). "-dirty" when the tree has
+# uncommitted changes (the survey isn't from a clean commit) — `git status
+# --porcelain` so untracked files count as dirty too, not just tracked-file
+# edits. "unknown" outside a git checkout. "prebuilt" when the run used a
+# fallback binary NOT compiled from this checkout (converter_from_source=0), so
+# the git commit can't be trusted to describe the converter that produced the row.
+if [ "$converter_from_source" = 1 ]; then
+    converter_commit=$(cd "$repo_root" && {
+        c=$(git rev-parse --short=12 HEAD 2>/dev/null) || { echo unknown; exit; }
+        [ -z "$(git status --porcelain 2>/dev/null)" ] || c="$c-dirty"
+        echo "$c"
+    })
+else
+    converter_commit=prebuilt
 fi
 
 # detect_configs <src> — echo the project's declared configuration types
@@ -611,8 +642,9 @@ summary="$out_dir/summary.txt"
 # NON-DETERMINISTIC (an LLM judge produced it) — a triage pointer to
 # producer-gap candidates, NOT a count comparable across runs. See the
 # intent-capture lens section in docs/survey-corpus.md.
-printf '%-14s %10s %10s %10s %6s %7s %8s %s\n' project rejections idioms coverage todos missed build status | tee "$summary"
-printf '%-14s %10s %10s %10s %6s %7s %8s %s\n' ------- ---------- ------ -------- ----- ------ ----- ------ | tee -a "$summary"
+printf '# survey run · converter %s\n' "$converter_commit" | tee "$summary"
+printf '%-14s %10s %10s %10s %6s %7s %8s %-18s %s\n' project rejections idioms coverage todos missed build converter status | tee -a "$summary"
+printf '%-14s %10s %10s %10s %6s %7s %8s %-18s %s\n' ------- ---------- ------ -------- ----- ------ ----- ------------------ ------ | tee -a "$summary"
 
 for entry in $projects; do
     name="${entry%%=*}"
@@ -621,7 +653,7 @@ for entry in $projects; do
     mkdir -p "$proj_out"
 
     if [ ! -d "$src" ]; then
-        printf '%-14s %10s %10s %10s %6s %7s %s\n' "$name" - - - - - "MISSING ($src) — run 'make fetch-$name'" | tee -a "$summary"
+        printf '%-14s %10s %10s %10s %6s %7s %8s %-18s %s\n' "$name" - - - - - - "$converter_commit" "MISSING ($src) — run 'make fetch-$name'" | tee -a "$summary"
         continue
     fi
 
@@ -1044,7 +1076,7 @@ for entry in $projects; do
     missed_n=$( [ -f "$intent" ] && grep -oE '"net_new"[[:space:]]*:[[:space:]]*[0-9]+' "$intent" 2>/dev/null | grep -oE '[0-9]+' | head -1 || echo "-" )
     missed_n="${missed_n:--}"
 
-    printf '%-14s %10s %10s %10s %6s %7s %8s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "${todo_n:--}" "$missed_n" "$build_status" "$status" | tee -a "$summary"
+    printf '%-14s %10s %10s %10s %6s %7s %8s %-18s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "${todo_n:--}" "$missed_n" "$build_status" "$converter_commit" "$status" | tee -a "$summary"
 done
 
 echo ""

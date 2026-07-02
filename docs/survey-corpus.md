@@ -32,6 +32,30 @@ triage pointer not a comparable metric**. Per-project build-lens detail is
 in *Build-lens status* below; the full corpus roster + rationale is under
 *The corpus*.
 
+> **Provenance / freshness.** A survey run is only meaningful against a
+> **specific converter commit**, so `run-survey.sh` now stamps it: `summary.txt`
+> opens with a `# survey run · converter <sha>` header and carries a per-row
+> **`converter`** column (`<sha>`, `-dirty` when the tree wasn't clean), so a row
+> refreshed at a different commit stays self-attributing. The stamp is honest
+> about what it *can't* attest: **`unknown`** outside a git checkout, and
+> **`prebuilt`** when the run fell back to a converter binary NOT compiled from
+> the current checkout (so its commit can't be trusted) — the stamp only reports
+> a real `<sha>` when the converter was built from source for that run.
+>
+> **This table's rows have MIXED provenance** — they were filled piecemeal across
+> many converter commits (e.g. fmt's `idiom 0` predates the
+> `raw-toolchain-feature-flag` idiom that glog's `idiom 30` already counts; a
+> fresh uniform run reads fmt `idiom 48` for that same class). That inconsistency
+> is exactly what the commit stamp fixes going forward. A **convertibility
+> reconfirmation** of the self-configuring members on the #769–#789 streak's HEAD
+> (`729b151…`) found **no rejection/coverage regressions** — see *Reconfirmation
+> (convertibility, 2026-07-01)* below and
+> [`survey-artifacts/reconfirm-2026-07-01.txt`](survey-artifacts/reconfirm-2026-07-01.txt).
+> The **Fidelity/Intent** columns and the **build lens** still predate the streak:
+> they need a box with a warm Bazel cache (they can't fetch `rules_cc`/BCR deps
+> behind a repo-scoped proxy), so a full uniform rerun that stamps every row is
+> the next step there.
+
 | Project | Rejections | Idiom | Coverage | Build lens | Fidelity | Intent |
 | --- | --- | --- | --- | --- | --- | --- |
 | **fmt** | 0 | 0 | 0 | `ok` | 29 | 7 |
@@ -95,6 +119,43 @@ is an empty stub; the path is a hand-rolled `fortran_library` in
 Large members surveyed for convertibility but not yet driven through
 the build lens (SDL, grpc, llvm, VTK, …) live under *The
 corpus* / *Regression corpus* below.
+
+### Reconfirmation (convertibility, 2026-07-01)
+
+After the #769–#789 converter streak, the **self-configuring** corpus members
+(no per-project prune / special flags / non-default root needed) were
+re-surveyed with `scripts/run-survey.sh` at converter `729b151` — the first
+uniformly-commit-stamped run (full output:
+[`survey-artifacts/reconfirm-2026-07-01.txt`](survey-artifacts/reconfirm-2026-07-01.txt)).
+The **convertibility signal is clean — no rejection/coverage regressions** from
+the streak:
+
+- `fmt` `glm` `zlib` `spdlog` `nlohmann-json` `googletest` `libxml2` `brotli`
+  `catch2` `libpng` `boost-core` `libevent` `zstd` — all **0 coverage gaps** and
+  no rejection regressions. `catch2` **improved** (rejection `1 → 0` vs the table's
+  `1`). `glog`'s `idiom 30` and `libevent`'s `idiom 5` match the table exactly.
+  `glog` and `zstd` each read a **raw** `1` rejection here where the table shows
+  `0†` and `0`: the table records the **discounted** lens count, so a raw `1` is
+  consistent with it — `glog`'s is the documented benign `$<TARGET_PROPERTY:…>`
+  forward-declared-include notice (the `†` class), and `zstd`'s single rejection
+  does not block its build (its build lens is green — see its row). **`zstd`'s
+  *convertibility* is reconfirmed here; its *fidelity* (the tracked split-emit
+  regression) is a build-lens question that still awaits a warm-Bazel box.**
+- **Idiom is a lens-provenance artifact, not a regression:** `fmt` now reads
+  `idiom 48` (all `raw-toolchain-feature-flag` — raw `-fvisibility=hidden` in
+  copts vs `features=[…]`), the *same* class `glog` already counts as `30`;
+  `zstd`'s `idiom 3` (table `0`) is the same story. The table's `fmt idiom 0` /
+  `zstd idiom 0` predate those checks being counted for them — precisely the
+  mixed-provenance the commit stamp now prevents.
+
+`mbedtls` **was attempted in this run but its bare configure fails** (its
+tests/programs must be turned off first) — so it produced no convertibility
+numbers, not a regression. **Not attempted here** (need per-member conf or a
+warm-Bazel box the repo-scoped proxy can't give): the medium/large members
+(`abseil` `protobuf` `curl` `eigen` `sdl` `grpc` `llvm` `vtk` `bde` `cutlass`
+`cuda-samples` `openblas`), and the **build / fidelity / intent** lenses (the
+Bazel deps `403` behind the proxy). Those await a full uniform rerun on a capable
+box, which the commit stamp will attribute per row.
 
 ## What a survey is checking for (the three lenses)
 
@@ -963,6 +1024,15 @@ make fetch-survey
 # narrower/faster pass.
 scripts/run-survey.sh
 SURVEY_OUT_DIR=/tmp/my-out scripts/run-survey.sh   # custom out dir
+
+# Every run stamps the CONVERTER COMMIT it used: summary.txt opens with a
+# `# survey run · converter <sha>` header and carries a per-row `converter`
+# column (`<sha>`, `-dirty` if the tree wasn't clean) — so a snapshot is
+# attributable and rows refreshed at different commits stay honest. The stamp
+# reads `unknown` outside a git checkout and `prebuilt` when the run used a
+# fallback converter binary NOT built from this checkout (commit untrustworthy);
+# a real `<sha>` means the converter was built from source for the run. Run from
+# a CLEAN checkout (commit first) when the number is going into this doc.
 
 # Survey one ad-hoc project (faithful flags baked into the script).
 scripts/run-survey.sh myproj=/path/to/cmake/root
