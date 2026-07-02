@@ -419,6 +419,21 @@ try_bazel_build() {
     # corpus members. Off by default (the inline emission is what the green
     # corpus is validated under).
     [ "${SURVEY_HOIST_COMMON_COPTS:-0}" != "0" ] && set -- "$@" --emit-common-compile-flags-bzl
+    # --detect-fused-sources: the build lens tests "does //... COMPILE", and the
+    # fused-source idiom (a source that textually #includes another source it
+    # doesn't list — fmt's posix-mock-test → ../src/os.cc, gtest's unity
+    # gtest-all.cc → src/*.cc, VTK's lz4hc.c → lz4.c) only builds when that
+    # included source is staged as a textual_hdrs input. The read-based scan that
+    # detects it is off in the DEFAULT convert (it reads every source+header, a
+    # cost most converts shouldn't pay) but IS the correct behavior for a build,
+    # so the build lens turns it on unconditionally. It never changes the
+    # diagnostic convert / the convertibility columns (a separate convert), only
+    # what the build stages. The cost is real — the scan reads + regex-scans every
+    # distinct compiled source AND header once (O(source tree), potentially the
+    # dominant convert cost on a large member); a member without the idiom still
+    # pays that full scan, it just routes no files. Acceptable in the build lens
+    # (the build itself dwarfs the scan); it's why the DEFAULT convert keeps it off.
+    set -- "$@" --detect-fused-sources
     set -- "$@" \
         --bazel-package-path "$_bb_pkg" \
         --out-build "$_bb_elt/BUILD.bazel" \

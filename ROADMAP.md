@@ -1119,15 +1119,20 @@ trees, optional-feature deps, codegen instances). Each member's
 - **KindNativeRule outputs in --split-packages relocation.** The codegen-recognizer registry's native-rule substrate now participates in the OutToGenrule-keyed consumer wiring AND the nested-cmake merge re-home (producerOuts/applyNestedProducerReHome read the `out`/`outs` attrs generically). The split-packages emitter (emit/bazel/split.go) still keys producer-output placement/relocation on KindGenrule/KindWriteFile/KindCMakeConfigureFile, so a pkg_tar (or future http_file/proto) native rule re-homed into a sub-package wouldn't relocate its out. Generalize split's placement to the same kind-agnostic outputs accessor. Demand signal: a native-rule producer under --split-packages.
 - **Genex-probe language gate — genex-wrapped link deps.** The probe's language-conditional skip now walks the INTERFACE_LINK_LIBRARIES closure (_cmtb_iface_lang_gate), so a $<COMPILE_LANGUAGE>/$<LINK_LANGUAGE> gate on a transitively-linked dependency's interface is caught — not just the target's own raw value. The walk follows BARE target deps only; a dep wrapped in a genex link entry ($<LINK_ONLY:dep>, $<BUILD_INTERFACE:dep>) or a bare system lib isn't queried, so a gate reachable solely through such an entry could still diverge. Closing it needs genex-entry target extraction in the hook. Demand signal: an abort whose gated dep is reachable only via a genex link entry.
 - **Stage textual-include-of-SOURCE siblings (`#include "x.cu"` /
-  `#include "x.c"`).** The sibling-header staging walk covers header
-  extensions (incl. `.cuh`), but cuda-samples' eigenvalues quote-includes a
-  `.cu` from its `.cuh` kernels (`bisect_util.cu` — the classic
-  one-definition-per-arch idiom), which never stages and the compile misses
-  it in the sandbox. Needs either an include-scan-driven staging channel or
-  per-extension opt-in to the walk; cc_binary's no-hdrs-slot drop
-  (quasirandomGenerator_nvrtc's `.cuh`) is the same family. Both samples are
-  pruned in `cuda-samples.conf` until then (eigenvalues is the only
-  non-toolkit-floor entry there).
+  `#include "x.c"`).** The read-based `--detect-fused-sources` scan already
+  stages a compiled source (any `cclang.IsCompiledSource`, incl. `.cc`/`.cu`)
+  that another file textually `#include`s but doesn't list, and the **survey
+  build lens now turns it on** (#794) — so the `.cc` variants build green
+  (fmt's `posix-mock-test.cc` → `../src/os.cc`; gtest's unity `gtest-all.cc`).
+  Two gaps remain: (1) it's off in the **default** convert (per-file read
+  cost), so a bare `convert-element-cmake` still emits a non-building tree for
+  a fused-idiom project — decide whether to flip the default (blast radius:
+  every such project gains `textual_hdrs`; needs a full render-gate sweep) or
+  keep it opt-in; (2) cuda-samples' eigenvalues (`.cuh` → `bisect_util.cu`)
+  stays pruned in `cuda-samples.conf`, unvalidated here because that build
+  can't fetch `rules_cuda` on the sandbox mirror — unprune + confirm once
+  buildable. cc_binary's no-hdrs-slot drop (quasirandomGenerator_nvrtc's
+  `.cuh`) is the same family.
 
 - **genclass textual-impl includes: angle-include form.** The
   textual-include router now detects a header that textually `#include`s
