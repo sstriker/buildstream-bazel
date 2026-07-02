@@ -169,11 +169,12 @@ fi
 # The converter commit every row in THIS run was produced with — stamped into the
 # summary so a survey snapshot is attributable to an exact converter (and rows
 # refreshed at different commits stay honest). "-dirty" when the tree has
-# uncommitted changes (the survey isn't from a clean commit). "unknown" outside a
-# git checkout.
+# uncommitted changes (the survey isn't from a clean commit) — `git status
+# --porcelain` so untracked files count as dirty too, not just tracked-file
+# edits. "unknown" outside a git checkout.
 converter_commit=$(cd "$repo_root" && {
     c=$(git rev-parse --short=12 HEAD 2>/dev/null) || { echo unknown; exit; }
-    git diff --quiet HEAD 2>/dev/null || c="$c-dirty"
+    [ -z "$(git status --porcelain 2>/dev/null)" ] || c="$c-dirty"
     echo "$c"
 })
 
@@ -623,8 +624,8 @@ summary="$out_dir/summary.txt"
 # producer-gap candidates, NOT a count comparable across runs. See the
 # intent-capture lens section in docs/survey-corpus.md.
 printf '# survey run · converter %s\n' "$converter_commit" | tee "$summary"
-printf '%-14s %10s %10s %10s %6s %7s %8s %-14s %s\n' project rejections idioms coverage todos missed build converter status | tee -a "$summary"
-printf '%-14s %10s %10s %10s %6s %7s %8s %-14s %s\n' ------- ---------- ------ -------- ----- ------ ----- --------- ------ | tee -a "$summary"
+printf '%-14s %10s %10s %10s %6s %7s %8s %-18s %s\n' project rejections idioms coverage todos missed build converter status | tee -a "$summary"
+printf '%-14s %10s %10s %10s %6s %7s %8s %-18s %s\n' ------- ---------- ------ -------- ----- ------ ----- ------------------ ------ | tee -a "$summary"
 
 for entry in $projects; do
     name="${entry%%=*}"
@@ -633,7 +634,7 @@ for entry in $projects; do
     mkdir -p "$proj_out"
 
     if [ ! -d "$src" ]; then
-        printf '%-14s %10s %10s %10s %6s %7s %8s %-14s %s\n' "$name" - - - - - - "$converter_commit" "MISSING ($src) — run 'make fetch-$name'" | tee -a "$summary"
+        printf '%-14s %10s %10s %10s %6s %7s %8s %-18s %s\n' "$name" - - - - - - "$converter_commit" "MISSING ($src) — run 'make fetch-$name'" | tee -a "$summary"
         continue
     fi
 
@@ -1056,7 +1057,7 @@ for entry in $projects; do
     missed_n=$( [ -f "$intent" ] && grep -oE '"net_new"[[:space:]]*:[[:space:]]*[0-9]+' "$intent" 2>/dev/null | grep -oE '[0-9]+' | head -1 || echo "-" )
     missed_n="${missed_n:--}"
 
-    printf '%-14s %10s %10s %10s %6s %7s %8s %-14s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "${todo_n:--}" "$missed_n" "$build_status" "$converter_commit" "$status" | tee -a "$summary"
+    printf '%-14s %10s %10s %10s %6s %7s %8s %-18s %s\n' "$name" "${rej_n:--}" "${idi_n:--}" "${cov_n:--}" "${todo_n:--}" "$missed_n" "$build_status" "$converter_commit" "$status" | tee -a "$summary"
 done
 
 echo ""

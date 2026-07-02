@@ -2,7 +2,8 @@
 # Produced by: scripts/run-survey.sh (convertibility lenses only; no build/fidelity/intent)
 # Date: 2026-07-01   Converter: 729b151 ("cmake: add a Starlark genrule(...) builtin", off the #769-#789 streak HEAD)
 # NB: '-dirty' below reflects the uncommitted run-survey.sh commit-stamping + this doc edit, NOT converter code.
-# Not included (need per-member conf and/or a warm-bazel box): mbedtls (conf), zstd (root), the build/fidelity/intent lenses, and the large members.
+# mbedtls IS attempted below but its bare configure fails (tests/programs must be off) — no numbers, not a regression.
+# Not attempted (need per-member conf and/or a warm-bazel box): the build/fidelity/intent lenses, and the large members.
 
 # survey run · converter 729b151e722f-dirty
 project        rejections     idioms   coverage  todos  missed    build converter      status

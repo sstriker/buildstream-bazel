@@ -127,20 +127,24 @@ The **convertibility signal is clean — no rejection/coverage regressions** fro
 the streak:
 
 - `fmt` `glm` `zlib` `spdlog` `nlohmann-json` `googletest` `libxml2` `brotli`
-  `catch2` `libpng` `boost-core` `libevent` — all **0 rejections / 0 coverage**.
-  `catch2` **improved** (rejection `1 → 0`); `glog`'s lone rejection is the
+  `catch2` `libpng` `boost-core` `libevent` `zstd` — all **0 coverage gaps** and
+  no rejection regressions. `catch2` **improved** (rejection `1 → 0`); `glog`'s
+  and `zstd`'s lone rejections (`1` each) match the table, and `glog`'s is the
   documented benign `$<TARGET_PROPERTY:…>` forward-declared-include notice (the
-  `0†` class), and its `idiom 30` and `libevent`'s `idiom 5` match the table.
+  `0†` class). `glog`'s `idiom 30`, `libevent`'s `idiom 5`, and `zstd`'s `idiom 3`
+  match the table. **`zstd`'s *convertibility* is reconfirmed here; its *fidelity*
+  (the tracked split-emit regression) is a build-lens question that still awaits a
+  warm-Bazel box.**
 - **Idiom is a lens-provenance artifact, not a regression:** `fmt` now reads
   `idiom 48` (all `raw-toolchain-feature-flag` — raw `-fvisibility=hidden` in
   copts vs `features=[…]`), the *same* class `glog` already counts as `30`. The
   table's `fmt idiom 0` predates that check being counted for fmt — precisely the
   mixed-provenance the commit stamp now prevents.
 
-**Not reconfirmed here** (need per-member conf, a non-default root, or a
-warm-Bazel box the repo-scoped proxy can't give): `mbedtls` (its tests/programs
-must be off — a bare configure fails), `zstd` (surveyed at `build/cmake`, and its
-fidelity is the tracked split-emit regression), the medium/large members
+`mbedtls` **was attempted in this run but its bare configure fails** (its
+tests/programs must be turned off first) — so it produced no convertibility
+numbers, not a regression. **Not attempted here** (need per-member conf or a
+warm-Bazel box the repo-scoped proxy can't give): the medium/large members
 (`abseil` `protobuf` `curl` `eigen` `sdl` `grpc` `llvm` `vtk` `bde` `cutlass`
 `cuda-samples` `openblas`), and the **build / fidelity / intent** lenses (the
 Bazel deps `403` behind the proxy). Those await a full uniform rerun on a capable
