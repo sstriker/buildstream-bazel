@@ -150,12 +150,81 @@ the streak:
 
 `mbedtls` **was attempted in this run but its bare configure fails** (its
 tests/programs must be turned off first) — so it produced no convertibility
-numbers, not a regression. **Not attempted here** (need per-member conf or a
-warm-Bazel box the repo-scoped proxy can't give): the medium/large members
-(`abseil` `protobuf` `curl` `eigen` `sdl` `grpc` `llvm` `vtk` `bde` `cutlass`
-`cuda-samples` `openblas`), and the **build / fidelity / intent** lenses (the
-Bazel deps `403` behind the proxy). Those await a full uniform rerun on a capable
-box, which the commit stamp will attribute per row.
+numbers, not a regression. The medium/large members and the **build / fidelity**
+lenses were out of reach on 2026-07-01 (Bazel deps `403` behind the proxy); the
+full run below (2026-07-02) delivers them after the egress mirror fix.
+
+### Full survey (2026-07-02)
+
+A full-corpus survey refresh at converter `6a1da82` (post-#769–#789; the #789
+genrule builtin is operator-only, no corpus effect) — convertibility for all 30,
+plus the build + fidelity lenses for the non-large members. Full output:
+[`survey-artifacts/full-survey-2026-07-02.txt`](survey-artifacts/full-survey-2026-07-02.txt).
+
+Members with extra prerequisites are **set up for success via their build-lens
+`.conf` + the SessionStart provisioning** (`tools/install-survey-deps.sh` for the
+host `find_package` deps — abseil / protobuf / re2 — and the CUDA toolkit for the
+`.cu` members), not left to fail a bare configure: see the per-member notes below.
+
+**Scope.** Phase A: convert-only for **all 30** (convertibility lenses). Phase B:
+**build + compile-db fidelity** for the **18 non-large**, plus **symbol / ELF
+fidelity** for the subset that both builds green AND ships a `.symfidelity` /
+`.elffidelity` conf (both are opt-in, config-gated — they only run/report where a
+conf exists). Among the 12 largest (`abseil` `protobuf` `curl` `eigen` `sdl`
+`grpc` `llvm` `vtk` `bde` `cutlass` `cuda-samples` `openblas`), the **default is
+convert-only** — build + symbol/ELF are skipped (they self-gate on a green build
+anyway). The **exceptions** are the three that this run's provisioning made
+buildable — `cutlass`, `cuda-samples`, `grpc` — whose build *was* attempted once
+they converted (their per-row build result is in the table); the other nine are
+convert-only.
+The **intent lens was not run** here (it's a non-deterministic LLM-judge triage
+pass; the `missed`/Intent column is `-` for this run).
+
+**Convertibility: all 30 convert** (up from 25/30 on a bare run) once the extra
+prerequisites are provisioned. The setup is **scripted** — `install-survey-deps.sh`
+host deps + the `mbedtls` `framework` submodule (PR #793), and the CUDA toolkit +
+`gcc-12` + assembled root behind `BSB_PROVISION_CUDA=1`. That moved `mbedtls`
+`0/0/0/2`, `re2` `0/0/0/1`, **`grpc` `0/59/0/1`** (the corpus's deepest
+`find_package` graph — abseil + protobuf + re2 + SSL + c-ares + zlib), `cutlass`
+`1/0/0/2719`, and `cuda-samples` `0/0/0/1` from `CONVERT FAILED` to convert-green.
+(A "converted" project may still carry recorded — not failing — `rej`/`idiom`/
+`todos`.) Fresh numbers for members not previously stamped: `llvm` `0/172/1/6`,
+`vtk` `0/346/2/878`, `abseil` `0/0/0/210`, `protobuf` `0/8/0/0`, `cryptoauthlib`
+`3/3/0/378`, `bde` `1/0/7/4`, `sdl` `0/6/0/5`.
+
+**Build lens: 15 non-large green** — `zlib` `spdlog` `nlohmann-json` `catch2`
+`libpng` `boost-core` `zstd` `libevent` `libxml2` `brotli` `glog` `glm`
+`cryptoauthlib`, plus **`fmt`** + **`googletest`** (PR #794). And among the large
+members, **`cutlass`** (header-only library, CUDA configure) also builds green.
+Remaining build failures, all honest and none a convertibility regression:
+- **`re2` / `grpc` / `buildbox`** — convert green (provisioned), but their build is
+  a per-member **greening follow-on**: the absl imports-manifest must be regenerated
+  against the abseil version Bazel MVS resolves (and the sandbox mirror carries only
+  some abseil release archives); `buildbox` additionally needs the grpc-class
+  hermetic-protoc treatment (its `.conf` documents this).
+- **`cuda-samples`** — converts (nvcc provisioned), but the build can't fetch
+  `rules_cuda v0.3.0`: its release archive `404`s on the sandbox GitHub→GCS mirror
+  (and github is `403` direct). An environmental mirror-coverage limit, not a
+  converter gap — a single sample's `.cu` graph converts + emits `cuda_library`.
+- **`mbedtls`** — the crypto library builds; its recovered doxygen `apidoc` genrule
+  fails (doxygen absent) — a dev-surface target its `.conf` doesn't yet disable.
+
+The `fmt` + `googletest` builds (previously failing on a source that textually
+`#include`s a sibling *source* file — `fmt`'s `posix-mock-test.cc` → `"../src/os.cc"`,
+`googletest`'s unity `gtest-all.cc` → `"src/*.cc"`) are fixed by **PR #794**: the
+build lens now passes `--detect-fused-sources` so the converter stages the
+textually-included source as a `textual_hdrs` input. (The converter has this
+capability; it's off in the *default* convert for its per-file read cost, so the
+build lens — which tests compilation — turns it on.)
+
+**Symbol fidelity: PASS (all deltas benign) for all 8 members that built AND carry
+a `.symfidelity` conf** — `brotli` `catch2` `glog` `libevent` `libpng` `libxml2`
+`spdlog` `zlib`. That is, the converted Bazel static archive **exports the same
+symbols as cmake's**, modulo fortify/stack-protector wrappers (e.g. `zlib`
+`both=105 benign=5`, `libxml2` `both=1505 benign=12`, `catch2` `both=2021
+benign=12`). Compile-db fidelity is recorded
+report-only (the `.`-include-dir and `-std`-framing per-TU deltas are the known
+benign compile-db noise, not build-blocking).
 
 ## What a survey is checking for (the three lenses)
 

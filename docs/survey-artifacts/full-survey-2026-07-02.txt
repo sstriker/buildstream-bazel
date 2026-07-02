@@ -1,0 +1,55 @@
+# Full corpus survey - 2026-07-02
+# Converter: 6a1da82 (post #769-#789; #789 genrule builtin is operator-only, no corpus effect).
+# Setup: members with extra prerequisites are provisioned via their build-lens .conf + SessionStart
+#   (tools/install-survey-deps.sh host deps [PR #793]; CUDA toolkit + gcc-12 + assembled root). The build
+#   lens stages fused-source #includes via --detect-fused-sources [PR #794].
+# Scope: convertibility (rej/idiom/cov/todos) for ALL 30. Build + compile-db fidelity for the non-large;
+#   symbol/ELF fidelity where a .symfidelity/.elffidelity conf exists AND the build is green.
+# CONVERTIBILITY: 30/30 convert with the full provisioning (was 25/30 bare).
+
+project         rej  idiom  cov  todo              build  symbol-fidelity          compile-db             note
+--------------------------------------------------------------------------------------------------------------
+fmt               0     48    0     0                 ok  -                        m=29,inc=0,def=0,std=29
+zlib              0      0    0     0                 ok  PASS(both=105,benign=5)  m=17,inc=17,def=0,std=0
+spdlog            0      0    0     0                 ok  PASS(both=1404,benign=9) m=32,inc=0,def=0,std=0
+nlohmann-json     0      0    0     0                 ok  -                        -
+catch2            0      0    0     0                 ok  PASS(both=2021,benign=12) m=107,inc=107,def=0,std=107
+libpng            0      0    0    12                 ok  PASS(both=406,benign=6)  m=24,inc=1,def=0,std=0
+googletest        0      0    0     0                 ok  -                        m=4,inc=0,def=0,std=4
+boost-core        0      0    0     0                 ok  -                        -
+zstd              1      3    0     7                 ok  -                        m=0,inc=0,def=0,std=0
+libevent          0      5    0     3                 ok  PASS(both=417,benign=9)  m=66,inc=17,def=0,std=0
+libxml2           0      0    0     1                 ok  PASS(both=1505,benign=12) m=52,inc=52,def=0,std=0
+brotli            0      0    0     1                 ok  PASS(both=11,benign=0)   m=36,inc=0,def=1,std=0
+mbedtls           0      0    0     2       FAIL(apidoc)  -                        -                      convert via provisioning (#793)
+glog              1     30    0     7                 ok  PASS(both=513,benign=11) m=20,inc=20,def=0,std=20
+glm               0      0    0     2                 ok  -                        m=186,inc=186,def=0,std=186
+cryptoauthlib     3      3    0   378                 ok  -                        m=173,inc=173,def=65,std=0
+buildbox          0     14    0     1    FAIL(follow-on)  -                        m=121,inc=121,def=0,std=0 convert via provisioning (#793)
+re2               0      0    0     1    FAIL(follow-on)  -                        -                      convert via provisioning (#793)
+abseil            0      0    0   210                  -  -                        -                      LARGE
+protobuf          0      8    0     0                  -  -                        -                      LARGE
+curl              0      1    0     4                  -  -                        -                      LARGE
+eigen             0      0    0     3                  -  -                        -                      LARGE
+sdl               0      6    0     5                  -  -                        -                      LARGE
+grpc              0     59    0     1    FAIL(follow-on)  -                        -                      LARGE ; convert via provisioning (#793)
+llvm              0    172    1     6                  -  -                        -                      LARGE
+vtk               0    346    2   878                  -  -                        -                      LARGE
+bde               1      0    7     4                  -  -                        -                      LARGE
+cutlass           1      0    0  2719                 ok  -                        -                      LARGE ; convert via CUDA (nvcc)
+cuda-samples      0      0    0     1 FAIL(mirror:rules_cuda)  -                        -                      LARGE ; convert via CUDA (nvcc)
+openblas          0      0    0     3                  -  -                        -                      LARGE
+
+FINDINGS:
+  CONVERTIBILITY now 30/30 (was 25/30 bare): the scripted provisioning (#793: install-survey-deps host
+    deps + mbedtls framework submodule; CUDA toolkit) moved mbedtls/re2/grpc + cutlass/cuda-samples to
+    convert-green. grpc 0/59/0/1 is the deepest find_package graph (abseil+protobuf+re2+ssl+c-ares+zlib).
+  BUILD green now includes fmt + googletest (PR #794: build lens stages fused-source #includes) and
+    cutlass (header-only lib, CUDA configure). 15 members build green.
+  BUILD follow-ons (convert green, build not yet, all environmental/greening — NOT converter regressions):
+    re2/grpc/buildbox -> absl imports-manifest vs the abseil version Bazel resolves + sandbox mirror's
+      partial abseil-release coverage; buildbox also needs the grpc-class hermetic-protoc.
+    cuda-samples -> rules_cuda v0.3.0 archive 404s on the sandbox GitHub->GCS mirror (github 403 direct).
+    mbedtls -> library builds; its recovered doxygen `apidoc` genrule fails (doxygen absent).
+  SYMBOL FIDELITY: PASS (all-benign deltas) for the 8 built .symfidelity members
+    (brotli catch2 glog libevent libpng libxml2 spdlog zlib) — same symbols as cmake's .a, modulo fortify.
