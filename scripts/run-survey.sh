@@ -167,10 +167,16 @@ elif [ -x "$converter" ]; then
     echo "warning: 'go build' unavailable or failed; using existing (possibly stale) $converter" >&2
     converter_from_source=0
     run_converter() { "$converter" "$@"; }
-else
-    echo "note: $converter not built and 'go build' failed; using 'go run' (slower)." >&2
+elif command -v go >/dev/null 2>&1; then
+    # go is present but `go build -o` failed (e.g. a read-only build/bin) — `go run`
+    # compiles to its own cache, so it still works and is still FROM SOURCE.
+    echo "note: 'go build -o' failed but Go is present; using 'go run' (slower)." >&2
     converter_from_source=1
     run_converter() { ( cd "$repo_root" && go run ./converter/cmd/convert-element-cmake "$@" ); }
+else
+    echo "error: no converter binary at $converter and no Go toolchain to build one." >&2
+    echo "       Install Go, or run 'make converter' where Go is available, then re-run." >&2
+    exit 1
 fi
 
 # The converter commit every row in THIS run was produced with — stamped into the

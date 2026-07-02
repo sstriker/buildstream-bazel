@@ -132,17 +132,20 @@ the streak:
 
 - `fmt` `glm` `zlib` `spdlog` `nlohmann-json` `googletest` `libxml2` `brotli`
   `catch2` `libpng` `boost-core` `libevent` `zstd` — all **0 coverage gaps** and
-  no rejection regressions. `catch2` **improved** (rejection `1 → 0`); `glog`'s
-  and `zstd`'s lone rejections (`1` each) match the table, and `glog`'s is the
-  documented benign `$<TARGET_PROPERTY:…>` forward-declared-include notice (the
-  `0†` class). `glog`'s `idiom 30`, `libevent`'s `idiom 5`, and `zstd`'s `idiom 3`
-  match the table. **`zstd`'s *convertibility* is reconfirmed here; its *fidelity*
-  (the tracked split-emit regression) is a build-lens question that still awaits a
-  warm-Bazel box.**
+  no rejection regressions. `catch2` **improved** (rejection `1 → 0` vs the table's
+  `1`). `glog`'s `idiom 30` and `libevent`'s `idiom 5` match the table exactly.
+  `glog` and `zstd` each read a **raw** `1` rejection here where the table shows
+  `0†` and `0`: the table records the **discounted** lens count, so a raw `1` is
+  consistent with it — `glog`'s is the documented benign `$<TARGET_PROPERTY:…>`
+  forward-declared-include notice (the `†` class), and `zstd`'s single rejection
+  does not block its build (its build lens is green — see its row). **`zstd`'s
+  *convertibility* is reconfirmed here; its *fidelity* (the tracked split-emit
+  regression) is a build-lens question that still awaits a warm-Bazel box.**
 - **Idiom is a lens-provenance artifact, not a regression:** `fmt` now reads
   `idiom 48` (all `raw-toolchain-feature-flag` — raw `-fvisibility=hidden` in
-  copts vs `features=[…]`), the *same* class `glog` already counts as `30`. The
-  table's `fmt idiom 0` predates that check being counted for fmt — precisely the
+  copts vs `features=[…]`), the *same* class `glog` already counts as `30`;
+  `zstd`'s `idiom 3` (table `0`) is the same story. The table's `fmt idiom 0` /
+  `zstd idiom 0` predate those checks being counted for them — precisely the
   mixed-provenance the commit stamp now prevents.
 
 `mbedtls` **was attempted in this run but its bare configure fails** (its
