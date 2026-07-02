@@ -171,8 +171,10 @@ host `find_package` deps — abseil / protobuf / re2 — and the CUDA toolkit fo
 fidelity** for the subset that both builds green AND ships a `.symfidelity` /
 `.elffidelity` conf (both are opt-in, config-gated — they only run/report where a
 conf exists). The 12 largest (`abseil` `protobuf` `curl` `eigen` `sdl` `grpc`
-`llvm` `vtk` `bde` `cutlass` `cuda-samples` `openblas`) stay **convert-only**
-(build + symbol/ELF skipped by request; they self-gate on a green build anyway).
+`llvm` `vtk` `bde` `cutlass` `cuda-samples` `openblas`) stay **convert-only** —
+*except* the ones provisioning made configurable this run (`cutlass`,
+`cuda-samples`, `grpc`), whose build was attempted once they converted; the rest
+skip build + symbol/ELF (they self-gate on a green build anyway).
 The **intent lens was not run** here (it's a non-deterministic LLM-judge triage
 pass; the `missed`/Intent column is `-` for this run).
 
@@ -188,11 +190,11 @@ host deps + the `mbedtls` `framework` submodule (PR #793), and the CUDA toolkit 
 `vtk` `0/346/2/878`, `abseil` `0/0/0/210`, `protobuf` `0/8/0/0`, `cryptoauthlib`
 `3/3/0/378`, `bde` `1/0/7/4`, `sdl` `0/6/0/5`.
 
-**Build lens: 15 green** — `zlib` `spdlog` `nlohmann-json` `catch2` `libpng`
-`boost-core` `zstd` `libevent` `libxml2` `brotli` `glog` `glm` `cryptoauthlib`,
-plus **`fmt`** + **`googletest`** (PR #794) and **`cutlass`** (header-only library,
-CUDA configure). Remaining build failures, all honest and none a convertibility
-regression:
+**Build lens: 15 non-large green** — `zlib` `spdlog` `nlohmann-json` `catch2`
+`libpng` `boost-core` `zstd` `libevent` `libxml2` `brotli` `glog` `glm`
+`cryptoauthlib`, plus **`fmt`** + **`googletest`** (PR #794). And among the large
+members, **`cutlass`** (header-only library, CUDA configure) also builds green.
+Remaining build failures, all honest and none a convertibility regression:
 - **`re2` / `grpc` / `buildbox`** — convert green (provisioned), but their build is
   a per-member **greening follow-on**: the absl imports-manifest must be regenerated
   against the abseil version Bazel MVS resolves (and the sandbox mirror carries only
