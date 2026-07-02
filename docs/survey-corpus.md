@@ -181,7 +181,7 @@ failure. Fresh numbers for members not previously stamped: `llvm` `0/172/1/6`,
 `vtk` `0/346/2/878`, `abseil` `0/0/0/210`, `protobuf` `0/8/0/0`, `cryptoauthlib`
 `3/3/0/378`, `bde` `1/0/7/4`, `sdl` `0/6/0/5`.
 
-**Build lens (18 non-large): 12 green** — `zlib` `spdlog` `nlohmann-json` `catch2`
+**Build lens (18 non-large): 13 green** — `zlib` `spdlog` `nlohmann-json` `catch2`
 `libpng` `boost-core` `zstd` `libevent` `libxml2` `brotli` `glog` `glm`
 `cryptoauthlib`. Failures (honest, and only now visible with the build unblocked):
 - **`fmt`** — the *library* compiles clean; its `//...` build fails only on the
