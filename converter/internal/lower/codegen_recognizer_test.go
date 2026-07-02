@@ -381,6 +381,34 @@ func TestEmitRecognizedRule_SharedTail(t *testing.T) {
 	}
 }
 
+// TestEmitRecognizedRule_MultiGenruleWiresEachOutToItsProducer pins that when a
+// recognizer emits MORE THAN ONE genrule, each output wires to the genrule that
+// actually DECLARES it (its GenruleOuts) — not to whichever genrule the emission
+// tail happened to find first. Regression guard for the "first KindGenrule wins"
+// mapping, which would have resolved a later genrule's output to the wrong
+// producer.
+func TestEmitRecognizedRule_MultiGenruleWiresEachOutToItsProducer(t *testing.T) {
+	cc := newCodegenContext()
+	res := CodegenResult{
+		Targets: []ir.Target{
+			{Name: "gen_a", Kind: ir.KindGenrule, GenruleOuts: []string{"gen/a.h"}},
+			{Name: "gen_b", Kind: ir.KindGenrule, GenruleOuts: []string{"gen/b.h"}},
+		},
+	}
+	cmd := CodegenCommand{Driver: "mygen", Srcs: []string{"in.x"}}
+
+	emit, ok := cc.emitRecognizedRule(cmd, res, "gen", []string{"gen/a.h", "gen/b.h"})
+	if !ok || len(emit) != 2 {
+		t.Fatalf("both genrules emit; ok=%v emit=%+v", ok, emit)
+	}
+	if cc.OutToGenrule["gen/a.h"] != "gen_a" {
+		t.Errorf("gen/a.h should wire to its declaring genrule gen_a; got %q", cc.OutToGenrule["gen/a.h"])
+	}
+	if cc.OutToGenrule["gen/b.h"] != "gen_b" {
+		t.Errorf("gen/b.h should wire to its declaring genrule gen_b (not the first genrule found); got %q", cc.OutToGenrule["gen/b.h"])
+	}
+}
+
 // TestRecognizeOrGenrule_FidelityMismatch: a recognizer that MATCHES the tool
 // but whose derived outputs disagree with cmake's recorded ones refuses (a loud
 // build-time stub) under --fidelity=strict, and falls back to the genrule under

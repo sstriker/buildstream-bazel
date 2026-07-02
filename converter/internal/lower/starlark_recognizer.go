@@ -297,8 +297,17 @@ func starlarkTarget(v starlark.Value) (ir.Target, error) {
 	if !ok {
 		return ir.Target{}, fmt.Errorf("each target must be native_rule(...) or genrule(...), got %s", v.Type())
 	}
-	if c, _ := structStr(st, "_construct"); c == "genrule" {
-		return starlarkGenruleTarget(st)
+	// A present-but-non-string _construct is a malformed recognizer struct;
+	// surface it directly rather than silently falling through to a confusing
+	// native_rule error. An absent _construct (st.Attr errors) falls through.
+	if _, attrErr := st.Attr("_construct"); attrErr == nil {
+		c, err := structStr(st, "_construct")
+		if err != nil {
+			return ir.Target{}, err
+		}
+		if c == "genrule" {
+			return starlarkGenruleTarget(st)
+		}
 	}
 	kind, err := structStr(st, "kind")
 	if err != nil {
@@ -330,7 +339,15 @@ func starlarkGenruleTarget(st *starlarkstruct.Struct) (ir.Target, error) {
 	if err != nil {
 		return ir.Target{}, err
 	}
-	cmd, _ := structStr(st, "cmd")
+	// A present-but-non-string cmd is a type error worth surfacing directly; an
+	// absent cmd leaves cmd=="" for the required-fields check below (the friendlier
+	// "requires a non-empty name and cmd" message).
+	cmd, cmdErr := structStr(st, "cmd")
+	if cmdErr != nil {
+		if _, attrErr := st.Attr("cmd"); attrErr == nil {
+			return ir.Target{}, fmt.Errorf("genrule %q cmd: %w", name, cmdErr)
+		}
+	}
 	if name == "" || cmd == "" {
 		return ir.Target{}, fmt.Errorf("genrule requires a non-empty name and cmd")
 	}
@@ -349,9 +366,11 @@ func starlarkGenruleTarget(st *starlarkstruct.Struct) (ir.Target, error) {
 	if err != nil {
 		return ir.Target{}, fmt.Errorf("genrule %q tools: %w", name, err)
 	}
+	// Normalize paths to forward slashes so emitted BUILD labels stay stable
+	// across platforms, matching how the rest of the lowerer emits paths.
 	return ir.Target{
 		Name: name, Kind: ir.KindGenrule,
-		GenruleCmd: cmd, GenruleOuts: outs, Srcs: srcs, GenruleTools: tools,
+		GenruleCmd: cmd, GenruleOuts: toSlashAll(outs), Srcs: toSlashAll(srcs), GenruleTools: toSlashAll(tools),
 		Visibility: []string{"//visibility:private"},
 	}, nil
 }
@@ -464,4 +483,17 @@ func goStringList(v starlark.Value) ([]string, error) {
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+// toSlashAll normalizes every element to forward slashes (filepath.ToSlash) so
+// genrule paths from Starlark strings emit stable Bazel labels across platforms.
+func toSlashAll(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = filepath.ToSlash(s)
+	}
+	return out
 }

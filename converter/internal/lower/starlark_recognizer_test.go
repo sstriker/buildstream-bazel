@@ -3,7 +3,11 @@ package lower
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"go.starlark.net/starlark"
+	"go.starlark.net/starlarkstruct"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
@@ -83,6 +87,37 @@ def lower(cmd):
 	r := loadStarFromString(t, "bad.star", src)
 	if _, err := r.Lower(CodegenCommand{Driver: "t"}); err == nil {
 		t.Fatal("a genrule with no outs must error")
+	}
+}
+
+// TestStarlarkTarget_NonStringConstructSurfaces: a recognizer struct whose
+// _construct field is present but not a string is malformed — starlarkTarget must
+// surface that directly rather than silently falling through to a confusing
+// native_rule error.
+func TestStarlarkTarget_NonStringConstructSurfaces(t *testing.T) {
+	st := starlarkstruct.FromStringDict(starlarkstruct.Default, starlark.StringDict{
+		"_construct": starlark.MakeInt(1),
+	})
+	if _, err := starlarkTarget(st); err == nil {
+		t.Fatal("a non-string _construct must surface an error, not fall through")
+	}
+}
+
+// TestStarlarkGenruleTarget_NonStringCmdSurfaces: a genrule struct whose cmd is
+// present but not a string surfaces the type error, not the generic
+// "requires a non-empty name and cmd" message that hides the real problem.
+func TestStarlarkGenruleTarget_NonStringCmdSurfaces(t *testing.T) {
+	st := starlarkstruct.FromStringDict(starlarkstruct.Default, starlark.StringDict{
+		"_construct": starlark.String("genrule"),
+		"name":       starlark.String("g"),
+		"cmd":        starlark.MakeInt(1),
+	})
+	_, err := starlarkTarget(st)
+	if err == nil {
+		t.Fatal("a non-string cmd must surface a type error")
+	}
+	if !strings.Contains(err.Error(), "cmd") {
+		t.Errorf("error should name the cmd field; got %v", err)
 	}
 }
 

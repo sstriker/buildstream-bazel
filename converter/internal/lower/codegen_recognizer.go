@@ -350,17 +350,40 @@ func (cc *codegenContext) emitRecognizedRule(cmd CodegenCommand, res CodegenResu
 	// exactly like the generic recovered-genrule path. So wire those outs through
 	// OutToGenrule, not the strip-and-dep OutToNativeConsumerDep. A native rule
 	// (proto_library, …) provides CcInfo and keeps the deps-edge wiring.
+	// Map each output to the genrule that actually DECLARES it (its GenruleOuts),
+	// so a recognizer emitting MORE THAN ONE genrule wires every out to its true
+	// producer — not just the first genrule found. `declaredBy` keys on the exact
+	// declared path and, best-effort, its basename (to bridge a relative-vs-derived
+	// form mismatch). An out matched by neither falls back to the first genrule,
+	// which keeps the single-genrule path byte-identical.
 	genruleProducer := ""
+	declaredBy := map[string]string{}
 	for _, t := range res.Targets {
-		if t.Kind == ir.KindGenrule {
+		if t.Kind != ir.KindGenrule {
+			continue
+		}
+		if genruleProducer == "" {
 			genruleProducer = t.Name
-			break
+		}
+		for _, decl := range t.GenruleOuts {
+			declaredBy[decl] = t.Name
+			if b := filepath.Base(decl); b != decl {
+				if _, seen := declaredBy[b]; !seen {
+					declaredBy[b] = t.Name
+				}
+			}
 		}
 	}
 	switch {
 	case genruleProducer != "" && cc.OutToGenrule != nil:
 		for _, o := range outs {
-			cc.OutToGenrule[o] = genruleProducer
+			producer := genruleProducer
+			if p, ok := declaredBy[o]; ok {
+				producer = p
+			} else if p, ok := declaredBy[filepath.Base(o)]; ok {
+				producer = p
+			}
+			cc.OutToGenrule[o] = producer
 		}
 	case cc.OutToNativeConsumerDep != nil && consumer != "":
 		for _, o := range outs {
