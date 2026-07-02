@@ -176,34 +176,42 @@ conf exists). The 12 largest (`abseil` `protobuf` `curl` `eigen` `sdl` `grpc`
 The **intent lens was not run** here (it's a non-deterministic LLM-judge triage
 pass; the `missed`/Intent column is `-` for this run).
 
-**Convertibility (all 30): 28 converted to completion, 2 environmental failures**
-(a "converted" project may still carry recorded — not failing — `rej`/`idiom`/
-`todos`). With the extra prerequisites **scripted** (`install-survey-deps.sh` host
-deps + the `mbedtls` `framework` submodule — landed in PR #793), `mbedtls`
-`0/0/0/2`, `re2` `0/0/0/1`, and **`grpc` `0/59/0/1`** (the corpus's deepest
-`find_package` graph — abseil + protobuf + re2 + SSL + c-ares + zlib) now convert
-**green**, up from `CONVERT FAILED`. The only two still failing are
-`cutlass`/`cuda-samples`, which need `nvcc` (opt-in `BSB_PROVISION_CUDA`, now also
-scripted to install `gcc-12` + assemble the CUDA root) — not provisioned in this
-run. Fresh numbers for members not previously stamped: `llvm` `0/172/1/6`, `vtk`
-`0/346/2/878`, `abseil` `0/0/0/210`, `protobuf` `0/8/0/0`, `cryptoauthlib`
+**Convertibility: all 30 convert** (up from 25/30 on a bare run) once the extra
+prerequisites are provisioned. The setup is **scripted** — `install-survey-deps.sh`
+host deps + the `mbedtls` `framework` submodule (PR #793), and the CUDA toolkit +
+`gcc-12` + assembled root behind `BSB_PROVISION_CUDA`. That moved `mbedtls`
+`0/0/0/2`, `re2` `0/0/0/1`, **`grpc` `0/59/0/1`** (the corpus's deepest
+`find_package` graph — abseil + protobuf + re2 + SSL + c-ares + zlib), `cutlass`
+`1/0/0/2719`, and `cuda-samples` `0/0/0/1` from `CONVERT FAILED` to convert-green.
+(A "converted" project may still carry recorded — not failing — `rej`/`idiom`/
+`todos`.) Fresh numbers for members not previously stamped: `llvm` `0/172/1/6`,
+`vtk` `0/346/2/878`, `abseil` `0/0/0/210`, `protobuf` `0/8/0/0`, `cryptoauthlib`
 `3/3/0/378`, `bde` `1/0/7/4`, `sdl` `0/6/0/5`.
 
-**Build lens: 13 green** — `zlib` `spdlog` `nlohmann-json` `catch2` `libpng`
-`boost-core` `zstd` `libevent` `libxml2` `brotli` `glog` `glm` `cryptoauthlib`.
-Build failures, all honest and none a convertibility regression:
-- **`fmt` + `googletest`** — one shared **converter gap**: a source that textually
-  `#include`s a sibling *source* file isn't staged onto the target (`fmt`'s test
-  `posix-mock-test.cc` → `"../src/os.cc"`; `googletest`'s unity `gtest-all.cc` →
-  `"src/gtest-assertion-result.cc"`). Both **libraries** compile clean; only these
-  targets fail. A real follow-up (stage the textually-source-included file).
+**Build lens: 15 green** — `zlib` `spdlog` `nlohmann-json` `catch2` `libpng`
+`boost-core` `zstd` `libevent` `libxml2` `brotli` `glog` `glm` `cryptoauthlib`,
+plus **`fmt`** + **`googletest`** (PR #794) and **`cutlass`** (header-only library,
+CUDA configure). Remaining build failures, all honest and none a convertibility
+regression:
 - **`re2` / `grpc` / `buildbox`** — convert green (provisioned), but their build is
   a per-member **greening follow-on**: the absl imports-manifest must be regenerated
   against the abseil version Bazel MVS resolves (and the sandbox mirror carries only
   some abseil release archives); `buildbox` additionally needs the grpc-class
   hermetic-protoc treatment (its `.conf` documents this).
+- **`cuda-samples`** — converts (nvcc provisioned), but the build can't fetch
+  `rules_cuda v0.3.0`: its release archive `404`s on the sandbox GitHub→GCS mirror
+  (and github is `403` direct). An environmental mirror-coverage limit, not a
+  converter gap — a single sample's `.cu` graph converts + emits `cuda_library`.
 - **`mbedtls`** — the crypto library builds; its recovered doxygen `apidoc` genrule
   fails (doxygen absent) — a dev-surface target its `.conf` doesn't yet disable.
+
+The `fmt` + `googletest` builds (previously failing on a source that textually
+`#include`s a sibling *source* file — `fmt`'s `posix-mock-test.cc` → `"../src/os.cc"`,
+`googletest`'s unity `gtest-all.cc` → `"src/*.cc"`) are fixed by **PR #794**: the
+build lens now passes `--detect-fused-sources` so the converter stages the
+textually-included source as a `textual_hdrs` input. (The converter has this
+capability; it's off in the *default* convert for its per-file read cost, so the
+build lens — which tests compilation — turns it on.)
 
 **Symbol fidelity: PASS (all deltas benign) for all 8 members that built AND carry
 a `.symfidelity` conf** — `brotli` `catch2` `glog` `libevent` `libpng` `libxml2`
