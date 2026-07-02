@@ -1125,10 +1125,11 @@ trees, optional-feature deps, codegen instances). Each member's
   fold on a different axis**: instead of diffing codemodels across build types,
   diff across option values and project the deltas onto `select()` arms keyed by
   a per-option flag. Most of the pipeline is reusable — `configfold.Project`
-  (`internal/configfold`) is already axis-agnostic (`cfgName` is just a label,
-  feed it `foo=on`/`foo=off` views); the `lowerMultiConfigDeltas`→PerPlatform→
-  `select()` emit (`internal/lower/multiconfig.go`) needs no change; and
-  `configsettings.Emit` (`emit/configsettings`) has the exact shape to copy —
+  (`converter/internal/configfold`) is already axis-agnostic (`cfgName` is just
+  a label, feed it `foo=on`/`foo=off` views); the `lowerMultiConfigDeltas`→
+  PerPlatform→`select()` emit (`converter/internal/lower/multiconfig.go`) needs
+  no change; and `configsettings.Emit` (`converter/emit/configsettings`) has the
+  exact shape to copy —
   swap the `string_flag build_type` for one `bool_flag` per BOOL option (a
   `string_flag` with `values=[…]` for `set(… CACHE STRING … STRINGS a;b;c)`
   enum options), each with a backing `config_setting`. The genuinely hard,
@@ -1140,7 +1141,8 @@ trees, optional-feature deps, codegen instances). Each member's
   over-inclusion), and it bites options far harder than it ever did build types.
   (2) **Extra configure passes** — capturing a delta means reconfiguring with
   the option flipped (precedent: `ApplyPerConfigBakes` in
-  `internal/lower/per_config_bake.go` already re-runs configure per build type);
+  `converter/internal/lower/per_config_bake.go` already re-runs configure per
+  build type);
   N options → 1+N passes one-at-a-time (first-order only) or up to 2^N for full
   interaction fidelity, and `cmake_dependent_option` makes some interactions
   mandatory (→ skylib `config_setting_group` AND). (3) **Multi-axis select
