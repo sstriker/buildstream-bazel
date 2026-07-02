@@ -67,8 +67,16 @@ grep -qE '^\s*name = "sgen_gen_h",' "$build" || fail "sgen not lowered to the re
 grep -qF '$(location //tools:sgen) $(SRCS) > $@' "$build" || fail "the genrule should re-run the hermetic //tools:sgen tool" "$build"
 grep -qF '"gen.h"' "$build" || fail "gen.h not declared by the genrule" "$build"
 # The consumer keeps gen.h in srcs (genrule output by filename), NOT a deps edge.
-grep -qE 'srcs = \[[^]]*"gen.h"' "$build" || grep -qF '"gen.h",' "$build" || fail "consumer must keep gen.h in srcs (genrule has no CcInfo for a deps edge)" "$build"
-grep -qF 'deps = [":sgen_gen_h"]' "$build" && fail "a genrule output must NOT be wired via a cc deps edge" "$build"
+# Scope the check to the cc_binary(name = "app") stanza specifically (paragraph
+# mode, stanzas are blank-line separated) so a bare '"gen.h"' elsewhere — e.g. the
+# genrule's own outs — can't satisfy it: a real regression stripping gen.h from
+# the consumer must fail here.
+app_stanza=$(awk 'BEGIN{RS="";ORS="\n\n"} /name = "app"/' "$build")
+printf '%s' "$app_stanza" | grep -qF '"gen.h"' \
+    || fail "consumer app must keep gen.h in srcs (genrule has no CcInfo for a deps edge)" "$build"
+# Whitespace-tolerant: no cc deps edge onto the genrule anywhere.
+grep -qE 'deps[[:space:]]*=[[:space:]]*\[[[:space:]]*":sgen_gen_h"' "$build" \
+    && fail "a genrule output must NOT be wired via a cc deps edge" "$build"
 echo "ok  meta-cmake-recognizer-starlark-stdout: sgen lowered to a hermetic genrule via the genrule(...) builtin (consumer keeps gen.h in srcs)"
 
 # --- Bazel-build half: the genrule + //tools:sgen are real. ---

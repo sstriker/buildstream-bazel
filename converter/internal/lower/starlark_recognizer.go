@@ -455,6 +455,13 @@ func goValueList(v starlark.Value) ([]starlark.Value, error) {
 	if isNoneOrNil(v) {
 		return nil, nil
 	}
+	// A Starlark string/bytes is Iterable (over its chars/bytes), so a scalar like
+	// outs = "gen.h" would silently split into ['g','e','n',...] instead of the
+	// intended ["gen.h"]. Reject it so this API mistake fails fast and clearly.
+	switch v.(type) {
+	case starlark.String, starlark.Bytes:
+		return nil, fmt.Errorf("expected a list, got a scalar %s (wrap it in a list, e.g. [%s])", v.Type(), v.String())
+	}
 	iter, ok := v.(starlark.Iterable)
 	if !ok {
 		return nil, fmt.Errorf("expected a list, got %s", v.Type())

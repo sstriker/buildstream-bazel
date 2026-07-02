@@ -121,6 +121,26 @@ func TestStarlarkGenruleTarget_NonStringCmdSurfaces(t *testing.T) {
 	}
 }
 
+// TestStarlarkRecognizer_ScalarOutsRejected: passing a bare string where a list
+// is expected (outs = "gen.h") must fail fast with a clear error, not silently
+// iterate the string into single characters.
+func TestStarlarkRecognizer_ScalarOutsRejected(t *testing.T) {
+	src := `
+def match(cmd):
+    return True
+def lower(cmd):
+    return result(targets = [genrule(name = "g", cmd = "x > $@", outs = "gen.h")], derived_outputs = ["gen.h"])
+`
+	r := loadStarFromString(t, "scalar.star", src)
+	_, err := r.Lower(CodegenCommand{Driver: "t"})
+	if err == nil {
+		t.Fatal("a scalar string for outs must error, not split into characters")
+	}
+	if !strings.Contains(err.Error(), "list") {
+		t.Errorf("error should hint the list requirement; got %v", err)
+	}
+}
+
 const protocStar = `
 def match(cmd):
     return cmd.driver.startswith("protoc") and any([a.startswith("--cpp_out") for a in cmd.args])
