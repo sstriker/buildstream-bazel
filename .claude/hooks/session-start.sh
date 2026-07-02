@@ -210,11 +210,22 @@ if [ -n "$egress_cas" ]; then
     # downloader line below (egress registry+truststore still apply).
     bsb_mirror_cfg="${BSB_BAZEL_MIRROR_CFG:-$HOME/.cache/bazel-mirror-downloader.cfg}"
     mkdir -p "$(dirname "$bsb_mirror_cfg")" 2>/dev/null || true
+    # Write atomically (temp in the same dir + mv), same idiom as the ~/.bazelrc
+    # update below: an interrupted or disk-full write must never leave a partial
+    # config at the published path, which would break every later bazel download.
     # ^-anchored so the github.com rule can't also match inside codeload.github.com
     # (which has its own rule). $1 is the rewrite backreference (literal here).
-    { printf 'rewrite ^github.com/(.*) storage.googleapis.com/bazel-mirror/github.com/$1\n'
-      printf 'rewrite ^codeload.github.com/(.*) storage.googleapis.com/bazel-mirror/codeload.github.com/$1\n'
-    } > "$bsb_mirror_cfg" 2>/dev/null || bsb_mirror_cfg=""
+    bsb_mirror_tmp="$(mktemp "$(dirname "$bsb_mirror_cfg")/.mirror.XXXXXX" 2>/dev/null || true)"
+    if [ -n "$bsb_mirror_tmp" ] \
+       && { printf 'rewrite ^github.com/(.*) storage.googleapis.com/bazel-mirror/github.com/$1\n'
+            printf 'rewrite ^codeload.github.com/(.*) storage.googleapis.com/bazel-mirror/codeload.github.com/$1\n'
+          } > "$bsb_mirror_tmp" 2>/dev/null \
+       && mv -f "$bsb_mirror_tmp" "$bsb_mirror_cfg" 2>/dev/null; then
+      :
+    else
+      rm -f "$bsb_mirror_tmp" 2>/dev/null || true
+      bsb_mirror_cfg=""
+    fi
     # Update ~/.bazelrc atomically. Build the new contents in a temp file in
     # the same dir (so publishing is an atomic rename): the current rc minus
     # any prior managed block, a trailing newline so the marker starts on its
@@ -242,9 +253,12 @@ RC
     fi
     if [ "$bsb_rc_ok" = 1 ]; then
       if [ -n "$bsb_mirror_cfg" ]; then
-        log "bazel egress configured: BCR + GitHub→GCS mirror rewrite + JVM truststore ($bsb_trust)"
+        log "bazel egress configured: BCR (GitHub registry mirror) + GitHub→GCS download rewrite + JVM truststore ($bsb_trust)"
       else
-        log "bazel egress configured: BCR via GitHub mirror + JVM truststore ($bsb_trust)"
+        # No download rewrite (mirror-config write failed) — say so plainly rather
+        # than imply the rewrite is active. Registry + truststore still apply; a
+        # bare github/codeload archive fetch will 403 until the rewrite is back.
+        log "bazel egress configured: BCR (GitHub registry mirror) + JVM truststore ($bsb_trust); download mirror rewrite NOT set (cfg write failed)"
       fi
     else
       rm -f "$bsb_rc_tmp" 2>/dev/null || true
