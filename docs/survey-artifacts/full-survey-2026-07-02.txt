@@ -3,8 +3,12 @@
 # Harness:   scripts/run-survey.sh with the converter commit stamp (#790); Bazel egress via the GitHub->GCS
 #            mirror + repository_cache (#791) -- which is what unblocked the build + fidelity lenses at all.
 # Scope:     Phase A convert-only for ALL 30 (convertibility lenses: rej/idiom/cov/todos). Phase B build +
-#            compile-db + symbol + ELF fidelity for the 18 non-large. The 12 largest are convert-only
-#            (build + symbol/ELF fidelity skipped per request; they self-gate on a green build anyway).
+#            compile-db fidelity for the 18 non-large, plus symbol/ELF fidelity where a .symfidelity/.elffidelity
+#            conf exists AND the build is green (both opt-in, config-gated). The 12 largest are convert-only
+#            (build + symbol/ELF skipped per request; they self-gate on a green build anyway).
+# ELF fidelity: ENABLED but produced NO rows this run -- only fmt/zlib carry a .elffidelity conf, and fmt's build
+#               failed (see FINDINGS), so no ELF dynamic-section comparison was emitted. Symbol fidelity is the
+#               fidelity signal below; per-project fidelity JSON lives under <out>/<name>/ when produced.
 # symbol-fidelity: nm exported symbols, cmake .a vs bazel .a. PASS = every delta benign (fortify/stack-protector).
 # compile-db:      report-only per-TU compile-commands diff. m=TUs matched; inc/def/std = TUs with include/
 #                  define/-std frame deltas. The inc '.'-dir and std-frame deltas are known benign compile-db

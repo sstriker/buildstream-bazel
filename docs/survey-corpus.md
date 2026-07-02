@@ -158,19 +158,23 @@ full run below (2026-07-02) delivers them after the egress mirror fix.
 
 The Bazel egress mirror + `--repository_cache` (landed in the SessionStart hook)
 unblocked the previously-`403`-gated fetch, so this is the **first run to
-exercise the build + fidelity lenses across the corpus** — not just the
-convertibility columns. Converter `6a1da82` (post-#769–#789; the #789 genrule
-builtin is operator-only, no corpus effect). Full output:
+exercise the build + fidelity lenses at all** (on the non-large members) — not
+just the convertibility columns. Converter `6a1da82` (post-#769–#789; the #789
+genrule builtin is operator-only, no corpus effect). Full output:
 [`survey-artifacts/full-survey-2026-07-02.txt`](survey-artifacts/full-survey-2026-07-02.txt).
 
 **Scope.** Phase A: convert-only for **all 30** (convertibility lenses). Phase B:
-**build + compile-db + symbol + ELF fidelity** for the **18 non-large**. The 12
-largest (`abseil` `protobuf` `curl` `eigen` `sdl` `grpc` `llvm` `vtk` `bde`
-`cutlass` `cuda-samples` `openblas`) stay **convert-only** (build + symbol/ELF
-skipped by request; they self-gate on a green build anyway).
+**build + compile-db fidelity** for the **18 non-large**, plus **symbol / ELF
+fidelity** for the subset that both builds green AND ships a `.symfidelity` /
+`.elffidelity` conf (both are opt-in, config-gated — they only run/report where a
+conf exists). The 12 largest (`abseil` `protobuf` `curl` `eigen` `sdl` `grpc`
+`llvm` `vtk` `bde` `cutlass` `cuda-samples` `openblas`) stay **convert-only**
+(build + symbol/ELF skipped by request; they self-gate on a green build anyway).
 
-**Convertibility (all 30): 25 clean, 5 environmental failures** — none a converter
-regression: `cutlass`/`cuda-samples` need `nvcc` (opt-in `BSB_PROVISION_CUDA`);
+**Convertibility (all 30): 25 converted to completion, 5 environmental failures**
+(a "converted" project may still carry recorded — not failing — `rej`/`idiom`/
+`todos`; the 5 below produced no numbers at all) — none a converter regression:
+`cutlass`/`cuda-samples` need `nvcc` (opt-in `BSB_PROVISION_CUDA`);
 `re2` needs `find_package(absl)` and `grpc` needs `find_package(Protobuf)` (external
 deps that resolve in-graph, not standalone); `mbedtls` is the documented bare-configure
 failure. Fresh numbers for members not previously stamped: `llvm` `0/172/1/6`,
