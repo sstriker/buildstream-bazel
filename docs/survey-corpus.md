@@ -176,29 +176,34 @@ conf exists). The 12 largest (`abseil` `protobuf` `curl` `eigen` `sdl` `grpc`
 The **intent lens was not run** here (it's a non-deterministic LLM-judge triage
 pass; the `missed`/Intent column is `-` for this run).
 
-**Convertibility (all 30): 25 converted to completion, 5 environmental failures**
+**Convertibility (all 30): 28 converted to completion, 2 environmental failures**
 (a "converted" project may still carry recorded — not failing — `rej`/`idiom`/
-`todos`; the 5 below produced no numbers at all) — none a converter regression:
-`cutlass`/`cuda-samples` need `nvcc` (opt-in `BSB_PROVISION_CUDA`);
-`re2` needs `find_package(absl)` and `grpc` needs `find_package(Protobuf)` (external
-deps that resolve in-graph, not standalone); `mbedtls` is the documented bare-configure
-failure. Fresh numbers for members not previously stamped: `llvm` `0/172/1/6`,
-`vtk` `0/346/2/878`, `abseil` `0/0/0/210`, `protobuf` `0/8/0/0`, `cryptoauthlib`
+`todos`). With the extra prerequisites **scripted** (`install-survey-deps.sh` host
+deps + the `mbedtls` `framework` submodule — landed in PR #793), `mbedtls`
+`0/0/0/2`, `re2` `0/0/0/1`, and **`grpc` `0/59/0/1`** (the corpus's deepest
+`find_package` graph — abseil + protobuf + re2 + SSL + c-ares + zlib) now convert
+**green**, up from `CONVERT FAILED`. The only two still failing are
+`cutlass`/`cuda-samples`, which need `nvcc` (opt-in `BSB_PROVISION_CUDA`, now also
+scripted to install `gcc-12` + assemble the CUDA root) — not provisioned in this
+run. Fresh numbers for members not previously stamped: `llvm` `0/172/1/6`, `vtk`
+`0/346/2/878`, `abseil` `0/0/0/210`, `protobuf` `0/8/0/0`, `cryptoauthlib`
 `3/3/0/378`, `bde` `1/0/7/4`, `sdl` `0/6/0/5`.
 
-**Build lens (18 non-large): 13 green** — `zlib` `spdlog` `nlohmann-json` `catch2`
-`libpng` `boost-core` `zstd` `libevent` `libxml2` `brotli` `glog` `glm`
-`cryptoauthlib`. Failures (honest):
-- **`fmt`** — the *library* compiles clean; its `//...` build fails only on the
-  test `posix-mock-test.cc`, which does `#include "../src/os.cc"` — that sibling
-  source isn't staged onto the test target. A real follow-up (stage the
-  relatively-source-included file onto the test), not a convertibility regression.
-- **`googletest`** — standalone `//...` needs its own gmock/gtest dep graph the
-  bare convert doesn't wire.
-- **`buildbox`** — needs the external remote-execution-api protos
-  (`remote_execution.proto` not found).
-- `mbedtls` / `re2` **CONVERT FAILED** (the artifact's term; the build lens never
-  runs — same configure prerequisites as the convertibility failures above).
+**Build lens: 13 green** — `zlib` `spdlog` `nlohmann-json` `catch2` `libpng`
+`boost-core` `zstd` `libevent` `libxml2` `brotli` `glog` `glm` `cryptoauthlib`.
+Build failures, all honest and none a convertibility regression:
+- **`fmt` + `googletest`** — one shared **converter gap**: a source that textually
+  `#include`s a sibling *source* file isn't staged onto the target (`fmt`'s test
+  `posix-mock-test.cc` → `"../src/os.cc"`; `googletest`'s unity `gtest-all.cc` →
+  `"src/gtest-assertion-result.cc"`). Both **libraries** compile clean; only these
+  targets fail. A real follow-up (stage the textually-source-included file).
+- **`re2` / `grpc` / `buildbox`** — convert green (provisioned), but their build is
+  a per-member **greening follow-on**: the absl imports-manifest must be regenerated
+  against the abseil version Bazel MVS resolves (and the sandbox mirror carries only
+  some abseil release archives); `buildbox` additionally needs the grpc-class
+  hermetic-protoc treatment (its `.conf` documents this).
+- **`mbedtls`** — the crypto library builds; its recovered doxygen `apidoc` genrule
+  fails (doxygen absent) — a dev-surface target its `.conf` doesn't yet disable.
 
 **Symbol fidelity: PASS (all deltas benign) for all 8 members that built AND carry
 a `.symfidelity` conf** — `brotli` `catch2` `glog` `libevent` `libpng` `libxml2`

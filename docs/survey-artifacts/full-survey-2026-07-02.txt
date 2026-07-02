@@ -1,59 +1,57 @@
 # Full corpus survey - 2026-07-02
 # Converter: 6a1da82 (post #769-#789 streak; the #789 genrule builtin is operator-only, no corpus effect).
-# Harness:   scripts/run-survey.sh with the converter commit stamp (#790); Bazel egress via the GitHub->GCS
-#            mirror + repository_cache (#791) -- which is what unblocked the build + fidelity lenses at all.
-# Scope:     Phase A convert-only for ALL 30 (convertibility lenses: rej/idiom/cov/todos). Phase B build +
-#            compile-db fidelity for the 18 non-large, plus symbol/ELF fidelity where a .symfidelity/.elffidelity
-#            conf exists AND the build is green (both opt-in, config-gated). The 12 largest are convert-only
-#            (build + symbol/ELF skipped per request; they self-gate on a green build anyway).
-# ELF fidelity: ENABLED but produced NO rows this run -- only fmt/zlib carry a .elffidelity conf, and fmt's build
-#               failed (see FINDINGS), so no ELF dynamic-section comparison was emitted. Symbol fidelity is the
-#               fidelity signal below; per-project fidelity JSON lives under <out>/<name>/ when produced.
-# symbol-fidelity: nm exported symbols, cmake .a vs bazel .a. PASS = every delta benign (fortify/stack-protector).
-# compile-db:      report-only per-TU compile-commands diff. m=TUs matched; inc/def/std = TUs with include/
-#                  define/-std frame deltas. The inc '.'-dir and std-frame deltas are known benign compile-db
-#                  noise (cmake adds CMAKE_CURRENT_{SOURCE,BINARY}_DIR to -I; -std framed differently), not build-blocking.
+# Harness:   scripts/run-survey.sh with the converter commit stamp. Members with extra find_package /
+#            toolchain prerequisites are set up via their build-lens .conf + SessionStart provisioning
+#            (tools/install-survey-deps.sh host deps; CUDA toolkit) -- scripted, see PR #793.
+# Scope:     convertibility (rej/idiom/cov/todos) for ALL 30. build + compile-db fidelity for the non-large;
+#            symbol/ELF fidelity where a .symfidelity/.elffidelity conf exists AND the build is green.
+# NOTE:      mbedtls/re2/grpc/buildbox convert GREEN once provisioned (install-survey-deps + mbedtls framework
+#            submodule). Their BUILD lens is a per-member follow-on (absl imports-manifest vs mirror-resolvable
+#            abseil version skew; mbedtls's doxygen apidoc genrule). cutlass/cuda-samples need CUDA (scripted,
+#            BSB_PROVISION_CUDA, not provisioned in this run). fmt/googletest builds hit one shared converter
+#            gap: a unity/test source #include-ing a sibling .cc/.cpp not staged onto the target.
 
-project         rej  idiom  cov  todo  build  symbol-fidelity          compile-db             note
---------------------------------------------------------------------------------------------------
-fmt               0     48    0     0   FAIL  -                        m=29,inc=0,def=0,std=29
-zlib              0      0    0     0     ok  PASS(both=105,benign=5)  m=17,inc=17,def=0,std=0
-spdlog            0      0    0     0     ok  PASS(both=1404,benign=9) m=32,inc=0,def=0,std=0
-nlohmann-json     0      0    0     0     ok  -                        -
-catch2            0      0    0     0     ok  PASS(both=2021,benign=12) m=107,inc=107,def=0,std=107
-libpng            0      0    0    12     ok  PASS(both=406,benign=6)  m=24,inc=1,def=0,std=0
-googletest        0      0    0     0   FAIL  -                        m=4,inc=0,def=0,std=4
-boost-core        0      0    0     0     ok  -                        -
-zstd              1      3    0     7     ok  -                        m=0,inc=0,def=0,std=0
-libevent          0      5    0     3     ok  PASS(both=417,benign=9)  m=66,inc=17,def=0,std=0
-libxml2           0      0    0     1     ok  PASS(both=1505,benign=12) m=52,inc=52,def=0,std=0
-brotli            0      0    0     1     ok  PASS(both=11,benign=0)   m=36,inc=0,def=1,std=0
-mbedtls           -      -    -     -      -  -                        -                      CONVERT FAILED: bare configure fails (needs tests/programs OFF)
-glog              1     30    0     7     ok  PASS(both=513,benign=11) m=20,inc=20,def=0,std=20
-glm               0      0    0     2     ok  -                        m=186,inc=186,def=0,std=186
-cryptoauthlib     3      3    0   378     ok  -                        m=173,inc=173,def=65,std=0
-buildbox          0     14    0     1   FAIL  -                        m=121,inc=121,def=0,std=0
-re2               -      -    -     -      -  -                        -                      CONVERT FAILED: needs find_package(absl)
-abseil            0      0    0   210      -  -                        -                      LARGE: convert-only
-protobuf          0      8    0     0      -  -                        -                      LARGE: convert-only
-curl              0      1    0     4      -  -                        -                      LARGE: convert-only
-eigen             0      0    0     3      -  -                        -                      LARGE: convert-only
-sdl               0      6    0     5      -  -                        -                      LARGE: convert-only
-grpc              -      -    -     -      -  -                        -                      CONVERT FAILED: needs find_package(Protobuf) [LARGE]
-llvm              0    172    1     6      -  -                        -                      LARGE: convert-only
-vtk               0    346    2   878      -  -                        -                      LARGE: convert-only
-bde               1      0    7     4      -  -                        -                      LARGE: convert-only
-cutlass           -      -    -     -      -  -                        -                      CONVERT FAILED: needs CUDA nvcc (BSB_PROVISION_CUDA) [LARGE]
-cuda-samples      -      -    -     -      -  -                        -                      CONVERT FAILED: needs CUDA nvcc (BSB_PROVISION_CUDA) [LARGE]
-openblas          0      0    0     3      -  -                        -                      LARGE: convert-only
+project         rej  idiom  cov  todo          build  symbol-fidelity          compile-db             note
+----------------------------------------------------------------------------------------------------------
+fmt               0     48    0     0           FAIL  -                        m=29,inc=0,def=0,std=29
+zlib              0      0    0     0             ok  PASS(both=105,benign=5)  m=17,inc=17,def=0,std=0
+spdlog            0      0    0     0             ok  PASS(both=1404,benign=9) m=32,inc=0,def=0,std=0
+nlohmann-json     0      0    0     0             ok  -                        -
+catch2            0      0    0     0             ok  PASS(both=2021,benign=12) m=107,inc=107,def=0,std=107
+libpng            0      0    0    12             ok  PASS(both=406,benign=6)  m=24,inc=1,def=0,std=0
+googletest        0      0    0     0           FAIL  -                        m=4,inc=0,def=0,std=4
+boost-core        0      0    0     0             ok  -                        -
+zstd              1      3    0     7             ok  -                        m=0,inc=0,def=0,std=0
+libevent          0      5    0     3             ok  PASS(both=417,benign=9)  m=66,inc=17,def=0,std=0
+libxml2           0      0    0     1             ok  PASS(both=1505,benign=12) m=52,inc=52,def=0,std=0
+brotli            0      0    0     1             ok  PASS(both=11,benign=0)   m=36,inc=0,def=1,std=0
+mbedtls           0      0    0     2   FAIL(apidoc)  -                        -                      convert green via provisioning (#793)
+glog              1     30    0     7             ok  PASS(both=513,benign=11) m=20,inc=20,def=0,std=20
+glm               0      0    0     2             ok  -                        m=186,inc=186,def=0,std=186
+cryptoauthlib     3      3    0   378             ok  -                        m=173,inc=173,def=65,std=0
+buildbox          0     14    0     1 FAIL(follow-on)  -                        m=121,inc=121,def=0,std=0 convert green via provisioning (#793)
+re2               0      0    0     1 FAIL(follow-on)  -                        -                      convert green via provisioning (#793)
+abseil            0      0    0   210              -  -                        -                      LARGE: convert-only
+protobuf          0      8    0     0              -  -                        -                      LARGE: convert-only
+curl              0      1    0     4              -  -                        -                      LARGE: convert-only
+eigen             0      0    0     3              -  -                        -                      LARGE: convert-only
+sdl               0      6    0     5              -  -                        -                      LARGE: convert-only
+grpc              0     59    0     1 FAIL(follow-on)  -                        -                      LARGE (provisioned convert) ; convert green via provisioning (#793)
+llvm              0    172    1     6              -  -                        -                      LARGE: convert-only
+vtk               0    346    2   878              -  -                        -                      LARGE: convert-only
+bde               1      0    7     4              -  -                        -                      LARGE: convert-only
+cutlass           -      -    -     -              -  -                        -                      CONVERT FAILED: needs CUDA nvcc (BSB_PROVISION_CUDA — now scripted) [LARGE]
+cuda-samples      -      -    -     -              -  -                        -                      CONVERT FAILED: needs CUDA nvcc (BSB_PROVISION_CUDA — now scripted) [LARGE]
+openblas          0      0    0     3              -  -                        -                      LARGE: convert-only
 
-FINDINGS / build failures (non-large, honest):
-  fmt        build FAIL: test posix-mock-test.cc does #include "../src/os.cc"; that sibling source isn't staged
-             into the test target, so gcc can't find it. The fmt LIBRARY compiles clean; only this test target
-             fails. New signal vs the table's build 'ok' (the 403 previously hid the //... test build) -- a real
-             follow-up: stage the relatively-source-included file onto the test.
-  googletest build FAIL: standalone //... needs its own gmock/gtest dep graph the bare convert doesn't wire.
-  buildbox   build FAIL: needs the external remote-execution-api protos (remote_execution.proto not found).
-SYMBOL FIDELITY: PASS (all-benign deltas) for all 8 members that built AND carry a .symfidelity conf --
-  brotli catch2 glog libevent libpng libxml2 spdlog zlib. i.e. the converted Bazel static archive exports the
-  SAME symbols as cmake's, modulo fortify/stack-protector wrappers. First time this is confirmable (needed the build).
+FINDINGS:
+  PROVISIONING (PR #793) moved mbedtls/re2/grpc from CONVERT FAILED to convert-green (0 rejections);
+    grpc 0/59/0/1 is the corpus's deepest find_package graph (abseil+protobuf+re2+ssl+c-ares+zlib).
+  BUILD follow-ons (convert green, build not yet): re2/grpc/buildbox need the absl imports-manifest
+    regenerated against the abseil version Bazel resolves (+ the sandbox mirror's partial abseil-release
+    coverage); mbedtls builds the library but its recovered doxygen `apidoc` genrule fails (doxygen absent).
+  CONVERTER GAP (fmt + googletest build FAIL, same root cause): a source that textually #includes a sibling
+    SOURCE file (fmt test posix-mock-test.cc -> ../src/os.cc; googletest gtest-all.cc -> src/*.cc) — the
+    included .cc isn't staged onto the target. The libraries themselves compile clean. A real follow-up.
+  SYMBOL FIDELITY: PASS (all-benign deltas) for the 8 built members with a .symfidelity conf
+    (brotli catch2 glog libevent libpng libxml2 spdlog zlib) — same symbols as cmake's .a, modulo fortify.
