@@ -297,16 +297,24 @@ func starlarkTarget(v starlark.Value) (ir.Target, error) {
 	if !ok {
 		return ir.Target{}, fmt.Errorf("each target must be native_rule(...) or genrule(...), got %s", v.Type())
 	}
-	// A present-but-non-string _construct is a malformed recognizer struct;
-	// surface it directly rather than silently falling through to a confusing
-	// native_rule error. An absent _construct (st.Attr errors) falls through.
+	// _construct is the public discriminator of the Starlark target contract.
+	// When present it MUST be a known constructor: dispatch genrule here, let
+	// native_rule fall through to the handling below, and reject any other value
+	// with a clear error rather than a confusing downstream "kind" complaint. A
+	// present-but-non-string _construct is likewise surfaced directly. An absent
+	// _construct (st.Attr errors) falls through (legacy bare native_rule struct).
 	if _, attrErr := st.Attr("_construct"); attrErr == nil {
 		c, err := structStr(st, "_construct")
 		if err != nil {
 			return ir.Target{}, err
 		}
-		if c == "genrule" {
+		switch c {
+		case "genrule":
 			return starlarkGenruleTarget(st)
+		case "native_rule":
+			// fall through to the native_rule handling below
+		default:
+			return ir.Target{}, fmt.Errorf("unknown target constructor _construct=%q (expected native_rule or genrule)", c)
 		}
 	}
 	kind, err := structStr(st, "kind")

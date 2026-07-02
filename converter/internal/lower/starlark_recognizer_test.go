@@ -103,6 +103,23 @@ func TestStarlarkTarget_NonStringConstructSurfaces(t *testing.T) {
 	}
 }
 
+// TestStarlarkTarget_UnknownConstructRejected: a struct with a known-shaped but
+// unrecognized _construct value fails fast with a clear message, not a confusing
+// downstream "kind" error.
+func TestStarlarkTarget_UnknownConstructRejected(t *testing.T) {
+	st := starlarkstruct.FromStringDict(starlarkstruct.Default, starlark.StringDict{
+		"_construct": starlark.String("something_else"),
+		"name":       starlark.String("g"),
+	})
+	_, err := starlarkTarget(st)
+	if err == nil {
+		t.Fatal("an unknown _construct must be rejected")
+	}
+	if !strings.Contains(err.Error(), "_construct") {
+		t.Errorf("error should name the _construct discriminator; got %v", err)
+	}
+}
+
 // TestStarlarkGenruleTarget_NonStringCmdSurfaces: a genrule struct whose cmd is
 // present but not a string surfaces the type error, not the generic
 // "requires a non-empty name and cmd" message that hides the real problem.

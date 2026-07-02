@@ -63,7 +63,7 @@ rec_dir="$work_dir/rec"; mkdir -p "$rec_dir"
     >"$work_dir/rec.out" 2>"$work_dir/rec.err" \
     || fail "operator-recognizer convert exited non-zero" "$work_dir/rec.err"
 build="$rec_dir/BUILD.bazel"
-grep -qE '^\s*name = "sgen_gen_h",' "$build" || fail "sgen not lowered to the recognizer's genrule sgen_gen_h" "$build"
+grep -qE '^[[:space:]]*name = "sgen_gen_h",' "$build" || fail "sgen not lowered to the recognizer's genrule sgen_gen_h" "$build"
 grep -qF '$(location //tools:sgen) $(SRCS) > $@' "$build" || fail "the genrule should re-run the hermetic //tools:sgen tool" "$build"
 grep -qF '"gen.h"' "$build" || fail "gen.h not declared by the genrule" "$build"
 # The consumer keeps gen.h in srcs (genrule output by filename), NOT a deps edge.
