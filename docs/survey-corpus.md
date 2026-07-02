@@ -36,7 +36,11 @@ in *Build-lens status* below; the full corpus roster + rationale is under
 > **specific converter commit**, so `run-survey.sh` now stamps it: `summary.txt`
 > opens with a `# survey run · converter <sha>` header and carries a per-row
 > **`converter`** column (`<sha>`, `-dirty` when the tree wasn't clean), so a row
-> refreshed at a different commit stays self-attributing.
+> refreshed at a different commit stays self-attributing. The stamp is honest
+> about what it *can't* attest: **`unknown`** outside a git checkout, and
+> **`prebuilt`** when the run fell back to a converter binary NOT compiled from
+> the current checkout (so its commit can't be trusted) — the stamp only reports
+> a real `<sha>` when the converter was built from source for that run.
 >
 > **This table's rows have MIXED provenance** — they were filled piecemeal across
 > many converter commits (e.g. fmt's `idiom 0` predates the
@@ -1021,8 +1025,11 @@ SURVEY_OUT_DIR=/tmp/my-out scripts/run-survey.sh   # custom out dir
 # Every run stamps the CONVERTER COMMIT it used: summary.txt opens with a
 # `# survey run · converter <sha>` header and carries a per-row `converter`
 # column (`<sha>`, `-dirty` if the tree wasn't clean) — so a snapshot is
-# attributable and rows refreshed at different commits stay honest. Run from a
-# CLEAN checkout (commit first) when the number is going into this doc.
+# attributable and rows refreshed at different commits stay honest. The stamp
+# reads `unknown` outside a git checkout and `prebuilt` when the run used a
+# fallback converter binary NOT built from this checkout (commit untrustworthy);
+# a real `<sha>` means the converter was built from source for the run. Run from
+# a CLEAN checkout (commit first) when the number is going into this doc.
 
 # Survey one ad-hoc project (faithful flags baked into the script).
 scripts/run-survey.sh myproj=/path/to/cmake/root

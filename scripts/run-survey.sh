@@ -155,14 +155,21 @@ fi
 # `go build` can't run (no Go toolchain on PATH).
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 converter="$repo_root/build/bin/convert-element-cmake"
+# converter_from_source is 1 when this run's converter is compiled from the
+# CURRENT checkout (go build or go run) — the only case where stamping the git
+# commit is honest. 0 when we fall back to a prebuilt binary of UNKNOWN
+# provenance (it may predate the checkout's HEAD), so the commit stamp would lie.
 if command -v go >/dev/null 2>&1 && \
    ( cd "$repo_root" && go build -o "$converter" ./converter/cmd/convert-element-cmake ); then
+    converter_from_source=1
     run_converter() { "$converter" "$@"; }
 elif [ -x "$converter" ]; then
     echo "warning: 'go build' unavailable or failed; using existing (possibly stale) $converter" >&2
+    converter_from_source=0
     run_converter() { "$converter" "$@"; }
 else
     echo "note: $converter not built and 'go build' failed; using 'go run' (slower)." >&2
+    converter_from_source=1
     run_converter() { ( cd "$repo_root" && go run ./converter/cmd/convert-element-cmake "$@" ); }
 fi
 
@@ -171,12 +178,18 @@ fi
 # refreshed at different commits stay honest). "-dirty" when the tree has
 # uncommitted changes (the survey isn't from a clean commit) — `git status
 # --porcelain` so untracked files count as dirty too, not just tracked-file
-# edits. "unknown" outside a git checkout.
-converter_commit=$(cd "$repo_root" && {
-    c=$(git rev-parse --short=12 HEAD 2>/dev/null) || { echo unknown; exit; }
-    [ -z "$(git status --porcelain 2>/dev/null)" ] || c="$c-dirty"
-    echo "$c"
-})
+# edits. "unknown" outside a git checkout. "prebuilt" when the run used a
+# fallback binary NOT compiled from this checkout (converter_from_source=0), so
+# the git commit can't be trusted to describe the converter that produced the row.
+if [ "$converter_from_source" = 1 ]; then
+    converter_commit=$(cd "$repo_root" && {
+        c=$(git rev-parse --short=12 HEAD 2>/dev/null) || { echo unknown; exit; }
+        [ -z "$(git status --porcelain 2>/dev/null)" ] || c="$c-dirty"
+        echo "$c"
+    })
+else
+    converter_commit=prebuilt
+fi
 
 # detect_configs <src> — echo the project's declared configuration types
 # as a comma-separated list, for SURVEY_BUILD_TYPES=auto. Runs a throwaway
