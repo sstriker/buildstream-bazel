@@ -1116,6 +1116,49 @@ trees, optional-feature deps, codegen instances). Each member's
   carry it — that converts the largest remaining bake population into
   real lifts with zero new machinery.
 
+- **Lift `option()` into `bool_flag`/`config_setting` selects (today they're
+  baked + commented).** `option()` is configure-time-resolved, so the converter
+  currently pins each option to the one value cmake was configured with, bakes
+  the result into the codemodel, and only records the inventory as a BUILD
+  header comment (`optionsHeaderComments`, `converter/internal/lower/lower.go`).
+  Making an option a real build-time toggle is structurally the **multi-config
+  fold on a different axis**: instead of diffing codemodels across build types,
+  diff across option values and project the deltas onto `select()` arms keyed by
+  a per-option flag. Most of the pipeline is reusable — `configfold.Project`
+  (`internal/configfold`) is already axis-agnostic (`cfgName` is just a label,
+  feed it `foo=on`/`foo=off` views); the `lowerMultiConfigDeltas`→PerPlatform→
+  `select()` emit (`internal/lower/multiconfig.go`) needs no change; and
+  `configsettings.Emit` (`emit/configsettings`) has the exact shape to copy —
+  swap the `string_flag build_type` for one `bool_flag` per BOOL option (a
+  `string_flag` with `values=[…]` for `set(… CACHE STRING … STRINGS a;b;c)`
+  enum options), each with a backing `config_setting`. The genuinely hard,
+  as-yet-unbuilt parts: (1) **target-existence deltas** — the real impedance
+  mismatch. Options routinely gate whole targets/subdirs (`if(BUILD_TESTS)
+  add_executable(…)`, conditional `add_subdirectory`); a `select()` varies an
+  attribute *inside* a rule but can't make a `cc_library` conditionally exist.
+  Needs `target_compatible_with = select({…})` (or always-emit-and-accept-
+  over-inclusion), and it bites options far harder than it ever did build types.
+  (2) **Extra configure passes** — capturing a delta means reconfiguring with
+  the option flipped (precedent: `ApplyPerConfigBakes` in
+  `internal/lower/per_config_bake.go` already re-runs configure per build type);
+  N options → 1+N passes one-at-a-time (first-order only) or up to 2^N for full
+  interaction fidelity, and `cmake_dependent_option` makes some interactions
+  mandatory (→ skylib `config_setting_group` AND). (3) **Multi-axis select
+  composition** — options × build-types can't AND config_settings in a single
+  select key without `config_setting_group`/nested selects. (4) **`#cmakedefine`
+  bodies per option value** — the per-config-bake problem extended to the option
+  axis. Staged plan: **(a)** attribute-only single-option fold, falling back to
+  today's bake-and-comment whenever the target-ID set changes across views
+  (independently shippable, proves the reuse); **(b)** `bool_flag`/`config_setting`
+  emit + `//config:<option>` label minting mirroring `configLabel`, plus a
+  `meta-cmake-options-fold.sh` render gate; **(c)** target-existence gating; **(d)**
+  multi-axis composition + per-option configure_file bake. Open decisions before
+  building: which options to lift (all detected vs. an operator allow-list, since
+  lifting all can explode the flag surface and pass count); first-order vs. full
+  interaction modelling; and the target-existence policy. Stages (a)–(b) are a
+  self-contained feature; (c)–(d) hold the multi-week effort and the real design
+  calls. Demand signal: a corpus member whose meaningful variation is an
+  `option()` toggle the fixed-value lens can't express.
 - **KindNativeRule outputs in --split-packages relocation.** The codegen-recognizer registry's native-rule substrate now participates in the OutToGenrule-keyed consumer wiring AND the nested-cmake merge re-home (producerOuts/applyNestedProducerReHome read the `out`/`outs` attrs generically). The split-packages emitter (emit/bazel/split.go) still keys producer-output placement/relocation on KindGenrule/KindWriteFile/KindCMakeConfigureFile, so a pkg_tar (or future http_file/proto) native rule re-homed into a sub-package wouldn't relocate its out. Generalize split's placement to the same kind-agnostic outputs accessor. Demand signal: a native-rule producer under --split-packages.
 - **Genex-probe language gate — genex-wrapped link deps.** The probe's language-conditional skip now walks the INTERFACE_LINK_LIBRARIES closure (_cmtb_iface_lang_gate), so a $<COMPILE_LANGUAGE>/$<LINK_LANGUAGE> gate on a transitively-linked dependency's interface is caught — not just the target's own raw value. The walk follows BARE target deps only; a dep wrapped in a genex link entry ($<LINK_ONLY:dep>, $<BUILD_INTERFACE:dep>) or a bare system lib isn't queried, so a gate reachable solely through such an entry could still diverge. Closing it needs genex-entry target extraction in the hook. Demand signal: an abort whose gated dep is reachable only via a genex link entry.
 - **Stage textual-include-of-SOURCE siblings (`#include "x.cu"` /
