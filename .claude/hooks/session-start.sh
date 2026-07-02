@@ -224,7 +224,10 @@ if [ -n "$egress_cas" ]; then
       :
     else
       rm -f "$bsb_mirror_tmp" 2>/dev/null || true
-      bsb_mirror_cfg=""
+      # Write failed (read-only HOME, disk full). If a previously published config
+      # is still readable at the stable path, keep using it — don't drop the
+      # rewrite on a transient failure when bazel could still read the old file.
+      [ -r "$bsb_mirror_cfg" ] || bsb_mirror_cfg=""
     fi
     # Update ~/.bazelrc atomically. Build the new contents in a temp file in
     # the same dir (so publishing is an atomic rename): the current rc minus
