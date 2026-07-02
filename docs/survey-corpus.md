@@ -170,18 +170,20 @@ host `find_package` deps — abseil / protobuf / re2 — and the CUDA toolkit fo
 **build + compile-db fidelity** for the **18 non-large**, plus **symbol / ELF
 fidelity** for the subset that both builds green AND ships a `.symfidelity` /
 `.elffidelity` conf (both are opt-in, config-gated — they only run/report where a
-conf exists). The 12 largest (`abseil` `protobuf` `curl` `eigen` `sdl` `grpc`
-`llvm` `vtk` `bde` `cutlass` `cuda-samples` `openblas`) stay **convert-only** —
-*except* the ones provisioning made configurable this run (`cutlass`,
-`cuda-samples`, `grpc`), whose build was attempted once they converted; the rest
-skip build + symbol/ELF (they self-gate on a green build anyway).
+conf exists). Among the 12 largest (`abseil` `protobuf` `curl` `eigen` `sdl`
+`grpc` `llvm` `vtk` `bde` `cutlass` `cuda-samples` `openblas`), the **default is
+convert-only** — build + symbol/ELF are skipped (they self-gate on a green build
+anyway). The **exceptions** are the three that this run's provisioning made
+buildable — `cutlass`, `cuda-samples`, `grpc` — whose build *was* attempted once
+they converted (their per-row build result is in the table); the other nine are
+convert-only.
 The **intent lens was not run** here (it's a non-deterministic LLM-judge triage
 pass; the `missed`/Intent column is `-` for this run).
 
 **Convertibility: all 30 convert** (up from 25/30 on a bare run) once the extra
 prerequisites are provisioned. The setup is **scripted** — `install-survey-deps.sh`
 host deps + the `mbedtls` `framework` submodule (PR #793), and the CUDA toolkit +
-`gcc-12` + assembled root behind `BSB_PROVISION_CUDA`. That moved `mbedtls`
+`gcc-12` + assembled root behind `BSB_PROVISION_CUDA=1`. That moved `mbedtls`
 `0/0/0/2`, `re2` `0/0/0/1`, **`grpc` `0/59/0/1`** (the corpus's deepest
 `find_package` graph — abseil + protobuf + re2 + SSL + c-ares + zlib), `cutlass`
 `1/0/0/2719`, and `cuda-samples` `0/0/0/1` from `CONVERT FAILED` to convert-green.

@@ -3,7 +3,7 @@
 # Setup: members with extra prerequisites are provisioned via their build-lens .conf + SessionStart
 #   (tools/install-survey-deps.sh host deps [PR #793]; CUDA toolkit + gcc-12 + assembled root). The build
 #   lens stages fused-source #includes via --detect-fused-sources [PR #794].
-# Scope: convertibility (rej/idiom/cov/todos) for ALL 30. build + compile-db fidelity for the non-large;
+# Scope: convertibility (rej/idiom/cov/todos) for ALL 30. Build + compile-db fidelity for the non-large;
 #   symbol/ELF fidelity where a .symfidelity/.elffidelity conf exists AND the build is green.
 # CONVERTIBILITY: 30/30 convert with the full provisioning (was 25/30 bare).
 
