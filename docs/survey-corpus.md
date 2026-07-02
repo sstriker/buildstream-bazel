@@ -156,15 +156,15 @@ full run below (2026-07-02) delivers them after the egress mirror fix.
 
 ### Full survey (2026-07-02)
 
-The Bazel egress mirror + `--repository_cache` (landed in the SessionStart hook)
-unblocked the previously-`403`-gated fetch, so this is the **first run in this
-cloud sandbox / session — since the egress mirror fix — to exercise the build +
-fidelity lenses** (on the non-large members), not just the convertibility columns.
-(The historical `Full-corpus lens snapshot (2026-06-08)` further down ran those
-lenses on a warm-Bazel box; the point here is that the *sandbox* can now do it
-too.) Converter `6a1da82` (post-#769–#789; the #789 genrule builtin is
-operator-only, no corpus effect). Full output:
+A full-corpus survey refresh at converter `6a1da82` (post-#769–#789; the #789
+genrule builtin is operator-only, no corpus effect) — convertibility for all 30,
+plus the build + fidelity lenses for the non-large members. Full output:
 [`survey-artifacts/full-survey-2026-07-02.txt`](survey-artifacts/full-survey-2026-07-02.txt).
+
+Members with extra prerequisites are **set up for success via their build-lens
+`.conf` + the SessionStart provisioning** (`tools/install-survey-deps.sh` for the
+host `find_package` deps — abseil / protobuf / re2 — and the CUDA toolkit for the
+`.cu` members), not left to fail a bare configure: see the per-member notes below.
 
 **Scope.** Phase A: convert-only for **all 30** (convertibility lenses). Phase B:
 **build + compile-db fidelity** for the **18 non-large**, plus **symbol / ELF
@@ -188,11 +188,10 @@ failure. Fresh numbers for members not previously stamped: `llvm` `0/172/1/6`,
 
 **Build lens (18 non-large): 13 green** — `zlib` `spdlog` `nlohmann-json` `catch2`
 `libpng` `boost-core` `zstd` `libevent` `libxml2` `brotli` `glog` `glm`
-`cryptoauthlib`. Failures (honest, and only now visible with the build unblocked):
+`cryptoauthlib`. Failures (honest):
 - **`fmt`** — the *library* compiles clean; its `//...` build fails only on the
   test `posix-mock-test.cc`, which does `#include "../src/os.cc"` — that sibling
-  source isn't staged onto the test target. **New signal vs the table's build
-  `ok`** (the `403` hid the `//...` test build); a real follow-up (stage the
+  source isn't staged onto the test target. A real follow-up (stage the
   relatively-source-included file onto the test), not a convertibility regression.
 - **`googletest`** — standalone `//...` needs its own gmock/gtest dep graph the
   bare convert doesn't wire.
@@ -206,8 +205,7 @@ a `.symfidelity` conf** — `brotli` `catch2` `glog` `libevent` `libpng` `libxml
 `spdlog` `zlib`. That is, the converted Bazel static archive **exports the same
 symbols as cmake's**, modulo fortify/stack-protector wrappers (e.g. `zlib`
 `both=105 benign=5`, `libxml2` `both=1505 benign=12`, `catch2` `both=2021
-benign=12`). This is the first time symbol fidelity is confirmable at all (it
-needs the green build the `403` used to block). Compile-db fidelity is recorded
+benign=12`). Compile-db fidelity is recorded
 report-only (the `.`-include-dir and `-std`-framing per-TU deltas are the known
 benign compile-db noise, not build-blocking).
 
