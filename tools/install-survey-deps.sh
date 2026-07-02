@@ -144,11 +144,38 @@ install_re2() {
   fi
 }
 
+# System (apt) deps the grpc + buildbox lenses' cmake CONFIGURE needs, beyond the
+# from-source abseil/protobuf/re2 installs above:
+#   - grpc  find_package: c-ares, OpenSSL, zlib (gRPC_*_PROVIDER=package) come
+#     from /usr; the .conf's CMAKE_PREFIX_PATH lists /usr for them.
+#   - buildbox find_program/find_package + pkg_check_modules: the protoc +
+#     grpc_cpp_plugin binaries, uuid, and tomlplusplus (a hard CORE dep —
+#     BuildboxCommonConfig.cmake's pkg_check_modules(tomlplusplus REQUIRED)
+#     fails configure without it).
+# Gated behind the same BSB_PROVISION_GRPC_DEPS opt-in (they only matter for the
+# grpc/buildbox lens runs). Idempotent: apt-get install is a no-op when present.
+install_grpc_buildbox_system_deps() {
+  command -v apt-get >/dev/null 2>&1 || { log "WARNING: no apt-get; grpc/buildbox system deps unavailable"; return 1; }
+  log "installing grpc/buildbox system deps (c-ares, OpenSSL, zlib, protoc+grpc plugin, uuid, tomlplusplus)"
+  _apt='apt-get'
+  [ "$(id -u)" -eq 0 ] || _apt='sudo apt-get'
+  DEBIAN_FRONTEND=noninteractive $_apt update -qq >&2 2>/dev/null || true
+  if DEBIAN_FRONTEND=noninteractive $_apt install -y --no-install-recommends \
+       libc-ares-dev libssl-dev zlib1g-dev protobuf-compiler protobuf-compiler-grpc \
+       libgrpc++-dev uuid-dev libtomlplusplus-dev >&2; then
+    log "grpc/buildbox system deps installed"
+  else
+    log "WARNING: some grpc/buildbox system deps failed to install (grpc/buildbox convert may fail)"
+    return 1
+  fi
+}
+
 if [ "${BSB_PROVISION_GRPC_DEPS:-}" = "1" ]; then
+  install_grpc_buildbox_system_deps || true
   install_protobuf || true
   install_re2 || true
 else
-  log "grpc deps not requested (set BSB_PROVISION_GRPC_DEPS=1 for protobuf-install/re2-install)"
+  log "grpc deps not requested (set BSB_PROVISION_GRPC_DEPS=1 for protobuf-install/re2-install + apt system deps)"
 fi
 
 # SDL: system OpenGL / GLES / EGL dev headers. SDL's cmake auto-enables the

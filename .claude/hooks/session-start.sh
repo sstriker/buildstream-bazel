@@ -371,8 +371,26 @@ if [ "${BSB_PROVISION_CUDA:-}" = "1" ]; then
   elif command -v apt-get >/dev/null 2>&1; then
     log "BSB_PROVISION_CUDA=1: installing CUDA toolkit (multi-GB) for cutlass/cuda-samples"
     apt_sudo apt-get update -qq || true
-    if apt_sudo apt-get install -y --no-install-recommends nvidia-cuda-toolkit; then
-      log "CUDA toolkit installed: $(nvcc --version | grep -oE 'release [0-9.]+' | head -1)"
+    # gcc-12/g++-12 alongside nvcc: cutlass CONFIGURE only needs nvcc, but
+    # cuda-samples' `.cu` COMPILE needs a host compiler nvcc supports — CUDA 12.0's
+    # nvcc caps host gcc at 12, and the base image's default gcc is newer (nvcc
+    # errors "unsupported GNU version"). cuda-samples.conf points BSB_CUDA_HOST_CC
+    # at gcc-12; install it here so that's satisfied.
+    if apt_sudo apt-get install -y --no-install-recommends nvidia-cuda-toolkit gcc-12 g++-12; then
+      log "CUDA toolkit installed: $(nvcc --version | grep -oE 'release [0-9.]+' | head -1) (+ gcc-12 host compiler)"
+      # cuda-samples' rules_cuda local toolchain wants ONE assembled CUDA root
+      # (Debian scatters it); provision-cuda-root.sh builds it and prints the path.
+      # Export BSB_CUDA_ROOT + BSB_CUDA_HOST_CC into the session env so the
+      # cuda-samples build lens picks them up without a manual step.
+      if [ -x "$CLAUDE_PROJECT_DIR/scripts/provision-cuda-root.sh" ]; then
+        _cuda_root="$(sh "$CLAUDE_PROJECT_DIR/scripts/provision-cuda-root.sh" 2>/dev/null | tail -1)"
+        if [ -n "$_cuda_root" ] && [ -d "$_cuda_root" ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+          printf 'export BSB_CUDA_ROOT=%s\nexport BSB_CUDA_HOST_CC=/usr/bin/gcc-12\n' "$_cuda_root" >> "$CLAUDE_ENV_FILE"
+          log "CUDA root assembled at $_cuda_root (BSB_CUDA_ROOT + BSB_CUDA_HOST_CC exported for the cuda-samples lens)"
+        else
+          log "note: CUDA root assembly incomplete — cuda-samples build needs BSB_CUDA_ROOT set manually (see scripts/provision-cuda-root.sh)"
+        fi
+      fi
     else
       log "WARNING: CUDA toolkit install failed — cutlass/cuda-samples stop at cmake configure"
     fi

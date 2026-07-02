@@ -749,12 +749,23 @@ sessions. It provisions:
 - **buildifier** (default, via `go install`) — the lens-2
   canonical-form check, so `survey-gazelle` / the split gate don't pay a
   per-run install.
+- **find_package host deps** (via `tools/install-survey-deps.sh`, called every
+  session) — the C++ packages members `find_package(...)` at convert time:
+  **abseil** + **catch2** install by default (cheap; protobuf/spdlog lenses need
+  them). Behind **`BSB_PROVISION_GRPC_DEPS=1`** it also builds **protobuf** + **re2**
+  from source *and* apt-installs the grpc/buildbox system deps (`libc-ares-dev`,
+  `libssl-dev`, `zlib1g-dev`, `protobuf-compiler`, `protobuf-compiler-grpc`,
+  `libgrpc++-dev`, `uuid-dev`, `libtomlplusplus-dev`) — so `grpc` / `buildbox` /
+  `re2` cmake configure resolves with no manual prep. Each member's
+  `scripts/build-lens/<name>.conf` points `CMAKE_PREFIX_PATH` at the installs and
+  maps the imported targets onto `@bcr` labels via a `<name>-imports.json`.
 - **CUDA toolkit** (`BSB_PROVISION_CUDA=1`) — cutlass / cuda-samples;
   opt-in because it's multi-GB. Installs `nvidia-cuda-toolkit` + `gcc-12`
-  (nvcc 12.0's host-compiler cap). For the `.cu` compile path (cuda-samples)
-  also run `scripts/provision-cuda-root.sh` to assemble the self-contained
-  CUDA root rules_cuda needs (it prints the path; export it as `BSB_CUDA_ROOT`
-  for `scripts/build-lens/cuda-samples.conf`).
+  (nvcc 12.0's host-compiler cap), then runs `scripts/provision-cuda-root.sh` to
+  assemble the self-contained CUDA root rules_cuda's local toolchain needs and
+  **exports `BSB_CUDA_ROOT` + `BSB_CUDA_HOST_CC` into the session env** (via
+  `CLAUDE_ENV_FILE`) so `scripts/build-lens/cuda-samples.conf` picks them up with
+  no manual step. cutlass's header-library build needs nvcc only to *configure*.
 - **gazelle_cc toolchain warm** (`BSB_WARM_GAZELLE=1`) — pre-builds the
   `gazelle_cc` binary into the persistent survey cache
   (`SURVEY_GAZELLE_BZL_CACHE`) so the first `make survey-gazelle` is
