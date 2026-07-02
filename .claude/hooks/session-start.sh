@@ -366,8 +366,11 @@ fi
 
 # --- CUDA toolkit (opt-in) -----------------------------------------------
 if [ "${BSB_PROVISION_CUDA:-}" = "1" ]; then
-  if command -v nvcc >/dev/null 2>&1; then
-    log "CUDA toolkit already present; skipping"
+  # Require BOTH nvcc AND the gcc-12 host compiler before skipping: cuda-samples'
+  # .cu compile needs gcc-12 (nvcc 12.0's host-compiler cap), so a partially
+  # provisioned host (nvcc present, gcc-12 absent) must still run the install path.
+  if command -v nvcc >/dev/null 2>&1 && command -v gcc-12 >/dev/null 2>&1; then
+    log "CUDA toolkit + gcc-12 already present; skipping"
   elif command -v apt-get >/dev/null 2>&1; then
     log "BSB_PROVISION_CUDA=1: installing CUDA toolkit (multi-GB) for cutlass/cuda-samples"
     apt_sudo apt-get update -qq || true
@@ -377,15 +380,23 @@ if [ "${BSB_PROVISION_CUDA:-}" = "1" ]; then
     # errors "unsupported GNU version"). cuda-samples.conf points BSB_CUDA_HOST_CC
     # at gcc-12; install it here so that's satisfied.
     if apt_sudo apt-get install -y --no-install-recommends nvidia-cuda-toolkit gcc-12 g++-12; then
-      log "CUDA toolkit installed: $(nvcc --version | grep -oE 'release [0-9.]+' | head -1) (+ gcc-12 host compiler)"
+      # `|| true` on the pipeline: under `set -euo pipefail` a `grep` that finds no
+      # match exits 1 and pipefail would propagate it out of the command
+      # substitution — aborting the hook even though CUDA installed fine.
+      log "CUDA toolkit installed: $(nvcc --version 2>/dev/null | grep -oE 'release [0-9.]+' | head -1 || true) (+ gcc-12 host compiler)"
       # cuda-samples' rules_cuda local toolchain wants ONE assembled CUDA root
       # (Debian scatters it); provision-cuda-root.sh builds it and prints the path.
       # Export BSB_CUDA_ROOT + BSB_CUDA_HOST_CC into the session env so the
       # cuda-samples build lens picks them up without a manual step.
       if [ -x "$CLAUDE_PROJECT_DIR/scripts/provision-cuda-root.sh" ]; then
-        _cuda_root="$(sh "$CLAUDE_PROJECT_DIR/scripts/provision-cuda-root.sh" 2>/dev/null | tail -1)"
+        # `|| true`: CUDA-root assembly is best-effort; a non-zero exit from
+        # provision-cuda-root.sh must not abort the hook under pipefail (the
+        # empty-`_cuda_root` note-path below already handles the failure).
+        _cuda_root="$(sh "$CLAUDE_PROJECT_DIR/scripts/provision-cuda-root.sh" 2>/dev/null | tail -1 || true)"
         if [ -n "$_cuda_root" ] && [ -d "$_cuda_root" ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
-          printf 'export BSB_CUDA_ROOT=%s\nexport BSB_CUDA_HOST_CC=/usr/bin/gcc-12\n' "$_cuda_root" >> "$CLAUDE_ENV_FILE"
+          # %q: shell-quote the path so a root with whitespace/metacharacters can't
+          # break (or inject into) the sourced env file. The hook is bash, so %q works.
+          printf 'export BSB_CUDA_ROOT=%q\nexport BSB_CUDA_HOST_CC=/usr/bin/gcc-12\n' "$_cuda_root" >> "$CLAUDE_ENV_FILE"
           log "CUDA root assembled at $_cuda_root (BSB_CUDA_ROOT + BSB_CUDA_HOST_CC exported for the cuda-samples lens)"
         else
           log "note: CUDA root assembly incomplete — cuda-samples build needs BSB_CUDA_ROOT set manually (see scripts/provision-cuda-root.sh)"
