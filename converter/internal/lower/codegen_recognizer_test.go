@@ -231,8 +231,10 @@ func TestRecognizeOrGenrule_DedupsSameInputAcrossOutDirs(t *testing.T) {
 	if len(t2) != 0 {
 		t.Errorf("the SAME input in a second out dir must NOT re-emit a duplicate rule; got %+v", t2)
 	}
-	if cc.OutToNativeConsumerDep["gen2/a.h"] != "mygen_rule" {
-		t.Errorf("the deduped invocation's output should wire to the existing rule; got %q", cc.OutToNativeConsumerDep["gen2/a.h"])
+	// mygen_rule is a KindGenrule, so its outputs wire by FILENAME (OutToGenrule),
+	// not the CcInfo deps edge (OutToNativeConsumerDep) — a genrule has no CcInfo.
+	if cc.OutToGenrule["gen2/a.h"] != "mygen_rule" {
+		t.Errorf("the deduped invocation's output should wire to the existing genrule; got %q", cc.OutToGenrule["gen2/a.h"])
 	}
 }
 
@@ -376,6 +378,34 @@ func TestEmitRecognizedRule_SharedTail(t *testing.T) {
 	other := CodegenCommand{Driver: "mygen", Srcs: []string{"other.x"}}
 	if _, ok3 := cc.emitRecognizedRule(other, res, "gen", []string{"gen/b.h"}); ok3 {
 		t.Fatal("different input colliding on the rule name must return ok=false")
+	}
+}
+
+// TestEmitRecognizedRule_MultiGenruleWiresEachOutToItsProducer pins that when a
+// recognizer emits MORE THAN ONE genrule, each output wires to the genrule that
+// actually DECLARES it (its GenruleOuts) — not to whichever genrule the emission
+// tail happened to find first. Regression guard for the "first KindGenrule wins"
+// mapping, which would have resolved a later genrule's output to the wrong
+// producer.
+func TestEmitRecognizedRule_MultiGenruleWiresEachOutToItsProducer(t *testing.T) {
+	cc := newCodegenContext()
+	res := CodegenResult{
+		Targets: []ir.Target{
+			{Name: "gen_a", Kind: ir.KindGenrule, GenruleOuts: []string{"gen/a.h"}},
+			{Name: "gen_b", Kind: ir.KindGenrule, GenruleOuts: []string{"gen/b.h"}},
+		},
+	}
+	cmd := CodegenCommand{Driver: "mygen", Srcs: []string{"in.x"}}
+
+	emit, ok := cc.emitRecognizedRule(cmd, res, "gen", []string{"gen/a.h", "gen/b.h"})
+	if !ok || len(emit) != 2 {
+		t.Fatalf("both genrules emit; ok=%v emit=%+v", ok, emit)
+	}
+	if cc.OutToGenrule["gen/a.h"] != "gen_a" {
+		t.Errorf("gen/a.h should wire to its declaring genrule gen_a; got %q", cc.OutToGenrule["gen/a.h"])
+	}
+	if cc.OutToGenrule["gen/b.h"] != "gen_b" {
+		t.Errorf("gen/b.h should wire to its declaring genrule gen_b (not the first genrule found); got %q", cc.OutToGenrule["gen/b.h"])
 	}
 }
 

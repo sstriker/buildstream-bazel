@@ -42,7 +42,12 @@ import (
 // FIRST-PARTY: the script declares derived_outputs and the Go host validates
 // them against cmake's recorded outputs (derivedOutputsConsistent), so a buggy
 // or non-standard script declines to the genrule fallback, never corrupts the
-// build. The native_rule(...) and result(...) builtins are the entire API.
+// build.
+//
+// The builtins are: native_rule(...) for a tool that maps to a rules_X macro,
+// genrule(name, cmd, outs, srcs=, tools=) for a tool that has NO native rule (a
+// stdout generator — `tool in > $@` — the shape the execute_process OUTPUT_FILE
+// recognition needs), and result(...) to bundle them.
 
 // LoadStarlarkRecognizers compiles each path into a CodegenRecognizer. Paths
 // are .star files (resolve a glob/dir to file paths before calling). A compile
@@ -67,6 +72,7 @@ func LoadStarlarkRecognizers(paths []string) ([]CodegenRecognizer, error) {
 func compileStarlarkRecognizer(path string, src []byte) (CodegenRecognizer, error) {
 	predeclared := starlark.StringDict{
 		"native_rule": starlark.NewBuiltin("native_rule", starlarkNativeRule),
+		"genrule":     starlark.NewBuiltin("genrule", starlarkGenrule),
 		"result":      starlark.NewBuiltin("result", starlarkResult),
 	}
 	thread := &starlark.Thread{Name: "recognizer-load:" + path}
@@ -157,11 +163,43 @@ func starlarkNativeRule(_ *starlark.Thread, b *starlark.Builtin, args starlark.T
 		attrs = starlark.NewDict(0)
 	}
 	return starlarkstruct.FromStringDict(starlarkstruct.Default, starlark.StringDict{
+		"_construct":  starlark.String("native_rule"),
 		"kind":        starlark.String(kind),
 		"name":        starlark.String(name),
 		"load_from":   starlark.String(loadFrom),
 		"load_symbol": starlark.String(loadSymbol),
 		"attrs":       attrs,
+	}), nil
+}
+
+// starlarkGenrule is the `genrule(name, cmd, outs, srcs=[], tools=[])` builtin —
+// a typed constructor for a raw ir.KindGenrule target, for a recognizer whose
+// tool has NO native Bazel rule (chiefly a STDOUT generator: `tool $(SRCS) > $@`,
+// the execute_process OUTPUT_FILE shape). `cmd` is the genrule shell command
+// (Bazel make-vars: $(SRCS)/$(location …)/$@), `outs` the produced files, `srcs`
+// the input labels, `tools` executable tool labels. Returns a struct the host
+// converts to ir.Target{Kind: KindGenrule}. Complements native_rule for tools
+// that DO map to a rules_X macro.
+func starlarkGenrule(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var name, cmd string
+	var outs, srcs, tools starlark.Value
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs,
+		"name", &name, "cmd", &cmd, "outs", &outs, "srcs?", &srcs, "tools?", &tools); err != nil {
+		return nil, err
+	}
+	norm := func(v starlark.Value) starlark.Value {
+		if v == nil {
+			return starlark.NewList(nil)
+		}
+		return v
+	}
+	return starlarkstruct.FromStringDict(starlarkstruct.Default, starlark.StringDict{
+		"_construct": starlark.String("genrule"),
+		"name":       starlark.String(name),
+		"cmd":        starlark.String(cmd),
+		"outs":       norm(outs),
+		"srcs":       norm(srcs),
+		"tools":      norm(tools),
 	}), nil
 }
 
@@ -257,7 +295,27 @@ func starlarkTargets(v starlark.Value) ([]ir.Target, error) {
 func starlarkTarget(v starlark.Value) (ir.Target, error) {
 	st, ok := v.(*starlarkstruct.Struct)
 	if !ok {
-		return ir.Target{}, fmt.Errorf("each target must be native_rule(...), got %s", v.Type())
+		return ir.Target{}, fmt.Errorf("each target must be native_rule(...) or genrule(...), got %s", v.Type())
+	}
+	// _construct is the public discriminator of the Starlark target contract.
+	// When present it MUST be a known constructor: dispatch genrule here, let
+	// native_rule fall through to the handling below, and reject any other value
+	// with a clear error rather than a confusing downstream "kind" complaint. A
+	// present-but-non-string _construct is likewise surfaced directly. An absent
+	// _construct (st.Attr errors) falls through (legacy bare native_rule struct).
+	if _, attrErr := st.Attr("_construct"); attrErr == nil {
+		c, err := structStr(st, "_construct")
+		if err != nil {
+			return ir.Target{}, err
+		}
+		switch c {
+		case "genrule":
+			return starlarkGenruleTarget(st)
+		case "native_rule":
+			// fall through to the native_rule handling below
+		default:
+			return ir.Target{}, fmt.Errorf("unknown target constructor _construct=%q (expected native_rule or genrule)", c)
+		}
 	}
 	kind, err := structStr(st, "kind")
 	if err != nil {
@@ -279,6 +337,49 @@ func starlarkTarget(v starlark.Value) (ir.Target, error) {
 	return ir.Target{
 		Name: name, Kind: ir.KindNativeRule,
 		NativeRule: &ir.NativeRuleSpec{Kind: kind, LoadFrom: loadFrom, LoadSymbol: loadSymbol, Attrs: attrs},
+	}, nil
+}
+
+// starlarkGenruleTarget converts a genrule(...) struct into an
+// ir.Target{Kind: KindGenrule}.
+func starlarkGenruleTarget(st *starlarkstruct.Struct) (ir.Target, error) {
+	name, err := structStr(st, "name")
+	if err != nil {
+		return ir.Target{}, err
+	}
+	// A present-but-non-string cmd is a type error worth surfacing directly; an
+	// absent cmd leaves cmd=="" for the required-fields check below (the friendlier
+	// "requires a non-empty name and cmd" message).
+	cmd, cmdErr := structStr(st, "cmd")
+	if cmdErr != nil {
+		if _, attrErr := st.Attr("cmd"); attrErr == nil {
+			return ir.Target{}, fmt.Errorf("genrule %q cmd: %w", name, cmdErr)
+		}
+	}
+	if name == "" || cmd == "" {
+		return ir.Target{}, fmt.Errorf("genrule requires a non-empty name and cmd")
+	}
+	outs, err := goStringList(attrOrNone(st, "outs"))
+	if err != nil {
+		return ir.Target{}, fmt.Errorf("genrule %q outs: %w", name, err)
+	}
+	if len(outs) == 0 {
+		return ir.Target{}, fmt.Errorf("genrule %q must declare outs", name)
+	}
+	srcs, err := goStringList(attrOrNone(st, "srcs"))
+	if err != nil {
+		return ir.Target{}, fmt.Errorf("genrule %q srcs: %w", name, err)
+	}
+	tools, err := goStringList(attrOrNone(st, "tools"))
+	if err != nil {
+		return ir.Target{}, fmt.Errorf("genrule %q tools: %w", name, err)
+	}
+	// Normalize paths to forward slashes so emitted BUILD labels stay stable
+	// across platforms, matching how the rest of the lowerer emits paths.
+	return ir.Target{
+		Name: name, Kind: ir.KindGenrule,
+		GenruleCmd: cmd, GenruleOuts: toSlashAll(outs), Srcs: toSlashAll(srcs), GenruleTools: toSlashAll(tools),
+		Visibility: []string{"//visibility:private"},
 	}, nil
 }
 
@@ -362,6 +463,13 @@ func goValueList(v starlark.Value) ([]starlark.Value, error) {
 	if isNoneOrNil(v) {
 		return nil, nil
 	}
+	// A Starlark string/bytes is Iterable (over its chars/bytes), so a scalar like
+	// outs = "gen.h" would silently split into ['g','e','n',...] instead of the
+	// intended ["gen.h"]. Reject it so this API mistake fails fast and clearly.
+	switch v.(type) {
+	case starlark.String, starlark.Bytes:
+		return nil, fmt.Errorf("expected a list, got a scalar %s (wrap it in a list, e.g. [%s])", v.Type(), v.String())
+	}
 	iter, ok := v.(starlark.Iterable)
 	if !ok {
 		return nil, fmt.Errorf("expected a list, got %s", v.Type())
@@ -390,4 +498,17 @@ func goStringList(v starlark.Value) ([]string, error) {
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+// toSlashAll normalizes every element to forward slashes (filepath.ToSlash) so
+// genrule paths from Starlark strings emit stable Bazel labels across platforms.
+func toSlashAll(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = filepath.ToSlash(s)
+	}
+	return out
 }

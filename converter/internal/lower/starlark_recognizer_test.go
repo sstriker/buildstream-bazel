@@ -3,8 +3,160 @@ package lower
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"go.starlark.net/starlark"
+	"go.starlark.net/starlarkstruct"
+
+	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
+
+// stdoutGenStar is an operator recognizer for a STDOUT generator (`sgen in > out`)
+// — a tool with no native Bazel rule, so lower() returns a genrule(...) rather
+// than a native_rule(...). It supplies the OUTPUT_FILE basename (fed as
+// cmd.discovered_outputs on the execute_process path) as both the genrule out and
+// the derived output. A genrule's outputs are consumed BY FILENAME (OutToGenrule),
+// so consumer_deps is left empty — a deps edge onto the genrule would be wrong.
+const stdoutGenStar = `
+def match(cmd):
+    return cmd.driver == "sgen"
+
+def lower(cmd):
+    out = cmd.discovered_outputs[0]
+    return result(
+        targets = [
+            genrule(
+                name = "sgen_gen",
+                cmd = "$(location //tools:sgen) $(SRCS) > $@",
+                outs = [out],
+                srcs = cmd.srcs,
+                tools = ["//tools:sgen"],
+            ),
+        ],
+        derived_outputs = [out],
+    )
+`
+
+// TestStarlarkRecognizer_GenruleBuiltin pins the genrule(...) builtin: an operator
+// recognizer for a stdout generator lowers to an ir.KindGenrule target carrying
+// the cmd / outs / srcs / tools it declared.
+func TestStarlarkRecognizer_GenruleBuiltin(t *testing.T) {
+	r := loadStarFromString(t, "sgen.star", stdoutGenStar)
+	cmd := CodegenCommand{Driver: "sgen", Srcs: []string{"in.x"}, DiscoveredOutputs: []string{"out.h"}}
+	if !r.Match(cmd) {
+		t.Fatal("expected Match to claim sgen")
+	}
+	res, err := r.Lower(cmd)
+	if err != nil {
+		t.Fatalf("Lower: %v", err)
+	}
+	if len(res.Targets) != 1 {
+		t.Fatalf("want 1 target, got %d", len(res.Targets))
+	}
+	g := res.Targets[0]
+	if g.Kind != ir.KindGenrule || g.Name != "sgen_gen" {
+		t.Fatalf("want a KindGenrule named sgen_gen, got kind=%v name=%q", g.Kind, g.Name)
+	}
+	if g.GenruleCmd != "$(location //tools:sgen) $(SRCS) > $@" {
+		t.Errorf("cmd = %q", g.GenruleCmd)
+	}
+	if len(g.GenruleOuts) != 1 || g.GenruleOuts[0] != "out.h" {
+		t.Errorf("outs = %v, want [out.h]", g.GenruleOuts)
+	}
+	if len(g.Srcs) != 1 || g.Srcs[0] != "in.x" {
+		t.Errorf("srcs = %v, want [in.x]", g.Srcs)
+	}
+	if len(g.GenruleTools) != 1 || g.GenruleTools[0] != "//tools:sgen" {
+		t.Errorf("tools = %v, want [//tools:sgen]", g.GenruleTools)
+	}
+	if len(res.DerivedOutputs) != 1 || res.DerivedOutputs[0] != "out.h" {
+		t.Errorf("derived = %v, want [out.h]", res.DerivedOutputs)
+	}
+}
+
+// TestStarlarkRecognizer_GenruleRequiresOuts: a genrule(...) with no outs is a
+// declaration error (surfaced from lower()).
+func TestStarlarkRecognizer_GenruleRequiresOuts(t *testing.T) {
+	src := `
+def match(cmd):
+    return True
+def lower(cmd):
+    return result(targets = [genrule(name = "g", cmd = "x > $@", outs = [])], derived_outputs = ["x"])
+`
+	r := loadStarFromString(t, "bad.star", src)
+	if _, err := r.Lower(CodegenCommand{Driver: "t"}); err == nil {
+		t.Fatal("a genrule with no outs must error")
+	}
+}
+
+// TestStarlarkTarget_NonStringConstructSurfaces: a recognizer struct whose
+// _construct field is present but not a string is malformed — starlarkTarget must
+// surface that directly rather than silently falling through to a confusing
+// native_rule error.
+func TestStarlarkTarget_NonStringConstructSurfaces(t *testing.T) {
+	st := starlarkstruct.FromStringDict(starlarkstruct.Default, starlark.StringDict{
+		"_construct": starlark.MakeInt(1),
+	})
+	if _, err := starlarkTarget(st); err == nil {
+		t.Fatal("a non-string _construct must surface an error, not fall through")
+	}
+}
+
+// TestStarlarkTarget_UnknownConstructRejected: a struct with a known-shaped but
+// unrecognized _construct value fails fast with a clear message, not a confusing
+// downstream "kind" error.
+func TestStarlarkTarget_UnknownConstructRejected(t *testing.T) {
+	st := starlarkstruct.FromStringDict(starlarkstruct.Default, starlark.StringDict{
+		"_construct": starlark.String("something_else"),
+		"name":       starlark.String("g"),
+	})
+	_, err := starlarkTarget(st)
+	if err == nil {
+		t.Fatal("an unknown _construct must be rejected")
+	}
+	if !strings.Contains(err.Error(), "_construct") {
+		t.Errorf("error should name the _construct discriminator; got %v", err)
+	}
+}
+
+// TestStarlarkGenruleTarget_NonStringCmdSurfaces: a genrule struct whose cmd is
+// present but not a string surfaces the type error, not the generic
+// "requires a non-empty name and cmd" message that hides the real problem.
+func TestStarlarkGenruleTarget_NonStringCmdSurfaces(t *testing.T) {
+	st := starlarkstruct.FromStringDict(starlarkstruct.Default, starlark.StringDict{
+		"_construct": starlark.String("genrule"),
+		"name":       starlark.String("g"),
+		"cmd":        starlark.MakeInt(1),
+	})
+	_, err := starlarkTarget(st)
+	if err == nil {
+		t.Fatal("a non-string cmd must surface a type error")
+	}
+	if !strings.Contains(err.Error(), "cmd") {
+		t.Errorf("error should name the cmd field; got %v", err)
+	}
+}
+
+// TestStarlarkRecognizer_ScalarOutsRejected: passing a bare string where a list
+// is expected (outs = "gen.h") must fail fast with a clear error, not silently
+// iterate the string into single characters.
+func TestStarlarkRecognizer_ScalarOutsRejected(t *testing.T) {
+	src := `
+def match(cmd):
+    return True
+def lower(cmd):
+    return result(targets = [genrule(name = "g", cmd = "x > $@", outs = "gen.h")], derived_outputs = ["gen.h"])
+`
+	r := loadStarFromString(t, "scalar.star", src)
+	_, err := r.Lower(CodegenCommand{Driver: "t"})
+	if err == nil {
+		t.Fatal("a scalar string for outs must error, not split into characters")
+	}
+	if !strings.Contains(err.Error(), "list") {
+		t.Errorf("error should hint the list requirement; got %v", err)
+	}
+}
 
 const protocStar = `
 def match(cmd):
