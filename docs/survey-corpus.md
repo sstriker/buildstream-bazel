@@ -157,10 +157,13 @@ full run below (2026-07-02) delivers them after the egress mirror fix.
 ### Full survey (2026-07-02)
 
 The Bazel egress mirror + `--repository_cache` (landed in the SessionStart hook)
-unblocked the previously-`403`-gated fetch, so this is the **first run to
-exercise the build + fidelity lenses at all** (on the non-large members) — not
-just the convertibility columns. Converter `6a1da82` (post-#769–#789; the #789
-genrule builtin is operator-only, no corpus effect). Full output:
+unblocked the previously-`403`-gated fetch, so this is the **first run in this
+cloud sandbox / session — since the egress mirror fix — to exercise the build +
+fidelity lenses** (on the non-large members), not just the convertibility columns.
+(The historical `Full-corpus lens snapshot (2026-06-08)` further down ran those
+lenses on a warm-Bazel box; the point here is that the *sandbox* can now do it
+too.) Converter `6a1da82` (post-#769–#789; the #789 genrule builtin is
+operator-only, no corpus effect). Full output:
 [`survey-artifacts/full-survey-2026-07-02.txt`](survey-artifacts/full-survey-2026-07-02.txt).
 
 **Scope.** Phase A: convert-only for **all 30** (convertibility lenses). Phase B:
@@ -170,6 +173,8 @@ fidelity** for the subset that both builds green AND ships a `.symfidelity` /
 conf exists). The 12 largest (`abseil` `protobuf` `curl` `eigen` `sdl` `grpc`
 `llvm` `vtk` `bde` `cutlass` `cuda-samples` `openblas`) stay **convert-only**
 (build + symbol/ELF skipped by request; they self-gate on a green build anyway).
+The **intent lens was not run** here (it's a non-deterministic LLM-judge triage
+pass; the `missed`/Intent column is `-` for this run).
 
 **Convertibility (all 30): 25 converted to completion, 5 environmental failures**
 (a "converted" project may still carry recorded — not failing — `rej`/`idiom`/

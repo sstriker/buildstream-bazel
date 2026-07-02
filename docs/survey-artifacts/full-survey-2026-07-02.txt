@@ -16,23 +16,23 @@
 
 project         rej  idiom  cov  todo  build  symbol-fidelity          compile-db             note
 --------------------------------------------------------------------------------------------------
-fmt               0     48    0     0   FAIL  -                        m=29,inc=0,def=0,std=29 
-zlib              0      0    0     0     ok  PASS(both=105,benign=5)  m=17,inc=17,def=0,std=0 
-spdlog            0      0    0     0     ok  PASS(both=1404,benign=9) m=32,inc=0,def=0,std=0 
-nlohmann-json     0      0    0     0     ok  -                        -                      
-catch2            0      0    0     0     ok  PASS(both=2021,benign=12) m=107,inc=107,def=0,std=107 
-libpng            0      0    0    12     ok  PASS(both=406,benign=6)  m=24,inc=1,def=0,std=0 
-googletest        0      0    0     0   FAIL  -                        m=4,inc=0,def=0,std=4  
-boost-core        0      0    0     0     ok  -                        -                      
-zstd              1      3    0     7     ok  -                        m=0,inc=0,def=0,std=0  
-libevent          0      5    0     3     ok  PASS(both=417,benign=9)  m=66,inc=17,def=0,std=0 
-libxml2           0      0    0     1     ok  PASS(both=1505,benign=12) m=52,inc=52,def=0,std=0 
-brotli            0      0    0     1     ok  PASS(both=11,benign=0)   m=36,inc=0,def=1,std=0 
+fmt               0     48    0     0   FAIL  -                        m=29,inc=0,def=0,std=29
+zlib              0      0    0     0     ok  PASS(both=105,benign=5)  m=17,inc=17,def=0,std=0
+spdlog            0      0    0     0     ok  PASS(both=1404,benign=9) m=32,inc=0,def=0,std=0
+nlohmann-json     0      0    0     0     ok  -                        -
+catch2            0      0    0     0     ok  PASS(both=2021,benign=12) m=107,inc=107,def=0,std=107
+libpng            0      0    0    12     ok  PASS(both=406,benign=6)  m=24,inc=1,def=0,std=0
+googletest        0      0    0     0   FAIL  -                        m=4,inc=0,def=0,std=4
+boost-core        0      0    0     0     ok  -                        -
+zstd              1      3    0     7     ok  -                        m=0,inc=0,def=0,std=0
+libevent          0      5    0     3     ok  PASS(both=417,benign=9)  m=66,inc=17,def=0,std=0
+libxml2           0      0    0     1     ok  PASS(both=1505,benign=12) m=52,inc=52,def=0,std=0
+brotli            0      0    0     1     ok  PASS(both=11,benign=0)   m=36,inc=0,def=1,std=0
 mbedtls           -      -    -     -      -  -                        -                      CONVERT FAILED: bare configure fails (needs tests/programs OFF)
-glog              1     30    0     7     ok  PASS(both=513,benign=11) m=20,inc=20,def=0,std=20 
-glm               0      0    0     2     ok  -                        m=186,inc=186,def=0,std=186 
-cryptoauthlib     3      3    0   378     ok  -                        m=173,inc=173,def=65,std=0 
-buildbox          0     14    0     1   FAIL  -                        m=121,inc=121,def=0,std=0 
+glog              1     30    0     7     ok  PASS(both=513,benign=11) m=20,inc=20,def=0,std=20
+glm               0      0    0     2     ok  -                        m=186,inc=186,def=0,std=186
+cryptoauthlib     3      3    0   378     ok  -                        m=173,inc=173,def=65,std=0
+buildbox          0     14    0     1   FAIL  -                        m=121,inc=121,def=0,std=0
 re2               -      -    -     -      -  -                        -                      CONVERT FAILED: needs find_package(absl)
 abseil            0      0    0   210      -  -                        -                      LARGE: convert-only
 protobuf          0      8    0     0      -  -                        -                      LARGE: convert-only
