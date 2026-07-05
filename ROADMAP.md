@@ -1146,21 +1146,40 @@ trees, optional-feature deps, codegen instances). Each member's
   N options → 1+N passes one-at-a-time (first-order only) or up to 2^N for full
   interaction fidelity, and `cmake_dependent_option` makes some interactions
   mandatory (→ skylib `config_setting_group` AND). (3) **Multi-axis select
-  composition** — options × build-types can't AND config_settings in a single
-  select key without `config_setting_group`/nested selects. (4) **`#cmakedefine`
-  bodies per option value** — the per-config-bake problem extended to the option
-  axis. Staged plan: **(a)** attribute-only single-option fold, falling back to
-  today's bake-and-comment whenever the target-ID set changes across views
-  (independently shippable, proves the reuse); **(b)** `bool_flag`/`config_setting`
-  emit + `//config:<option>` label minting mirroring `configLabel`, plus a
-  `meta-cmake-options-fold.sh` render gate; **(c)** target-existence gating; **(d)**
-  multi-axis composition + per-option configure_file bake. Open decisions before
-  building: which options to lift (all detected vs. an operator allow-list, since
-  lifting all can explode the flag surface and pass count); first-order vs. full
-  interaction modelling; and the target-existence policy. Stages (a)–(b) are a
-  self-contained feature; (c)–(d) hold the multi-week effort and the real design
-  calls. Demand signal: a corpus member whose meaningful variation is an
-  `option()` toggle the fixed-value lens can't express.
+  composition** — three axes now, not two: options × build-types ×
+  **platforms**. The platform axis is already shipped machinery — the
+  per-element multi-platform fold (`converter/elementfold` + the
+  `fold-element` CLI + `scripts/survey-multiplatform.sh`) configures per
+  platform, converts per platform, and folds the N per-platform IRs into one
+  package whose `Target.PerPlatform` arms are keyed by constraint labels
+  (`@platforms//os:*`) — the same map the multi-config fold merges its
+  `//config:*` arms into, and the emitter already renders the combined map as
+  one select. Option arms (`//options:*` config_settings) would be the third
+  key family in that map. Two option-specific wrinkles the platform axis adds:
+  option **defaults can be platform-dependent** (`option(FOO "…" ${WIN32})` —
+  the flag's `build_setting_default` is per-platform, which a single
+  `bool_flag` can't express; needs either a per-platform default select in a
+  wrapper or accepting one canonical default), and a delta conditional on BOTH
+  an option and a platform (`if(WIN32 AND FOO)`) can't AND config_settings in
+  a single select key without skylib `config_setting_group`/nested selects.
+  Pass-count also multiplies: each platform's configure (elementfold cell)
+  needs its own option flips — M platforms × (1+N) configures first-order.
+  (4) **`#cmakedefine` bodies per option value** — the per-config-bake problem
+  extended to the option axis. Staged plan: **(a)** attribute-only
+  single-option fold, falling back to today's bake-and-comment whenever the
+  target-ID set changes across views (independently shippable, proves the
+  reuse); **(b)** `bool_flag`/`config_setting` emit + `//options:<option>`
+  label minting mirroring `configLabel`, plus a `meta-cmake-options-fold.sh`
+  render gate; **(c)** target-existence gating; **(d)** multi-axis composition
+  (incl. the platform axis: per-cell option flips in the elementfold flow,
+  `config_setting_group` for option×platform-conditional deltas, per-platform
+  option defaults) + per-option configure_file bake. Open decisions before
+  building: which options to lift (all detected vs. an operator allow-list,
+  since lifting all can explode the flag surface and pass count); first-order
+  vs. full interaction modelling; and the target-existence policy. Stages
+  (a)–(b) are a self-contained feature; (c)–(d) hold the multi-week effort and
+  the real design calls. Demand signal: a corpus member whose meaningful
+  variation is an `option()` toggle the fixed-value lens can't express.
 - **KindNativeRule outputs in --split-packages relocation.** The codegen-recognizer registry's native-rule substrate now participates in the OutToGenrule-keyed consumer wiring AND the nested-cmake merge re-home (producerOuts/applyNestedProducerReHome read the `out`/`outs` attrs generically). The split-packages emitter (emit/bazel/split.go) still keys producer-output placement/relocation on KindGenrule/KindWriteFile/KindCMakeConfigureFile, so a pkg_tar (or future http_file/proto) native rule re-homed into a sub-package wouldn't relocate its out. Generalize split's placement to the same kind-agnostic outputs accessor. Demand signal: a native-rule producer under --split-packages.
 - **Genex-probe language gate — genex-wrapped link deps.** The probe's language-conditional skip now walks the INTERFACE_LINK_LIBRARIES closure (_cmtb_iface_lang_gate), so a $<COMPILE_LANGUAGE>/$<LINK_LANGUAGE> gate on a transitively-linked dependency's interface is caught — not just the target's own raw value. The walk follows BARE target deps only; a dep wrapped in a genex link entry ($<LINK_ONLY:dep>, $<BUILD_INTERFACE:dep>) or a bare system lib isn't queried, so a gate reachable solely through such an entry could still diverge. Closing it needs genex-entry target extraction in the hook. Demand signal: an abort whose gated dep is reachable only via a genex link entry.
 - **Stage textual-include-of-SOURCE siblings (`#include "x.cu"` /
