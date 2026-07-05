@@ -68,18 +68,18 @@ func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]file
 		if !ok {
 			continue
 		}
-		applyPartition(tgt, "defines", fold.Defines, cmakeSrc, cmakeBuild)
-		applyPartition(tgt, "copts", fold.CompileFragments, cmakeSrc, cmakeBuild)
+		applyPartition(tgt, "defines", fold.Defines, cmakeSrc, cmakeBuild, configLabel)
+		applyPartition(tgt, "copts", fold.CompileFragments, cmakeSrc, cmakeBuild, configLabel)
 		if pch != nil {
 			if id, ok := nameToID[fold.Name]; ok {
 				perConfigPCHArms(tgt, byConfig[id], nonFeatureConfigs, byConfig, nameToID, *pch)
 			}
 		}
-		applyPartition(tgt, "linkopts", fold.LinkFragments, cmakeSrc, cmakeBuild)
+		applyPartition(tgt, "linkopts", fold.LinkFragments, cmakeSrc, cmakeBuild, configLabel)
 		// Includes are routed to the "includes" Bazel attribute
 		// rather than copts -I, matching the rest of the lift's
 		// includes handling.
-		applyPartition(tgt, "includes", fold.Includes, cmakeSrc, cmakeBuild)
+		applyPartition(tgt, "includes", fold.Includes, cmakeSrc, cmakeBuild, configLabel)
 		// Phase 5 target-graph fold: per-config srcs / deps.
 		// Source files gated on `if(CMAKE_BUILD_TYPE STREQUAL
 		// "X") target_sources(... ${SRC})` end up with different
@@ -88,7 +88,7 @@ func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]file
 		// for codemodel-deps gated on build-type. Source paths
 		// and target IDs are already package-relative-ish in the
 		// codemodel; no reanchor needed here.
-		applyPartition(tgt, "srcs", fold.Sources, cmakeSrc, cmakeBuild)
+		applyPartition(tgt, "srcs", fold.Sources, cmakeSrc, cmakeBuild, configLabel)
 		// Deps need an id→label translation pass before applyPartition
 		// — configfold's Dependencies partition is keyed on cmake
 		// target IDs (matching codemodel TargetDependency.Id), while
@@ -96,7 +96,7 @@ func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]file
 		// Substitute IDs with their target names (":<name>") where
 		// idToName covers the ID; drop unresolvable IDs (out-of-tree
 		// targets the codemodel saw but the lower path didn't lower).
-		applyPartition(tgt, "deps", relabelDependencyPartition(fold.Dependencies, idToName), cmakeSrc, cmakeBuild)
+		applyPartition(tgt, "deps", relabelDependencyPartition(fold.Dependencies, idToName), cmakeSrc, cmakeBuild, configLabel)
 		// Single-config baseline (the IR's flat copts / defines /
 		// linkopts populated by lowerTarget's first-config view)
 		// can carry the same value a per-config delta added —
@@ -299,43 +299,63 @@ func pruneEmptyPerPlatform(tgt *ir.Target) {
 	}
 }
 
-// dedupBaselineAgainstDeltas removes entries from tgt.Copts /
-// tgt.Defines / tgt.LinkOpts whose value appears in any of the
-// per-config delta arms in tgt.PerPlatform for the same attr.
-// The select() arm is the authoritative source for cross-config-
-// varying values; the flat baseline ends up reflecting only
-// truly-baseline values (those common to every config).
+// dedupBaselineAgainstDeltas removes entries from the flat baseline
+// attributes whose value appears in any of the per-cell delta arms
+// in tgt.PerPlatform for the same attr. The select() arm is the
+// authoritative source for cross-cell-varying values; the flat
+// baseline ends up reflecting only truly-baseline values (those
+// common to every cell).
+//
+// srcs / deps matter beyond hygiene: the primary-cell arm re-adds
+// the primary view's value, so leaving it flat would DOUBLE it there
+// (Bazel rejects duplicate labels in srcs/deps) and wrongly include
+// it under every other arm. LocalDefines dedups against the
+// "defines" arms — the codemodel's compile-view defines fold onto
+// the propagating `defines` attribute (matching this fold's routing;
+// applyInterfaceScopeToDefines re-scopes them afterwards on the
+// traced path), so a define moved into an arm must leave the flat
+// local_defines too or non-matching arms would still carry it.
 func dedupBaselineAgainstDeltas(tgt *ir.Target) {
 	if tgt == nil || tgt.PerPlatform == nil {
 		return
 	}
-	dedup := func(attr string, baseline []string) []string {
-		deltas, ok := tgt.PerPlatform[attr]
-		if !ok || len(deltas) == 0 {
-			return baseline
-		}
-		inDelta := map[string]bool{}
-		for _, arm := range deltas {
+	inDelta := func(attr string) map[string]bool {
+		set := map[string]bool{}
+		for _, arm := range tgt.PerPlatform[attr] {
 			for _, v := range arm {
-				inDelta[v] = true
+				set[v] = true
 			}
+		}
+		return set
+	}
+	dedup := func(baseline []string, delta map[string]bool) []string {
+		if len(delta) == 0 {
+			return baseline
 		}
 		out := baseline[:0]
 		for _, v := range baseline {
-			if !inDelta[v] {
+			if !delta[v] {
 				out = append(out, v)
 			}
 		}
 		return out
 	}
-	tgt.Copts = dedup("copts", tgt.Copts)
-	tgt.Defines = dedup("defines", tgt.Defines)
-	tgt.LinkOpts = dedup("linkopts", tgt.LinkOpts)
+	tgt.Copts = dedup(tgt.Copts, inDelta("copts"))
+	defineArms := inDelta("defines")
+	tgt.Defines = dedup(tgt.Defines, defineArms)
+	tgt.LocalDefines = dedup(tgt.LocalDefines, defineArms)
+	tgt.LinkOpts = dedup(tgt.LinkOpts, inDelta("linkopts"))
+	tgt.Srcs = dedup(tgt.Srcs, inDelta("srcs"))
+	tgt.Deps = dedup(tgt.Deps, inDelta("deps"))
 }
 
 // applyPartition writes the per-cell deltas of one fact family
-// into tgt.PerPlatform[attr]. The fact-family key (e.g. "C|-O2"
-// for CompileFragments) is decomposed: for compile / link
+// into tgt.PerPlatform[attr]. labelFor maps a partition cell name
+// onto the select() arm label: the multi-config fold passes
+// configLabel (cells are cmake config names → //config:<name>),
+// the option fold passes identity (its cells are already full
+// //options:<name>_{on,off} labels). The fact-family key (e.g.
+// "C|-O2" for CompileFragments) is decomposed: for compile / link
 // fragments we strip the role/language prefix before emit so the
 // select() arm carries the flag itself, not the disambiguator key.
 //
@@ -354,7 +374,7 @@ func dedupBaselineAgainstDeltas(tgt *ir.Target) {
 //     tokens are short flags without embedded paths after
 //     splitCompileFragments).
 //   - includes: paths the existing includes handler normalises.
-func applyPartition(tgt *ir.Target, attr string, p configfold.Partition, cmakeSrc, cmakeBuild string) {
+func applyPartition(tgt *ir.Target, attr string, p configfold.Partition, cmakeSrc, cmakeBuild string, labelFor func(string) string) {
 	if len(p.Deltas) == 0 {
 		return
 	}
@@ -368,7 +388,7 @@ func applyPartition(tgt *ir.Target, attr string, p configfold.Partition, cmakeSr
 		if len(facts) == 0 {
 			continue
 		}
-		label := configLabel(cell)
+		label := labelFor(cell)
 		values := make([]string, 0, len(facts))
 		for fact := range facts {
 			tok := stripFactPrefix(fact)

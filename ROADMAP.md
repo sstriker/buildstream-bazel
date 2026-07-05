@@ -1116,23 +1116,56 @@ trees, optional-feature deps, codegen instances). Each member's
   carry it — that converts the largest remaining bake population into
   real lifts with zero new machinery.
 
+- **Lift `option()` into `bool_flag`/`config_setting` selects — remaining:
+  target existence, multi-axis, enum options.** The attribute-only lift
+  SHIPPED (`--lift-options NAME[,NAME…]` + `--out-option-settings`, gate
+  `meta-cmake-option-lift.sh`): one cold flip configure per listed BOOL
+  option, `configfold.Project` over the base/flip views, deltas folded onto
+  `//options:<name>_{on,off}` select() arms (`lower.ApplyOptionFold`; the
+  same `Target.PerPlatform` map + emit the multi-config and multi-platform
+  folds use), an `//options` package of `bool_flag` + `config_setting`
+  pairs (`converter/emit/optionsettings`), lifted options relocated out of
+  the "values baked in; re-convert to change" header block, and a
+  target-set guard that falls back to the baked value (with a breadcrumb)
+  when flipping changes the target set. Opt-in allow-list by design;
+  first-order only (one flip per option from the baseline). **Remaining:**
+  (1) **target-existence deltas** — options gating whole targets/subdirs
+  (`if(BUILD_TESTS) add_executable(…)`) hit the guard and stay baked;
+  lifting them needs `target_compatible_with = select({…})` (or
+  always-emit-and-accept-over-inclusion) since a `select()` can't make a
+  `cc_library` conditionally exist. (2) **Multi-axis composition** —
+  `--lift-options` currently rejects `--build-types`, and the platform
+  axis (the shipped `converter/elementfold` + `fold-element` +
+  `scripts/survey-multiplatform.sh` flow, whose constraint-label arms
+  share the same PerPlatform map) needs per-cell option flips in the
+  elementfold flow, skylib `config_setting_group` for
+  option×config/option×platform-conditional deltas (`if(WIN32 AND FOO)`
+  can't AND config_settings in one select key), and a story for
+  platform-dependent option defaults (`option(FOO "…" ${WIN32})` — a
+  single `bool_flag` default can't vary per platform). Pass count
+  multiplies: M platforms × (1+N options) configures first-order, and
+  `cmake_dependent_option` makes some option interactions mandatory.
+  (3) **Enum cache options** — `set(… CACHE STRING … STRINGS a;b;c)` needs
+  a `string_flag` with `values=[…]` and one arm per value (v1 is
+  BOOL-only). (4) **`#cmakedefine` bodies per option value** — the
+  per-config-bake problem extended to the option axis. (5) **write-a
+  threading** — the pipeline doesn't thread `--lift-options` into the
+  conversion genrule / emit the //options package the way it does
+  `--build-types` + //config. Demand signal for each: a corpus member
+  whose meaningful variation is an `option()` toggle the fixed-value lens
+  can't express.
 - **KindNativeRule outputs in --split-packages relocation.** The codegen-recognizer registry's native-rule substrate now participates in the OutToGenrule-keyed consumer wiring AND the nested-cmake merge re-home (producerOuts/applyNestedProducerReHome read the `out`/`outs` attrs generically). The split-packages emitter (emit/bazel/split.go) still keys producer-output placement/relocation on KindGenrule/KindWriteFile/KindCMakeConfigureFile, so a pkg_tar (or future http_file/proto) native rule re-homed into a sub-package wouldn't relocate its out. Generalize split's placement to the same kind-agnostic outputs accessor. Demand signal: a native-rule producer under --split-packages.
 - **Genex-probe language gate — genex-wrapped link deps.** The probe's language-conditional skip now walks the INTERFACE_LINK_LIBRARIES closure (_cmtb_iface_lang_gate), so a $<COMPILE_LANGUAGE>/$<LINK_LANGUAGE> gate on a transitively-linked dependency's interface is caught — not just the target's own raw value. The walk follows BARE target deps only; a dep wrapped in a genex link entry ($<LINK_ONLY:dep>, $<BUILD_INTERFACE:dep>) or a bare system lib isn't queried, so a gate reachable solely through such an entry could still diverge. Closing it needs genex-entry target extraction in the hook. Demand signal: an abort whose gated dep is reachable only via a genex link entry.
 - **Stage textual-include-of-SOURCE siblings (`#include "x.cu"` /
-  `#include "x.c"`).** The read-based `--detect-fused-sources` scan already
-  stages a compiled source (any `cclang.IsCompiledSource`, incl. `.cc`/`.cu`)
-  that another file textually `#include`s but doesn't list, and the **survey
-  build lens now turns it on** (#794) — so the `.cc` variants build green
-  (fmt's `posix-mock-test.cc` → `../src/os.cc`; gtest's unity `gtest-all.cc`).
-  Two gaps remain: (1) it's off in the **default** convert (per-file read
-  cost), so a bare `convert-element-cmake` still emits a non-building tree for
-  a fused-idiom project — decide whether to flip the default (blast radius:
-  every such project gains `textual_hdrs`; needs a full render-gate sweep) or
-  keep it opt-in; (2) cuda-samples' eigenvalues (`.cuh` → `bisect_util.cu`)
-  stays pruned in `cuda-samples.conf`, unvalidated here because that build
-  can't fetch `rules_cuda` on the sandbox mirror — unprune + confirm once
-  buildable. cc_binary's no-hdrs-slot drop (quasirandomGenerator_nvrtc's
-  `.cuh`) is the same family.
+  `#include "x.c"`).** The sibling-header staging walk covers header
+  extensions (incl. `.cuh`), but cuda-samples' eigenvalues quote-includes a
+  `.cu` from its `.cuh` kernels (`bisect_util.cu` — the classic
+  one-definition-per-arch idiom), which never stages and the compile misses
+  it in the sandbox. Needs either an include-scan-driven staging channel or
+  per-extension opt-in to the walk; cc_binary's no-hdrs-slot drop
+  (quasirandomGenerator_nvrtc's `.cuh`) is the same family. Both samples are
+  pruned in `cuda-samples.conf` until then (eigenvalues is the only
+  non-toolkit-floor entry there).
 
 - **genclass textual-impl includes: angle-include form.** The
   textual-include router now detects a header that textually `#include`s

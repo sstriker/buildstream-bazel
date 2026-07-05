@@ -620,3 +620,40 @@ func TestParse_FidelityMasterDial(t *testing.T) {
 		t.Errorf("non-overridden lifts should still enable under explicit strict")
 	}
 }
+
+// TestParse_LiftOptions covers the option-lift surface (stages a+b
+// of the option-lift ROADMAP.md item): the comma-slice parse, the
+// --source-root requirement (flip passes need a live configure),
+// the --build-types mutual exclusion (option x config composition
+// is stage d), and malformed-name rejection.
+func TestParse_LiftOptions(t *testing.T) {
+	var stderr bytes.Buffer
+	args, code := Parse([]string{"--source-root", "/proj", "--lift-options=FOO_FEATURE,BUILD_TESTS", "--out-option-settings", "/out/options/BUILD.bazel"}, &stderr)
+	if code != ExitSuccess {
+		t.Fatalf("parse failed: code=%d stderr=%q", code, stderr.String())
+	}
+	want := []string{"FOO_FEATURE", "BUILD_TESTS"}
+	if len(args.LiftOptions) != len(want) {
+		t.Fatalf("LiftOptions: got %v want %v", args.LiftOptions, want)
+	}
+	for i := range want {
+		if args.LiftOptions[i] != want[i] {
+			t.Errorf("LiftOptions[%d] = %q; want %q", i, args.LiftOptions[i], want[i])
+		}
+	}
+	if args.OutOptionSettings != "/out/options/BUILD.bazel" {
+		t.Errorf("OutOptionSettings = %q", args.OutOptionSettings)
+	}
+
+	for name, argv := range map[string][]string{
+		"requires source-root":       {"--reply-dir", "/b/.cmake/api/v1/reply", "--lift-options=FOO"},
+		"excludes build-types":       {"--source-root", "/proj", "--build-types=Debug,Release", "--lift-options=FOO"},
+		"rejects malformed name":     {"--source-root", "/proj", "--lift-options=FOO=ON"},
+		"rejects whitespace in name": {"--source-root", "/proj", "--lift-options=FOO BAR"},
+	} {
+		stderr.Reset()
+		if _, code := Parse(argv, &stderr); code != ExitUsage {
+			t.Errorf("%s: code = %d, want ExitUsage; stderr=%q", name, code, stderr.String())
+		}
+	}
+}

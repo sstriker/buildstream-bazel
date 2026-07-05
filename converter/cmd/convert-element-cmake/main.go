@@ -67,6 +67,7 @@ type timings struct {
 	LoweringSecs      float64 `json:"lowering_seconds,omitempty"`
 	WarmConfigureSecs float64 `json:"warm_configure_seconds,omitempty"`
 	PerConfigBakeSecs float64 `json:"per_config_bake_seconds,omitempty"`
+	OptionLiftSecs    float64 `json:"option_lift_seconds,omitempty"`
 }
 
 // phase names for the phaseRecorder buckets surfaced in timings (v2).
@@ -74,6 +75,7 @@ const (
 	phaseLowering      = "lowering"       // wall of every lower.ToIR invocation
 	phaseWarmConfigure = "warm_configure" // wall of the warm second cmake reconfigure(s)
 	phasePerConfigBake = "per_config_bake"
+	phaseOptionLift    = "option_lift" // wall of the --lift-options flip configures
 )
 
 // phaseRecorder accumulates per-phase wall-clock so --out-timings can show
@@ -617,15 +619,17 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	testRegistry, traceRaw, hostBuildOrReply := in.testRegistry, in.traceRaw, in.hostBuildOrReply
 	genexProbes, configureLogEvents := in.genexProbes, in.configureLogEvents
 
-	// Launch the per-config bake configures NOW — the trace the auto pre-gate
-	// needs is in hand, and the cold configures (the largest single
-	// subprocess block on CMAKE_BUILD_TYPE-reading projects) don't need the IR
-	// to RUN, only to know which outputs to read back. Firing them here
-	// overlaps them with the lowering + warm passes below; finishPerConfigBakes
-	// joins + folds once pkg is final. The defer is the early-error safety net:
-	// cleanup is idempotent, so finish's own cleanup doesn't double-free.
-	bakeJob := startPerConfigBakes(ctx, a, hostBuildDir, traceRaw, rec)
+	// Launch the per-config bake + option-lift flip configures NOW — the
+	// trace the bake's auto pre-gate needs is in hand, and the cold
+	// configures (the largest single subprocess block when they fire) don't
+	// need the IR to RUN, only to know what to read back. Firing them here
+	// overlaps them with the lowering + warm passes below; the finish half
+	// (finishSpeculativeConfigures) joins + folds once pkg is final. The
+	// defers are the early-error safety net: cleanup is idempotent, so
+	// finish's own cleanup doesn't double-free.
+	bakeJob, optJob := startPerConfigBakes(ctx, a, hostBuildDir, traceRaw, rec), startOptionLift(ctx, a, r, hostBuildDir, rec)
 	defer bakeJob.cleanup()
+	defer optJob.cleanup()
 	rejections, execFallback := in.rejections, in.execFallback
 	coverageCollector, todosCollector := in.coverageCollector, in.todosCollector
 	stampSink, backedFeatures := in.stampSink, in.backedFeatures
@@ -858,7 +862,7 @@ func runLowerPasses(ctx context.Context, a cli.Args, r *fileapi.Reply, in *conve
 	// into content select() arms (lower.ApplyPerConfigBakes). A declined pre-gate
 	// (nil job) or no write_file bakes is a no-op; failures degrade to the pass-1
 	// single body, exactly as without the feature.
-	finishPerConfigBakes(bakeJob, a, hostBuildDir, pkg)
+	finishSpeculativeConfigures(bakeJob, optJob, a, hostBuildDir, r, pkg)
 
 	// The file(DOWNLOAD) lockfile is a lowering byproduct (the recovered
 	// http_file repo specs) not carried on the IR, so write it here where
@@ -1386,6 +1390,7 @@ func writeRunTailReports(a cli.Args, r *fileapi.Reply, g *ninja.Graph, pkg *ir.P
 			LoweringSecs:       rec.get(phaseLowering).Seconds(),
 			WarmConfigureSecs:  rec.get(phaseWarmConfigure).Seconds(),
 			PerConfigBakeSecs:  rec.get(phasePerConfigBake).Seconds(),
+			OptionLiftSecs:     rec.get(phaseOptionLift).Seconds(),
 		}, "", "  ")
 		if err := os.MkdirAll(filepath.Dir(a.OutTimings), 0o755); err != nil {
 			return err
