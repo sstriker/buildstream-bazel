@@ -72,8 +72,13 @@ type optionLiftJob struct {
 	cleanOnce sync.Once
 }
 
-func (j *optionLiftJob) scratch(option string) string {
-	return j.buildDir + "-opt-" + sanitizeConfigName(option)
+// scratch names result i's flip-configure build dir. The index
+// prefix keeps distinct options collision-free even when their
+// sanitized names coincide (sanitizeConfigName maps every
+// non-alphanumeric rune to '_', so FOO-BAR and FOO_BAR would
+// otherwise share a dir and the concurrent configures would race).
+func (j *optionLiftJob) scratch(i int) string {
+	return fmt.Sprintf("%s-opt-%d-%s", j.buildDir, i, sanitizeConfigName(j.results[i].name))
 }
 
 func (j *optionLiftJob) join() {
@@ -94,7 +99,7 @@ func (j *optionLiftJob) cleanup() {
 		}
 		j.join()
 		for i := range j.results {
-			os.RemoveAll(j.scratch(j.results[i].name))
+			os.RemoveAll(j.scratch(i))
 		}
 	})
 }
@@ -142,7 +147,7 @@ func startOptionLift(ctx context.Context, a cli.Args, r *fileapi.Reply, hostBuil
 	var wg sync.WaitGroup
 	for i := range job.results {
 		wg.Add(1)
-		go func(res *optionLiftResult) {
+		go func(i int, res *optionLiftResult) {
 			defer wg.Done()
 			flip := "ON"
 			if res.baseOn {
@@ -158,7 +163,7 @@ func startOptionLift(ctx context.Context, a cli.Args, r *fileapi.Reply, hostBuil
 			extra[res.name] = flip
 			_, cfgErr := cmakerun.Configure(liftCtx, cmakerun.Options{
 				SourceRoot:         a.SourceRoot,
-				BuildDir:           job.scratch(res.name),
+				BuildDir:           job.scratch(i),
 				PrefixDir:          a.PrefixDir,
 				ToolchainCMakeFile: a.ToolchainCMakeFile,
 				BuildType:          a.BuildType,
@@ -167,7 +172,7 @@ func startOptionLift(ctx context.Context, a cli.Args, r *fileapi.Reply, hostBuil
 				Stderr:             &res.out,
 			})
 			res.err = cfgErr
-		}(&job.results[i])
+		}(i, &job.results[i])
 	}
 	go func() {
 		wg.Wait()
@@ -217,7 +222,7 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 			_, _ = os.Stderr.Write(res.out.Bytes())
 			continue
 		}
-		scratchDir := job.scratch(res.name)
+		scratchDir := job.scratch(i)
 		fr, err := fileapi.Load(filepath.Join(scratchDir, ".cmake", "api", "v1", "reply"))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s: flip configure produced no loadable File API reply (%v); keeping it baked.\n", res.name, err)

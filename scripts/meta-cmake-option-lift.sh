@@ -64,7 +64,6 @@ fail() {
 grep -qF '"//options:foo_feature_on": ["feature.c"]' "$build" || fail "srcs select arm missing feature.c"
 grep -qF '"//options:foo_feature_on": ["FOO_FEATURE=1"]' "$build" || fail "defines select arm missing FOO_FEATURE=1"
 grep -qF 'srcs = ["common.c"] + select({' "$build" || fail "feature.c not deduped out of the flat srcs baseline"
-grep -qF 'FOO_FEATURE=1' "$build" | head -1 >/dev/null
 if grep -qE 'local_defines = \[[^]]*FOO_FEATURE' "$build"; then
     fail "FOO_FEATURE=1 still in flat local_defines (off arm would carry it)"
 fi
