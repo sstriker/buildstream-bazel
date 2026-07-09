@@ -143,8 +143,12 @@ func (h *harvester) applyLinkEntry(r *row, v string) {
 		h.applyGenexContent(r, v[len("$<LINK_ONLY:"):len(v)-1])
 	case strings.HasPrefix(v, "$<INSTALL_INTERFACE:") && strings.HasSuffix(v, ">"):
 		h.applyGenexContent(r, v[len("$<INSTALL_INTERFACE:"):len(v)-1])
-	case strings.HasPrefix(v, "$<BUILD_INTERFACE:"):
-		// Build-tree-only; empty for an installed consumer. Skip silently.
+	case strings.HasPrefix(v, "$<BUILD_INTERFACE:") && strings.HasSuffix(v, ">"):
+		// Build-tree-only; empty for an installed consumer. Skip silently
+		// — but only when well-formed. A malformed/truncated entry (no
+		// closing '>', e.g. a genex split on an unexpected ';') falls
+		// through to the generic warn path below so the parse issue
+		// surfaces instead of vanishing.
 	case strings.HasPrefix(v, "$<$<"):
 		if content, ok := conditionalGenexContent(v); ok {
 			h.applyGenexContent(r, content)

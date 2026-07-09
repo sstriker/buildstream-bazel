@@ -177,7 +177,17 @@ func TestApplyLinkEntry_InterfaceGenexes(t *testing.T) {
 		t.Errorf("depRefs = %v, want only the INSTALL_INTERFACE arm", r.depRefs)
 	}
 	if len(h.warnings) != 0 {
-		t.Errorf("BUILD_INTERFACE drop must be silent (empty for an installed consumer); warnings: %v", h.warnings)
+		t.Errorf("well-formed BUILD_INTERFACE drop must be silent (empty for an installed consumer); warnings: %v", h.warnings)
+	}
+	// A malformed BUILD_INTERFACE (no closing '>', e.g. a genex split on
+	// an unexpected ';') must NOT be silently swallowed — it falls
+	// through to the generic genex warn path so the parse issue surfaces.
+	h.applyLinkEntry(r, "$<BUILD_INTERFACE:Pkg::truncated")
+	if len(h.warnings) != 1 {
+		t.Errorf("malformed BUILD_INTERFACE must warn (not silently skip); warnings: %v", h.warnings)
+	}
+	if len(r.depRefs) != 1 {
+		t.Errorf("malformed BUILD_INTERFACE must not add a dep; depRefs: %v", r.depRefs)
 	}
 }
 
