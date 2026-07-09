@@ -1120,6 +1120,13 @@ trees, optional-feature deps, codegen instances). Each member's
   harvester routing these flags into `linkLibs`/a linkopts channel rather than
   warn-dropping at classification time. Demand signal: a harvested prefix whose
   interface link line carries a bare `-Wl,…`/`-framework` a consumer needs.
+  Sibling gap, same area: `applyProperty` pre-splits `INTERFACE_LINK_LIBRARIES`
+  on `;` before `applyLinkEntry` sees each entry, so a *multi-dep* conditional
+  genex (`$<$<CONFIG:Release>:a;b>`) arrives already broken into
+  `$<$<CONFIG:Release>:a` (warns+drops — no closing `>`) and `b>` (falls to the
+  link-lib default, a garbage `b>` lib). The single-dep per-config sibling shape
+  this thread targets is handled; closing the multi-dep case needs
+  genex-aware `;`-splitting upstream of the classifier.
 
 ## Later (research / open questions)
 
