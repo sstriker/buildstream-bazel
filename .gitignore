@@ -54,7 +54,10 @@ converter/testdata/sample-projects/libdrm/
 # when developers run `go build ./cmd/...` without an -o flag
 # (the canonical path is build/bin/<name> per Makefile).
 /build-cc-index
+/imports-harvest
+/imports-wrapper-gen
 /relax-keeps
+/run-manifest
 /stage-b
 /write-a
 /convert-element

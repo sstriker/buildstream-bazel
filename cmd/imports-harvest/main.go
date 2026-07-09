@@ -24,8 +24,52 @@ import (
 	"os"
 
 	"github.com/sstriker/buildstream-bazel/internal/harvest"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 	"github.com/sstriker/buildstream-bazel/internal/wrappergen"
 )
+
+// stringSlice collects a repeatable string flag.
+type stringSlice []string
+
+func (s *stringSlice) String() string     { return fmt.Sprint([]string(*s)) }
+func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
+
+// buildRegistry merges the sibling exports.json manifests into a
+// cmake-target → bazel-label map, so a harvest resolves an
+// INTERFACE_LINK_LIBRARIES / .pc Requires ref to a target ANOTHER element
+// exports (a cross-element dep) instead of warn-dropping it. Later manifests
+// win on a duplicate cmake target (deterministic: the caller orders --registry).
+func buildRegistry(paths []string) (map[string]string, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	reg := map[string]string{}
+	for _, p := range paths {
+		doc, err := manifest.LoadDoc(p)
+		if err != nil {
+			return nil, fmt.Errorf("registry %s: %w", p, err)
+		}
+		// Version is required; reject unknown majors, and defensively skip nil
+		// element/export entries a hand-edited manifest could carry — matching
+		// manifest.LoadMerged so a malformed input errors loudly rather than
+		// crashing or silently yielding an empty registry.
+		if doc.Version != 1 {
+			return nil, fmt.Errorf("registry %s: unsupported manifest version %d (want 1)", p, doc.Version)
+		}
+		for _, el := range doc.Elements {
+			if el == nil {
+				continue
+			}
+			for _, ex := range el.Exports {
+				if ex == nil || ex.CMakeTarget == "" || ex.BazelLabel == "" {
+					continue
+				}
+				reg[ex.CMakeTarget] = ex.BazelLabel
+			}
+		}
+	}
+	return reg, nil
+}
 
 func main() {
 	fs := flag.NewFlagSet("imports-harvest", flag.ExitOnError)
@@ -33,12 +77,19 @@ func main() {
 	element := fs.String("element", "", "manifest element name")
 	pkgPath := fs.String("package", "", "workspace-relative Bazel package the wrapper BUILD will land in (labels synthesize against it)")
 	out := fs.String("out", "", "output manifest path")
+	var registry stringSlice
+	fs.Var(&registry, "registry", "sibling exports.json manifest to resolve cross-element deps against (repeatable); a ref this prefix didn't harvest but another element exports resolves to that element's label instead of being dropped")
 	_ = fs.Parse(os.Args[1:])
 	if *prefix == "" || *element == "" || *pkgPath == "" || *out == "" {
 		fmt.Fprintln(os.Stderr, "imports-harvest: --prefix, --element, --package and --out are required")
 		os.Exit(64)
 	}
-	im, warnings, err := harvest.Harvest(*prefix, *element, *pkgPath)
+	reg, err := buildRegistry(registry)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "imports-harvest: %v\n", err)
+		os.Exit(1)
+	}
+	im, warnings, err := harvest.HarvestWithRegistry(*prefix, *element, *pkgPath, reg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "imports-harvest: %v\n", err)
 		os.Exit(1)

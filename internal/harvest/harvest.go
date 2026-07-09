@@ -45,6 +45,21 @@ var builtinPseudoTargets = map[string]string{
 // element, labels under "//"+labelPkg+":") plus human-readable
 // warnings for everything conservatively skipped.
 func Harvest(prefixDir, element, labelPkg string) (*manifest.Imports, []string, error) {
+	return HarvestWithRegistry(prefixDir, element, labelPkg, nil)
+}
+
+// HarvestWithRegistry is Harvest plus a cross-element LABEL REGISTRY: a map from
+// a foreign cmake target name (e.g. "OtherPkg::foo") to its absolute Bazel label.
+// A single prefix's harvest can only resolve INTERFACE_LINK_LIBRARIES / .pc
+// Requires refs to targets IN THAT PREFIX (h.byName); a ref to a target another
+// element exports isn't there, so resolveDeps would warn-drop it — silently
+// losing the link edge (a static consumer's undefined symbol is legal in the .a
+// and only surfaces at the far-downstream executable link). The registry — built
+// by the orchestrator from the OTHER elements' exports.json manifests — is
+// consulted before that drop, so a cross-element dep resolves to the real
+// sibling label instead of vanishing. Nil registry ⇒ Harvest's historical
+// single-prefix behavior.
+func HarvestWithRegistry(prefixDir, element, labelPkg string, registry map[string]string) (*manifest.Imports, []string, error) {
 	st, err := os.Stat(prefixDir)
 	if err != nil || !st.IsDir() {
 		return nil, nil, fmt.Errorf("prefix %s is not a directory", prefixDir)
@@ -53,6 +68,7 @@ func Harvest(prefixDir, element, labelPkg string) (*manifest.Imports, []string, 
 		prefix:     prefixDir,
 		realPrefix: prefixDir,
 		labelPkg:   labelPkg,
+		registry:   registry,
 		byName:     map[string]*row{},
 		byPath:     map[string]*row{},
 	}
@@ -202,6 +218,7 @@ type harvester struct {
 	prefix     string
 	realPrefix string // EvalSymlinks(prefix) — base for canonicalized anchoring
 	labelPkg   string
+	registry   map[string]string // foreign cmake target → absolute Bazel label (cross-element deps)
 	rows       []*row
 	byName     map[string]*row // cmake target / pc name → row
 	byPath     map[string]*row // canonicalKey(anchored path) → row (dedup pc-vs-bundle)
@@ -284,7 +301,20 @@ func (h *harvester) resolveDeps() {
 				r.linkLibs = appendUnique(r.linkLibs, lib)
 				continue
 			}
-			h.warnf("%s: dep %q resolves to no harvested target; dropped", r.cmakeTarget, ref)
+			// Cross-element label registry: a ref this prefix didn't harvest
+			// may be a target ANOTHER element exports. Resolve it to the
+			// registered sibling label instead of dropping the edge — the fix
+			// for cross-element link deps silently vanishing (a static
+			// consumer's undefined symbol only surfaces at the downstream exe
+			// link). Guard against self- and dup-edges like the byName arm.
+			if l := h.registry[ref]; l != "" {
+				if l != h.label(r.cmakeTarget) && !seen[l] {
+					seen[l] = true
+					r.deps = append(r.deps, l)
+				}
+				continue
+			}
+			h.warnf("%s: dep %q resolves to no harvested target or registry entry; dropped", r.cmakeTarget, ref)
 		}
 		sort.Strings(r.deps)
 	}
