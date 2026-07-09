@@ -198,7 +198,7 @@ func renderLibrary(b *strings.Builder, name string, ex *manifest.Export, oldLabe
 	// (Export.LinkLibraries). Without these a consumer that pulls the
 	// wrapper still fails at the FINAL link on the leaf system libs the
 	// prebuilt needs — Threads::Threads → -lpthread, ${CMAKE_DL_LIBS} →
-	// -ldl, a bare -lm — even though the target-label deps resolved.
+	// -ldl, a bare m → -lm — even though the target-label deps resolved.
 	if lo := wrapperLinkopts(ex); len(lo) > 0 {
 		b.WriteString("    linkopts = [\n")
 		for _, l := range lo {
@@ -212,7 +212,10 @@ func renderLibrary(b *strings.Builder, name string, ex *manifest.Export, oldLabe
 // wrapperLinkopts renders Export.LinkLibraries as cc_library linkopts. The
 // harvester stores these as bare lib names (`m`, `pthread`, `dl`) or already-flag
 // fragments (`-pthread`); a bare name gets a `-l` prefix, an existing flag passes
-// through. Sorted + deduped for byte-stable output.
+// through. SOURCE ORDER is preserved (only deduped): linker argv order is
+// semantically significant — a positional `-Wl,--as-needed` / `--no-as-needed`
+// applies to the libs that follow it — and the harvester already builds
+// LinkLibraries deterministically, so this stays byte-stable without sorting.
 func wrapperLinkopts(ex *manifest.Export) []string {
 	if len(ex.LinkLibraries) == 0 {
 		return nil
@@ -233,7 +236,6 @@ func wrapperLinkopts(ex *manifest.Export) []string {
 		seen[l] = true
 		out = append(out, l)
 	}
-	sort.Strings(out)
 	return out
 }
 
