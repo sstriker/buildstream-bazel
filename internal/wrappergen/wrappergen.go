@@ -194,7 +194,47 @@ func renderLibrary(b *strings.Builder, name string, ex *manifest.Export, oldLabe
 		}
 		b.WriteString("    ],\n")
 	}
+	// linkopts carry the harvested system-lib / -l<name> fragments
+	// (Export.LinkLibraries). Without these a consumer that pulls the
+	// wrapper still fails at the FINAL link on the leaf system libs the
+	// prebuilt needs — Threads::Threads → -lpthread, ${CMAKE_DL_LIBS} →
+	// -ldl, a bare -lm — even though the target-label deps resolved.
+	if lo := wrapperLinkopts(ex); len(lo) > 0 {
+		b.WriteString("    linkopts = [\n")
+		for _, l := range lo {
+			fmt.Fprintf(b, "        %q,\n", l)
+		}
+		b.WriteString("    ],\n")
+	}
 	b.WriteString(")\n")
+}
+
+// wrapperLinkopts renders Export.LinkLibraries as cc_library linkopts. The
+// harvester stores these as bare lib names (`m`, `pthread`, `dl`) or already-flag
+// fragments (`-pthread`); a bare name gets a `-l` prefix, an existing flag passes
+// through. Sorted + deduped for byte-stable output.
+func wrapperLinkopts(ex *manifest.Export) []string {
+	if len(ex.LinkLibraries) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, l := range ex.LinkLibraries {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue
+		}
+		if !strings.HasPrefix(l, "-") {
+			l = "-l" + l
+		}
+		if seen[l] {
+			continue
+		}
+		seen[l] = true
+		out = append(out, l)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // checkDepCycles refuses manifests whose Deps close a cycle among the
