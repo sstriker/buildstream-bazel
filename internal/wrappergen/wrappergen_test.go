@@ -205,3 +205,37 @@ func TestGenerate_HeaderGlobSurface(t *testing.T) {
 		}
 	}
 }
+
+// TestGenerate_LinkLibrariesToLinkopts pins that a wrapper carries the
+// harvested system-lib fragments (Export.LinkLibraries — Threads::Threads →
+// pthread, ${CMAKE_DL_LIBS} → dl, a bare m → -lm) as cc_library linkopts. Without
+// them a consumer that pulls the wrapper still fails at the FINAL link on those
+// leaf system libs even though the target-label deps resolved. Bare names get a
+// -l prefix; an already-flag fragment passes through; SOURCE ORDER is preserved
+// (not sorted) since linker argv order is semantically significant.
+func TestGenerate_LinkLibrariesToLinkopts(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "app",
+			Exports: []*manifest.Export{{
+				CMakeTarget: "App::app",
+				BazelLabel:  "//old:app",
+				LinkPaths:   []string{"/opt/prefix/lib/libapp.a"},
+				// Deliberately NOT alphabetical: -Wl,--as-needed must precede the
+				// libs it gates, and pthread must stay before m, so the emitted
+				// order has to mirror this input, not sort it.
+				LinkLibraries: []string{"-Wl,--as-needed", "pthread", "m"},
+			}},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/app", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	want := "    linkopts = [\n        \"-Wl,--as-needed\",\n        \"-lpthread\",\n        \"-lm\",\n    ],\n"
+	if !strings.Contains(s, want) {
+		t.Errorf("wrapper linkopts must be emitted in SOURCE order (bare names -l-prefixed); want block:\n%s\n--- got ---\n%s", want, s)
+	}
+}
