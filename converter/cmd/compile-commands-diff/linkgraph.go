@@ -39,8 +39,10 @@ type linkGraphReport struct {
 }
 
 // linkGraphDiff loads cmake's codemodel reply + a CppLink aquery and compares,
-// per matched executable, the SET of link edges. Returns nil (no report) when
-// either source is unavailable.
+// per matched executable, the SET of link edges. Returns an error if either
+// input can't be loaded/parsed; the caller only invokes it once both inputs are
+// present (main gates on --cmake-codemodel && --aquery-link), so "unavailable"
+// is a caller concern, not a nil return here.
 func linkGraphDiff(replyDir, aqueryLinkPath string) (*linkGraphReport, error) {
 	reply, err := fileapi.Load(replyDir)
 	if err != nil {
@@ -120,11 +122,12 @@ func (r *linkGraphReport) print(w *os.File) {
 	fmt.Fprintln(w, "   --dynamic_mode=off; external/find_package labels are not yet matched, see link-order.)")
 }
 
-// writeJSON writes the report for the survey harness to consume.
+// writeJSON writes the report for the survey harness to consume. No trailing
+// newline, matching the compile-db report.writeJSON in this tool.
 func (r *linkGraphReport) writeJSON(path string) error {
 	b, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(b, '\n'), 0o644)
+	return os.WriteFile(path, b, 0o644)
 }

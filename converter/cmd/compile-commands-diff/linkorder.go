@@ -246,7 +246,12 @@ func linkOrderDiff(replyDir, aqueryLinkPath string) (*linkOrderReport, error) {
 // both sides — cmake EXECUTABLE Link.CommandFragments and Bazel CppLink action
 // arguments — keyed by binary basename. Shared by the link-ORDER and link-GRAPH
 // (set) lenses so both read the SAME identity space (system libs "sys:", project
-// archives "tgt:") from the same two inputs.
+// archives "tgt:") from the same two inputs. On the cmake side it scans BOTH the
+// role="libraries" fragments (the archives/`-l` names) AND role="flags"
+// fragments intentionally: the Ninja generator sometimes emits a bare `-l<name>`
+// system lib under the flags role rather than libraries, and libIdentity only
+// recognizes real system-lib tokens, so folding flags in catches those without
+// admitting noise.
 func perBinaryLibIdentities(reply *fileapi.Reply, doc *aqueryLinkDoc) (cmakeOrd, bazelOrd map[string][]string) {
 	// Map every in-tree library target's artifact basename (sonameBase form) to
 	// its cmake target name, so cmake-side link fragments (which name libraries
