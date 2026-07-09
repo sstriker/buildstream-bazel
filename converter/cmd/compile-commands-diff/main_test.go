@@ -435,3 +435,66 @@ func TestCompareLinkOrder_FiresOnInfidelity(t *testing.T) {
 		t.Errorf("clean order must not fire: %v", rep.Inversions)
 	}
 }
+
+// TestCompareLinkGraph_FiresOnDroppedEdge: the SET lens flags an edge on
+// cmake's link line that's missing from Bazel's (a project archive AND a
+// system lib), and reports nothing when Bazel's set matches. This is the
+// silent-drop symptom the whole link-fidelity effort targets.
+func TestCompareLinkGraph_FiresOnDroppedEdge(t *testing.T) {
+	reply := &fileapi.Reply{Targets: map[string]fileapi.Target{
+		"app": {Type: "EXECUTABLE", Name: "app", NameOnDisk: "app", Link: &fileapi.TargetLink{
+			CommandFragments: []fileapi.CommandFragment{
+				{Role: "libraries", Fragment: "lib/libfoo.a lib/libbar.a -lm -lpthread"},
+			},
+		}},
+		"foo": {Type: "STATIC_LIBRARY", Name: "foo", NameOnDisk: "libfoo.a"},
+		"bar": {Type: "STATIC_LIBRARY", Name: "bar", NameOnDisk: "libbar.a"},
+	}}
+	docFor := func(args []string) *aqueryLinkDoc {
+		d := &aqueryLinkDoc{}
+		d.Actions = append(d.Actions, struct {
+			Mnemonic        string   `json:"mnemonic"`
+			Arguments       []string `json:"arguments"`
+			PrimaryOutputId int      `json:"primaryOutputId"`
+			OutputIds       []int    `json:"outputIds"`
+		}{Mnemonic: "CppLink", Arguments: args, PrimaryOutputId: 1})
+		d.Artifacts = append(d.Artifacts, struct {
+			Id             int `json:"id"`
+			PathFragmentId int `json:"pathFragmentId"`
+		}{Id: 1, PathFragmentId: 10})
+		d.PathFragments = append(d.PathFragments, struct {
+			Id       int    `json:"id"`
+			Label    string `json:"label"`
+			ParentId int    `json:"parentId"`
+		}{Id: 10, Label: "app", ParentId: 0})
+		return d
+	}
+
+	// DROPPED: Bazel links only foo + m, missing bar (project archive) and
+	// pthread (system lib).
+	dropped := docFor([]string{
+		"bazel-out/k8-fastbuild/bin/elements/p/libfoo.a",
+		"-lm",
+	})
+	rep := compareLinkGraph(reply, dropped)
+	if rep.Matched != 1 {
+		t.Fatalf("expected the app binary to match, Matched=%d", rep.Matched)
+	}
+	got := rep.OnlyCmake["app"]
+	if len(got) != 2 || got[0] != "sys:pthread" || got[1] != "tgt:bar" {
+		t.Fatalf("dropped edges = %v, want [sys:pthread tgt:bar] (sorted)", got)
+	}
+	if rep.Dropped != 2 {
+		t.Errorf("Dropped = %d, want 2", rep.Dropped)
+	}
+
+	// CLEAN: Bazel's set matches cmake's -> nothing dropped.
+	clean := docFor([]string{
+		"bazel-out/k8-fastbuild/bin/elements/p/libfoo.a",
+		"bazel-out/k8-fastbuild/bin/elements/p/libbar.a",
+		"-lm", "-lpthread",
+	})
+	if rep := compareLinkGraph(reply, clean); rep.Dropped != 0 {
+		t.Errorf("clean set must not fire: OnlyCmake=%v", rep.OnlyCmake)
+	}
+}

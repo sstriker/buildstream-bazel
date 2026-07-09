@@ -579,8 +579,15 @@ EOF
                     --json "$_bb_po/fidelity.json" --cmake-src "$_bb_src" --cmake-build "$_cc_cm" \
                     --bazel-package "$_bb_pkg" \
                     --cmake-codemodel "$_cc_cm/.cmake/api/v1/reply" --aquery-link "$_bb_po/cc-aquery-link.json" \
+                    --link-graph-json "$_bb_po/link-graph-fidelity.json" \
                     >> "$_bb_po/fidelity.log" 2>&1 || true
                 echo "  $_bb_name: compile-db fidelity -> $_bb_po/fidelity.json" >&2
+                if [ -f "$_bb_po/link-graph-fidelity.json" ]; then
+                    # lens-Q3: link-edge SET fidelity; `dropped` counts cmake link
+                    # edges missing from Bazel (candidate silent drops; 0 = healthy).
+                    _lg_dropped=$(grep -o '"dropped": *[0-9]*' "$_bb_po/link-graph-fidelity.json" | grep -o '[0-9]*' || echo "?")
+                    echo "  $_bb_name: link-graph fidelity -> $_bb_po/link-graph-fidelity.json (dropped=$_lg_dropped)" >&2
+                fi
             fi
         fi
     fi

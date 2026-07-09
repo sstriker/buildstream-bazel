@@ -242,13 +242,12 @@ func linkOrderDiff(replyDir, aqueryLinkPath string) (*linkOrderReport, error) {
 	return compareLinkOrder(reply, &doc), nil
 }
 
-// compareLinkOrder is the pure comparison half of linkOrderDiff: given a loaded
-// cmake codemodel reply and a parsed CppLink aquery, it builds each matched
-// executable's ordered lib identities on both sides and reports the order
-// inversions. Split out so the wiring (cmake Link.CommandFragments → ordered
-// identities, aquery args → ordered identities, binary matching by basename,
-// inversion detection) is unit-testable without an on-disk reply dir.
-func compareLinkOrder(reply *fileapi.Reply, doc *aqueryLinkDoc) *linkOrderReport {
+// perBinaryLibIdentities builds each linked binary's ordered lib identities on
+// both sides — cmake EXECUTABLE Link.CommandFragments and Bazel CppLink action
+// arguments — keyed by binary basename. Shared by the link-ORDER and link-GRAPH
+// (set) lenses so both read the SAME identity space (system libs "sys:", project
+// archives "tgt:") from the same two inputs.
+func perBinaryLibIdentities(reply *fileapi.Reply, doc *aqueryLinkDoc) (cmakeOrd, bazelOrd map[string][]string) {
 	// Map every in-tree library target's artifact basename (sonameBase form) to
 	// its cmake target name, so cmake-side link fragments (which name libraries
 	// by output path, e.g. lib/libcurl.a) resolve to the same identity Bazel's
@@ -264,7 +263,7 @@ func compareLinkOrder(reply *fileapi.Reply, doc *aqueryLinkDoc) *linkOrderReport
 	}
 
 	// cmake: binary basename -> ordered lib identities (EXECUTABLE targets).
-	cmakeOrd := map[string][]string{}
+	cmakeOrd = map[string][]string{}
 	for _, t := range reply.Targets {
 		if t.Type != "EXECUTABLE" || t.Link == nil {
 			continue
@@ -285,7 +284,7 @@ func compareLinkOrder(reply *fileapi.Reply, doc *aqueryLinkDoc) *linkOrderReport
 	}
 
 	// bazel: binary basename -> ordered lib identities (CppLink actions).
-	bazelOrd := map[string][]string{}
+	bazelOrd = map[string][]string{}
 	for _, a := range doc.Actions {
 		if a.Mnemonic != "CppLink" {
 			continue
@@ -298,6 +297,17 @@ func compareLinkOrder(reply *fileapi.Reply, doc *aqueryLinkDoc) *linkOrderReport
 			bazelOrd[base] = ord
 		}
 	}
+	return cmakeOrd, bazelOrd
+}
+
+// compareLinkOrder is the pure comparison half of linkOrderDiff: given a loaded
+// cmake codemodel reply and a parsed CppLink aquery, it builds each matched
+// executable's ordered lib identities on both sides and reports the order
+// inversions. Split out so the wiring (cmake Link.CommandFragments → ordered
+// identities, aquery args → ordered identities, binary matching by basename,
+// inversion detection) is unit-testable without an on-disk reply dir.
+func compareLinkOrder(reply *fileapi.Reply, doc *aqueryLinkDoc) *linkOrderReport {
+	cmakeOrd, bazelOrd := perBinaryLibIdentities(reply, doc)
 
 	rep := &linkOrderReport{
 		Inversions: map[string][]string{},
