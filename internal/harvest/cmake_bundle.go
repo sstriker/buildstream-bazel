@@ -98,14 +98,14 @@ func (h *harvester) applyProperties(c cmakeCall) {
 func (h *harvester) applyProperty(r *row, key, value string) {
 	switch {
 	case key == "INTERFACE_INCLUDE_DIRECTORIES":
-		for _, v := range strings.Split(value, ";") {
+		for _, v := range splitTopLevelSemicolons(value) {
 			if anchored, ok := h.anchoredFromImportPrefix(v); ok {
 				rel := strings.TrimPrefix(anchored, manifest.PrefixAnchor)
 				r.includes = appendUnique(r.includes, rel)
 			}
 		}
 	case key == "INTERFACE_LINK_LIBRARIES":
-		for _, v := range strings.Split(value, ";") {
+		for _, v := range splitTopLevelSemicolons(value) {
 			h.applyLinkEntry(r, v)
 		}
 	case strings.HasPrefix(key, "IMPORTED_LOCATION"):
@@ -162,7 +162,17 @@ func (h *harvester) applyLinkEntry(r *row, v string) {
 	case strings.HasPrefix(v, "-l"):
 		r.linkLibs = appendUnique(r.linkLibs, strings.TrimPrefix(v, "-l"))
 	case strings.HasPrefix(v, "-"):
-		h.warnf("%s: link flag %q skipped (no manifest channel)", r.cmakeTarget, v)
+		// A bare linker flag (-pthread, -Wl,--as-needed, -rdynamic,
+		// -framework): route it VERBATIM into the link_libraries channel.
+		// wrappergen's wrapperLinkopts passes any '-'-prefixed fragment
+		// through unchanged (only bare names get a '-l'), and preserves
+		// source order — so a positional -Wl,--as-needed keeps its place
+		// relative to the libs it governs. This is the linkopts channel
+		// #798 opened downstream; before it existed the flag warn-dropped
+		// with "no manifest channel". (Two-token forms like
+		// `-framework;Foo` still split at the ';' — the trailing `Foo`
+		// falls to the bare-name default, a pre-existing limitation.)
+		r.linkLibs = appendUnique(r.linkLibs, v)
 	default:
 		if anchored, ok := h.anchoredFromImportPrefix(v); ok {
 			r.linkPaths = appendUnique(r.linkPaths, anchored)
@@ -175,9 +185,10 @@ func (h *harvester) applyLinkEntry(r *row, v string) {
 
 // applyGenexContent re-classifies the guarded content of an unwrapped
 // generator expression. The content can be a ';'-separated list, and
-// each element can itself be a genex, so re-split and recurse.
+// each element can itself be a genex, so re-split (genex-aware, so a
+// nested genex carrying its own ';' stays intact) and recurse.
 func (h *harvester) applyGenexContent(r *row, content string) {
-	for _, item := range strings.Split(content, ";") {
+	for _, item := range splitTopLevelSemicolons(content) {
 		h.applyLinkEntry(r, item)
 	}
 }
@@ -310,6 +321,37 @@ func parseCallArgs(src string, i int) ([]string, int) {
 	}
 	flush()
 	return args, i
+}
+
+// splitTopLevelSemicolons splits a cmake list value on ';' at genex
+// depth 0 only. A generator expression can itself contain ';' — a
+// multi-element per-config dep like $<$<CONFIG:Release>:a;b> — and a
+// naive strings.Split would shatter it into malformed fragments
+// ("$<$<CONFIG:Release>:a", "b>"), dropping the first to a warn and the
+// second to a garbage link lib. Same `$<...>` depth convention as
+// parseCallArgs.
+func splitTopLevelSemicolons(s string) []string {
+	var out []string
+	var cur strings.Builder
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '$' && i+1 < len(s) && s[i+1] == '<':
+			depth++
+			cur.WriteString("$<")
+			i++
+		case s[i] == '>' && depth > 0:
+			depth--
+			cur.WriteByte('>')
+		case s[i] == ';' && depth == 0:
+			out = append(out, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(s[i])
+		}
+	}
+	out = append(out, cur.String())
+	return out
 }
 
 func isIdentRune(c byte) bool {

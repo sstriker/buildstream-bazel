@@ -3,6 +3,7 @@ package harvest
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
@@ -188,6 +189,164 @@ func TestApplyLinkEntry_InterfaceGenexes(t *testing.T) {
 	}
 	if len(r.depRefs) != 1 {
 		t.Errorf("malformed BUILD_INTERFACE must not add a dep; depRefs: %v", r.depRefs)
+	}
+}
+
+// TestApplyLinkEntry_LinkerFlags pins the non-`-l` link-flag channel:
+// a bare linker flag (-pthread, -Wl,…) is routed VERBATIM into
+// link_libraries (wrappergen renders it as a passthrough linkopt),
+// keeping source order relative to the -l libs it governs, instead of
+// warn-dropping as "no manifest channel". `-l` libs still strip to bare.
+func TestApplyLinkEntry_LinkerFlags(t *testing.T) {
+	h := &harvester{byName: map[string]*row{}, byPath: map[string]*row{}}
+	r := &row{cmakeTarget: "Pkg::a"}
+	for _, v := range []string{"-Wl,--as-needed", "-lm", "-pthread"} {
+		h.applyLinkEntry(r, v)
+	}
+	want := []string{"-Wl,--as-needed", "m", "-pthread"}
+	if len(r.linkLibs) != len(want) {
+		t.Fatalf("linkLibs = %v, want %v (order preserved, flags kept)", r.linkLibs, want)
+	}
+	for i, w := range want {
+		if r.linkLibs[i] != w {
+			t.Errorf("linkLibs[%d] = %q, want %q (source order must survive)", i, r.linkLibs[i], w)
+		}
+	}
+	if len(h.warnings) != 0 {
+		t.Errorf("linker flags must NOT warn-drop (they have a linkopts channel now); warnings: %v", h.warnings)
+	}
+}
+
+// TestSplitTopLevelSemicolons pins genex-aware list splitting: a ';'
+// INSIDE a generator expression (a multi-dep per-config arm) must not
+// shatter the genex, while top-level ';' still separates list elements.
+func TestSplitTopLevelSemicolons(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"a;b;c", []string{"a", "b", "c"}},
+		{"$<$<CONFIG:Release>:a;b>;c", []string{"$<$<CONFIG:Release>:a;b>", "c"}},
+		{"x;$<LINK_ONLY:$<$<CONFIG:Debug>:p;q>>;y", []string{"x", "$<LINK_ONLY:$<$<CONFIG:Debug>:p;q>>", "y"}},
+		{"solo", []string{"solo"}},
+	}
+	for _, c := range cases {
+		got := splitTopLevelSemicolons(c.in)
+		if len(got) != len(c.want) {
+			t.Errorf("splitTopLevelSemicolons(%q) = %v, want %v", c.in, got, c.want)
+			continue
+		}
+		for i := range c.want {
+			if got[i] != c.want[i] {
+				t.Errorf("splitTopLevelSemicolons(%q)[%d] = %q, want %q", c.in, i, got[i], c.want[i])
+			}
+		}
+	}
+}
+
+// TestHarvest_MultiDepConditionalGenex is the integration proof for item
+// 2: a $<$<CONFIG:Release>:App::a;App::b> arm (two sibling deps under one
+// config guard) is split genex-aware, so BOTH siblings resolve as deps
+// instead of the first warning and the second becoming a garbage `b>`
+// link lib.
+func TestHarvest_MultiDepConditionalGenex(t *testing.T) {
+	prefix := t.TempDir()
+	must := func(rel, body string) {
+		p := filepath.Join(prefix, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must("lib/cmake/App/AppTargets.cmake", `add_library(App::a STATIC IMPORTED)
+set_target_properties(App::a PROPERTIES IMPORTED_LOCATION "${_IMPORT_PREFIX}/lib/liba.a")
+add_library(App::b STATIC IMPORTED)
+set_target_properties(App::b PROPERTIES IMPORTED_LOCATION "${_IMPORT_PREFIX}/lib/libb.a")
+add_library(App::app STATIC IMPORTED)
+set_target_properties(App::app PROPERTIES
+  IMPORTED_LOCATION "${_IMPORT_PREFIX}/lib/libapp.a"
+  INTERFACE_LINK_LIBRARIES "$<$<CONFIG:Release>:App::a;App::b>"
+)
+`)
+	must("lib/liba.a", "!<arch>\n")
+	must("lib/libb.a", "!<arch>\n")
+	must("lib/libapp.a", "!<arch>\n")
+	im, warns, err := Harvest(prefix, "app", "prebuilts/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var app *manifest.Export
+	for _, ex := range im.Elements[0].Exports {
+		if ex.CMakeTarget == "App::app" {
+			app = ex
+		}
+	}
+	if app == nil {
+		t.Fatal("App::app missing")
+	}
+	if len(app.Deps) != 2 || app.Deps[0] != "//prebuilts/app:a" || app.Deps[1] != "//prebuilts/app:b" {
+		t.Errorf("app.Deps = %v, want both siblings resolved from the multi-dep conditional genex", app.Deps)
+	}
+	for _, l := range app.LinkLibraries {
+		if strings.HasSuffix(l, ">") {
+			t.Errorf("a genex fragment leaked into link_libraries as a garbage lib %q", l)
+		}
+	}
+	for _, w := range warns {
+		if contains(w, "App::a") || contains(w, "App::b") {
+			t.Errorf("multi-dep conditional sibling must not warn-drop: %s", w)
+		}
+	}
+}
+
+// TestHarvest_PCFileDirRelocatable pins item 6: a fully-relocatable .pc
+// that derives its paths from ${pcfiledir} (the dir holding the file)
+// rather than a build-time prefix= resolves its -L/-I. Without seeding
+// pcfiledir the substvars expand empty and the link path + include
+// silently vanish.
+func TestHarvest_PCFileDirRelocatable(t *testing.T) {
+	prefix := t.TempDir()
+	must := func(rel, body string) {
+		p := filepath.Join(prefix, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// pcfiledir = <prefix>/lib/pkgconfig, so ${pcfiledir}/.. = <prefix>/lib
+	// and ${pcfiledir}/../../include = <prefix>/include.
+	must("lib/pkgconfig/reloc.pc", `libdir=${pcfiledir}/..
+includedir=${pcfiledir}/../../include
+Name: reloc
+Description: fully relocatable
+Version: 1.0
+Libs: -L${libdir} -lreloc
+Cflags: -I${includedir}
+`)
+	must("lib/libreloc.a", "!<arch>\n")
+	must("include/reloc.h", "#pragma once\n")
+	im, _, err := Harvest(prefix, "reloc", "prebuilts/reloc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reloc *manifest.Export
+	for _, ex := range im.Elements[0].Exports {
+		if ex.CMakeTarget == "pkgconfig::reloc" {
+			reloc = ex
+		}
+	}
+	if reloc == nil {
+		t.Fatal("pkgconfig::reloc missing")
+	}
+	if !sliceContains(reloc.InterfaceIncludes, "include") {
+		t.Errorf("pcfiledir-derived -I lost: includes = %v", reloc.InterfaceIncludes)
+	}
+	if !sliceContains(reloc.LinkPaths, manifest.PrefixAnchor+"lib/libreloc.a") {
+		t.Errorf("pcfiledir-derived -L/-l lost: link_paths = %v", reloc.LinkPaths)
 	}
 }
 
