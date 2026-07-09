@@ -49,11 +49,22 @@ func buildRegistry(paths []string) (map[string]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("registry %s: %w", p, err)
 		}
+		// Version is required; reject unknown majors, and defensively skip nil
+		// element/export entries a hand-edited manifest could carry — matching
+		// manifest.LoadMerged so a malformed input errors loudly rather than
+		// crashing or silently yielding an empty registry.
+		if doc.Version != 1 {
+			return nil, fmt.Errorf("registry %s: unsupported manifest version %d (want 1)", p, doc.Version)
+		}
 		for _, el := range doc.Elements {
+			if el == nil {
+				continue
+			}
 			for _, ex := range el.Exports {
-				if ex.CMakeTarget != "" && ex.BazelLabel != "" {
-					reg[ex.CMakeTarget] = ex.BazelLabel
+				if ex == nil || ex.CMakeTarget == "" || ex.BazelLabel == "" {
+					continue
 				}
+				reg[ex.CMakeTarget] = ex.BazelLabel
 			}
 		}
 	}
