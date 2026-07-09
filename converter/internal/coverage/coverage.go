@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
 // Finding is one lens-3 coverage gap, keyed by the consuming target and
@@ -85,20 +86,34 @@ func (c *Collector) Items() []Finding {
 // fixed (INTERFACE-library link arms not routed to deps); the check is
 // a regression tripwire for it and a finder for new instances.
 //
+// A `::`-namespaced arm (alias / find_package-imported target) is
+// handled through the imports manifest rather than the in-codebase
+// oracle: when the manifest RESOLVES the arm to a Bazel label (so the
+// lowering was expected to wire that label) but the label is absent
+// from every dep bucket, it's a dropped find_package link edge —
+// reported as "dropped-find-package-dep". An arm the manifest doesn't
+// know (a truly external / system lib with no export) stays skipped:
+// there's no label it could have dropped. This closes the historical
+// blind spot where every `::` arm was skipped unconditionally. Because
+// the check keys on the target's DIRECTLY-named arms, it never trips on
+// the intentional transitive-only archive drop in lowerLinkFragments
+// (that fires for arms a target does NOT name directly).
+//
 // Conservative by construction (biased to false negatives, not false
 // positives), so a non-zero count is a real signal:
-//   - `::`-namespaced arms (alias / find_package-imported targets) are
-//     skipped — they resolve through the imports manifest / alias rules,
-//     not an in-codebase ":name" dep.
-//   - arms that don't match any emitted target name are skipped — system
-//     libraries (pthread, m, …) and out-of-tree imports, which correctly
-//     never become an in-codebase dep.
+//   - `::` arms the imports manifest can't resolve are skipped (system
+//     libraries, out-of-tree imports with no export).
+//   - bare arms that don't match any emitted target name are skipped —
+//     system libraries (pthread, m, …), which correctly never become an
+//     in-codebase dep.
 //   - a self-reference is skipped.
 //
-// traceLinkLibs maps a cmake target name to its ordered
+// imports is the same resolver the lowering wired deps from (may be
+// nil — then the `::` check is a no-op, preserving the pre-widening
+// behavior). traceLinkLibs maps a cmake target name to its ordered
 // target_link_libraries lib names (all visibility arms); it is empty
 // when no trace is available, in which case this check is a no-op.
-func AuditLinkDeps(pkg *ir.Package, traceLinkLibs map[string][]string) []Finding {
+func AuditLinkDeps(pkg *ir.Package, traceLinkLibs map[string][]string, imports *manifest.Resolver) []Finding {
 	if pkg == nil || len(traceLinkLibs) == 0 {
 		return nil
 	}
@@ -143,45 +158,19 @@ func AuditLinkDeps(pkg *ir.Package, traceLinkLibs map[string][]string) []Finding
 
 		seen := map[string]bool{}
 		for _, lib := range libs {
-			if lib == t.Name || strings.Contains(lib, "::") {
-				continue
-			}
-			if !inCodebase[lib] || seen[lib] {
+			if lib == t.Name || seen[lib] {
 				continue
 			}
 			seen[lib] = true
-			if emitted[":"+lib] {
-				continue
-			}
-			// Alias / interface-library indirection: cmake's link arm
-			// names `lib`, but the converter may resolve it to `lib`'s
-			// own concrete target(s) — e.g. libevent's `event_core` is a
-			// trace-synthesized interface cc_library whose only dep is
-			// `:event_core_shared`, and consumers get
-			// deps=[":event_core_shared"] directly. The edge IS present,
-			// just under the resolved label, so don't flag it. Accept
-			// when the consumer's deps include any of `lib`'s own direct
-			// deps. One hop is enough for the common alias/forwarder
-			// shape; deeper chains stay conservative (a false negative,
-			// which is the safe direction for this audit).
-			resolved := false
-			for _, rd := range ownDeps[lib] {
-				if emitted[rd] {
-					resolved = true
-					break
+			if strings.Contains(lib, "::") {
+				if f, ok := auditFindPackageArm(t, lib, imports, emitted); ok {
+					findings = append(findings, f)
 				}
-			}
-			if resolved {
 				continue
 			}
-			findings = append(findings, Finding{
-				Rule:   ruleName(t.Kind),
-				Target: t.Name,
-				Dep:    lib,
-				Code:   "dropped-link-dep",
-				Message: "target_link_libraries names in-codebase target " + lib +
-					" but it is absent from deps/implementation_deps/data — a silent dropped dependency edge (lens-3 intent loss); check that the lowering routes this link arm (cf. #302, INTERFACE-library arms)",
-			})
+			if f, ok := auditInCodebaseArm(t, lib, inCodebase, ownDeps, emitted); ok {
+				findings = append(findings, f)
+			}
 		}
 	}
 	sort.Slice(findings, func(i, j int) bool {
@@ -191,6 +180,60 @@ func AuditLinkDeps(pkg *ir.Package, traceLinkLibs map[string][]string) []Finding
 		return findings[i].Dep < findings[j].Dep
 	})
 	return findings
+}
+
+// auditFindPackageArm audits a `::` (find_package / namespaced) arm
+// through the imports manifest: when the manifest resolves it to a Bazel
+// label that never landed in a dep bucket, that's a dropped find_package
+// edge. An arm the manifest can't resolve (a system / out-of-tree import
+// with no export) is not flagged — there's no label it could have
+// dropped — and a nil resolver disables the check entirely.
+func auditFindPackageArm(t *ir.Target, lib string, imports *manifest.Resolver, emitted map[string]bool) (Finding, bool) {
+	if imports == nil {
+		return Finding{}, false
+	}
+	ex := imports.LookupCMakeTarget(lib)
+	if ex == nil || ex.BazelLabel == "" || emitted[ex.BazelLabel] {
+		return Finding{}, false
+	}
+	return Finding{
+		Rule:   ruleName(t.Kind),
+		Target: t.Name,
+		Dep:    lib,
+		Code:   "dropped-find-package-dep",
+		Message: "target_link_libraries names find_package target " + lib +
+			" (imports manifest resolves it to " + ex.BazelLabel +
+			") but that label is absent from deps/implementation_deps/data — a silent dropped find_package link edge (lens-3 intent loss)",
+	}, true
+}
+
+// auditInCodebaseArm audits a bare arm against the in-codebase oracle: an
+// arm naming an emitted cc target that's absent from every dep bucket is
+// a dropped edge (the #302 class), UNLESS it's reachable one hop through
+// an alias/forwarder's own deps. cmake's link arm may name an
+// interface-library / alias target (libevent's `event_core`) that the
+// converter resolved to that target's concrete dep (`:event_core_shared`)
+// and handed the consumer directly — the edge IS present under the
+// resolved label, so accept when the consumer's deps include any of
+// `lib`'s own direct deps. One hop covers the common forwarder shape;
+// deeper chains stay conservative (a false negative, the safe direction).
+func auditInCodebaseArm(t *ir.Target, lib string, inCodebase map[string]bool, ownDeps map[string][]string, emitted map[string]bool) (Finding, bool) {
+	if !inCodebase[lib] || emitted[":"+lib] {
+		return Finding{}, false
+	}
+	for _, rd := range ownDeps[lib] {
+		if emitted[rd] {
+			return Finding{}, false
+		}
+	}
+	return Finding{
+		Rule:   ruleName(t.Kind),
+		Target: t.Name,
+		Dep:    lib,
+		Code:   "dropped-link-dep",
+		Message: "target_link_libraries names in-codebase target " + lib +
+			" but it is absent from deps/implementation_deps/data — a silent dropped dependency edge (lens-3 intent loss); check that the lowering routes this link arm (cf. #302, INTERFACE-library arms)",
+	}, true
 }
 
 func isCCTarget(k ir.Kind) bool {

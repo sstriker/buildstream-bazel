@@ -4,7 +4,21 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
+
+// fpResolver indexes a tiny imports manifest for the find_package tests.
+func fpResolver(t *testing.T, exports ...*manifest.Export) *manifest.Resolver {
+	t.Helper()
+	res, err := manifest.Index(&manifest.Imports{
+		Version:  1,
+		Elements: []*manifest.Element{{Name: "e", Exports: exports}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
+}
 
 // TestAuditLinkDeps_FlagsDroppedInCodebaseEdge: a target_link_libraries
 // arm naming an in-codebase target that didn't land in any dep bucket is
@@ -18,7 +32,7 @@ func TestAuditLinkDeps_FlagsDroppedInCodebaseEdge(t *testing.T) {
 	// consumer links dep_lib (in-codebase) + other (routed) + pthread (system).
 	tll := map[string][]string{"consumer": {"dep_lib", "other", "pthread"}}
 
-	got := AuditLinkDeps(pkg, tll)
+	got := AuditLinkDeps(pkg, tll, nil)
 	if len(got) != 1 {
 		t.Fatalf("findings = %d, want 1: %+v", len(got), got)
 	}
@@ -51,7 +65,7 @@ func TestAuditLinkDeps_RoutedEdgesAndNonCodebaseClean(t *testing.T) {
 		"Boost::core", // namespaced alias / imported — skipped
 		"consumer",    // self-reference — skipped
 	}}
-	if got := AuditLinkDeps(pkg, tll); len(got) != 0 {
+	if got := AuditLinkDeps(pkg, tll, nil); len(got) != 0 {
 		t.Errorf("findings = %+v, want none", got)
 	}
 }
@@ -65,7 +79,7 @@ func TestAuditLinkDeps_InterfaceLibConsumer(t *testing.T) {
 		{Name: "boost_assert", Kind: ir.KindCCInterface},
 	}}
 	tll := map[string][]string{"boost_core": {"boost_assert"}}
-	got := AuditLinkDeps(pkg, tll)
+	got := AuditLinkDeps(pkg, tll, nil)
 	if len(got) != 1 || got[0].Target != "boost_core" || got[0].Dep != "boost_assert" {
 		t.Fatalf("findings = %+v, want boost_core->boost_assert", got)
 	}
@@ -89,8 +103,52 @@ func TestAuditLinkDeps_AliasResolvedDepNotFlagged(t *testing.T) {
 		{Name: "hello_world", Kind: ir.KindCCBinary, Deps: []string{":event_core_shared"}},
 	}}
 	tll := map[string][]string{"hello_world": {"event_core"}}
-	if got := AuditLinkDeps(pkg, tll); len(got) != 0 {
+	if got := AuditLinkDeps(pkg, tll, nil); len(got) != 0 {
 		t.Errorf("findings = %+v, want none (event_core resolved to :event_core_shared)", got)
+	}
+}
+
+// TestAuditLinkDeps_FlagsDroppedFindPackageEdge: a directly-named `::`
+// arm the imports manifest RESOLVES to a label that never landed in any
+// dep bucket is a silent dropped find_package edge — the `::` analog of
+// the in-codebase drop, previously invisible because every `::` arm was
+// skipped unconditionally.
+func TestAuditLinkDeps_FlagsDroppedFindPackageEdge(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "consumer", Kind: ir.KindCCLibrary, Deps: []string{"@zlib//:zlib"}},
+	}}
+	// consumer links Foo::foo (resolves to @foo//:foo, DROPPED) and
+	// ZLIB::ZLIB (resolves to @zlib//:zlib, wired — must not flag).
+	res := fpResolver(t,
+		&manifest.Export{CMakeTarget: "Foo::foo", BazelLabel: "@foo//:foo"},
+		&manifest.Export{CMakeTarget: "ZLIB::ZLIB", BazelLabel: "@zlib//:zlib"},
+	)
+	tll := map[string][]string{"consumer": {"Foo::foo", "ZLIB::ZLIB"}}
+	got := AuditLinkDeps(pkg, tll, res)
+	if len(got) != 1 {
+		t.Fatalf("findings = %d, want 1 (only Foo::foo dropped): %+v", len(got), got)
+	}
+	if got[0].Target != "consumer" || got[0].Dep != "Foo::foo" || got[0].Code != "dropped-find-package-dep" {
+		t.Errorf("finding = %+v, want consumer/Foo::foo/dropped-find-package-dep", got[0])
+	}
+}
+
+// TestAuditLinkDeps_FindPackageUnknownOrNilResolverClean: a `::` arm the
+// manifest can't resolve (a system/out-of-tree import with no export) is
+// NOT flagged — there's no label it could have dropped — and a nil
+// resolver disables the `::` check entirely (pre-widening behavior).
+func TestAuditLinkDeps_FindPackageUnknownOrNilResolverClean(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "consumer", Kind: ir.KindCCLibrary},
+	}}
+	tll := map[string][]string{"consumer": {"Unknown::thing"}}
+	// Resolver knows a DIFFERENT target; Unknown::thing resolves to nil.
+	res := fpResolver(t, &manifest.Export{CMakeTarget: "Known::known", BazelLabel: "@known//:known"})
+	if got := AuditLinkDeps(pkg, tll, res); len(got) != 0 {
+		t.Errorf("unknown :: arm must not flag (no label to drop): %+v", got)
+	}
+	if got := AuditLinkDeps(pkg, tll, nil); len(got) != 0 {
+		t.Errorf("nil resolver must disable the :: check: %+v", got)
 	}
 }
 
@@ -100,7 +158,7 @@ func TestAuditLinkDeps_NoTraceIsNoOp(t *testing.T) {
 	pkg := &ir.Package{Targets: []ir.Target{
 		{Name: "consumer", Kind: ir.KindCCLibrary},
 	}}
-	if got := AuditLinkDeps(pkg, nil); got != nil {
+	if got := AuditLinkDeps(pkg, nil, nil); got != nil {
 		t.Errorf("findings = %+v, want nil with no trace", got)
 	}
 }
@@ -116,7 +174,7 @@ func TestAuditLinkDeps_NonCCTargetsIgnored(t *testing.T) {
 	// consumer "links" gen — but gen isn't a cc target, so it's not an
 	// in-codebase link target (no false positive).
 	tll := map[string][]string{"consumer": {"gen"}}
-	if got := AuditLinkDeps(pkg, tll); len(got) != 0 {
+	if got := AuditLinkDeps(pkg, tll, nil); len(got) != 0 {
 		t.Errorf("findings = %+v, want none (genrule is not a link target)", got)
 	}
 }
