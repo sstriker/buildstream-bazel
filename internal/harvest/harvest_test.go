@@ -31,6 +31,10 @@ add_library(Greet::base STATIC IMPORTED)
 set_target_properties(Greet::base PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "${_IMPORT_PREFIX}/include"
 )
+add_library(Greet::dbg STATIC IMPORTED)
+set_target_properties(Greet::dbg PROPERTIES
+  INTERFACE_INCLUDE_DIRECTORIES "${_IMPORT_PREFIX}/include"
+)
 add_library(Greet::core STATIC IMPORTED)
 set_target_properties(Greet::core PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "${_IMPORT_PREFIX}/include"
@@ -45,6 +49,9 @@ set_target_properties(Greet::base PROPERTIES
 )
 set_target_properties(Greet::core PROPERTIES
   IMPORTED_LOCATION_RELEASE "${_IMPORT_PREFIX}/lib/libcore.a"
+)
+set_target_properties(Greet::dbg PROPERTIES
+  IMPORTED_LOCATION_RELEASE "${_IMPORT_PREFIX}/lib/libdbg.a"
 )
 set_target_properties(Greet::gen PROPERTIES
   IMPORTED_LOCATION_RELEASE "${_IMPORT_PREFIX}/bin/gen"
@@ -65,6 +72,7 @@ Libs: -lother
 `)
 	must("lib/libbase.a", "!<arch>\n")
 	must("lib/libcore.a", "!<arch>\n")
+	must("lib/libdbg.a", "!<arch>\n")
 	must("lib/libextra.a", "!<arch>\n")
 	must("lib/libother.a", "!<arch>\n")
 	must("include/greet.h", "#pragma once\n")
@@ -99,15 +107,17 @@ func harvested(t *testing.T) (*manifest.Imports, []string, map[string]*manifest.
 // generator's Bazel transitivity owns the closure): core deps on base's
 // synthesized label; $<LINK_ONLY:Threads::Threads> unwraps to the
 // builtin pthread mapping; -lm folds to link_libraries; the config-arm
-// genex warns and drops.
+// genex $<$<CONFIG:DEBUG>:Greet::dbg> unwraps and wires the sibling dbg
+// dep UNCONDITIONALLY (an over-approximated link edge is sound), instead
+// of silently dropping a real link edge.
 func TestHarvest_BundleGraph(t *testing.T) {
 	_, warns, byName := harvested(t)
 	core := byName["Greet::core"]
 	if core == nil {
 		t.Fatal("Greet::core missing")
 	}
-	if len(core.Deps) != 1 || core.Deps[0] != "//prebuilts/greet:base" {
-		t.Errorf("core.Deps = %v, want DIRECT dep on base's synthesized label", core.Deps)
+	if len(core.Deps) != 2 || core.Deps[0] != "//prebuilts/greet:base" || core.Deps[1] != "//prebuilts/greet:dbg" {
+		t.Errorf("core.Deps = %v, want DIRECT deps on base's and (config-conditional) dbg's synthesized labels", core.Deps)
 	}
 	wantLibs := map[string]bool{"pthread": true, "m": true}
 	for _, l := range core.LinkLibraries {
@@ -122,14 +132,52 @@ func TestHarvest_BundleGraph(t *testing.T) {
 	if len(core.InterfaceIncludes) != 1 || core.InterfaceIncludes[0] != "include" {
 		t.Errorf("core.InterfaceIncludes = %v", core.InterfaceIncludes)
 	}
-	genexWarned := false
 	for _, w := range warns {
-		if contains(w, "$<$<CONFIG:DEBUG>") {
-			genexWarned = true
+		if contains(w, "$<$<CONFIG:DEBUG>") || contains(w, "Greet::dbg") {
+			t.Errorf("config-conditional sibling dep must NOT be dropped; got warning: %s", w)
 		}
 	}
-	if !genexWarned {
-		t.Errorf("conservative genex drop must WARN; warnings: %v", warns)
+}
+
+// TestConditionalGenexContent pins the nested-condition unwrap: the
+// guarded content is everything after the outer genex's first depth-0
+// ':' (the CONFIG/PLATFORM condition's own ':' must not terminate the
+// scan), and only nested-condition ($<$<...>:x>) shapes match.
+func TestConditionalGenexContent(t *testing.T) {
+	cases := []struct {
+		in     string
+		want   string
+		wantOK bool
+	}{
+		{"$<$<CONFIG:DEBUG>:Greet::dbg>", "Greet::dbg", true},
+		{"$<$<PLATFORM_ID:Linux>:m>", "m", true},
+		{"$<$<BOOL:1>:$<LINK_ONLY:Greet::x>>", "$<LINK_ONLY:Greet::x>", true},
+		{"$<LINK_ONLY:Greet::x>", "", false},         // keyword head, not a condition
+		{"$<INSTALL_INTERFACE:Greet::x>", "", false}, // keyword head, not a condition
+		{"Greet::plain", "", false},
+	}
+	for _, c := range cases {
+		got, ok := conditionalGenexContent(c.in)
+		if ok != c.wantOK || got != c.want {
+			t.Errorf("conditionalGenexContent(%q) = (%q, %v), want (%q, %v)", c.in, got, ok, c.want, c.wantOK)
+		}
+	}
+}
+
+// TestApplyLinkEntry_InterfaceGenexes pins the install/build split: the
+// INSTALL_INTERFACE arm is the consumer-visible one for an installed
+// prefix and must unwrap into a dep; the BUILD_INTERFACE arm is empty
+// for that consumer and is dropped silently (no warning, no edge).
+func TestApplyLinkEntry_InterfaceGenexes(t *testing.T) {
+	h := &harvester{byName: map[string]*row{}, byPath: map[string]*row{}}
+	r := &row{cmakeTarget: "Pkg::a"}
+	h.applyLinkEntry(r, "$<INSTALL_INTERFACE:Pkg::installed>")
+	h.applyLinkEntry(r, "$<BUILD_INTERFACE:Pkg::buildonly>")
+	if len(r.depRefs) != 1 || r.depRefs[0] != "Pkg::installed" {
+		t.Errorf("depRefs = %v, want only the INSTALL_INTERFACE arm", r.depRefs)
+	}
+	if len(h.warnings) != 0 {
+		t.Errorf("BUILD_INTERFACE drop must be silent (empty for an installed consumer); warnings: %v", h.warnings)
 	}
 }
 
