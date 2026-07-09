@@ -173,7 +173,7 @@ func main() {
 	cmakeSrc := flag.String("cmake-src", "", "cmake source root (for include normalization, e.g. /tmp/zlib)")
 	cmakeBuild := flag.String("cmake-build", "", "cmake build dir (for include normalization, e.g. /tmp/zbuild)")
 	bazelPkg := flag.String("bazel-package", "", "converted element package (for include normalization, e.g. elements/zlib)")
-	cmakeReply := flag.String("cmake-codemodel", "", "cmake File API reply dir (for link-ORDER check; e.g. <build>/.cmake/api/v1/reply)")
+	cmakeReply := flag.String("cmake-codemodel", "", "cmake File API reply dir (for the link-ORDER + link-GRAPH checks; e.g. <build>/.cmake/api/v1/reply)")
 	aqueryLink := flag.String("aquery-link", "", "path to `bazel aquery --output=jsonproto mnemonic(CppLink,//...)` JSON (link-ORDER + link-GRAPH checks)")
 	linkGraphJSON := flag.String("link-graph-json", "", "optional: write the link-graph (edge set) fidelity report here")
 	flag.Parse()
@@ -217,13 +217,13 @@ func main() {
 		// Link-GRAPH (edge set) check (Q3): reuses the same two inputs.
 		// Report-only, like link-order — a missing edge is a candidate
 		// silent drop, surfaced as the report's `dropped` count.
-		grep, err := linkGraphDiff(*cmakeReply, *aqueryLink)
+		lgRep, err := linkGraphDiff(*cmakeReply, *aqueryLink)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "compile-commands-diff: link-graph: %v\n", err)
 		} else {
-			grep.print(os.Stdout)
+			lgRep.print(os.Stdout)
 			if *linkGraphJSON != "" {
-				if err := grep.writeJSON(*linkGraphJSON); err != nil {
+				if err := lgRep.writeJSON(*linkGraphJSON); err != nil {
 					fmt.Fprintf(os.Stderr, "compile-commands-diff: write %s: %v\n", *linkGraphJSON, err)
 				}
 			}
