@@ -13,8 +13,9 @@ package main
 // SCOPE / CAVEAT (same as link-order): a project-archive edge only has teeth
 // when Bazel ALSO links static — under default dynamic_mode a cc_library dep
 // arrives as a `-l<mangled>` solib (still matched by demangling) but a genuinely
-// absent one reads the same as a drop, so run this against a static-link
-// codemodel (--dynamic_mode=off) for a clean project-archive comparison. The
+// absent one reads the same as a drop, so pass Bazel `--dynamic_mode=off` (a
+// Bazel link-mode flag, not a cmake setting) when generating the CppLink aquery
+// for a clean project-archive comparison. The
 // system-lib layer is comparable regardless. find_package/external labels
 // (imports-manifest BazelLabel) remain the sub-layer not yet matched on the
 // Bazel side — see linkorder.go's caveat; they are neither in "sys:" nor "tgt:"
