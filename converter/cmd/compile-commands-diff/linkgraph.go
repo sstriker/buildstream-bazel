@@ -39,31 +39,11 @@ type linkGraphReport struct {
 	OnlyBazel map[string][]string `json:"only_bazel"` // binary → edges on Bazel's line, absent from cmake's
 }
 
-// linkGraphDiff loads cmake's codemodel reply + a CppLink aquery and compares,
-// per matched executable, the SET of link edges. Returns an error if either
-// input can't be loaded/parsed; the caller only invokes it once both inputs are
-// present (main gates on --cmake-codemodel && --aquery-link), so "unavailable"
-// is a caller concern, not a nil return here.
-func linkGraphDiff(replyDir, aqueryLinkPath string) (*linkGraphReport, error) {
-	reply, err := fileapi.Load(replyDir)
-	if err != nil {
-		return nil, fmt.Errorf("cmake codemodel: %w", err)
-	}
-	b, err := os.ReadFile(aqueryLinkPath)
-	if err != nil {
-		return nil, fmt.Errorf("aquery-link: %w", err)
-	}
-	var doc aqueryLinkDoc
-	if err := json.Unmarshal(b, &doc); err != nil {
-		return nil, fmt.Errorf("aquery-link parse: %w", err)
-	}
-	return compareLinkGraph(reply, &doc), nil
-}
-
-// compareLinkGraph is the pure comparison half of linkGraphDiff: for each binary
-// present on BOTH link lines it reports the set-difference of link-edge
-// identities in each direction. Split out so it is unit-testable without an
-// on-disk reply dir.
+// compareLinkGraph is the pure comparison half of the link-graph lens: for each
+// binary present on BOTH link lines it reports the set-difference of link-edge
+// identities in each direction. It takes already-loaded inputs (main shares the
+// parse with the link-order lens via loadLinkInputs) and is unit-testable
+// without an on-disk reply dir.
 func compareLinkGraph(reply *fileapi.Reply, doc *aqueryLinkDoc) *linkGraphReport {
 	cmakeIDs, bazelIDs := perBinaryLibIdentities(reply, doc)
 	rep := &linkGraphReport{

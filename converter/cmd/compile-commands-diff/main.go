@@ -205,22 +205,20 @@ func main() {
 		}
 	}
 
-	// Optional link-ORDER check (Q2): only when both cmake codemodel + CppLink
-	// aquery are supplied. Report-only, like the compile diff.
+	// Optional link-line checks (Q2 link-ORDER + Q3 link-GRAPH): only when
+	// both cmake codemodel + CppLink aquery are supplied. Load the two
+	// (potentially large) inputs ONCE and run both lenses on the shared
+	// in-memory data — same parse, same error handling. Report-only, like
+	// the compile diff.
 	if *cmakeReply != "" && *aqueryLink != "" {
-		lrep, err := linkOrderDiff(*cmakeReply, *aqueryLink)
+		reply, doc, err := loadLinkInputs(*cmakeReply, *aqueryLink)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "compile-commands-diff: link-order: %v\n", err)
+			fmt.Fprintf(os.Stderr, "compile-commands-diff: link inputs: %v\n", err)
 		} else {
-			lrep.print(os.Stdout)
-		}
-		// Link-GRAPH (edge set) check (Q3): reuses the same two inputs.
-		// Report-only, like link-order — a missing edge is a candidate
-		// silent drop, surfaced as the report's `dropped` count.
-		lgRep, err := linkGraphDiff(*cmakeReply, *aqueryLink)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "compile-commands-diff: link-graph: %v\n", err)
-		} else {
+			compareLinkOrder(reply, doc).print(os.Stdout)
+			// A missing edge is a candidate silent drop, surfaced as the
+			// report's `dropped` count.
+			lgRep := compareLinkGraph(reply, doc)
 			lgRep.print(os.Stdout)
 			if *linkGraphJSON != "" {
 				if err := lgRep.writeJSON(*linkGraphJSON); err != nil {

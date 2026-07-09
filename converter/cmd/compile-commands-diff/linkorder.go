@@ -223,23 +223,25 @@ func (d *aqueryLinkDoc) resolveOutputBase(artifactId int) string {
 	return labels[fragID]
 }
 
-// linkOrderDiff loads cmake's codemodel reply + a CppLink aquery and compares,
-// per matched executable, the relative order of system libs. Returns nil (no
-// report) when either source is unavailable.
-func linkOrderDiff(replyDir, aqueryLinkPath string) (*linkOrderReport, error) {
+// loadLinkInputs loads the two inputs both link-line lenses share — cmake's
+// File API codemodel reply and a CppLink aquery jsonproto — so main can parse
+// them ONCE and run compareLinkOrder + compareLinkGraph on the same in-memory
+// data (no double I/O, single error-handling path). The caller supplies both
+// paths (it gates on --cmake-codemodel && --aquery-link being non-empty).
+func loadLinkInputs(replyDir, aqueryLinkPath string) (*fileapi.Reply, *aqueryLinkDoc, error) {
 	reply, err := fileapi.Load(replyDir)
 	if err != nil {
-		return nil, fmt.Errorf("cmake codemodel: %w", err)
+		return nil, nil, fmt.Errorf("cmake codemodel: %w", err)
 	}
 	b, err := os.ReadFile(aqueryLinkPath)
 	if err != nil {
-		return nil, fmt.Errorf("aquery-link: %w", err)
+		return nil, nil, fmt.Errorf("aquery-link: %w", err)
 	}
 	var doc aqueryLinkDoc
 	if err := json.Unmarshal(b, &doc); err != nil {
-		return nil, fmt.Errorf("aquery-link parse: %w", err)
+		return nil, nil, fmt.Errorf("aquery-link parse: %w", err)
 	}
-	return compareLinkOrder(reply, &doc), nil
+	return reply, &doc, nil
 }
 
 // perBinaryLibIdentities builds each linked binary's ordered lib identities on
@@ -305,12 +307,13 @@ func perBinaryLibIdentities(reply *fileapi.Reply, doc *aqueryLinkDoc) (cmakeOrd,
 	return cmakeOrd, bazelOrd
 }
 
-// compareLinkOrder is the pure comparison half of linkOrderDiff: given a loaded
-// cmake codemodel reply and a parsed CppLink aquery, it builds each matched
-// executable's ordered lib identities on both sides and reports the order
-// inversions. Split out so the wiring (cmake Link.CommandFragments → ordered
-// identities, aquery args → ordered identities, binary matching by basename,
-// inversion detection) is unit-testable without an on-disk reply dir.
+// compareLinkOrder is the pure comparison half of the link-order lens: given a
+// loaded cmake codemodel reply and a parsed CppLink aquery (main shares the
+// parse via loadLinkInputs), it builds each matched executable's ordered lib
+// identities on both sides and reports the order inversions. Split out so the
+// wiring (cmake Link.CommandFragments → ordered identities, aquery args →
+// ordered identities, binary matching by basename, inversion detection) is
+// unit-testable without an on-disk reply dir.
 func compareLinkOrder(reply *fileapi.Reply, doc *aqueryLinkDoc) *linkOrderReport {
 	cmakeOrd, bazelOrd := perBinaryLibIdentities(reply, doc)
 
