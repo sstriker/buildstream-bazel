@@ -7,6 +7,25 @@ transition cleanly.
 
 ## Now
 
+- **Cross-element link deps silently dropped by the import harvester — label
+  registry (STARTED).** `harvest.resolveDeps` resolved each
+  `INTERFACE_LINK_LIBRARIES` / `.pc Requires` ref only against the targets in the
+  ONE harvested prefix (`h.byName`); a ref to a target ANOTHER element exports
+  missed, warn-dropped, and vanished from the closure — and for a STATIC consumer
+  the undefined symbol is legal in the `.a`, so it only surfaces at the
+  far-downstream executable link (effectively silent). `HarvestWithRegistry` +
+  `imports-harvest --registry <sibling exports.json>` now consult a cross-element
+  `cmake target → label` registry before dropping, resolving the foreign ref to
+  the sibling label (tested). **Remaining to fully close the gap:** (1) wire the
+  orchestrator to build the registry from sibling `exports.json` and pass
+  `--registry` wherever multi-element host-install prefixes are harvested; (2) the
+  consumer-side transitive-only drop (`lower.go:3784`) is still silent — it drops
+  a manifest-matched archive trusting the directly-named export's `Deps` closure,
+  with no diagnostic when that closure is incomplete; escalate it to a coverage
+  finding; (3) `coverage.AuditLinkDeps` skips every `::`-namespaced import
+  (`coverage.go`), so an external/manifest edge lost there produces no finding —
+  widen it to audit manifest-known imports.
+
 - **grpc build-lens red — a grpc↔protobuf version/cadence mismatch, NOT a
   converter bug.** The grpc lens run is red in BOTH link modes at the same spot:
   `grpc_cpp_plugin`'s compile picks protobuf headers whose

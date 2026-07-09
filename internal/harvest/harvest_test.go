@@ -700,3 +700,77 @@ func TestHarvest_OpenSSLShape(t *testing.T) {
 		}
 	}
 }
+
+// TestHarvestWithRegistry_ResolvesCrossElementDep pins the cross-element label
+// registry: an INTERFACE_LINK_LIBRARIES ref this prefix DIDN'T harvest (a target
+// another element exports) is resolved to the registry's sibling label instead
+// of warn-dropped — closing the silent cross-element link-edge loss (a static
+// consumer's undefined symbol only surfaces at the far-downstream exe link).
+func TestHarvestWithRegistry_ResolvesCrossElementDep(t *testing.T) {
+	prefix := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(prefix, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// App::app links Foreign::util, which lives in ANOTHER element (not in this
+	// prefix). A plain namespaced ref (no genex), so it's extracted as a dep ref.
+	write("lib/cmake/App/AppTargets.cmake", `add_library(App::app STATIC IMPORTED)
+set_target_properties(App::app PROPERTIES
+  INTERFACE_LINK_LIBRARIES "Foreign::util"
+)
+`)
+	write("lib/cmake/App/AppTargets-release.cmake", `set_target_properties(App::app PROPERTIES
+  IMPORTED_LOCATION_RELEASE "${_IMPORT_PREFIX}/lib/libapp.a"
+)
+`)
+	write("lib/libapp.a", "!<arch>\n")
+
+	appDeps := func(im *manifest.Imports) []string {
+		for _, ex := range im.Elements[0].Exports {
+			if ex.CMakeTarget == "App::app" {
+				return ex.Deps
+			}
+		}
+		t.Fatal("App::app export missing")
+		return nil
+	}
+	warnDropped := func(warns []string) bool {
+		for _, w := range warns {
+			if indexOf(w, "Foreign::util") >= 0 && indexOf(w, "dropped") >= 0 {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Baseline (no registry): the foreign ref warn-drops; App::app has no deps.
+	im0, warns0, err := Harvest(prefix, "app", "prebuilts/app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := appDeps(im0); len(d) != 0 {
+		t.Errorf("baseline: App::app.Deps = %v, want empty (foreign ref dropped)", d)
+	}
+	if !warnDropped(warns0) {
+		t.Errorf("baseline: expected a drop warning for Foreign::util; got %v", warns0)
+	}
+
+	// With the registry: the foreign ref resolves to the sibling label, no drop.
+	reg := map[string]string{"Foreign::util": "//elements/foreign:util"}
+	im1, warns1, err := HarvestWithRegistry(prefix, "app", "prebuilts/app", reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sliceContains(appDeps(im1), "//elements/foreign:util") {
+		t.Errorf("registry: App::app.Deps = %v, want the resolved sibling label //elements/foreign:util", appDeps(im1))
+	}
+	if warnDropped(warns1) {
+		t.Errorf("registry: Foreign::util should resolve, not drop; got %v", warns1)
+	}
+}
