@@ -153,3 +153,22 @@ func TestFold_OrderSensitiveOptionArms(t *testing.T) {
 		t.Errorf("divergent order-sensitive arm must not pass through: %v", copts)
 	}
 }
+
+// TestGroupSink_SanitizeCollisionDisambiguates: distinct
+// (SelectKey, armLabel) pairs whose names sanitize identically get
+// distinct group labels rather than silently sharing one.
+func TestGroupSink_SanitizeCollisionDisambiguates(t *testing.T) {
+	sink := &groupSink{families: map[string]string{}, defs: map[string]ir.Target{}}
+	a := sink.group(Cell{Platform: Platform{Name: "linux", SelectKey: "@platforms//os:linux"}}, "//options:foo_on")
+	b := sink.group(Cell{Platform: Platform{Name: "Linux", SelectKey: "//platforms:linux_x86_64"}}, "//options:foo_on")
+	if a == b {
+		t.Fatalf("colliding sanitized names must disambiguate: %q vs %q", a, b)
+	}
+	// Same pair reuses the same label.
+	if again := sink.group(Cell{Platform: Platform{Name: "linux", SelectKey: "@platforms//os:linux"}}, "//options:foo_on"); again != a {
+		t.Errorf("same pair must reuse: %q vs %q", again, a)
+	}
+	if got := sink.defs[b].GroupMatchAll[0]; got != "//platforms:linux_x86_64" {
+		t.Errorf("disambiguated group's match_all: %v", sink.defs[b].GroupMatchAll)
+	}
+}
