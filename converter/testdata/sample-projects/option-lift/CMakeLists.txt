@@ -16,3 +16,8 @@ if(BACKEND STREQUAL "fast")
 endif()
 
 configure_file(cfg.h.in cfg.h)
+
+option(BUILD_EXTRA_TOOL "Build the extra tool" ON)
+if(BUILD_EXTRA_TOOL)
+  add_executable(extra_tool tool.c)
+endif()

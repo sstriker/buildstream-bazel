@@ -603,11 +603,14 @@ type Args struct {
 	// //options:<name>_{on,off} (BOOL) / //options:<name>_<value>
 	// (enum) config_settings, option-derived configure_file bodies fold
 	// into write_file content select() arms, and the backing //options
-	// package emits via --out-option-settings. Options whose change
-	// alters the TARGET SET (an if(FOO) add_executable /
-	// add_subdirectory gate) fall back to today's baked value with a
-	// stderr breadcrumb — select() can't make a target conditionally
-	// exist (that's the roadmap item's target-existence stage).
+	// package emits via --out-option-settings. A target the primary
+	// configure declares that a changed value doesn't (an if(FOO)
+	// add_executable / add_subdirectory gate) renders unconditionally
+	// with a target_compatible_with select() marking it
+	// @platforms//:incompatible under that arm, so builds there skip
+	// it; a target declared ONLY under a non-configured value can't be
+	// emitted from this convert (the primary lower never saw it) and
+	// surfaces as a re-convert-with-that-value breadcrumb.
 	//
 	// Opt-in allow-list by design: lifting every detected option would
 	// multiply configure passes and explode the flag surface. Requires
@@ -921,7 +924,7 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.StringVar(&a.OutCommonCompileFlagsFeature, "out-common-compile-flags-feature", "", "write a cc_toolchain feature (.bzl) carrying the longest copt prefix shared by every converted cc target (cmake's project-wide CMAKE_<LANG>_FLAGS), strip that prefix from each target's copts, and tag those targets features=[\"cmake_common_compile_flags\"] so the flags aren't duplicated per target. Thread COMMON_COMPILE_FLAGS_FEATURES into your cc_toolchain config (same as --out-sanitizer-features). Off by default (byte-stable inline emission).")
 	fs.BoolVar(&a.EmitCommonCompileFlagsBzl, "emit-common-compile-flags-bzl", false, "self-contained alternative to --out-common-compile-flags-feature: strip the longest shared copt prefix and rewrite each target's copts as COMMON_COPTS + [delta], with COMMON_COPTS in a generated common_compile_flags.bzl (next to the root BUILD) that every BUILD load()s. Needs no cc_toolchain wiring. Mutually exclusive with --out-common-compile-flags-feature.")
 	fs.StringVar(&a.OutConfigSettings, "out-config-settings", "", "write a //config package BUILD (string_flag build_type + one config_setting per non-sanitizer config in --build-types) backing the multi-config fold's //config:<name> select() arms, making the converted output self-contained. Phase 5 of the generator-parity uplift.")
-	fs.Var(commaSlice{&a.LiftOptions}, "lift-options", "comma-separated cmake option names to lift into build-time toggles: extra cold configures per name (a BOOL option() flipped once; an enum STRING cache entry with a STRINGS list re-configured per value), attribute deltas folded into select() arms over //options:<name>_{on,off} / //options:<name>_<value> config_settings, and option-derived configure_file bodies folded into write_file content select() arms (write the backing //options package with --out-option-settings). Options whose change alters the target set fall back to the baked value with a stderr breadcrumb. Requires --source-root; mutually exclusive with --build-types (option-lift roadmap item).")
+	fs.Var(commaSlice{&a.LiftOptions}, "lift-options", "comma-separated cmake option names to lift into build-time toggles: extra cold configures per name (a BOOL option() flipped once; an enum STRING cache entry with a STRINGS list re-configured per value), attribute deltas folded into select() arms over //options:<name>_{on,off} / //options:<name>_<value> config_settings, and option-derived configure_file bodies folded into write_file content select() arms (write the backing //options package with --out-option-settings). Targets the primary configure declares that a changed value doesn't gain a target_compatible_with select marking them @platforms//:incompatible under that arm (builds there skip them); targets declared only under non-configured values surface as re-convert breadcrumbs. Requires --source-root; mutually exclusive with --build-types (option-lift roadmap item).")
 	fs.StringVar(&a.OutOptionSettings, "out-option-settings", "", "write an //options package BUILD (bool_flag + _on/_off config_settings per lifted BOOL option; string_flag with values + per-value config_settings per lifted enum option) backing the option fold's select() arms. Toggle at build time with --//options:<name>=<value>.")
 	fs.StringVar(&a.AuditBazelIdiomReport, "audit-bazel-idiom-report", "", "write the structured bazelidiom audit findings (JSON) to this path. The audit pass itself runs unconditionally on every convert and surfaces findings on stderr.")
 	fs.StringVar(&a.AuditCoverageReport, "audit-coverage-report", "", "write the structured lens-3 dependency-coverage findings (JSON) to this path. The check runs unconditionally on every convert (findings to stderr); it flags trace target_link_libraries arms naming an in-codebase target that didn't land in any dep bucket.")

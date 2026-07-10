@@ -27,6 +27,29 @@ import (
 // error mirrors the producer-bug guards the text emitters raise (e.g. a
 // filegroup that sets both explicit srcs and a glob).
 func astTargetStmts(t ir.Target, opts Options) ([]build.Expr, bool, error) {
+	stmts, handled, err := astTargetStmtsByKind(t, opts)
+	if err != nil || !handled || len(stmts) == 0 {
+		return stmts, handled, err
+	}
+	// target_compatible_with is a COMMON attribute (every rule kind
+	// accepts it), and the option lift's target-existence gating can
+	// land on any lowered kind — an option-gated add_custom_target is
+	// a genrule, an option-gated configure_file a write_file — so
+	// apply it generically to the primary rule here rather than
+	// per-kind (a cc-only wiring would silently drop the gate on
+	// non-cc targets and they'd wrongly build under every arm).
+	if sel := perPlatformAttr(t, "target_compatible_with"); len(sel) > 0 {
+		if call, ok := stmts[0].(*build.CallExpr); ok {
+			r := &build.Rule{Call: call}
+			if r.Attr("target_compatible_with") == nil {
+				setIfNonNil(r, "target_compatible_with", attrExprAST(nil, sel))
+			}
+		}
+	}
+	return stmts, handled, err
+}
+
+func astTargetStmtsByKind(t ir.Target, opts Options) ([]build.Expr, bool, error) {
 	one := func(c *build.CallExpr) ([]build.Expr, bool, error) { return []build.Expr{c}, true, nil }
 	oneErr := func(c *build.CallExpr, err error) ([]build.Expr, bool, error) {
 		if err != nil {

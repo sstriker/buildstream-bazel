@@ -142,6 +142,62 @@ func ApplyOptionFold(pkg *ir.Package, byCell map[string]map[string]fileapi.Targe
 	return lifted
 }
 
+// IncompatibleLabel is the canonical constraint Bazel skips targets
+// on (`bazel build //...` prunes incompatible targets instead of
+// failing them) — the option lift's target-existence gate points
+// select() arms at it.
+const IncompatibleLabel = "@platforms//:incompatible"
+
+// GateTargetExistence closes the target-existence half of the
+// option lift: a target cmake declares under the primary configure
+// but NOT under some flip cell(s) (an `if(FOO) add_executable(…)` /
+// conditional add_subdirectory gate) can't be un-declared by a
+// select() — targets exist unconditionally in Bazel, only
+// attributes select. Instead the target gains
+//
+//	target_compatible_with = select({
+//	    "//options:<arm>": ["@platforms//:incompatible"],
+//	    "//conditions:default": [],
+//	})
+//
+// so builds under the gating option value skip it (incompatible
+// targets prune from //... builds and fail dep sites with a legible
+// diagnostic) while every other configuration builds it exactly as
+// before. gates maps target name → the arm labels the target is
+// ABSENT under. Returns the gated names, sorted, for the caller's
+// stderr surfacing; names without a matching pkg target are skipped
+// (utility targets the lower path didn't emit).
+func GateTargetExistence(pkg *ir.Package, gates map[string][]string) []string {
+	if pkg == nil || len(gates) == 0 {
+		return nil
+	}
+	byName := map[string]*ir.Target{}
+	for i := range pkg.Targets {
+		byName[pkg.Targets[i].Name] = &pkg.Targets[i]
+	}
+	var gated []string
+	for name, arms := range gates {
+		tgt, ok := byName[name]
+		if !ok || len(arms) == 0 {
+			continue
+		}
+		if tgt.PerPlatform == nil {
+			tgt.PerPlatform = map[string]map[string][]string{}
+		}
+		if tgt.PerPlatform["target_compatible_with"] == nil {
+			tgt.PerPlatform["target_compatible_with"] = map[string][]string{}
+		}
+		for _, arm := range arms {
+			if !stringSliceContains(tgt.PerPlatform["target_compatible_with"][arm], IncompatibleLabel) {
+				tgt.PerPlatform["target_compatible_with"][arm] = append(tgt.PerPlatform["target_compatible_with"][arm], IncompatibleLabel)
+			}
+		}
+		gated = append(gated, name)
+	}
+	sort.Strings(gated)
+	return gated
+}
+
 // perPlatformArmCount counts the non-empty select() arm cells on a
 // target — the "did the fold land anything" signal ApplyOptionFold
 // uses, robust to applyPartition+prune round-trips that net to

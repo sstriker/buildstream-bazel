@@ -98,6 +98,36 @@ func TestEnumSpecOK_RejectsSuffixCollision(t *testing.T) {
 	}
 }
 
+func TestFoldGroups_SplitsByPresenceSignature(t *testing.T) {
+	base, off := "//options:feat_on", "//options:feat_off"
+	lc := &liftedCells{
+		cells: []string{base, off},
+		byCell: map[string]map[string]fileapi.Target{
+			"everywhere": {base: {Name: "everywhere"}, off: {Name: "everywhere"}},
+			"base_only":  {base: {Name: "base_only"}},
+			"also_both":  {base: {Name: "also_both"}, off: {Name: "also_both"}},
+		},
+	}
+	groups := lc.foldGroups()
+	if len(groups) != 2 {
+		t.Fatalf("groups: got %d, want 2 (both-cells + base-only)", len(groups))
+	}
+	for _, g := range groups {
+		switch len(g.cells) {
+		case 2:
+			if len(g.byCell) != 2 {
+				t.Errorf("both-cells group: %v", g.byCell)
+			}
+		case 1:
+			if g.cells[0] != base || len(g.byCell) != 1 {
+				t.Errorf("base-only group: cells=%v targets=%v", g.cells, g.byCell)
+			}
+		default:
+			t.Errorf("unexpected group cells: %v", g.cells)
+		}
+	}
+}
+
 func TestConfigTargetNameSetAndEquality(t *testing.T) {
 	cfgs := []fileapi.Configuration{{
 		Name: "Release",

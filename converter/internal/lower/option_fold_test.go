@@ -244,6 +244,32 @@ func TestApplyContentBakes_LabelKeyedMerge(t *testing.T) {
 	}
 }
 
+func TestGateTargetExistence(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{
+		{Name: "extra_tool", Kind: ir.KindCCBinary},
+		{Name: "always", Kind: ir.KindCCLibrary},
+	}}
+	gated := GateTargetExistence(pkg, map[string][]string{
+		"extra_tool": {"//options:build_extra_tool_off"},
+		"not_in_pkg": {"//options:x_off"},
+	})
+	if !reflect.DeepEqual(gated, []string{"extra_tool"}) {
+		t.Fatalf("gated = %v, want [extra_tool]", gated)
+	}
+	arms := pkg.Targets[0].PerPlatform["target_compatible_with"]
+	if got := arms["//options:build_extra_tool_off"]; len(got) != 1 || got[0] != IncompatibleLabel {
+		t.Errorf("gate arm: %v", got)
+	}
+	if pkg.Targets[1].PerPlatform != nil {
+		t.Errorf("ungated target should stay untouched: %v", pkg.Targets[1].PerPlatform)
+	}
+	// Idempotent: re-gating the same arm must not duplicate the label.
+	GateTargetExistence(pkg, map[string][]string{"extra_tool": {"//options:build_extra_tool_off"}})
+	if got := pkg.Targets[0].PerPlatform["target_compatible_with"]["//options:build_extra_tool_off"]; len(got) != 1 {
+		t.Errorf("gate arm duplicated: %v", got)
+	}
+}
+
 func TestAnnotateLiftedOptions_RelocatesLiftedEntries(t *testing.T) {
 	pkg := &ir.Package{HeaderComments: []string{
 		"some attribution",

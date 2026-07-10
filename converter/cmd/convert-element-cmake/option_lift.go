@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
 	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
 	"github.com/sstriker/buildstream-bazel/converter/ir"
+	"github.com/sstriker/buildstream-bazel/internal/sliceutil"
 )
 
 // The option lift (--lift-options; the option-lift ROADMAP.md item)
@@ -42,14 +44,20 @@ import (
 //     same label suffix — else skip + warn;
 //   - every flip configure must succeed — else skip + warn with
 //     cmake's own output;
-//   - every flip reply's TARGET NAME SET must equal the primary's —
-//     an option gating whole targets (if(FOO) add_executable(…))
-//     can't fold into attribute select()s (target-existence gating
-//     is the roadmap item's next stage), so the option stays baked
-//     with a breadcrumb;
-//   - the fold must land at least one attribute arm OR one content
-//     bake — an option that changes neither emits no flag (a toggle
-//     nobody reads would be noise).
+//   - the fold must land at least one attribute arm, one
+//     target_compatible_with gate, OR one content bake — an option
+//     that changes nothing emits no flag (a toggle nobody reads
+//     would be noise).
+//
+// Target existence is expressed, not guarded: a target the primary
+// configure declares but a flip value doesn't gains a
+// target_compatible_with select() arm pointing at
+// @platforms//:incompatible under that arm (lower.
+// GateTargetExistence) — builds under that option value skip it. The
+// inverse (a target declared ONLY under a flip value) can't be
+// emitted from this convert — the primary lower never saw it — and
+// surfaces as a breadcrumb suggesting a re-convert with that value
+// configured.
 //
 // Successfully lifted options get their flag + config_settings in
 // the --out-option-settings package and move out of the "values
@@ -65,6 +73,21 @@ type optionSpec struct {
 	baseOn    bool     // BOOL options: cmakeTruthy(baseValue)
 	values    []string // enum options: the STRINGS list, verbatim
 	baseLabel string   // arm label of the primary configure's cell
+}
+
+// cliDefault renders the spec's configured value the way the emitted
+// flag accepts it on the CLI: true/false for a bool_flag (the raw
+// cache value is ON/OFF, which --//options:<name>= would reject),
+// the cache string quoted (%q) for an enum string_flag so values
+// with spaces read unambiguously in the breadcrumb.
+func (s *optionSpec) cliDefault() string {
+	if s.enum {
+		return fmt.Sprintf("%q", s.baseValue)
+	}
+	if s.baseOn {
+		return "true"
+	}
+	return "false"
 }
 
 // optionFlip is one in-flight (then completed) flip configure.
@@ -299,13 +322,65 @@ func finishSpeculativeConfigures(bakeJob *perConfigBakeJob, optJob *optionLiftJo
 	finishOptionLift(optJob, a, hostBuildDir, r, pkg)
 }
 
-// liftedCells is one option's loaded + guarded flip data, ready to
-// fold: the per-target cell views and the write_file bodies read
-// from each flip's scratch dir.
+// liftedCells is one option's loaded flip data, ready to fold: the
+// per-target cell views (each target under exactly the cells that
+// declare it), the write_file bodies read from each flip's scratch
+// dir, and the target-existence bookkeeping.
 type liftedCells struct {
 	cells  []string // baseLabel first, then each flip's arm label
 	byCell map[string]map[string]fileapi.Target
 	bakes  map[string]map[string][]byte // WriteFileOut rel → arm label → bytes
+	// gates maps a base-declared target name → the arm labels it is
+	// ABSENT under (an if(<option>) target gate); GateTargetExistence
+	// renders these as target_compatible_with select() arms.
+	gates map[string][]string
+	// flipOnly maps a target name declared ONLY under some flip
+	// value(s) → those values. The primary lower never saw it, so it
+	// can't be emitted from this convert; surfaced as a breadcrumb
+	// (re-convert with that value configured to emit it).
+	flipOnly map[string][]string
+}
+
+// foldGroup is one presence-signature slice of an option's targets:
+// every target in byCell is declared under exactly the same cells.
+type foldGroup struct {
+	cells  []string
+	byCell map[string]map[string]fileapi.Target
+}
+
+// foldGroups splits byCell by presence signature: configfold.Project
+// treats a missing declared cell as "every fact deltas onto the
+// observing cells", so a target absent under some arm must fold over
+// ONLY its present cells (its existence there is already expressed
+// by the target_compatible_with gate, not by attribute arms).
+// Groups are keyed by the cell signature; returned in sorted
+// signature order for determinism.
+func (lc *liftedCells) foldGroups() []foldGroup {
+	bySig := map[string]*foldGroup{}
+	var sigs []string
+	for name, cells := range lc.byCell {
+		// Present-cell list in lc.cells order (base first, then flips).
+		var present []string
+		for _, c := range lc.cells {
+			if _, ok := cells[c]; ok {
+				present = append(present, c)
+			}
+		}
+		sig := strings.Join(present, "\x00")
+		g, ok := bySig[sig]
+		if !ok {
+			g = &foldGroup{cells: present, byCell: map[string]map[string]fileapi.Target{}}
+			bySig[sig] = g
+			sigs = append(sigs, sig)
+		}
+		g.byCell[name] = cells
+	}
+	sort.Strings(sigs)
+	out := make([]foldGroup, 0, len(bySig))
+	for _, sig := range sigs {
+		out = append(out, *bySig[sig])
+	}
+	return out
 }
 
 // finishOptionLift joins the flip configures and, per option: loads
@@ -339,14 +414,34 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 		if lc == nil {
 			continue
 		}
-		armed := lower.ApplyOptionFold(pkg, lc.byCell, lc.cells, srcRoot, hostBuildDir, replyIDToName(r, job))
+		// Attribute fold per presence-signature group: a target absent
+		// under some arm folds over only its present cells (its
+		// existence there is the gate's job, not attribute arms').
+		idToName := replyIDToName(r, job)
+		var armed []string
+		for _, grp := range lc.foldGroups() {
+			armed = append(armed, lower.ApplyOptionFold(pkg, grp.byCell, grp.cells, srcRoot, hostBuildDir, idToName)...)
+		}
+		gated := lower.GateTargetExistence(pkg, lc.gates)
 		baked := lower.ApplyContentBakes(pkg, lc.bakes, srcRoot, hostBuildDir, a.BazelPackagePath, "cmake-codegen-per-option-content")
-		if len(armed) == 0 && len(baked) == 0 {
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: changing it folds no attribute delta and no configure_file body; no flag emitted, keeping it baked.\n", spec.name)
+		if len(lc.flipOnly) > 0 {
+			names := sliceutil.SortedKeys(lc.flipOnly)
+			for _, name := range names {
+				values := append([]string(nil), lc.flipOnly[name]...)
+				sort.Strings(values)
+				for i, v := range values {
+					values[i] = fmt.Sprintf("%q", v)
+				}
+				fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: target %s exists only under value(s) %s — the primary configure never declared it, so this convert can't emit it; re-convert with that value configured to include it.\n",
+					spec.name, name, strings.Join(values, ", "))
+			}
+		}
+		if len(armed) == 0 && len(gated) == 0 && len(baked) == 0 {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: changing it folds no attribute delta, gates no target, and changes no configure_file body; no flag emitted, keeping it baked.\n", spec.name)
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: lifted to --//options:%s (default %q); %d target(s) gained select() arms, %d write_file body(ies) gained content arms.\n",
-			spec.name, strings.ToLower(spec.name), spec.baseValue, len(armed), len(baked))
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: lifted to --//options:%s (default %s); %d target(s) gained select() arms, %d gained target_compatible_with gates, %d write_file body(ies) gained content arms.\n",
+			spec.name, strings.ToLower(spec.name), spec.cliDefault(), len(armed), len(gated), len(baked))
 		lifted = append(lifted, specOption(spec))
 		liftedLabels[spec.name] = "//options:" + strings.ToLower(spec.name)
 	}
@@ -357,15 +452,18 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 	writeOptionSettings(a.OutOptionSettings, lifted)
 }
 
-// collectOption loads + guards one spec's flip replies and reads its
-// write_file bodies. Returns nil (with a stderr breadcrumb) when any
-// flip failed, produced no reply, or changed the target set.
+// collectOption loads one spec's flip replies and reads its
+// write_file bodies, tracking per-target cell presence (gates /
+// flipOnly). Returns nil (with a stderr breadcrumb) when any flip
+// failed or produced no reply.
 func (j *optionLiftJob) collectOption(specIdx int, r *fileapi.Reply, baseNames map[string]bool, writeFileOuts []string, hostBuildDir string) *liftedCells {
 	spec := &j.specs[specIdx]
 	lc := &liftedCells{
-		cells:  []string{spec.baseLabel},
-		byCell: map[string]map[string]fileapi.Target{},
-		bakes:  map[string]map[string][]byte{},
+		cells:    []string{spec.baseLabel},
+		byCell:   map[string]map[string]fileapi.Target{},
+		bakes:    map[string]map[string][]byte{},
+		gates:    map[string][]string{},
+		flipOnly: map[string][]string{},
 	}
 	for _, t := range r.Targets {
 		lc.byCell[t.Name] = map[string]fileapi.Target{spec.baseLabel: t}
@@ -388,16 +486,30 @@ func (j *optionLiftJob) collectOption(specIdx int, r *fileapi.Reply, baseNames m
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s: flip configure (=%s) produced no loadable File API reply (%v); keeping it baked.\n", spec.name, flip.setValue, err)
 			return nil
 		}
-		// Target-set guard: an option value that adds/removes targets
-		// can't fold into attribute select()s — that's target-existence
-		// gating (the option-lift roadmap item's next stage).
+		// Target-existence bookkeeping: a target the primary configure
+		// declares but this flip value doesn't (an if(<option>) target
+		// gate) can't be un-declared by a select() — it gets a
+		// target_compatible_with arm pointing at
+		// @platforms//:incompatible under this flip's label instead
+		// (GateTargetExistence). A target declared ONLY under this flip
+		// value was never lowered, so it can't be emitted from this
+		// convert — recorded for the flip-only breadcrumb.
 		flipNames := configTargetNameSet(fr.Codemodel.Configurations)
-		if !stringSetsEqual(baseNames, flipNames) {
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: value %s changes the target set (%d -> %d targets); attribute select()s can't express conditional target existence, keeping it baked.\n", spec.name, flip.setValue, len(baseNames), len(flipNames))
-			return nil
+		for name := range baseNames {
+			if !flipNames[name] {
+				lc.gates[name] = append(lc.gates[name], flip.armLabel)
+			}
+		}
+		for name := range flipNames {
+			if !baseNames[name] {
+				lc.flipOnly[name] = append(lc.flipOnly[name], flip.setValue)
+			}
 		}
 		lc.cells = append(lc.cells, flip.armLabel)
 		for _, t := range fr.Targets {
+			if !baseNames[t.Name] {
+				continue // flip-only: no lowered target to fold onto
+			}
 			canonicalizeFlipTarget(&t, scratchDir, hostBuildDir)
 			if lc.byCell[t.Name] == nil {
 				lc.byCell[t.Name] = map[string]fileapi.Target{}

@@ -10,10 +10,13 @@
 # config_settings, and emits the backing //options package
 # (bool_flag + config_setting pair) via --out-option-settings.
 #
-# Drives convert-element-cmake --lift-options FOO_FEATURE,BACKEND
-# against converter/testdata/sample-projects/option-lift (a BOOL
-# option gating a private define + an extra source; an enum
-# STRING+STRINGS option gating a define + a configure_file body).
+# Drives convert-element-cmake --lift-options
+# FOO_FEATURE,BACKEND,BUILD_EXTRA_TOOL against
+# converter/testdata/sample-projects/option-lift (a BOOL option gating
+# a private define + an extra source; an enum STRING+STRINGS option
+# gating a define + a configure_file body; a BOOL option gating a
+# whole cc_binary, rendered via a target_compatible_with select over
+# @platforms//:incompatible).
 # Asserts (rendered BUILD): the BOOL define and source ride the
 # //options:foo_feature_on arm and are GONE from the flat baseline
 # (the off arm must not compile them); the enum define rides the
@@ -45,7 +48,7 @@ trap "rm -rf '$work_dir'" EXIT
 
 "$bin_dir/convert-element-cmake" \
     --source-root "$fixture" \
-    --lift-options FOO_FEATURE,BACKEND \
+    --lift-options FOO_FEATURE,BACKEND,BUILD_EXTRA_TOOL \
     --out-build "$work_dir/BUILD.bazel" \
     --out-option-settings "$work_dir/options-BUILD.bazel" \
     >"$work_dir/convert.stdout" 2>"$work_dir/convert.stderr" || {
@@ -100,6 +103,17 @@ if grep -qE -- '-opt-[0-9]+-' "$build"; then
 fi
 grep -qE 'lift-options FOO_FEATURE: lifted .* 0 write_file body' "$work_dir/convert.stderr" || fail "FOO_FEATURE gained a content select — its flip differs only by scratch-dir spelling (canonicalization regression)"
 
+# Target-existence gating: BUILD_EXTRA_TOOL gates a whole cc_binary;
+# the target renders unconditionally with a target_compatible_with
+# select() marking it incompatible under the OFF arm.
+grep -qF 'name = "extra_tool"' "$build" || fail "option-gated cc_binary extra_tool missing from the BUILD"
+# Scope the gate assertions to the extra_tool stanza itself, not the
+# whole BUILD (another rule matching would false-positive).
+tool_stanza=$(sed -n '/name = "extra_tool"/,/^)/p' "$build")
+printf '%s' "$tool_stanza" | grep -qF 'target_compatible_with = select({' || fail "extra_tool lacks the target_compatible_with select (existence gate)"
+printf '%s' "$tool_stanza" | grep -qF '"//options:build_extra_tool_off": ["@platforms//:incompatible"]' || fail "extra_tool lacks the incompatible arm for build_extra_tool_off"
+grep -qF 'name = "build_extra_tool"' "$options_build" || fail "//options bool_flag for BUILD_EXTRA_TOOL missing"
+
 echo "ok  meta-cmake-option-lift: bool + enum option arms, flag package, and per-option content select rendered"
 
 # --- Bazel-build half ---
@@ -123,7 +137,7 @@ fi
 
 ws="$work_dir/ws"
 mkdir -p "$ws/options"
-cp "$fixture"/common.c "$fixture"/feature.c "$ws/"
+cp "$fixture"/common.c "$fixture"/feature.c "$fixture"/tool.c "$ws/"
 cp "$build" "$ws/BUILD.bazel"
 cp "$options_build" "$ws/options/BUILD.bazel"
 # The write_file rule provides cfg.h; the source-tree template isn't
@@ -182,4 +196,25 @@ check_backend() {
 check_backend ref ref
 check_backend fast fast
 
-echo "ok  meta-cmake-option-lift: feature object + generated header flip per --//options flags (no cmake)"
+# Existence gate: a //... build under the gating value SKIPS the
+# incompatible cc_binary (no analysis error, no binary produced);
+# under the default it builds.
+check_tool() {
+    value="$1"; want_binary="$2"
+    # shellcheck disable=SC2086
+    if ! (cd "$ws" && "$BZL" --output_user_root="$bz_cache" ${META_BAZEL_STARTUP_ARGS:-} \
+            build ${META_BAZEL_BUILD_ARGS:-} --//options:build_extra_tool="$value" //...) >"$work_dir/bazel-tool-$value.log" 2>&1; then
+        echo "FAIL: bazel build //... under --//options:build_extra_tool=$value failed"
+        sed 's/^/   /' "$work_dir/bazel-tool-$value.log"
+        exit 1
+    fi
+    if [ -e "$ws/bazel-bin/extra_tool" ]; then got=1; else got=0; fi
+    if [ "$got" != "$want_binary" ]; then
+        echo "FAIL: --//options:build_extra_tool=$value: extra_tool built=$got, want $want_binary"
+        exit 1
+    fi
+}
+check_tool true 1
+check_tool false 0
+
+echo "ok  meta-cmake-option-lift: feature object, generated header, and gated tool flip per --//options flags (no cmake)"
