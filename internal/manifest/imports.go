@@ -548,6 +548,51 @@ func (r *Resolver) LookupCMakeTarget(name string) *Export {
 	return r.byCMakeTarget[name]
 }
 
+// LinkDepClosure returns the set of Bazel labels reachable from the seed
+// labels by following Export.Deps edges (the manifest's declared link
+// closure), the seeds themselves included. A consumer that static-links a
+// flattened archive closure uses it to tell a transitive archive — one
+// that re-enters through a directly-named export's Export.Deps and so is
+// safe to drop — from a DIRECT-link entry point nothing named pulls in
+// (unreachable → must be wired or the link fails with undefined symbols).
+// Deps are verbatim labels; a manifest that leaves Deps empty (the wrapper
+// model, where transitivity lives in Bazel, not the manifest) yields just
+// the seeds, so every non-seed archive reads as an entry point.
+func (r *Resolver) LinkDepClosure(seeds []string) map[string]bool {
+	closure := map[string]bool{}
+	if r == nil {
+		return closure
+	}
+	byLabel := make(map[string]*Export, len(r.byCMakeTarget))
+	for _, ex := range r.byCMakeTarget {
+		if ex.BazelLabel != "" {
+			byLabel[ex.BazelLabel] = ex
+		}
+	}
+	var stack []string
+	for _, s := range seeds {
+		if s != "" && !closure[s] {
+			closure[s] = true
+			stack = append(stack, s)
+		}
+	}
+	for len(stack) > 0 {
+		lbl := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		ex := byLabel[lbl]
+		if ex == nil {
+			continue
+		}
+		for _, dep := range ex.Deps {
+			if dep != "" && !closure[dep] {
+				closure[dep] = true
+				stack = append(stack, dep)
+			}
+		}
+	}
+	return closure
+}
+
 // LookupLinkPath returns the export that owns a given absolute link-fragment
 // path, or nil if none. Used by lower to map cross-element library
 // fragments (CMake records IMPORTED_LOCATION_<CONFIG> file paths in

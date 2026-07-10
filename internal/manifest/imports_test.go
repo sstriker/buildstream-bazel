@@ -246,6 +246,46 @@ func TestResolver_NilAndEmpty(t *testing.T) {
 	}
 }
 
+// TestLinkDepClosure walks the transitive Export.Deps closure (seeds
+// included), chases multi-hop label chains, and yields just the seeds
+// when Deps are empty (the wrapper model, where transitivity is Bazel's).
+func TestLinkDepClosure(t *testing.T) {
+	r, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "Pkg::a", BazelLabel: "//p:a", Deps: []string{"//p:b"}},
+				{CMakeTarget: "Pkg::b", BazelLabel: "//p:b", Deps: []string{"//p:c"}},
+				{CMakeTarget: "Pkg::c", BazelLabel: "//p:c"},
+				{CMakeTarget: "Pkg::z", BazelLabel: "//p:z"}, // island
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed a → multi-hop closure a→b→c; z (island) not reached.
+	cl := r.LinkDepClosure([]string{"//p:a"})
+	for _, want := range []string{"//p:a", "//p:b", "//p:c"} {
+		if !cl[want] {
+			t.Errorf("closure missing %q: %v", want, cl)
+		}
+	}
+	if cl["//p:z"] {
+		t.Errorf("island //p:z must not be reachable from //p:a: %v", cl)
+	}
+	// Empty Deps (wrapper model): closure is just the seed.
+	if cl := r.LinkDepClosure([]string{"//p:z"}); len(cl) != 1 || !cl["//p:z"] {
+		t.Errorf("empty-Deps closure must be just the seed: %v", cl)
+	}
+	// Nil resolver is safe.
+	var nilR *manifest.Resolver
+	if cl := nilR.LinkDepClosure([]string{"//p:a"}); len(cl) != 0 {
+		t.Errorf("nil resolver closure must be empty: %v", cl)
+	}
+}
+
 func TestLoad_Phase6CMakeBundleFields(t *testing.T) {
 	// Phase 6 of the generator-parity uplift extends the per-export
 	// entry with CMakeConfigBundleLabel + CMakeImportLabels so cross-
