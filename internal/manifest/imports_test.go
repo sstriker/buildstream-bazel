@@ -246,6 +246,53 @@ func TestResolver_NilAndEmpty(t *testing.T) {
 	}
 }
 
+// TestLinkDepClosure pins the ONE-LEVEL semantics: a seed contributes
+// itself plus its DIRECT Export.Deps, and deps-of-deps are NOT chased
+// (matching lower.addExport's verbatim one-level wiring — chasing would
+// drop an archive that never re-enters on a non-flattened manifest). It
+// also excludes an island and yields just the seed for a no-Deps export.
+func TestLinkDepClosure(t *testing.T) {
+	r, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "Pkg::a", BazelLabel: "//p:a", Deps: []string{"//p:b"}},
+				{CMakeTarget: "Pkg::b", BazelLabel: "//p:b", Deps: []string{"//p:c"}},
+				{CMakeTarget: "Pkg::c", BazelLabel: "//p:c"},
+				{CMakeTarget: "Pkg::z", BazelLabel: "//p:z"}, // island
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed a → {a, its direct dep b}. c is b's dep (deps-of-deps) and must
+	// NOT be chased; z (island) is unreachable.
+	cl := r.LinkDepClosure([]string{"//p:a"})
+	for _, want := range []string{"//p:a", "//p:b"} {
+		if !cl[want] {
+			t.Errorf("closure missing direct edge %q: %v", want, cl)
+		}
+	}
+	if cl["//p:c"] {
+		t.Errorf("deps-of-deps //p:c must NOT be chased (one-level only): %v", cl)
+	}
+	if cl["//p:z"] {
+		t.Errorf("island //p:z must not be reachable from //p:a: %v", cl)
+	}
+	// A seed whose export declares no Deps yields just that seed (an entry
+	// point with no closure — also the per-export wrapper-model shape).
+	if cl := r.LinkDepClosure([]string{"//p:z"}); len(cl) != 1 || !cl["//p:z"] {
+		t.Errorf("no-Deps seed closure must be just the seed: %v", cl)
+	}
+	// Nil resolver is safe.
+	var nilR *manifest.Resolver
+	if cl := nilR.LinkDepClosure([]string{"//p:a"}); len(cl) != 0 {
+		t.Errorf("nil resolver closure must be empty: %v", cl)
+	}
+}
+
 func TestLoad_Phase6CMakeBundleFields(t *testing.T) {
 	// Phase 6 of the generator-parity uplift extends the per-export
 	// entry with CMakeConfigBundleLabel + CMakeImportLabels so cross-

@@ -271,6 +271,7 @@ func LoadDoc(path string) (*Imports, error) {
 func LoadMerged(paths ...string) (*Resolver, error) {
 	r := &Resolver{
 		byCMakeTarget:   map[string]*Export{},
+		byBazelLabel:    map[string]*Export{},
 		byElement:       map[string]*Element{},
 		byLinkPath:      map[string]*Export{},
 		byLinkLib:       map[string]*Export{},
@@ -309,6 +310,7 @@ func LoadMerged(paths ...string) (*Resolver, error) {
 					return nil, fmt.Errorf("manifest: %s element %q export %q: empty bazel_label", p, el.Name, ex.CMakeTarget)
 				}
 				r.byCMakeTarget[ex.CMakeTarget] = ex
+				r.byBazelLabel[ex.BazelLabel] = ex
 				for _, lp := range ex.LinkPaths {
 					r.byLinkPath[lp] = ex
 				}
@@ -342,6 +344,7 @@ func Index(im *Imports) (*Resolver, error) {
 	}
 	r := &Resolver{
 		byCMakeTarget:   map[string]*Export{},
+		byBazelLabel:    map[string]*Export{},
 		byElement:       map[string]*Element{},
 		byLinkPath:      map[string]*Export{},
 		byLinkLib:       map[string]*Export{},
@@ -376,6 +379,7 @@ func Index(im *Imports) (*Resolver, error) {
 					ex.CMakeTarget, el.Name, findElementForExport(im, existing))
 			}
 			r.byCMakeTarget[ex.CMakeTarget] = ex
+			r.byBazelLabel[ex.BazelLabel] = ex
 			for _, lp := range ex.LinkPaths {
 				r.byLinkPath[lp] = ex
 			}
@@ -416,7 +420,17 @@ func findElementForExport(im *Imports, ex *Export) string {
 // Resolver is the indexed manifest. Query methods are pure and concurrency-
 // safe (no mutation post-Load).
 type Resolver struct {
-	byCMakeTarget   map[string]*Export
+	byCMakeTarget map[string]*Export
+	// byBazelLabel backs LinkDepClosure's Export.Deps walk. Unlike
+	// cmake_target, bazel_label is deliberately NOT unique: an alias export
+	// and its underlying target share one label (the harvester emits both
+	// names), so uniqueness here would reject valid manifests. Those two are
+	// the SAME Bazel target and so declare the same Deps — last-write-wins is
+	// exact for any consistent manifest. In the pathological case of two
+	// UNRELATED exports colliding on a label, last-write-wins under-
+	// approximates the closure, which is sound for the transitive-drop gate
+	// (it only ever over-attributes an entry edge, never drops a real one).
+	byBazelLabel    map[string]*Export
 	byElement       map[string]*Element
 	byLinkPath      map[string]*Export
 	byLinkLib       map[string]*Export
@@ -490,6 +504,7 @@ func (r *Resolver) HasTools() bool {
 func NewResolver() *Resolver {
 	return &Resolver{
 		byCMakeTarget:   map[string]*Export{},
+		byBazelLabel:    map[string]*Export{},
 		byElement:       map[string]*Element{},
 		byLinkPath:      map[string]*Export{},
 		byLinkLib:       map[string]*Export{},
@@ -546,6 +561,51 @@ func (r *Resolver) LookupCMakeTarget(name string) *Export {
 		return nil
 	}
 	return r.byCMakeTarget[name]
+}
+
+// LinkDepClosure returns the set of Bazel labels that RE-ENTER a consumer's
+// link when it wires the seed labels: the seeds themselves plus each seed's
+// DIRECT Export.Deps. It deliberately does NOT chase deps-of-deps — this
+// mirrors exactly what lowering wires (lower.addExport adds ex.Deps
+// verbatim, one level) and the Export.Deps contract (a listed label's own
+// Deps are never chased; a hand-written manifest must pre-flatten each
+// export's full closure into its Deps, so one level here already covers it).
+// A consumer that static-links a flattened archive closure uses the result
+// to tell a transitive archive — one that re-enters through a directly-named
+// export's Deps and so is safe to drop — from a DIRECT-link entry point
+// nothing named pulls in (unreachable → must be wired or the link fails with
+// undefined symbols). A manifest that leaves Deps empty (the wrapper model,
+// where transitivity lives in Bazel, not the manifest) yields just the
+// seeds, so every non-seed archive reads as an entry point. A nil resolver
+// yields the empty set (not the seeds) — there is no manifest to resolve
+// against.
+//
+// Chasing transitively would be UNSOUND on a non-flattened manifest: it
+// could mark a label reachable through an intermediate export whose Deps
+// lowering never wires, dropping an archive that then fails to re-enter.
+// One level under-approximates instead — the safe direction (it only ever
+// over-attributes an entry edge, never drops a real one).
+func (r *Resolver) LinkDepClosure(seeds []string) map[string]bool {
+	closure := map[string]bool{}
+	if r == nil {
+		return closure
+	}
+	for _, s := range seeds {
+		if s == "" {
+			continue
+		}
+		closure[s] = true
+		ex := r.byBazelLabel[s]
+		if ex == nil {
+			continue
+		}
+		for _, dep := range ex.Deps {
+			if dep != "" {
+				closure[dep] = true
+			}
+		}
+	}
+	return closure
 }
 
 // LookupLinkPath returns the export that owns a given absolute link-fragment

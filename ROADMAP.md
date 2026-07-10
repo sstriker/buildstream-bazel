@@ -7,25 +7,6 @@ transition cleanly.
 
 ## Now
 
-- **Cross-element link deps silently dropped by the import harvester — label
-  registry (STARTED).** `harvest.resolveDeps` resolved each
-  `INTERFACE_LINK_LIBRARIES` / `.pc Requires` ref only against the targets in the
-  ONE harvested prefix (`h.byName`); a ref to a target ANOTHER element exports
-  missed, warn-dropped, and vanished from the closure — and for a STATIC consumer
-  the undefined symbol is legal in the `.a`, so it only surfaces at the
-  far-downstream executable link (effectively silent). `HarvestWithRegistry` +
-  `imports-harvest --registry <sibling exports.json>` now consult a cross-element
-  `cmake target → label` registry before dropping, resolving the foreign ref to
-  the sibling label (tested). **Remaining to fully close the gap:** (1) wire the
-  orchestrator to build the registry from sibling `exports.json` and pass
-  `--registry` wherever multi-element host-install prefixes are harvested; (2) the
-  consumer-side transitive-only drop (`lower.go:3784`) is still silent — it drops
-  a manifest-matched archive trusting the directly-named export's `Deps` closure,
-  with no diagnostic when that closure is incomplete; escalate it to a coverage
-  finding; (3) `coverage.AuditLinkDeps` skips every `::`-namespaced import
-  (`coverage.go`), so an external/manifest edge lost there produces no finding —
-  widen it to audit manifest-known imports.
-
 - **grpc build-lens red — a grpc↔protobuf version/cadence mismatch, NOT a
   converter bug.** The grpc lens run is red in BOTH link modes at the same spot:
   `grpc_cpp_plugin`'s compile picks protobuf headers whose
@@ -1131,22 +1112,18 @@ trees, optional-feature deps, codegen instances). Each member's
   (a macOS-framework-aware classifier). Demand signal: a harvested macOS prefix
   whose interface link line carries `-framework Foo`.
 
-- **Consumer-side link-graph fidelity — diagnostic + a fidelity gate.** The
-  producer side (harvester → `wrappergen`) no longer silently drops link edges,
-  but the CONSUMER lowering still can: `converter/internal/lower/lower.go`
-  `lowerLinkFragments` drops a transitive-only resolved archive with a bare
-  `continue` (no breadcrumb tag), and `converter/internal/coverage/coverage.go`
-  `AuditLinkDeps` is structurally blind to `find_package`/external `::` edges
-  (it `continue`s on `::` and only checks `inCodebase[lib]`), so it can't CATCH
-  such a drop. The parity goal ("link as solid as translation-unit fidelity")
-  needs: (1) a diagnostic tag at the consumer drop, mirroring
-  `attributeUnresolvedLibPath`'s `cmake-elided-link-fragment` breadcrumb; (2)
-  widening `AuditLinkDeps` to cross-check `::` arms against the imports manifest
-  resolver instead of skipping them; (3) a **link-graph fidelity** lens beside
-  `converter/cmd/compile-commands-diff/linkorder.go` (whose own comment flags
-  "external libs not yet matched") comparing the SET of link edges — including
-  external `::` via the imports manifest `BazelLabel` — with survey wiring
-  mirroring the compile-db / symbol-ELF fidelity lenses.
+- **Link-graph fidelity — external/find_package label matching (Bazel side).**
+  The link-graph SET lens (`converter/cmd/compile-commands-diff/linkgraph.go`)
+  compares per-binary link edges in the system-lib + project-archive identity
+  space, and the consumer lowering now recovers unreachable direct-link entry
+  edges instead of dropping them. The remaining sub-layer, shared with the
+  link-ORDER lens: `find_package`/external labels (imports-manifest `BazelLabel`)
+  are matched on the cmake side but not yet demangled from Bazel's external solib
+  / `bazel-out/.../external/...` archive forms, so an external edge present on
+  both lines isn't yet reconciled (it's neither `sys:` nor `tgt:` identity, so it
+  is never *misreported* as a project drop — just unverified). Closing it needs a
+  Bazel-external-label demangler keyed on the manifest `BazelLabel`, best built
+  against real corpus aquery fixtures.
 
 ## Later (research / open questions)
 
