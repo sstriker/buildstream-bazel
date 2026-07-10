@@ -410,6 +410,15 @@ func (j *optionLiftJob) collectOption(specIdx int, r *fileapi.Reply, baseNames m
 			if readErr != nil {
 				continue // not produced under this value; coverage check below drops it
 			}
+			// Canonicalize scratch-dir spellings onto the primary build
+			// dir BEFORE the shared content fold: ApplyContentBakes'
+			// re-anchor helpers strip the primary dir (and the per-config
+			// bake's -cfg-<name> siblings) but know nothing about the
+			// option lift's -opt-<i>-<name> dirs, so an uncanonicalized
+			// body embedding CMAKE_BINARY_DIR would leak the throwaway
+			// path — and fabricate a content select() whose only delta is
+			// scratch-dir spelling.
+			body = bytes.ReplaceAll(body, []byte(scratchDir), []byte(hostBuildDir))
 			if lc.bakes[rel] == nil {
 				lc.bakes[rel] = map[string][]byte{}
 			}

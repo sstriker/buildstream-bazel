@@ -1,1 +1,2 @@
 #define BACKEND_NAME "@BACKEND@"
+/* build dir: @CMAKE_CURRENT_BINARY_DIR@ — regression: scratch-dir spellings must canonicalize */

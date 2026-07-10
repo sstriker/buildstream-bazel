@@ -92,6 +92,13 @@ grep -qF 'content = select({' "$build" || fail "write_file content is not a sele
 grep -qF '"#define BACKEND_NAME \"fast\""' "$build" || fail "fast arm body missing from content select"
 grep -qF '"#define BACKEND_NAME \"ref\""' "$build" || fail "ref (default) arm body missing from content select"
 grep -qF 'cmake-codegen-per-option-content' "$build" || fail "per-option content audit tag missing"
+# The template embeds CMAKE_CURRENT_BINARY_DIR: flip scratch-dir
+# spellings must canonicalize onto the primary build dir (and strip),
+# not leak as throwaway paths or fabricate spelling-only select arms.
+if grep -qE -- '-opt-[0-9]+-' "$build"; then
+    fail "flip scratch-dir path leaked into the rendered BUILD"
+fi
+grep -qE 'lift-options FOO_FEATURE: lifted .* 0 write_file body' "$work_dir/convert.stderr" || fail "FOO_FEATURE gained a content select — its flip differs only by scratch-dir spelling (canonicalization regression)"
 
 echo "ok  meta-cmake-option-lift: bool + enum option arms, flag package, and per-option content select rendered"
 
@@ -162,7 +169,11 @@ check_backend() {
         sed 's/^/   /' "$work_dir/bazel-backend-$value.log"
         exit 1
     fi
-    got=$(grep -h "BACKEND_NAME" "$ws/bazel-bin/cfg.h")
+    got=$(grep -h "BACKEND_NAME" "$ws/bazel-bin/cfg.h" 2>/dev/null) || {
+        echo "FAIL: --//options:backend=$value: bazel-bin/cfg.h missing or lacks BACKEND_NAME"
+        ls "$ws/bazel-bin" 2>/dev/null | sed 's/^/   /'
+        exit 1
+    }
     case "$got" in
         *"\"$want\""*) ;;
         *) echo "FAIL: --//options:backend=$value: generated header carries '$got', want \"$want\""; exit 1 ;;
