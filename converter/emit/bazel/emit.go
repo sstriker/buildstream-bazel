@@ -491,6 +491,7 @@ func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
 	emitPkgFilesLoad(&buf, pkg)
 	emitWriteFileLoad(&buf, pkg)
 	emitBoolFlagLoad(&buf, pkg)
+	emitSelectsLoad(&buf, pkg)
 	emitCMakeConfigureFileLoad(&buf, pkg)
 	emitCCEmbedLoad(&buf, pkg)
 	emitNativeRuleLoads(&buf, pkg)
@@ -1948,6 +1949,17 @@ func emitConfigSetting(w *bytes.Buffer, t ir.Target) error {
 		Value:      t.ConfigSettingValue,
 		Visibility: nonDefaultVisibility(t.Visibility),
 	})
+}
+
+// emitSelectsLoad writes the bazel_skylib selects load when any
+// KindConfigSettingGroup is present. Mirrors emitBoolFlagLoad.
+func emitSelectsLoad(buf *bytes.Buffer, pkg *ir.Package) {
+	for _, t := range pkg.Targets {
+		if t.Kind == ir.KindConfigSettingGroup {
+			buf.WriteString(`load("@bazel_skylib//lib:selects.bzl", "selects")` + "\n\n")
+			return
+		}
+	}
 }
 
 // emitBoolFlagLoad writes the bazel_skylib common_settings load when any

@@ -1159,7 +1159,7 @@ trees, optional-feature deps, codegen instances). Each member's
   real lifts with zero new machinery.
 
 - **Lift `option()` into `bool_flag`/`config_setting` selects — remaining:
-  platform axis, write-a threading.** The single-axis lift
+  write-a threading.** The single-axis lift
   SHIPPED (`--lift-options NAME[,NAME…]` + `--out-option-settings`, gate
   `meta-cmake-option-lift.sh`): cold flip configures per listed option —
   one for a BOOL `option()`, one per non-configured value for an enum
@@ -1203,17 +1203,25 @@ trees, optional-feature deps, codegen instances). Each member's
   spelling), which would otherwise over-apply them under option
   values outside the support, because additive selects can't
   subtract.
-  **Remaining:**
-  (1) **Platform axis** — the shipped `converter/elementfold` +
-  `fold-element` + `scripts/survey-multiplatform.sh` flow (whose
-  constraint-label arms share the same PerPlatform map) needs
-  per-cell option flips in the elementfold flow, the same AND-arm
-  shape for option×platform-conditional deltas, and a story for
-  platform-dependent option defaults (`option(FOO "…" ${WIN32})` — a
-  single `bool_flag` default can't vary per platform). Pass count
-  multiplies: M platforms × (1+N options) configures first-order, and
+  The platform axis is SHIPPED: `SURVEY_MP_LIFT_OPTIONS` threads
+  `--lift-options` into each per-platform convert
+  (`scripts/survey-multiplatform.sh`), and `elementfold.Fold` unions
+  the cells' select-arm family maps and folds their pre-existing
+  option/config arms — arms agreeing across every present cell pass
+  through under their own label, arms present in SOME cells only
+  (option×platform-conditional) route each cell's items through an
+  in-package `selects.config_setting_group` AND-arm
+  (`ir.KindConfigSettingGroup`) of (platform select key, option arm);
+  order-sensitive arms fold by whole-sequence agreement with per-cell
+  verbatim AND arms on divergence. Platform-dependent option DEFAULTS
+  (`option(FOO "…" ${WIN32})`) stay a documented limitation: a
+  `bool_flag`/`string_flag` default can't vary per platform, so the
+  fold keeps the first surviving platform's //options package and
+  warns on divergence. Pass count multiplies as documented: M
+  platforms × (1+N options) configures first-order, and
   `cmake_dependent_option` makes some option interactions mandatory.
-  (2) **write-a threading** — the pipeline doesn't thread `--lift-options`
+  **Remaining:**
+  (1) **write-a threading** — the pipeline doesn't thread `--lift-options`
   into the conversion genrule / emit the //options package the way it does
   `--build-types` + //config. Demand signal for each: a corpus member
   whose meaningful variation is an `option()` toggle the fixed-value lens

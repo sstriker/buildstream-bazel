@@ -30,6 +30,18 @@
 #                        "linux windows darwin"; linux is the native
 #                        configure, the rest use survey-toolchains/).
 #   SURVEY_MP_OUT_DIR    output dir (default /tmp/survey-mp-out).
+#   SURVEY_MP_LIFT_OPTIONS  comma list of cmake option names to lift
+#                        (--lift-options) in EACH per-platform convert;
+#                        option arms fold through elementfold (agreeing
+#                        arms pass through, platform-conditional arms
+#                        become selects.config_setting_group AND-arms).
+#                        The //options package is taken from the FIRST
+#                        surviving platform's convert (a bool_flag /
+#                        string_flag default can't vary per platform —
+#                        option(FOO ... \${WIN32})-style platform-
+#                        dependent defaults keep the first platform's);
+#                        a divergence between platforms' //options
+#                        packages is surfaced as a warning.
 #
 # Output per project: <out>/<name>/<platform>/ir.json, the folded
 # <out>/<name>/BUILD.bazel, and a summary line reporting how many targets
@@ -50,6 +62,7 @@ cd "$repo_root"
 # project.
 platforms="${SURVEY_MP_PLATFORMS:-auto}"
 out_dir="${SURVEY_MP_OUT_DIR:-/tmp/survey-mp-out}"
+lift_options="${SURVEY_MP_LIFT_OPTIONS:-}"
 toolchain_dir="$repo_root/scripts/survey-toolchains"
 
 # cmake/ninja are required (the converter runs cmake itself). Skip
@@ -185,11 +198,16 @@ for entry in "$@"; do
             fi
             tc_arg="--toolchain-cmake-file=$tc_file"
         fi
-        # shellcheck disable=SC2086 # tc_arg is intentionally word-split (empty or one flag).
+        lift_args=""
+        if [ -n "$lift_options" ]; then
+            lift_args="--lift-options=$lift_options --out-option-settings=$cell_out/options-BUILD.bazel"
+        fi
+        # shellcheck disable=SC2086 # tc_arg/lift_args are intentionally word-split.
         if "$bin_dir/convert-element-cmake" \
             --source-root "$src" \
             --diagnostics \
             $tc_arg \
+            $lift_args \
             --out-ir-json "$cell_out/ir.json" \
             --out-build "$cell_out/BUILD.bazel" \
             > "$cell_out/convert.log" 2>&1
@@ -215,6 +233,24 @@ for entry in "$@"; do
         --out-build "$proj_out/BUILD.bazel" \
         > "$proj_out/fold.log" 2>&1
     then
+        # Stage the //options package from the first surviving cell (flag
+        # defaults are per-convert; they can't vary per platform), warning
+        # when another cell's package diverges — the operator picks which
+        # platform's defaults win.
+        if [ -n "$lift_options" ]; then
+            first_opts=""
+            for p in $ok_platforms; do
+                cell_opts="$proj_out/$p/options-BUILD.bazel"
+                [ -f "$cell_opts" ] || continue
+                if [ -z "$first_opts" ]; then
+                    first_opts="$cell_opts"
+                    mkdir -p "$proj_out/options"
+                    cp "$cell_opts" "$proj_out/options/BUILD.bazel"
+                elif ! cmp -s "$first_opts" "$cell_opts"; then
+                    echo "  $name: //options package differs between platforms ($first_opts vs $cell_opts) — platform-dependent option defaults keep the first platform's; review before staging" >&2
+                fi
+            done
+        fi
         # Count targets that gained a platform select() — the signal that
         # multi-platform intent landed (rules whose srcs/deps/etc. carry
         # `+ select({@platforms//...})`).
