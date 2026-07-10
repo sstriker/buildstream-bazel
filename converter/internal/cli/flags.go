@@ -614,9 +614,12 @@ type Args struct {
 	//
 	// Opt-in allow-list by design: lifting every detected option would
 	// multiply configure passes and explode the flag surface. Requires
-	// --source-root (the flip passes need a live configure) and is
-	// mutually exclusive with --build-types for now (option x config
-	// composition is the roadmap's stage d).
+	// --source-root (the flip passes need a live configure). Composes
+	// with --build-types: flips run the same multi-config generator
+	// and the 2D fold classifies each fact over the full
+	// (config x option-value) grid — pure-option facts land on
+	// //options arms, option x config-conditional facts on
+	// config_setting_group AND-arms.
 	LiftOptions []string
 
 	// OutOptionSettings is the path the //options package BUILD is
@@ -924,7 +927,7 @@ func registerFlags(fs *flag.FlagSet, a *Args) {
 	fs.StringVar(&a.OutCommonCompileFlagsFeature, "out-common-compile-flags-feature", "", "write a cc_toolchain feature (.bzl) carrying the longest copt prefix shared by every converted cc target (cmake's project-wide CMAKE_<LANG>_FLAGS), strip that prefix from each target's copts, and tag those targets features=[\"cmake_common_compile_flags\"] so the flags aren't duplicated per target. Thread COMMON_COMPILE_FLAGS_FEATURES into your cc_toolchain config (same as --out-sanitizer-features). Off by default (byte-stable inline emission).")
 	fs.BoolVar(&a.EmitCommonCompileFlagsBzl, "emit-common-compile-flags-bzl", false, "self-contained alternative to --out-common-compile-flags-feature: strip the longest shared copt prefix and rewrite each target's copts as COMMON_COPTS + [delta], with COMMON_COPTS in a generated common_compile_flags.bzl (next to the root BUILD) that every BUILD load()s. Needs no cc_toolchain wiring. Mutually exclusive with --out-common-compile-flags-feature.")
 	fs.StringVar(&a.OutConfigSettings, "out-config-settings", "", "write a //config package BUILD (string_flag build_type + one config_setting per non-sanitizer config in --build-types) backing the multi-config fold's //config:<name> select() arms, making the converted output self-contained. Phase 5 of the generator-parity uplift.")
-	fs.Var(commaSlice{&a.LiftOptions}, "lift-options", "comma-separated cmake option names to lift into build-time toggles: extra cold configures per name (a BOOL option() flipped once; an enum STRING cache entry with a STRINGS list re-configured per value), attribute deltas folded into select() arms over //options:<name>_{on,off} / //options:<name>_<value> config_settings, and option-derived configure_file bodies folded into write_file content select() arms (write the backing //options package with --out-option-settings). Targets the primary configure declares that a changed value doesn't gain a target_compatible_with select marking them @platforms//:incompatible under that arm (builds there skip them); targets declared only under non-configured values surface as re-convert breadcrumbs. Requires --source-root; mutually exclusive with --build-types (option-lift roadmap item).")
+	fs.Var(commaSlice{&a.LiftOptions}, "lift-options", "comma-separated cmake option names to lift into build-time toggles: extra cold configures per name (a BOOL option() flipped once; an enum STRING cache entry with a STRINGS list re-configured per value), attribute deltas folded into select() arms over //options:<name>_{on,off} / //options:<name>_<value> config_settings, and option-derived configure_file bodies folded into write_file content select() arms (write the backing //options package with --out-option-settings). Targets the primary configure declares that a changed value doesn't gain a target_compatible_with select marking them @platforms//:incompatible under that arm (builds there skip them); targets declared only under non-configured values surface as re-convert breadcrumbs. Requires --source-root; composes with --build-types (the 2D option x config fold routes option x config-conditional facts onto config_setting_group AND-arms).")
 	fs.StringVar(&a.OutOptionSettings, "out-option-settings", "", "write an //options package BUILD (bool_flag + _on/_off config_settings per lifted BOOL option; string_flag with values + per-value config_settings per lifted enum option) backing the option fold's select() arms. Toggle at build time with --//options:<name>=<value>.")
 	fs.StringVar(&a.AuditBazelIdiomReport, "audit-bazel-idiom-report", "", "write the structured bazelidiom audit findings (JSON) to this path. The audit pass itself runs unconditionally on every convert and surfaces findings on stderr.")
 	fs.StringVar(&a.AuditCoverageReport, "audit-coverage-report", "", "write the structured lens-3 dependency-coverage findings (JSON) to this path. The check runs unconditionally on every convert (findings to stderr); it flags trace target_link_libraries arms naming an in-codebase target that didn't land in any dep bucket.")
@@ -1010,17 +1013,13 @@ func parseValidate(a Args, fs *flag.FlagSet, stderr io.Writer) (Args, int) {
 	case a.CMakeBuildDir != "":
 		a.ReplyDir = filepath.Join(a.CMakeBuildDir, ".cmake", "api", "v1", "reply")
 	}
-	// --lift-options needs the flip configures (live cmake) and is
-	// single-axis for now: option x build-type composition is the
-	// option-lift roadmap item's stage (d), so combining the flags is
-	// rejected rather than quietly folding against the wrong baseline.
+	// --lift-options needs the flip configures (live cmake). Under
+	// --build-types the flips run the same multi-config generator and
+	// the 2D option x config fold classifies facts over the full
+	// (config x option-value) grid.
 	if len(a.LiftOptions) > 0 {
 		if a.SourceRoot == "" {
 			fmt.Fprintln(stderr, "convert-element-cmake: --lift-options requires --source-root (each lifted option runs an extra cmake configure with the option flipped)")
-			return a, ExitUsage
-		}
-		if len(a.BuildTypes) > 0 {
-			fmt.Fprintln(stderr, "convert-element-cmake: --lift-options is mutually exclusive with --build-types (option x build-type select composition isn't folded yet; see the option-lift ROADMAP.md item)")
 			return a, ExitUsage
 		}
 		for _, name := range a.LiftOptions {

@@ -15,6 +15,11 @@ if(BACKEND STREQUAL "fast")
   target_compile_definitions(foo PRIVATE USE_FAST_BACKEND=1)
 endif()
 
+# Option x config interaction: present only under (Debug AND FOO_FEATURE)
+# — the 2D fold's mixed-support shape (config_setting_group AND-arm).
+target_compile_definitions(foo PRIVATE
+  $<$<AND:$<CONFIG:Debug>,$<BOOL:${FOO_FEATURE}>>:FOO_DEBUG_EXTRA=1>)
+
 configure_file(cfg.h.in cfg.h)
 
 option(BUILD_EXTRA_TOOL "Build the extra tool" ON)
