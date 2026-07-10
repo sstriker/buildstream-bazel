@@ -563,41 +563,45 @@ func (r *Resolver) LookupCMakeTarget(name string) *Export {
 	return r.byCMakeTarget[name]
 }
 
-// LinkDepClosure returns the set of Bazel labels reachable from the seed
-// labels by following Export.Deps edges (the manifest's declared link
-// closure), the seeds themselves included. A consumer that static-links a
-// flattened archive closure uses it to tell a transitive archive — one
-// that re-enters through a directly-named export's Export.Deps and so is
-// safe to drop — from a DIRECT-link entry point nothing named pulls in
-// (unreachable → must be wired or the link fails with undefined symbols).
-// Deps are verbatim labels; a manifest that leaves Deps empty (the wrapper
-// model, where transitivity lives in Bazel, not the manifest) yields just
-// the seeds, so every non-seed archive reads as an entry point. A nil
-// resolver yields the empty set (not the seeds) — there is no manifest to
-// resolve against.
+// LinkDepClosure returns the set of Bazel labels that RE-ENTER a consumer's
+// link when it wires the seed labels: the seeds themselves plus each seed's
+// DIRECT Export.Deps. It deliberately does NOT chase deps-of-deps — this
+// mirrors exactly what lowering wires (lower.addExport adds ex.Deps
+// verbatim, one level) and the Export.Deps contract (a listed label's own
+// Deps are never chased; a hand-written manifest must pre-flatten each
+// export's full closure into its Deps, so one level here already covers it).
+// A consumer that static-links a flattened archive closure uses the result
+// to tell a transitive archive — one that re-enters through a directly-named
+// export's Deps and so is safe to drop — from a DIRECT-link entry point
+// nothing named pulls in (unreachable → must be wired or the link fails with
+// undefined symbols). A manifest that leaves Deps empty (the wrapper model,
+// where transitivity lives in Bazel, not the manifest) yields just the
+// seeds, so every non-seed archive reads as an entry point. A nil resolver
+// yields the empty set (not the seeds) — there is no manifest to resolve
+// against.
+//
+// Chasing transitively would be UNSOUND on a non-flattened manifest: it
+// could mark a label reachable through an intermediate export whose Deps
+// lowering never wires, dropping an archive that then fails to re-enter.
+// One level under-approximates instead — the safe direction (it only ever
+// over-attributes an entry edge, never drops a real one).
 func (r *Resolver) LinkDepClosure(seeds []string) map[string]bool {
 	closure := map[string]bool{}
 	if r == nil {
 		return closure
 	}
-	var stack []string
 	for _, s := range seeds {
-		if s != "" && !closure[s] {
-			closure[s] = true
-			stack = append(stack, s)
+		if s == "" {
+			continue
 		}
-	}
-	for len(stack) > 0 {
-		lbl := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		ex := r.byBazelLabel[lbl]
+		closure[s] = true
+		ex := r.byBazelLabel[s]
 		if ex == nil {
 			continue
 		}
 		for _, dep := range ex.Deps {
-			if dep != "" && !closure[dep] {
+			if dep != "" {
 				closure[dep] = true
-				stack = append(stack, dep)
 			}
 		}
 	}
