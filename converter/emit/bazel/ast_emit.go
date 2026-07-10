@@ -67,6 +67,8 @@ func astTargetStmtsByKind(t ir.Target, opts Options) ([]build.Expr, bool, error)
 		return one(boolFlagExpr(t))
 	case ir.KindConfigSetting:
 		return one(configSettingExpr(t))
+	case ir.KindConfigSettingGroup:
+		return one(configSettingGroupExpr(t))
 	case ir.KindPickFile:
 		return one(pickFileExpr(t))
 	case ir.KindCCHash:
@@ -423,6 +425,18 @@ func globExpr(patterns []string) build.Expr {
 
 // configSettingExpr is the AST form of emitConfigSetting: name, a single-entry
 // flag_values dict, optional visibility (no tags).
+// configSettingGroupExpr renders skylib's
+// selects.config_setting_group(name=, match_all=[…]) — the
+// AND-condition the elementfold option×platform fold's
+// platform-conditional option arms select on.
+func configSettingGroupExpr(t ir.Target) *build.CallExpr {
+	call, r := newCall("selects.config_setting_group")
+	r.SetAttr("name", strExpr(t.Name))
+	r.SetAttr("match_all", strListExpr(append([]string(nil), t.GroupMatchAll...)))
+	setListIfNonEmpty(r, "visibility", nonDefaultVisibility(t.Visibility))
+	return call
+}
+
 func configSettingExpr(t ir.Target) *build.CallExpr {
 	call, r := newCall("config_setting")
 	r.SetAttr("name", strExpr(t.Name))

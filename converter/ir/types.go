@@ -203,6 +203,16 @@ const (
 	// bespoke ir.Kind + emit path per tool. The emitter renders it generically
 	// (the spec's load() + the rule with its attrs).
 	KindNativeRule
+	// KindConfigSettingGroup renders as skylib's
+	// `selects.config_setting_group(name=, match_all=[…])` — the
+	// AND-condition backing a select() arm that must hold on TWO
+	// axes at once (the elementfold option×platform fold's
+	// platform-conditional option arms). Carries GroupMatchAll.
+	//
+	// Declared LAST: ir.json serializes Kind as its iota number, so
+	// new kinds append to keep previously persisted ir.json files
+	// (the fold-element flow's cells) decoding to the right kinds.
+	KindConfigSettingGroup
 )
 
 func (k Kind) String() string {
@@ -249,6 +259,8 @@ func (k Kind) String() string {
 		return "fortran_library"
 	case KindBoolFlag:
 		return "bool_flag"
+	case KindConfigSettingGroup:
+		return "config_setting_group"
 	case KindConfigSetting:
 		return "config_setting"
 	}
@@ -966,6 +978,11 @@ type Target struct {
 
 	// Build-setting fields, populated only for the lifted-feature-probe
 	// pair (KindBoolFlag / KindConfigSetting).
+
+	// GroupMatchAll is KindConfigSettingGroup's match_all member
+	// list: the select-key labels (config_settings and/or
+	// constraint_values) that must ALL hold for the group to match.
+	GroupMatchAll []string
 
 	// BoolFlagDefault is the bool_flag's build_setting_default — the
 	// value cmake's probe produced (false when the probe's value
