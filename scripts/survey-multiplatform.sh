@@ -62,7 +62,9 @@ cd "$repo_root"
 # project.
 platforms="${SURVEY_MP_PLATFORMS:-auto}"
 out_dir="${SURVEY_MP_OUT_DIR:-/tmp/survey-mp-out}"
-lift_options="${SURVEY_MP_LIFT_OPTIONS:-}"
+# Strip whitespace ("FOO, BAR" -> "FOO,BAR"): the converter rejects
+# padded option names and lift_args below is word-split.
+lift_options="$(printf '%s' "${SURVEY_MP_LIFT_OPTIONS:-}" | tr -d '[:space:]')"
 toolchain_dir="$repo_root/scripts/survey-toolchains"
 
 # cmake/ninja are required (the converter runs cmake itself). Skip
