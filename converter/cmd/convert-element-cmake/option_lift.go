@@ -78,7 +78,8 @@ type optionSpec struct {
 // cliDefault renders the spec's configured value the way the emitted
 // flag accepts it on the CLI: true/false for a bool_flag (the raw
 // cache value is ON/OFF, which --//options:<name>= would reject),
-// the cache string verbatim for an enum string_flag.
+// the cache string quoted (%q) for an enum string_flag so values
+// with spaces read unambiguously in the breadcrumb.
 func (s *optionSpec) cliDefault() string {
 	if s.enum {
 		return fmt.Sprintf("%q", s.baseValue)
