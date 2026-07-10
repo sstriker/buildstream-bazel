@@ -3697,19 +3697,23 @@ func directTraceDepClosure(directTraceLibs map[string]bool, imports *manifest.Re
 		return nil, false
 	}
 	var seeds []string
-	nSeeds, allEmpty := 0, true
+	allEmpty := true
 	for lib := range directTraceLibs {
 		ex := imports.LookupCMakeTarget(lib)
 		if ex == nil || ex.BazelLabel == "" {
 			continue
 		}
 		seeds = append(seeds, ex.BazelLabel)
-		nSeeds++
 		if len(ex.Deps) > 0 {
 			allEmpty = false
 		}
 	}
-	return imports.LinkDepClosure(seeds), nSeeds > 0 && allEmpty
+	if len(seeds) == 0 {
+		// No traced lib resolves to a manifest export — gate disabled, per
+		// the (nil, false) contract; nothing to reason about, attribute all.
+		return nil, false
+	}
+	return imports.LinkDepClosure(seeds), allEmpty
 }
 
 func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc targetLowerCtx) {
