@@ -129,12 +129,6 @@ const (
 	// flag the operator can flip (`--//pkg:have_x=False`). Default is
 	// BoolFlagDefault (the value cmake probed, when captured).
 	KindBoolFlag
-	// KindConfigSettingGroup renders as skylib's
-	// `selects.config_setting_group(name=, match_all=[…])` — the
-	// AND-condition backing a select() arm that must hold on TWO
-	// axes at once (the elementfold option×platform fold's
-	// platform-conditional option arms). Carries GroupMatchAll.
-	KindConfigSettingGroup
 	// KindConfigSetting renders as a `config_setting(name=,
 	// flag_values={<ConfigSettingFlag>: <ConfigSettingValue>})` — the
 	// select()-able condition paired with a KindBoolFlag so consumers
@@ -209,6 +203,16 @@ const (
 	// bespoke ir.Kind + emit path per tool. The emitter renders it generically
 	// (the spec's load() + the rule with its attrs).
 	KindNativeRule
+	// KindConfigSettingGroup renders as skylib's
+	// `selects.config_setting_group(name=, match_all=[…])` — the
+	// AND-condition backing a select() arm that must hold on TWO
+	// axes at once (the elementfold option×platform fold's
+	// platform-conditional option arms). Carries GroupMatchAll.
+	//
+	// Declared LAST: ir.json serializes Kind as its iota number, so
+	// new kinds append to keep previously persisted ir.json files
+	// (the fold-element flow's cells) decoding to the right kinds.
+	KindConfigSettingGroup
 )
 
 func (k Kind) String() string {
