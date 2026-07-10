@@ -223,3 +223,66 @@ func TestExportDeps_DependencyChannel(t *testing.T) {
 	}
 	assertExportClosure(t, exportDepsFind(t, pkg, "consumer").Deps, "dependency channel")
 }
+
+// TestExportDeps_WrapperSeedKeepsTransitiveDrop guards the wrapper-model
+// case: when the directly-traced seed is a cc_library WRAPPER label whose
+// Export.Deps are empty (transitivity lives in Bazel), a non-directly-named
+// flattened archive re-enters via Bazel and must still DROP — attributing
+// every internal archive would over-specify the graph. The entry-edge
+// recovery applies only to prebuilt/flattened seeds (non-empty Deps).
+func TestExportDeps_WrapperSeedKeepsTransitiveDrop(t *testing.T) {
+	res, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				// Wrapper seed: label models its own deps in Bazel, Deps empty.
+				{CMakeTarget: "Pkg::w", BazelLabel: "//elements/pkg:w", LinkPaths: []string{"/opt/prefix/lib/libw.a"}},
+				// Internal archive on the flattened line, not named, also a wrapper.
+				{CMakeTarget: "Pkg::internal", BazelLabel: "//elements/pkg:internal", LinkPaths: []string{"/opt/prefix/lib/libinternal.a"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"app::@": {
+			Name: "app", Type: "EXECUTABLE",
+			Sources:       []fileapi.TargetSource{{Path: "m.c", CompileGroupIndex: 0}},
+			CompileGroups: []fileapi.CompileGroup{{Language: "C", SourceIndexes: []int{0}}},
+			Link: &fileapi.TargetLink{
+				Language: "C",
+				CommandFragments: []fileapi.CommandFragment{
+					{Fragment: "/opt/prefix/lib/libw.a", Role: "libraries"},        // directly traced → wired
+					{Fragment: "/opt/prefix/lib/libinternal.a", Role: "libraries"}, // transitive via Bazel → drop
+				},
+			},
+		}},
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "app::@", Name: "app"}},
+			}},
+		},
+	}
+	traceRaw := []byte(
+		`{"args":["app","PUBLIC","Pkg::w"],"cmd":"target_link_libraries","file":"/s/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{Imports: res, TraceRaw: traceRaw, HostSourceRoot: "/s"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	app := exportDepsFind(t, pkg, "app")
+	if !stringSliceContains(app.Deps, "//elements/pkg:w") {
+		t.Errorf("directly-traced wrapper seed must be wired: %v", app.Deps)
+	}
+	// The internal archive re-enters via the wrapper's Bazel deps, so it must
+	// NOT be attributed as a direct dep — only breadcrumbed.
+	if stringSliceContains(app.Deps, "//elements/pkg:internal") {
+		t.Errorf("wrapper-model internal archive must DROP (re-enters via Bazel), not attribute: %v", app.Deps)
+	}
+	if !stringSliceContains(app.Tags, "cmake-transitive-link-drop=Pkg::internal") {
+		t.Errorf("dropped internal archive must leave a breadcrumb: %v", app.Tags)
+	}
+}
