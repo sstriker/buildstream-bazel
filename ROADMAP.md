@@ -1108,44 +1108,45 @@ trees, optional-feature deps, codegen instances). Each member's
   `--trace-source-root` is wired but no e2e job exercises it yet. Add a
   build-tracer-on-CI fixture so the trace-driven sibling gate can run too.
 
-- **pkg-config harvester: `${pcfiledir}` substvar.** The harvester
-  (`internal/harvest/pkgconfig.go`) parses `.pc` files directly (no `pkg-config`
-  binary) and expands `${var}` substvars — top-down nested definitions plus
-  `--define-prefix` relocation (the file's build-time `prefix=` is overridden by
-  the harvest seed) are understood and tested. The gap is pkg-config's built-in
-  **`${pcfiledir}`** (the directory containing the `.pc`): `vars` is seeded with
-  `prefix` only, so `${pcfiledir}` expands to empty. The increasingly-common
-  fully-relocatable idiom that derives paths from it rather than `prefix`
-  (`libdir=${pcfiledir}/../lib`, `Cflags: -I${pcfiledir}/../include`) then
-  silently drops its `-L`/`-I`. Fix is small and localized: seed
-  `vars["pcfiledir"]` (and `pc_sysrootdir`) from the `.pc` file's own directory in
-  `parsePkgConfig` before `parsePC` (the file path is already in hand), with a
-  fixture mirroring a pcfiledir-relocatable `.pc`. Lower-priority sibling edges,
-  same area: expansion is order-dependent (per-line accumulation vs pkg-config's
-  lazy any-order resolution — a define-after-use `.pc` mis-expands to empty), and
-  `$$` isn't unescaped to a literal `$`.
+- **pkg-config harvester: order-dependent substvar expansion + `$$`.** The
+  harvester (`internal/harvest/pkgconfig.go`) parses `.pc` files directly (no
+  `pkg-config` binary) and expands `${var}` substvars — top-down nested
+  definitions, `--define-prefix` relocation (the file's build-time `prefix=` is
+  overridden by the harvest seed), and the built-in `${pcfiledir}` /
+  `${pc_sysrootdir}` (the fully-relocatable idiom deriving paths from the file's
+  own directory, `libdir=${pcfiledir}/../lib`) are seeded and tested. Remaining
+  edges: expansion is order-dependent (per-line accumulation vs pkg-config's lazy
+  any-order resolution — a define-after-use `.pc` mis-expands to empty), and `$$`
+  isn't unescaped to a literal `$`.
 
-- **cmake-bundle harvester: non-`-l` link flags have no manifest channel.**
-  `applyLinkEntry` (`internal/harvest/cmake_bundle.go`) now unwraps the genex
-  shapes that carry real link edges — `$<LINK_ONLY:x>`, `$<INSTALL_INTERFACE:x>`
-  (consumer-visible for an installed prefix), and nested-condition
-  `$<$<CONFIG:…>:x>` / `$<$<PLATFORM_ID:…>:x>` (wired UNCONDITIONALLY: a superset
-  link edge is sound) — instead of dropping config-conditional sibling deps;
-  `$<BUILD_INTERFACE:x>` is dropped silently (empty for that consumer). The
-  remaining drop is non-`-l` link *flags* in `INTERFACE_LINK_LIBRARIES`
-  (`-pthread`, `-Wl,--as-needed`, `-framework Foo`): they warn and drop because
-  the `Export` has no flag channel. `wrappergen` now emits `linkopts` from
-  `Export.LinkLibraries`, so the channel exists downstream — the gap is the
-  harvester routing these flags into `linkLibs`/a linkopts channel rather than
-  warn-dropping at classification time. Demand signal: a harvested prefix whose
-  interface link line carries a bare `-Wl,…`/`-framework` a consumer needs.
-  Sibling gap, same area: `applyProperty` pre-splits `INTERFACE_LINK_LIBRARIES`
-  on `;` before `applyLinkEntry` sees each entry, so a *multi-dep* conditional
-  genex (`$<$<CONFIG:Release>:a;b>`) arrives already broken into
-  `$<$<CONFIG:Release>:a` (warns+drops — no closing `>`) and `b>` (falls to the
-  link-lib default, a garbage `b>` lib). The single-dep per-config sibling shape
-  this thread targets is handled; closing the multi-dep case needs
-  genex-aware `;`-splitting upstream of the classifier.
+- **cmake-bundle harvester: `-framework Foo` two-token link flags.**
+  `applyLinkEntry` (`internal/harvest/cmake_bundle.go`) now routes bare linker
+  flags (`-pthread`, `-Wl,…`, `-rdynamic`, `-framework`) verbatim into the
+  `link_libraries`→`linkopts` channel (`wrappergen` #798), and
+  `INTERFACE_LINK_LIBRARIES` / `INTERFACE_INCLUDE_DIRECTORIES` split genex-aware
+  (`splitTopLevelSemicolons`) so a multi-dep `$<$<CONFIG:…>:a;b>` no longer
+  shatters into a warn-drop plus a garbage `b>` lib. Residual: the two-token
+  `-framework;Foo` form still splits at the `;`, so the trailing `Foo` falls to
+  the bare-name default and becomes `-lFoo`. Closing it needs two-token lookahead
+  (a macOS-framework-aware classifier). Demand signal: a harvested macOS prefix
+  whose interface link line carries `-framework Foo`.
+
+- **Consumer-side link-graph fidelity — diagnostic + a fidelity gate.** The
+  producer side (harvester → `wrappergen`) no longer silently drops link edges,
+  but the CONSUMER lowering still can: `converter/internal/lower/lower.go`
+  `lowerLinkFragments` drops a transitive-only resolved archive with a bare
+  `continue` (no breadcrumb tag), and `converter/internal/coverage/coverage.go`
+  `AuditLinkDeps` is structurally blind to `find_package`/external `::` edges
+  (it `continue`s on `::` and only checks `inCodebase[lib]`), so it can't CATCH
+  such a drop. The parity goal ("link as solid as translation-unit fidelity")
+  needs: (1) a diagnostic tag at the consumer drop, mirroring
+  `attributeUnresolvedLibPath`'s `cmake-elided-link-fragment` breadcrumb; (2)
+  widening `AuditLinkDeps` to cross-check `::` arms against the imports manifest
+  resolver instead of skipping them; (3) a **link-graph fidelity** lens beside
+  `converter/cmd/compile-commands-diff/linkorder.go` (whose own comment flags
+  "external libs not yet matched") comparing the SET of link edges — including
+  external `::` via the imports manifest `BazelLabel` — with survey wiring
+  mirroring the compile-db / symbol-ELF fidelity lenses.
 
 ## Later (research / open questions)
 

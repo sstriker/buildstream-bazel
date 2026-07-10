@@ -45,7 +45,7 @@ func (h *harvester) parsePkgConfig() error {
 		if err != nil {
 			return err
 		}
-		r, foreign := h.parsePC(strings.TrimSuffix(filepath.Base(f), ".pc"), string(body))
+		r, foreign := h.parsePC(strings.TrimSuffix(filepath.Base(f), ".pc"), filepath.Dir(f), string(body))
 		pendings = append(pendings, pending{r, foreign})
 	}
 	// Placement: same library already harvested (SELF-artifact identity
@@ -114,8 +114,19 @@ func (h *harvester) resolvePCForeign(r *row, foreign []pcForeign) {
 	}
 }
 
-func (h *harvester) parsePC(name, body string) (*row, []pcForeign) {
-	vars := map[string]string{"prefix": strings.TrimSuffix(h.prefix, "/")}
+func (h *harvester) parsePC(name, pcdir, body string) (*row, []pcForeign) {
+	// Seed pkg-config's two built-in path vars alongside prefix.
+	// ${pcfiledir} is the directory holding THIS .pc file — the
+	// increasingly-common fully-relocatable idiom derives every path from
+	// it (libdir=${pcfiledir}/../lib, Cflags: -I${pcfiledir}/../include)
+	// rather than from prefix=; without the seed those expand empty and
+	// the -L/-I silently vanish. ${pc_sysrootdir} defaults empty (the
+	// PKG_CONFIG_SYSROOT_DIR-unset case), matching pkg-config.
+	vars := map[string]string{
+		"prefix":        strings.TrimSuffix(h.prefix, "/"),
+		"pcfiledir":     strings.TrimSuffix(pcdir, "/"),
+		"pc_sysrootdir": "",
+	}
 	fields := map[string]string{}
 	for _, line := range strings.Split(body, "\n") {
 		line = strings.TrimSpace(line)
