@@ -2984,7 +2984,7 @@ func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts
 	// when no trace was decoded (traceLinkLibs empty) or no collector
 	// was supplied.
 	if opts.Coverage != nil {
-		for _, f := range coverage.AuditLinkDeps(pkg, traceLinkLibs) {
+		for _, f := range coverage.AuditLinkDeps(pkg, traceLinkLibs, opts.Imports) {
 			opts.Coverage.Add(f)
 		}
 		// Unrecognized-command-FORM breadcrumb: surface a build-input-producing
@@ -3782,6 +3782,18 @@ func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 			// the gate entirely when no trace covers this
 			// target (directTraceLibs empty).
 			if len(directTraceLibs) > 0 && !directTraceLibs[export.CMakeTarget] {
+				// Leave a breadcrumb rather than dropping silently. The
+				// edge is intentionally not wired (it re-enters through a
+				// directly-named export's declared closure — see below),
+				// but recording it keeps the drop VISIBLE to the
+				// link-graph fidelity lens / coverage audit, matching the
+				// cmake-elided-link-fragment tag the unresolved path
+				// leaves. A genuinely lost edge then shows up as a missing
+				// breadcrumb, not as nothing at all.
+				tag := "cmake-transitive-link-drop=" + export.CMakeTarget
+				if !stringSliceContains(irt.Tags, tag) {
+					irt.Tags = append(irt.Tags, tag)
+				}
 				continue
 			}
 			// addExport (not bare add): the export's manifest-declared
