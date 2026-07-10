@@ -63,7 +63,7 @@ cd "$repo_root"
 platforms="${SURVEY_MP_PLATFORMS:-auto}"
 out_dir="${SURVEY_MP_OUT_DIR:-/tmp/survey-mp-out}"
 # Strip whitespace ("FOO, BAR" -> "FOO,BAR"): the converter rejects
-# padded option names and lift_args below is word-split.
+# padded option names.
 lift_options="$(printf '%s' "${SURVEY_MP_LIFT_OPTIONS:-}" | tr -d '[:space:]')"
 toolchain_dir="$repo_root/scripts/survey-toolchains"
 
@@ -200,16 +200,17 @@ for entry in "$@"; do
             fi
             tc_arg="--toolchain-cmake-file=$tc_file"
         fi
-        lift_args=""
-        if [ -n "$lift_options" ]; then
-            lift_args="--lift-options=$lift_options --out-option-settings=$cell_out/options-BUILD.bazel"
+        # Build the converter argv with set -- rather than word-split
+        # flag strings: each flag stays one argument, immune to glob
+        # expansion and IFS surprises in option names/paths.
+        set -- --source-root "$src" --diagnostics
+        if [ -n "$tc_arg" ]; then
+            set -- "$@" "$tc_arg"
         fi
-        # shellcheck disable=SC2086 # tc_arg/lift_args are intentionally word-split.
-        if "$bin_dir/convert-element-cmake" \
-            --source-root "$src" \
-            --diagnostics \
-            $tc_arg \
-            $lift_args \
+        if [ -n "$lift_options" ]; then
+            set -- "$@" "--lift-options=$lift_options" "--out-option-settings=$cell_out/options-BUILD.bazel"
+        fi
+        if "$bin_dir/convert-element-cmake" "$@" \
             --out-ir-json "$cell_out/ir.json" \
             --out-build "$cell_out/BUILD.bazel" \
             > "$cell_out/convert.log" 2>&1
