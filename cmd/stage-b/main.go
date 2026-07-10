@@ -113,6 +113,7 @@ func run(a args) ([]string, error) {
 	}
 
 	bElements := filepath.Join(a.projectB, "elements")
+	optionsBuilds := map[string][]byte{}
 	entries, err := os.ReadDir(bElements)
 	if err != nil {
 		return nil, fmt.Errorf("read project B elements/ (%s): %v", bElements, err)
@@ -182,6 +183,11 @@ func run(a args) ([]string, error) {
 		if err := stageSidecar(filepath.Join(aElements, name), filepath.Join(bElements, name), "common_compile_flags.bzl"); err != nil {
 			return nil, fmt.Errorf("stage common_compile_flags.bzl for %s: %v", name, err)
 		}
+		// Option lift: the converter emits options-BUILD.bazel next to
+		// BUILD.bazel.out when --lift-options is threaded (a header-only
+		// placeholder when the element lifted nothing). Collect the
+		// substantive ones for the root //options package staging below.
+		collectOptionsBuild(aElements, name, optionsBuilds)
 		dst := filepath.Join(bElements, name, "BUILD.bazel")
 		dstBytes, err := os.ReadFile(dst)
 		if err != nil && !os.IsNotExist(err) {
@@ -199,7 +205,71 @@ func run(a args) ([]string, error) {
 		changed = append(changed, "elements/"+name)
 	}
 	sort.Strings(changed)
+	if ch, err := stageOptionsPackage(a.projectB, optionsBuilds); err != nil {
+		return nil, err
+	} else if ch {
+		changed = append(changed, "options")
+		sort.Strings(changed)
+	}
 	return changed, nil
+}
+
+// collectOptionsBuild records one element's options-BUILD.bazel bytes
+// when the file exists and actually declares flags (the converter
+// writes a header-only placeholder when the element lifted nothing —
+// detected by the absence of any flag rule).
+func collectOptionsBuild(aElements, name string, sink map[string][]byte) {
+	body, err := os.ReadFile(filepath.Join(aElements, name, "options-BUILD.bazel"))
+	if err != nil {
+		return // absent: --lift-options wasn't threaded for this element
+	}
+	if !bytes.Contains(body, []byte("_flag(")) {
+		return // placeholder: nothing lifted
+	}
+	sink[name] = body
+}
+
+// stageOptionsPackage stages project B's root //options package from
+// the elements' converter-produced options-BUILD.bazel files. The
+// //options:<name> labels in the staged BUILDs are absolute, so ONE
+// root package backs every element. When several elements lift
+// options, their packages must agree byte-for-byte — flag DEFAULTS
+// are per-convert, so a divergence means the elements resolved
+// different option values; the FIRST element (sorted) wins and the
+// divergence is surfaced for the operator to reconcile (harmonize
+// the --lift-options set / cmake defines and re-convert). Returns
+// whether the staged package changed.
+func stageOptionsPackage(bRoot string, optionsBuilds map[string][]byte) (bool, error) {
+	if len(optionsBuilds) == 0 {
+		return false, nil
+	}
+	names := make([]string, 0, len(optionsBuilds))
+	for n := range optionsBuilds {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	first := names[0]
+	body := optionsBuilds[first]
+	for _, n := range names[1:] {
+		if !bytes.Equal(optionsBuilds[n], body) {
+			fmt.Fprintf(os.Stderr, "stage-b: warning: //options package differs between elements %s and %s (per-convert flag defaults?); staging %s's — reconcile and re-convert if %s's toggles matter\n", first, n, first, n)
+		}
+	}
+	dst := filepath.Join(bRoot, "options", "BUILD.bazel")
+	existing, err := os.ReadFile(dst)
+	if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("read staged //options package: %v", err)
+	}
+	if bytes.Equal(existing, body) {
+		return false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return false, fmt.Errorf("stage //options dir: %v", err)
+	}
+	if err := os.WriteFile(dst, body, 0o644); err != nil {
+		return false, fmt.Errorf("stage //options package: %v", err)
+	}
+	return true, nil
 }
 
 // stageSidecar copies a per-element converter sidecar file (e.g.

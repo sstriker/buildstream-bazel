@@ -119,6 +119,15 @@ var cmakeConfig struct {
 	// single-config render byte-stable.
 	buildTypes []string
 
+	// liftOptions, when non-empty, threads --lift-options=<names> +
+	// --out-option-settings into each kind:cmake converter genrule
+	// (the option-lift ROADMAP.md item): the converter folds option
+	// deltas into //options:<name> select() arms in BUILD.bazel.out
+	// and produces options-BUILD.bazel (a header-only placeholder
+	// when nothing lifts — declared genrule outs must exist).
+	// stage-b stages the //options package into project B.
+	liftOptions []string
+
 	// autoBuildTypes selects --build-types=auto: the converter genrule
 	// gets --build-types=auto (convert-element-cmake configures Ninja
 	// Multi-Config without forcing CMAKE_CONFIGURATION_TYPES, so the
@@ -555,7 +564,7 @@ genrule(
         "read_paths.json",
         "cmake-config-bundle.tar",
         "exports.json",
-        "conversion-todos.json",%[11]s%[20]s
+        "conversion-todos.json",%[11]s%[20]s%[22]s
     ],
     cmd = """
         # Build a unified source-root by merging real srcs (workspace
@@ -588,7 +597,7 @@ genrule(
             --out-read-paths="$(location read_paths.json)" \\
             --out-exports="$(location exports.json)" \\
             --conversion-todos-report="$(location conversion-todos.json)" \\
-            --bazel-package-path="elements/%[1]s"%[4]s%[5]s%[6]s%[7]s%[8]s%[9]s%[10]s%[12]s%[16]s%[19]s
+            --bazel-package-path="elements/%[1]s"%[4]s%[5]s%[6]s%[7]s%[8]s%[9]s%[10]s%[12]s%[16]s%[19]s%[21]s
         tar -cf "$(location cmake-config-bundle.tar)" -C "$$BUNDLE_DIR" .%[17]s
     """,
     tools = ["//tools:convert-element-cmake"],
@@ -611,7 +620,7 @@ filegroup(
     name = "cmake_config_bundle",
     srcs = ["cmake-config-bundle.tar"],
 )
-`, elem.Name, srcsList, flags.depExtract, flags.prefix, flags.imports, flags.lift, flags.fallback, flags.fidelity, flags.bakeIn, flags.diagnostics, flags.diagnosticOuts, exportsInFlag, primaryOut, outBuildSetup, outBuildFlag, splitFlag, buildPackagingStep, buildBazelSrcs, flags.buildTypes, flags.downloadReposOut)
+`, elem.Name, srcsList, flags.depExtract, flags.prefix, flags.imports, flags.lift, flags.fallback, flags.fidelity, flags.bakeIn, flags.diagnostics, flags.diagnosticOuts, exportsInFlag, primaryOut, outBuildSetup, outBuildFlag, splitFlag, buildPackagingStep, buildBazelSrcs, flags.buildTypes, flags.downloadReposOut, flags.liftOptions, flags.optionSettingsOut)
 	return b.String()
 }
 
@@ -651,12 +660,17 @@ func composeCmakeGenruleSrcs(elem *element, cmakeDepLabels []cmakeDepBundleLabel
 // inactive, keeping the rendered genrule byte-stable for legacy callsites that
 // never set the dial.
 type cmakeConverterFlags struct {
-	fidelity       string
-	bakeIn         string
-	buildTypes     string
-	diagnostics    string
-	diagnosticOuts string
-	lift           string
+	fidelity   string
+	bakeIn     string
+	buildTypes string
+	// liftOptions threads --lift-options + --out-option-settings;
+	// optionSettingsOut adds the options-BUILD.bazel output to the
+	// genrule's outs (the download-repos.json pattern).
+	liftOptions       string
+	optionSettingsOut string
+	diagnostics       string
+	diagnosticOuts    string
+	lift              string
 	// downloadReposOut adds the download-repos.json output to the genrule's
 	// outs (mirrors diagnosticOuts) when --lift-download is set; the matching
 	// --out-download-repos flag rides f.lift.
@@ -692,6 +706,17 @@ func buildCmakeConverterFlags(cmakeDepLabels []cmakeDepBundleLabel) cmakeConvert
 	} else if len(cmakeConfig.buildTypes) > 0 {
 		f.buildTypes = fmt.Sprintf(` \
             --build-types=%s`, strings.Join(cmakeConfig.buildTypes, ","))
+	}
+	// Option lift: thread the allow-list + the //options package
+	// output. The converter always writes options-BUILD.bazel when
+	// --out-option-settings is set (header-only placeholder when the
+	// element lifts nothing), so the declared out is safe.
+	if len(cmakeConfig.liftOptions) > 0 {
+		f.liftOptions = fmt.Sprintf(` \
+            --lift-options=%s \
+            --out-option-settings="$(location options-BUILD.bazel)"`, strings.Join(cmakeConfig.liftOptions, ","))
+		f.optionSettingsOut = `
+        "options-BUILD.bazel",`
 	}
 	// Diagnostics dial: thread --diagnostics + a per-element
 	// rejections.json output. The converter writes the file (empty

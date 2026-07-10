@@ -414,6 +414,7 @@ type writeACLI struct {
 	gazelleCC             bool
 	splitPackages         bool
 	buildTypes            string
+	liftOptions           string
 	cmakeRound2Fallback   bool
 	mesonBin              string
 	mesonRound2Fallback   bool
@@ -457,6 +458,7 @@ func parseWriteAFlags() *writeACLI {
 	flag.BoolVar(&a.gazelleCC, "gazelle-cc", false, "optional: wire gazelle_cc into project B so `bazel run //:gazelle` maintains the converted BUILDs (the Phase-8b continuous-conversion flow: the converter bootstraps the per-directory split via --split-packages, then gazelle_cc canonicalizes / owns the layout — relocating cc_library targets to their source dirs, preferring implementation_deps; converter targets gazelle_cc can't regenerate carry rule-level # keep to survive). Adds bazel_dep(gazelle/gazelle_cc/rules_go) to project B's MODULE.bazel and a gazelle_binary(languages=[\"@gazelle_cc//language/cc\"]) + gazelle(name=\"gazelle\") pair to project B's root BUILD.bazel. No go_sdk extension is emitted — gazelle_cc's transitive go_sdk.download handles the toolchain in network-having environments; the sandbox e2e gate appends go_sdk.host() to overlay.MODULE.bazel. Off (the default) leaves project B's MODULE.bazel + root BUILD.bazel byte-identical to today. See docs/design/cmake-split-packages.md.")
 	flag.BoolVar(&a.splitPackages, "split-packages", false, "optional: render kind:cmake elements as one BUILD.bazel per CMake source directory (the gazelle per-directory model) instead of a single monolithic BUILD per element. The converter genrule threads --split-packages and emits a single build-packages.tar of the per-sub-package tree (a genrule can't declare the discovered-at-action-time sub-package set as static outs); stage-b unpacks it into project B's elements/<name>/. Off (the default) keeps the single-BUILD shape. See docs/design/cmake-split-packages.md.")
 	flag.StringVar(&a.buildTypes, "build-types", "", "optional: \"auto\" or a comma-separated list of cmake configuration names (e.g. \"Debug,Release,RelWithDebInfo\"). \"auto\" detects each kind:cmake element's own CMAKE_CONFIGURATION_TYPES via a throwaway Ninja Multi-Config configure at render time (falling back to cmake's standard set when cmake is absent or an element's configure fails) and uses their union. Either form threads --build-types into every kind:cmake converter genrule so cmake runs under the Ninja Multi-Config generator and BUILD.bazel.out carries the per-config //config:<name> select() arms (Phase 5 multi-config fold). write-a renders the matching //config package (string_flag build_type + one config_setting per config) into project B so the labels resolve; select a config at build time with --//config:build_type=<name>. Empty (default) keeps the single-config render byte-stable.")
+	flag.StringVar(&a.liftOptions, "lift-options", "", "optional: comma-separated cmake option names to lift into build-time toggles (the option-lift ROADMAP.md item). Threads --lift-options + --out-option-settings into every kind:cmake converter genrule: the converter runs flip configures per option, folds the deltas into //options:<name> select() arms in BUILD.bazel.out, and produces options-BUILD.bazel as a build artifact (a header-only placeholder when the element lifts nothing). stage-b stages the lifted elements' //options package into project B (first element wins on divergence, with a warning — flag DEFAULTS are per-convert). Composes with --build-types (the 2D option x config fold). Not yet supported with --split-packages. Empty (default) keeps the render byte-stable.")
 	flag.BoolVar(&a.cmakeRound2Fallback, "cmake-round2-fallback", false, "optional: enable kind:cmake round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-execute-process-fallback=true into convert-element-cmake so classifier refusals on execute_process produce the placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (cmake configure + ninja + install + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (action-time :<elem>_trace_load via the kind-agnostic trace_load rule in rules/traces.bzl) is staged today; convert-element-cmake doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/rendezvous.md.")
 	flag.StringVar(&a.mesonBin, "convert-element-meson", "", "optional: path to convert-element-meson. When set, kind:meson elements render natively (per-element genrule that runs `meson setup` + introspection-driven IR translation, producing cc_library / cc_binary in BUILD.bazel.out). Off (the default) preserves the legacy pipeline-shape coarse install genrule. See docs/architecture.md.")
 	flag.BoolVar(&a.mesonRound2Fallback, "meson-round2-fallback", false, "optional: enable kind:meson round-2 fallback shape (Phase B). Project A's converter genrule threads --unsupported-target-fallback=true into convert-element-meson so native-lowering refusals (subproject, custom_target, generated_sources, cross-compile, unresolved-dependency, unknown target type) produce the install-plan-driven placeholder shape instead of Tier-1 exit; Project B emits a real install genrule (meson setup + ninja + meson install --destdir + tar under build-tracer + inline trace-publish) replacing the current placeholder RenderB. Requires --convert-element-meson + --build-tracer-bin + --trace-publish-bin + --trace-lookup-bin: the lookup wiring (action-time :<elem>_trace_load via the kind-agnostic trace_load rule in rules/traces.bzl) is staged today; convert-element-meson doesn't yet CONSUME the trace bytes for refusal-refinement (that's queued behind the trace-driven convergence research follow-on) but the wiring is in place so the follow-on is converter-side only. See docs/design/rendezvous.md.")
@@ -566,6 +568,22 @@ func applyWriteAModes(a *writeACLI) (resolvedModes, modeFlags) {
 		for _, bt := range strings.Split(a.buildTypes, ",") {
 			if bt = strings.TrimSpace(bt); bt != "" {
 				cmakeConfig.buildTypes = append(cmakeConfig.buildTypes, bt)
+			}
+		}
+	}
+	// --lift-options threads verbatim (option resolution happens in the
+	// converter genrule against each element's own cache). The split-
+	// packages TreeArtifact path doesn't carry the options-BUILD output
+	// yet — fail fast rather than render a tree whose //options labels
+	// dangle.
+	if a.liftOptions != "" {
+		if a.splitPackages {
+			fmt.Fprintln(os.Stderr, "write-a: --lift-options is not yet supported with --split-packages")
+			os.Exit(1)
+		}
+		for _, name := range strings.Split(a.liftOptions, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				cmakeConfig.liftOptions = append(cmakeConfig.liftOptions, name)
 			}
 		}
 	}
