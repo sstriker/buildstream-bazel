@@ -149,6 +149,8 @@ func (h *harvester) applyLinkEntry(r *row, v string) {
 		// closing '>', e.g. a genex split on an unexpected ';') falls
 		// through to the generic warn path below so the parse issue
 		// surfaces instead of vanishing.
+	case strings.HasPrefix(v, "$<LINK_GROUP:") && strings.HasSuffix(v, ">"):
+		h.applyLinkGroup(r, v[len("$<LINK_GROUP:"):len(v)-1])
 	case strings.HasPrefix(v, "$<$<"):
 		if content, ok := conditionalGenexContent(v); ok {
 			h.applyGenexContent(r, content)
@@ -190,6 +192,29 @@ func (h *harvester) applyLinkEntry(r *row, v string) {
 func (h *harvester) applyGenexContent(r *row, content string) {
 	for _, item := range splitTopLevelSemicolons(content) {
 		h.applyLinkEntry(r, item)
+	}
+}
+
+// applyLinkGroup handles $<LINK_GROUP:feature,lib1,lib2,…> — cmake's
+// cyclic static-archive bracket (it emits --start-group/--end-group so a
+// single-pass linker rescans the group). The first ','-element is the group
+// feature (RESCAN, …); the rest are the mutually-cyclic members. Each member
+// is wired as a normal link entry AND recorded so markCyclicGroups can flag
+// its row alwayslink — the Bazel-native whole-archive equivalent of the
+// group bracket. Members use ',' separators (not ';'), so the entry arrives
+// whole from the top-level split.
+func (h *harvester) applyLinkGroup(r *row, content string) {
+	parts := strings.Split(content, ",")
+	if len(parts) < 2 {
+		return
+	}
+	for _, m := range parts[1:] { // parts[0] is the feature/decorator
+		m = strings.TrimSpace(m)
+		if m == "" {
+			continue
+		}
+		h.applyLinkEntry(r, m)
+		h.cyclicGroups[m] = true
 	}
 }
 

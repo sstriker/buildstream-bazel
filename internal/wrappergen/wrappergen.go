@@ -153,6 +153,13 @@ func renderLibrary(b *strings.Builder, name string, ex *manifest.Export, oldLabe
 			attr = "shared_library"
 		}
 		fmt.Fprintf(b, "    %s = %q,\n", attr, archiveRel)
+		// A cyclic static-archive SCC member: whole-archive it so every
+		// object links regardless of position (cmake broke the cycle by
+		// repetition / --start-group; alwayslink is the Bazel equivalent).
+		// Only meaningful for a static archive.
+		if ex.AlwaysLink && attr == "static_library" {
+			b.WriteString("    alwayslink = True,\n")
+		}
 		b.WriteString("    visibility = [\"//visibility:private\"],\n)\n\n")
 	}
 	fmt.Fprintf(b, "cc_library(\n    name = %q,\n", name)
