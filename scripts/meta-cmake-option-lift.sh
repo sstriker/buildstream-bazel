@@ -107,8 +107,11 @@ grep -qE 'lift-options FOO_FEATURE: lifted .* 0 write_file body' "$work_dir/conv
 # the target renders unconditionally with a target_compatible_with
 # select() marking it incompatible under the OFF arm.
 grep -qF 'name = "extra_tool"' "$build" || fail "option-gated cc_binary extra_tool missing from the BUILD"
-grep -qF 'target_compatible_with = select({' "$build" || fail "target_compatible_with select missing (existence gate)"
-grep -qF '"//options:build_extra_tool_off": ["@platforms//:incompatible"]' "$build" || fail "incompatible arm for build_extra_tool_off missing"
+# Scope the gate assertions to the extra_tool stanza itself, not the
+# whole BUILD (another rule matching would false-positive).
+tool_stanza=$(sed -n '/name = "extra_tool"/,/^)/p' "$build")
+printf '%s' "$tool_stanza" | grep -qF 'target_compatible_with = select({' || fail "extra_tool lacks the target_compatible_with select (existence gate)"
+printf '%s' "$tool_stanza" | grep -qF '"//options:build_extra_tool_off": ["@platforms//:incompatible"]' || fail "extra_tool lacks the incompatible arm for build_extra_tool_off"
 grep -qF 'name = "build_extra_tool"' "$options_build" || fail "//options bool_flag for BUILD_EXTRA_TOOL missing"
 
 echo "ok  meta-cmake-option-lift: bool + enum option arms, flag package, and per-option content select rendered"
@@ -134,7 +137,7 @@ fi
 
 ws="$work_dir/ws"
 mkdir -p "$ws/options"
-cp "$fixture"/common.c "$fixture"/feature.c "$ws/"
+cp "$fixture"/common.c "$fixture"/feature.c "$fixture"/tool.c "$ws/"
 cp "$build" "$ws/BUILD.bazel"
 cp "$options_build" "$ws/options/BUILD.bazel"
 # The write_file rule provides cfg.h; the source-tree template isn't
