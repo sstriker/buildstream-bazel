@@ -42,7 +42,10 @@ func OptionCellLabel(option string, on bool) string {
 // string_flag + per-value config_settings come from the same
 // emit/optionsettings package; the parity test pins the naming.
 // Value sanitization mirrors the target-name-safe subset: lowercase
-// with every rune outside [a-z0-9._-] mapped to '_'. Callers must
+// with every BYTE outside [a-z0-9._-] mapped to '_' (a multi-byte
+// rune maps to one '_' per byte — cmake cache values are ASCII in
+// practice, and the suffix-collision guard covers the rest). Callers
+// must
 // guard against two allowed values sanitizing to the same suffix
 // (skip the option) — the labels would collide.
 func OptionValueCellLabel(option, value string) string {
@@ -50,8 +53,8 @@ func OptionValueCellLabel(option, value string) string {
 }
 
 // SanitizeOptionValue maps an enum option's allowed value onto the
-// label-safe suffix OptionValueCellLabel uses: lowercased, with
-// every rune outside [a-z0-9._-] replaced by '_'.
+// label-safe suffix OptionValueCellLabel uses: ASCII-lowercased, with
+// every byte outside [a-z0-9._-] replaced by '_'.
 func SanitizeOptionValue(value string) string {
 	out := make([]byte, 0, len(value))
 	for i := 0; i < len(value); i++ {

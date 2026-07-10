@@ -58,12 +58,14 @@ func ApplyPerConfigBakes(pkg *ir.Package, bakes map[string]map[string][]byte, re
 // lying arm.
 //
 // Each captured body is re-anchored with the SAME policy its target's
-// primary body got, so a path-spelling delta between a scratch dir
-// (<buildDir>-cfg-<name> / <buildDir>-opt-<i>-<name>) and the primary dir
-// can't fabricate a select(): file_generate-driven bakes go through
+// primary body got: file_generate-driven bakes go through
 // reanchorResponseContent (exec-root form + @BSB_GENDIR@ markers),
-// everything else through the configure_file strip policy (prefix removal,
-// extended to the scratch dirs).
+// everything else through the configure_file strip policy. Those helpers
+// strip the primary build dir and the per-config bake's -cfg-<name>
+// sibling dirs ONLY — they know nothing about the option lift's
+// -opt-<i>-<name> scratch dirs, so the option-axis caller canonicalizes
+// each flip body's scratch-dir spelling onto the primary build dir BEFORE
+// handing bytes here (see collectOption in cmd/convert-element-cmake).
 //
 // Returns the names of the targets that gained per-cell content, for the
 // caller's stderr surfacing.
