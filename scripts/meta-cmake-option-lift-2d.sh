@@ -77,5 +77,13 @@ grep -qF '"//options:foo_feature_on",' "$options_build" || fail "group match_all
 grep -qF '"//options:backend_fast": ["USE_FAST_BACKEND=1"]' "$build" || fail "pure enum option arm missing"
 grep -qF '"//options:foo_feature_on": ["FOO_FEATURE=1"]' "$build" || fail "pure bool option arm missing"
 grep -qF 'name = "build_type"' "$work_dir/config-BUILD.bazel" || fail "//config package missing"
+# Partially-present enum target: absent under turbo (existence gate),
+# but its per-value define must STILL fold over the present values —
+# dropping partially-present targets from the 2D grid would silently
+# hand the fast build the ref attributes.
+partial_stanza=$(sed -n '/name = "partial"/,/^)/p' "$build")
+[ -n "$partial_stanza" ] || fail "partially-present enum target missing from the BUILD"
+printf '%s' "$partial_stanza" | grep -qF '"//options:backend_fast": ["PARTIAL_FAST=1"]' || fail "partial target lost its per-value arm (2D fold dropped a partially-present target)"
+printf '%s' "$partial_stanza" | grep -qF '"//options:backend_turbo": ["@platforms//:incompatible"]' || fail "partial target lacks the turbo existence gate"
 
 echo "ok  meta-cmake-option-lift-2d: option x config interaction rendered as a config_setting_group AND-arm; pure arms per axis"
