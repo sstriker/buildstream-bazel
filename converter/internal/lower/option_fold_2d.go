@@ -50,8 +50,10 @@ type OptionGroup struct {
 	MatchAll []string
 }
 
-// GroupLabel/groupName mint the AND-arm's label from its config name
-// and option-arm label: //options:<cfg>_and_<option-arm-suffix>.
+// groupName mints the AND-group's TARGET NAME (the //options-package
+// target) from its config name and option-arm label:
+// <cfg>_and_<option-arm-suffix>. Callers prepend "//options:" to form
+// the select-arm label.
 func groupName(config, valueArm string) string {
 	return toLower(config) + "_and_" + strings.TrimPrefix(valueArm, "//options:")
 }
