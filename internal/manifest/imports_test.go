@@ -247,8 +247,11 @@ func TestResolver_NilAndEmpty(t *testing.T) {
 }
 
 // TestLinkDepClosure walks the transitive Export.Deps closure (seeds
-// included), chases multi-hop label chains, and yields just the seeds
-// when Deps are empty (the wrapper model, where transitivity is Bazel's).
+// included), chases multi-hop label chains, excludes an island, and — for
+// a seed whose own export declares no Deps — yields just that seed. That
+// no-Deps case is the per-export mechanism behind the wrapper model (where
+// every export leaves Deps empty and transitivity lives in Bazel): each
+// such seed reads as a link entry point.
 func TestLinkDepClosure(t *testing.T) {
 	r, err := manifest.Index(&manifest.Imports{
 		Version: 1,
@@ -275,9 +278,10 @@ func TestLinkDepClosure(t *testing.T) {
 	if cl["//p:z"] {
 		t.Errorf("island //p:z must not be reachable from //p:a: %v", cl)
 	}
-	// Empty Deps (wrapper model): closure is just the seed.
+	// A seed whose export declares no Deps yields just that seed (the
+	// per-export wrapper-model shape — an entry point with no closure).
 	if cl := r.LinkDepClosure([]string{"//p:z"}); len(cl) != 1 || !cl["//p:z"] {
-		t.Errorf("empty-Deps closure must be just the seed: %v", cl)
+		t.Errorf("no-Deps seed closure must be just the seed: %v", cl)
 	}
 	// Nil resolver is safe.
 	var nilR *manifest.Resolver

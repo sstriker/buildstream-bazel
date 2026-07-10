@@ -271,6 +271,7 @@ func LoadDoc(path string) (*Imports, error) {
 func LoadMerged(paths ...string) (*Resolver, error) {
 	r := &Resolver{
 		byCMakeTarget:   map[string]*Export{},
+		byBazelLabel:    map[string]*Export{},
 		byElement:       map[string]*Element{},
 		byLinkPath:      map[string]*Export{},
 		byLinkLib:       map[string]*Export{},
@@ -309,6 +310,7 @@ func LoadMerged(paths ...string) (*Resolver, error) {
 					return nil, fmt.Errorf("manifest: %s element %q export %q: empty bazel_label", p, el.Name, ex.CMakeTarget)
 				}
 				r.byCMakeTarget[ex.CMakeTarget] = ex
+				r.byBazelLabel[ex.BazelLabel] = ex
 				for _, lp := range ex.LinkPaths {
 					r.byLinkPath[lp] = ex
 				}
@@ -342,6 +344,7 @@ func Index(im *Imports) (*Resolver, error) {
 	}
 	r := &Resolver{
 		byCMakeTarget:   map[string]*Export{},
+		byBazelLabel:    map[string]*Export{},
 		byElement:       map[string]*Element{},
 		byLinkPath:      map[string]*Export{},
 		byLinkLib:       map[string]*Export{},
@@ -376,6 +379,7 @@ func Index(im *Imports) (*Resolver, error) {
 					ex.CMakeTarget, el.Name, findElementForExport(im, existing))
 			}
 			r.byCMakeTarget[ex.CMakeTarget] = ex
+			r.byBazelLabel[ex.BazelLabel] = ex
 			for _, lp := range ex.LinkPaths {
 				r.byLinkPath[lp] = ex
 			}
@@ -417,6 +421,7 @@ func findElementForExport(im *Imports, ex *Export) string {
 // safe (no mutation post-Load).
 type Resolver struct {
 	byCMakeTarget   map[string]*Export
+	byBazelLabel    map[string]*Export // for LinkDepClosure's Export.Deps walk
 	byElement       map[string]*Element
 	byLinkPath      map[string]*Export
 	byLinkLib       map[string]*Export
@@ -490,6 +495,7 @@ func (r *Resolver) HasTools() bool {
 func NewResolver() *Resolver {
 	return &Resolver{
 		byCMakeTarget:   map[string]*Export{},
+		byBazelLabel:    map[string]*Export{},
 		byElement:       map[string]*Element{},
 		byLinkPath:      map[string]*Export{},
 		byLinkLib:       map[string]*Export{},
@@ -563,12 +569,6 @@ func (r *Resolver) LinkDepClosure(seeds []string) map[string]bool {
 	if r == nil {
 		return closure
 	}
-	byLabel := make(map[string]*Export, len(r.byCMakeTarget))
-	for _, ex := range r.byCMakeTarget {
-		if ex.BazelLabel != "" {
-			byLabel[ex.BazelLabel] = ex
-		}
-	}
 	var stack []string
 	for _, s := range seeds {
 		if s != "" && !closure[s] {
@@ -579,7 +579,7 @@ func (r *Resolver) LinkDepClosure(seeds []string) map[string]bool {
 	for len(stack) > 0 {
 		lbl := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		ex := byLabel[lbl]
+		ex := r.byBazelLabel[lbl]
 		if ex == nil {
 			continue
 		}
