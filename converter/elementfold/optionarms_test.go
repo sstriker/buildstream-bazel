@@ -2,6 +2,7 @@ package elementfold
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/ir"
@@ -170,5 +171,78 @@ func TestGroupSink_SanitizeCollisionDisambiguates(t *testing.T) {
 	}
 	if got := sink.defs[b].GroupMatchAll[0]; got != "//platforms:linux_x86_64" {
 		t.Errorf("disambiguated group's match_all: %v", sink.defs[b].GroupMatchAll)
+	}
+}
+
+// A "//conditions:default" arm (an if-chain's else() arm) that agrees
+// across cells passes through; one that DIVERGES errors — default is
+// not a config_setting, so (platform AND default) has no
+// config_setting_group spelling and minting one would render an
+// unusable BUILD.
+func TestFold_DefaultArmAgreesPassesThrough(t *testing.T) {
+	mk := func() ir.Package {
+		return ir.Package{
+			Name: "p",
+			Targets: []ir.Target{{
+				Name: "lib", Kind: ir.KindCCLibrary,
+				PerPlatform: map[string]map[string][]string{
+					"srcs": {
+						"@platforms//os:windows": {"win.c"},
+						"//conditions:default":   {"posix.c"},
+					},
+				},
+			}},
+		}
+	}
+	out, err := Fold(twoCells(mk(), mk()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := out.Targets[0].PerPlatform["srcs"]["//conditions:default"]
+	if !reflect.DeepEqual(got, []string{"posix.c"}) {
+		t.Errorf("agreeing default arm must pass through: %v", out.Targets[0].PerPlatform)
+	}
+	if len(out.Targets) != 1 {
+		t.Errorf("no groups expected: %v", out.Targets)
+	}
+}
+
+func TestFold_DefaultArmDivergesErrors(t *testing.T) {
+	linux := ir.Package{Name: "p", Targets: []ir.Target{{
+		Name: "lib", Kind: ir.KindCCLibrary,
+		PerPlatform: map[string]map[string][]string{
+			"srcs": {"//conditions:default": {"posix.c"}},
+		},
+	}}}
+	darwin := ir.Package{Name: "p", Targets: []ir.Target{{
+		Name: "lib", Kind: ir.KindCCLibrary,
+		PerPlatform: map[string]map[string][]string{
+			"srcs": {"//conditions:default": {"mac.c"}},
+		},
+	}}}
+	_, err := Fold(twoCells(linux, darwin))
+	if err == nil {
+		t.Fatal("divergent default arm must error, not mint an AND-group")
+	}
+	if !strings.Contains(err.Error(), "//conditions:default") {
+		t.Errorf("error should name the default arm: %v", err)
+	}
+}
+
+func TestFold_DefaultArmDivergesErrors_OrderSensitive(t *testing.T) {
+	linux := ir.Package{Name: "p", Targets: []ir.Target{{
+		Name: "lib", Kind: ir.KindCCLibrary,
+		PerPlatform: map[string]map[string][]string{
+			"copts": {"//conditions:default": {"-O2"}},
+		},
+	}}}
+	darwin := ir.Package{Name: "p", Targets: []ir.Target{{
+		Name: "lib", Kind: ir.KindCCLibrary,
+		PerPlatform: map[string]map[string][]string{
+			"copts": {"//conditions:default": {"-O3"}},
+		},
+	}}}
+	if _, err := Fold(twoCells(linux, darwin)); err == nil {
+		t.Fatal("divergent order-sensitive default arm must error")
 	}
 }

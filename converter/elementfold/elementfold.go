@@ -281,6 +281,11 @@ func Fold(cells []Cell) (*ir.Package, error) {
 // their labels under a per-base-family group family (groups of one
 // option flag are pairwise exclusive across platforms; groups of
 // different flags can match simultaneously and must split selects).
+// conditionsDefault is select()'s catch-all arm label — not a
+// config_setting, so it can never participate in a
+// config_setting_group AND-arm.
+const conditionsDefault = "//conditions:default"
+
 type groupSink struct {
 	families map[string]string    // the merged package's unified family map (mutated)
 	defs     map[string]ir.Target // group label (":<name>") → target
@@ -362,7 +367,13 @@ func sanitizeGroupPart(s string) string {
 // conditional and routes to the AND-group of (cell, armLabel). The
 // returned claimed set lists every item any arm carried (excluded
 // from the flat-baseline membership partition).
-func foldPreexistingArms(def attrDef, variants map[string]ir.Target, cells []Cell, sink *groupSink) (arms map[string][]string, claimed map[string]bool) {
+//
+// A divergent "//conditions:default" arm (an if-chain's else() arm
+// that differs per cell) is an error: default isn't a config_setting,
+// so (platform AND default-of-family) has no config_setting_group
+// spelling — an AND-group would render an unusable BUILD. Agreeing
+// default arms pass through like any other label.
+func foldPreexistingArms(def attrDef, variants map[string]ir.Target, cells []Cell, sink *groupSink) (arms map[string][]string, claimed map[string]bool, err error) {
 	membership := map[string]map[string]map[string]bool{} // armLabel → item → cellName
 	for _, c := range cells {
 		for armLabel, items := range variants[c.Platform.Name].PerPlatform[def.name] {
@@ -386,6 +397,9 @@ func foldPreexistingArms(def attrDef, variants map[string]ir.Target, cells []Cel
 				arms[armLabel] = append(arms[armLabel], item)
 				continue
 			}
+			if armLabel == conditionsDefault {
+				return nil, nil, fmt.Errorf("attribute %s: pre-existing %q arm diverges across cells (item %q is platform-conditional); %q is not a config_setting, so it can't AND with a platform — the default arm must agree in every cell", def.name, armLabel, item, armLabel)
+			}
 			for _, c := range cells {
 				if present[c.Platform.Name] {
 					label := sink.group(c, armLabel)
@@ -394,7 +408,7 @@ func foldPreexistingArms(def attrDef, variants map[string]ir.Target, cells []Cel
 			}
 		}
 	}
-	return arms, claimed
+	return arms, claimed, nil
 }
 
 func foldTarget(variants map[string]ir.Target, cells []Cell, allCellNames []string, sink *groupSink) (*ir.Target, error) {
@@ -512,10 +526,14 @@ func foldTarget(variants map[string]ir.Target, cells []Cell, allCellNames []stri
 
 	for _, def := range targetAttrs {
 		if def.orderSensitive {
-			foldOrderSensitiveAttr(def, &merged, variants, cells, phantom, sink)
+			if err := foldOrderSensitiveAttr(def, &merged, variants, cells, phantom, sink); err != nil {
+				return nil, err
+			}
 			continue
 		}
-		foldOrderInsensitiveAttr(def, &merged, variants, cells, allCellNames, sink)
+		if err := foldOrderInsensitiveAttr(def, &merged, variants, cells, allCellNames, sink); err != nil {
+			return nil, err
+		}
 	}
 	return &merged, nil
 }
@@ -538,8 +556,11 @@ func foldTarget(variants map[string]ir.Target, cells []Cell, allCellNames []stri
 // (baseline = in every cell). Without the pass-through, folding partitioned
 // cells would drop every arm item — losing all conditional facts from the
 // unified BUILD.
-func foldOrderInsensitiveAttr(def attrDef, merged *ir.Target, variants map[string]ir.Target, cells []Cell, allCellNames []string, sink *groupSink) {
-	preArms, armItemKeys := foldPreexistingArms(def, variants, cells, sink)
+func foldOrderInsensitiveAttr(def attrDef, merged *ir.Target, variants map[string]ir.Target, cells []Cell, allCellNames []string, sink *groupSink) error {
+	preArms, armItemKeys, err := foldPreexistingArms(def, variants, cells, sink)
+	if err != nil {
+		return err
+	}
 
 	facts := map[string]map[string]bool{}
 	for _, c := range cells {
@@ -596,6 +617,7 @@ func foldOrderInsensitiveAttr(def attrDef, merged *ir.Target, variants map[strin
 		}
 		setArm(c.Platform.SelectKey, items)
 	}
+	return nil
 }
 
 // foldOrderSensitiveAttr handles copts / linkopts. When every
@@ -616,8 +638,10 @@ func foldOrderInsensitiveAttr(def attrDef, merged *ir.Target, variants map[strin
 // per cell routes each present cell's verbatim sequence through the
 // (cell, armLabel) AND-group — order preserved within each arm either
 // way.
-func foldOrderSensitiveAttr(def attrDef, merged *ir.Target, variants map[string]ir.Target, cells []Cell, phantom bool, sink *groupSink) {
-	foldOrderSensitivePreArms(def, merged, variants, cells, sink)
+func foldOrderSensitiveAttr(def attrDef, merged *ir.Target, variants map[string]ir.Target, cells []Cell, phantom bool, sink *groupSink) error {
+	if err := foldOrderSensitivePreArms(def, merged, variants, cells, sink); err != nil {
+		return err
+	}
 	first := def.get(variants[cells[0].Platform.Name])
 	allEqual := !phantom
 	if allEqual {
@@ -630,7 +654,7 @@ func foldOrderSensitiveAttr(def attrDef, merged *ir.Target, variants map[string]
 	}
 	if allEqual {
 		def.set(merged, append([]string(nil), first...))
-		return
+		return nil
 	}
 	def.set(merged, nil)
 	// All present cells carry an empty sequence (common for
@@ -648,7 +672,7 @@ func foldOrderSensitiveAttr(def attrDef, merged *ir.Target, variants map[string]
 		}
 	}
 	if !anyNonEmpty {
-		return
+		return nil
 	}
 	if merged.PerPlatform == nil {
 		merged.PerPlatform = map[string]map[string][]string{}
@@ -660,13 +684,17 @@ func foldOrderSensitiveAttr(def attrDef, merged *ir.Target, variants map[string]
 		seq := def.get(variants[c.Platform.Name])
 		merged.PerPlatform[def.name][c.Platform.SelectKey] = append([]string(nil), seq...)
 	}
+	return nil
 }
 
 // foldOrderSensitivePreArms folds the cells' pre-existing
 // order-sensitive arms (see foldOrderSensitiveAttr's doc): whole-arm
 // byte-agreement across every present cell → pass-through; anything
 // else → per-cell AND-group arms with each cell's verbatim sequence.
-func foldOrderSensitivePreArms(def attrDef, merged *ir.Target, variants map[string]ir.Target, cells []Cell, sink *groupSink) {
+// A divergent "//conditions:default" arm errors — default isn't a
+// config_setting, so it has no AND-group spelling (see
+// foldPreexistingArms).
+func foldOrderSensitivePreArms(def attrDef, merged *ir.Target, variants map[string]ir.Target, cells []Cell, sink *groupSink) error {
 	labels := map[string]bool{}
 	for _, c := range cells {
 		for armLabel := range variants[c.Platform.Name].PerPlatform[def.name] {
@@ -674,7 +702,7 @@ func foldOrderSensitivePreArms(def attrDef, merged *ir.Target, variants map[stri
 		}
 	}
 	if len(labels) == 0 {
-		return
+		return nil
 	}
 	setArm := func(label string, seq []string) {
 		if len(seq) == 0 {
@@ -702,12 +730,16 @@ func foldOrderSensitivePreArms(def attrDef, merged *ir.Target, variants map[stri
 			setArm(armLabel, first)
 			continue
 		}
+		if armLabel == conditionsDefault {
+			return fmt.Errorf("attribute %s: pre-existing %q arm diverges across cells; %q is not a config_setting, so it can't AND with a platform — the default arm must agree in every cell", def.name, armLabel, armLabel)
+		}
 		for _, c := range cells {
 			if seq, ok := variants[c.Platform.Name].PerPlatform[def.name][armLabel]; ok {
 				setArm(sink.group(c, armLabel), seq)
 			}
 		}
 	}
+	return nil
 }
 
 // targetAttrs declares the IR attributes the fold partitions
