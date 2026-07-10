@@ -427,8 +427,13 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 		if len(lc.flipOnly) > 0 {
 			names := sliceutil.SortedKeys(lc.flipOnly)
 			for _, name := range names {
+				values := append([]string(nil), lc.flipOnly[name]...)
+				sort.Strings(values)
+				for i, v := range values {
+					values[i] = fmt.Sprintf("%q", v)
+				}
 				fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: target %s exists only under value(s) %s — the primary configure never declared it, so this convert can't emit it; re-convert with that value configured to include it.\n",
-					spec.name, name, strings.Join(lc.flipOnly[name], ", "))
+					spec.name, name, strings.Join(values, ", "))
 			}
 		}
 		if len(armed) == 0 && len(gated) == 0 && len(baked) == 0 {
