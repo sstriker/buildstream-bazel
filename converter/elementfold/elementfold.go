@@ -388,7 +388,8 @@ func foldPreexistingArms(def attrDef, variants map[string]ir.Target, cells []Cel
 			}
 			for _, c := range cells {
 				if present[c.Platform.Name] {
-					arms[sink.group(c, armLabel)] = append(arms[sink.group(c, armLabel)], item)
+					label := sink.group(c, armLabel)
+					arms[label] = append(arms[label], item)
 				}
 			}
 		}
