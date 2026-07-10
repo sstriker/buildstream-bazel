@@ -99,6 +99,9 @@ type optionFlip struct {
 	armLabel string // the select() arm this flip's deltas land under
 	err      error
 	out      bytes.Buffer
+	// reply is the flip's loaded File API reply, stored by
+	// collectOption for the 2D fold's (config x value) grid.
+	reply *fileapi.Reply
 }
 
 // optionLiftJob is the handle for the speculatively-launched flip
@@ -290,16 +293,26 @@ func startOptionLift(ctx context.Context, a cli.Args, r *fileapi.Reply, hostBuil
 			// same option — the whole point of the pass is the changed
 			// view.
 			extra[job.specs[flip.spec].name] = flip.setValue
-			_, cfgErr := cmakerun.Configure(liftCtx, cmakerun.Options{
+			// Mirror the primary configure's generator shape: under
+			// --build-types the flip must be the same multi-config
+			// configure (the 2D fold diffs per (config, value) cell);
+			// BuildType and BuildTypes are mutually exclusive in
+			// cmakerun, so exactly one is set.
+			copts := cmakerun.Options{
 				SourceRoot:         a.SourceRoot,
 				BuildDir:           job.scratch(i),
 				PrefixDir:          a.PrefixDir,
 				ToolchainCMakeFile: a.ToolchainCMakeFile,
-				BuildType:          a.BuildType,
 				ExtraCacheVars:     extra,
 				Stdout:             &flip.out,
 				Stderr:             &flip.out,
-			})
+			}
+			if len(a.BuildTypes) > 0 {
+				copts.BuildTypes = a.BuildTypes
+			} else {
+				copts.BuildType = a.BuildType
+			}
+			_, cfgErr := cmakerun.Configure(liftCtx, copts)
 			flip.err = cfgErr
 		}(i, &job.flips[i])
 	}
@@ -407,7 +420,20 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 	baseNames := configTargetNameSet(r.Codemodel.Configurations)
 	writeFileOuts := packageWriteFileOuts(pkg)
 	var lifted []optionsettings.Option
+	var groups []optionsettings.Group
 	liftedLabels := map[string]string{}
+	// The 2D option x config grid needs >=2 non-sanitizer configs in a
+	// multi-config reply; otherwise the single-axis fold applies.
+	var nonFeatureConfigs []string
+	if len(a.BuildTypes) >= 2 && len(r.TargetsByConfig) > 0 {
+		var names []string
+		for _, cfg := range r.Codemodel.Configurations {
+			names = append(names, cfg.Name)
+		}
+		if nf := lower.NonFeatureConfigNames(names); len(nf) >= 2 {
+			nonFeatureConfigs = nf
+		}
+	}
 	for specIdx := range job.specs {
 		spec := &job.specs[specIdx]
 		lc := job.collectOption(specIdx, r, baseNames, writeFileOuts, hostBuildDir)
@@ -426,13 +452,25 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 				lower.RegisterOptionArms(pkg, flagLabel, job.flips[i].armLabel)
 			}
 		}
-		// Attribute fold per presence-signature group: a target absent
-		// under some arm folds over only its present cells (its
-		// existence there is the gate's job, not attribute arms').
+		// Attribute fold. Under a multi-config configure the 2D fold
+		// classifies each fact over the (config x option-value) grid —
+		// pure-option facts land on //options arms, option x config-
+		// conditional facts on config_setting_group AND-arms (and leave
+		// the base fold's plain //config arms). Single-config runs keep
+		// the single-axis fold. Both paths group targets by presence
+		// signature first: a target absent under some arm folds over
+		// only its present cells (its existence there is the gate's
+		// job, not attribute arms').
 		idToName := replyIDToName(r, job)
 		var armed []string
-		for _, grp := range lc.foldGroups() {
-			armed = append(armed, lower.ApplyOptionFold(pkg, grp.byCell, grp.cells, srcRoot, hostBuildDir, idToName)...)
+		var specGroups []optionsettings.Group
+		if nonFeatureConfigs != nil {
+			armed, specGroups = fold2DGroups(pkg, job.cells2D(specIdx, r, nonFeatureConfigs, hostBuildDir),
+				nonFeatureConfigs, srcRoot, hostBuildDir, idToName, flagLabel)
+		} else {
+			for _, grp := range lc.foldGroups() {
+				armed = append(armed, lower.ApplyOptionFold(pkg, grp.byCell, grp.cells, srcRoot, hostBuildDir, idToName)...)
+			}
 		}
 		gated := lower.GateTargetExistence(pkg, lc.gates)
 		baked, bakeSkipped := lower.ApplyContentBakes(pkg, lc.bakes, srcRoot, hostBuildDir, a.BazelPackagePath, "cmake-codegen-per-option-content", flagLabel)
@@ -458,13 +496,17 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 		fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: lifted to --//options:%s (default %s); %d target(s) gained select() arms, %d gained target_compatible_with gates, %d write_file body(ies) gained content arms.\n",
 			spec.name, strings.ToLower(spec.name), spec.cliDefault(), len(armed), len(gated), len(baked))
 		lifted = append(lifted, specOption(spec))
+		// Groups append only once the option is confirmed lifted: an
+		// unlifted option's groups would reference config_settings the
+		// package never declares.
+		groups = append(groups, specGroups...)
 		liftedLabels[spec.name] = flagLabel
 	}
 	if len(lifted) == 0 {
 		return
 	}
 	lower.AnnotateLiftedOptions(pkg, liftedLabels)
-	writeOptionSettings(a.OutOptionSettings, lifted)
+	writeOptionSettings(a.OutOptionSettings, lifted, groups)
 }
 
 // collectOption loads one spec's flip replies and reads its
@@ -501,6 +543,7 @@ func (j *optionLiftJob) collectOption(specIdx int, r *fileapi.Reply, baseNames m
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s: flip configure (=%s) produced no loadable File API reply (%v); keeping it baked.\n", spec.name, flip.setValue, err)
 			return nil
 		}
+		flip.reply = fr
 		// Target-existence bookkeeping: a target the primary configure
 		// declares but this flip value doesn't (an if(<option>) target
 		// gate) can't be un-declared by a select() — it gets a
@@ -566,6 +609,131 @@ func (j *optionLiftJob) collectOption(specIdx int, r *fileapi.Reply, baseNames m
 	return lc
 }
 
+// fold2DGroup is one presence-signature slice of the 2D grid: every
+// target in byCell is present under exactly (configs × valueArms) — a
+// rectangular sub-grid over ALL configs and >= 2 option values.
+type fold2DGroup struct {
+	valueArms []string
+	byCell    map[string]map[string]fileapi.Target
+}
+
+// cells2D builds one spec's (config x option-value) grid for the 2D
+// fold — target NAME → Cell2DKey(config, valueArm) → view — and
+// splits it by presence signature, mirroring the 1D path's
+// foldGroups: a target absent under some option VALUE folds over only
+// its present values (its existence there is the gate's job, not
+// attribute arms'), so an enum-lifted target present under a value
+// subset still gains its per-value arms. Flip views canonicalize
+// their scratch-dir spellings onto the primary build dir, same as the
+// 1D path.
+func (j *optionLiftJob) cells2D(specIdx int, r *fileapi.Reply, configs []string, hostBuildDir string) []fold2DGroup {
+	spec := &j.specs[specIdx]
+	valueArms := []string{spec.baseLabel}
+	byCell := map[string]map[string]fileapi.Target{}
+	add := func(reply *fileapi.Reply, valueArm, scratchDir string) {
+		for _, byCfg := range reply.TargetsByConfig {
+			for _, cfg := range configs {
+				t, ok := byCfg[cfg]
+				if !ok {
+					continue
+				}
+				if scratchDir != "" {
+					canonicalizeFlipTarget(&t, scratchDir, hostBuildDir)
+				}
+				if byCell[t.Name] == nil {
+					byCell[t.Name] = map[string]fileapi.Target{}
+				}
+				byCell[t.Name][lower.Cell2DKey(cfg, valueArm)] = t
+			}
+		}
+	}
+	add(r, spec.baseLabel, "")
+	for i := range j.flips {
+		flip := &j.flips[i]
+		if flip.spec != specIdx || flip.reply == nil {
+			continue
+		}
+		valueArms = append(valueArms, flip.armLabel)
+		add(flip.reply, flip.armLabel, j.scratch(i))
+	}
+	return group2DCells(byCell, configs, valueArms)
+}
+
+// group2DCells splits the raw 2D grid by per-target present-VALUE
+// signature. A value counts as present only when the target exists
+// under EVERY config of it: a ragged column (config-level absence) is
+// the base multi-config fold's pre-existing config-only residual, and
+// the 2D classifier would read the hole as "fact absent" and mint
+// bogus AND arms — such targets drop entirely, as do targets present
+// under fewer than two values (nothing to fold on the option axis;
+// existence there is the gate's job). Groups are returned in sorted
+// signature order for determinism; each keeps valueArms' base-first
+// flip order.
+func group2DCells(byCell map[string]map[string]fileapi.Target, configs, valueArms []string) []fold2DGroup {
+	bySig := map[string]*fold2DGroup{}
+	var sigs []string
+	for name, cells := range byCell {
+		var present []string
+		rectangular := true
+		for _, v := range valueArms {
+			n := 0
+			for _, c := range configs {
+				if _, ok := cells[lower.Cell2DKey(c, v)]; ok {
+					n++
+				}
+			}
+			switch n {
+			case 0:
+			case len(configs):
+				present = append(present, v)
+			default:
+				rectangular = false
+			}
+		}
+		if !rectangular || len(present) < 2 {
+			continue
+		}
+		sig := strings.Join(present, "\x00")
+		g, ok := bySig[sig]
+		if !ok {
+			g = &fold2DGroup{valueArms: present, byCell: map[string]map[string]fileapi.Target{}}
+			bySig[sig] = g
+			sigs = append(sigs, sig)
+		}
+		g.byCell[name] = cells
+	}
+	sort.Strings(sigs)
+	out := make([]fold2DGroup, 0, len(sigs))
+	for _, sig := range sigs {
+		out = append(out, *bySig[sig])
+	}
+	return out
+}
+
+// fold2DGroups runs the 2D fold once per presence-signature group,
+// concatenating the armed-target names (re-sorted: each target is in
+// exactly one group) and deduplicating the config_setting_groups —
+// two signature groups can mint the same AND-group, and emitting it
+// twice would redeclare the //options target.
+func fold2DGroups(pkg *ir.Package, grps []fold2DGroup, configs []string, srcRoot, hostBuildDir string, idToName map[string]string, flagLabel string) ([]string, []optionsettings.Group) {
+	var armed []string
+	var out []optionsettings.Group
+	seen := map[string]bool{}
+	for _, grp := range grps {
+		names, gs := lower.ApplyOptionFold2D(pkg, grp.byCell, configs, grp.valueArms, srcRoot, hostBuildDir, idToName, flagLabel)
+		armed = append(armed, names...)
+		for _, g := range gs {
+			if seen[g.Name] {
+				continue
+			}
+			seen[g.Name] = true
+			out = append(out, optionsettings.Group{Name: g.Name, MatchAll: g.MatchAll})
+		}
+	}
+	sort.Strings(armed)
+	return armed, out
+}
+
 // flipIDToName accumulates a flip reply's id→name pairs into the
 // job-level map replyIDToName consults for the deps relabel.
 func (j *optionLiftJob) flipIDToName(fr *fileapi.Reply) {
@@ -614,11 +782,11 @@ func specOption(spec *optionSpec) optionsettings.Option {
 // writeOptionSettings emits the //options package to outPath (no-op
 // when the flag is unset). Failures warn rather than failing the
 // convert — the BUILD itself is already correct.
-func writeOptionSettings(outPath string, lifted []optionsettings.Option) {
+func writeOptionSettings(outPath string, lifted []optionsettings.Option, groups []optionsettings.Group) {
 	if outPath == "" {
 		return
 	}
-	body := optionsettings.Emit(lifted)
+	body := optionsettings.Emit(lifted, groups)
 	if body == nil {
 		return
 	}

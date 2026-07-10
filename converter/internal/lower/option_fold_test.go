@@ -129,7 +129,7 @@ func TestApplyOptionFold_DedupsFlatBaseline(t *testing.T) {
 // the same parity contract TestConfigLabel_MatchesConfigSettingsEmit
 // pins for the multi-config fold.
 func TestOptionCellLabel_MatchesOptionSettingsEmit(t *testing.T) {
-	body := string(optionsettings.Emit([]optionsettings.Option{{Name: "Foo_Feature", Default: "True"}}))
+	body := string(optionsettings.Emit([]optionsettings.Option{{Name: "Foo_Feature", Default: "True"}}, nil))
 	for _, on := range []bool{true, false} {
 		label := OptionCellLabel("Foo_Feature", on)
 		name := strings.TrimPrefix(label, "//options:")
@@ -153,7 +153,7 @@ func TestOptionValueCellLabel_MatchesOptionSettingsEmit(t *testing.T) {
 	}
 	body := string(optionsettings.Emit([]optionsettings.Option{{
 		Name: "Backend", Default: "Ref", Values: values, ValueSuffixes: suffixes,
-	}}))
+	}}, nil))
 	for _, v := range values {
 		label := OptionValueCellLabel("Backend", v)
 		name := strings.TrimPrefix(label, "//options:")

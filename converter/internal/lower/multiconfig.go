@@ -349,7 +349,14 @@ func dedupBaselineAgainstDeltas(tgt *ir.Target) {
 		return out
 	}
 	tgt.Copts = dedup(tgt.Copts, inDelta("copts"))
+	// Defines dedup spans BOTH spellings' arms: the folds route a
+	// define onto `defines` or `local_defines` arms depending on its
+	// original scope, and a token left in either flat list would still
+	// apply under non-matching arms.
 	defineArms := inDelta("defines")
+	for v := range inDelta("local_defines") {
+		defineArms[v] = true
+	}
 	tgt.Defines = dedup(tgt.Defines, defineArms)
 	tgt.LocalDefines = dedup(tgt.LocalDefines, defineArms)
 	tgt.LinkOpts = dedup(tgt.LinkOpts, inDelta("linkopts"))
@@ -399,54 +406,7 @@ func applyPartition(tgt *ir.Target, attr string, p configfold.Partition, cmakeSr
 		label := labelFor(cell)
 		values := make([]string, 0, len(facts))
 		for fact := range facts {
-			tok := stripFactPrefix(fact)
-			switch attr {
-			case "linkopts":
-				// Skip "libraries"-role link fragments — those
-				// are static archives / cmake import targets that
-				// belong in `deps`, not linkopts. The single-
-				// config baseline path at lower.go's t.Link.
-				// CommandFragments loop already routes them
-				// through imports.LookupLinkPath into the IR's
-				// deps slice; per-config delta entries that
-				// reflect different build-dir paths per config
-				// would otherwise leak in as bogus
-				// `linkopts = ["Debug/lib/libfoo.a", ...]` select
-				// arms (LLVM-shape).
-				if strings.HasPrefix(fact, "libraries|") ||
-					strings.HasPrefix(fact, "libraryPath|") {
-					continue
-				}
-				if rewritten, keep := reanchorLinkOptToken(tok, cmakeSrc, cmakeBuild); keep {
-					values = append(values, rewritten)
-				}
-			case "defines":
-				if rewritten, keep := reanchorDefineValue(tok, cmakeSrc, cmakeBuild); keep {
-					values = append(values, rewritten)
-				}
-			case "includes":
-				// Per-config include deltas can be absolute build-dir or
-				// source-dir paths the single-config include handler never
-				// saw (it only walks the primary config). Relativize them
-				// the same way: a build-dir include (a `$<CONFIG>`-dependent
-				// file(GENERATE) output dir like
-				// include-config-debug/build_config) becomes build-dir-
-				// relative — which is exactly where the recovered per-config
-				// genrule places its output, so the select arm's `-I` finds
-				// the generated header. A source-tree include becomes src-
-				// relative. System / out-of-tree absolutes drop (the
-				// toolchain supplies those). Without this the select kept
-				// absolute throwaway-build-dir paths
-				// (/tmp/convert-element-build-*/...) that resolve to nothing
-				// at Bazel time (SDL's per-config SDL_build_config.h dir).
-				if rel, ok := relativeIfInsideRelaxed(cmakeBuild, tok); ok {
-					values = append(values, rel)
-				} else if rel, ok := relativeIfInside(cmakeSrc, tok); ok {
-					values = append(values, rel)
-				} else if !filepath.IsAbs(tok) {
-					values = append(values, tok)
-				}
-			default:
+			if tok, keep := filterFactForAttr(attr, fact, cmakeSrc, cmakeBuild); keep {
 				values = append(values, tok)
 			}
 		}
@@ -462,10 +422,56 @@ func applyPartition(tgt *ir.Target, attr string, p configfold.Partition, cmakeSr
 		sort.Strings(values)
 		// Merge: a target already populated with per-platform
 		// deltas keeps those; per-config deltas append. The
-		// emitter handles the combined map as a single select()
-		// with arms from both axes.
+		// emitter renders the combined map per select family.
 		tgt.PerPlatform[attr][label] = append(tgt.PerPlatform[attr][label], values...)
 	}
+}
+
+// filterFactForAttr applies one fact-family token's per-attribute
+// re-anchor / drop policy (shared by applyPartition and the 2D
+// option×config fold — the policy is per-token, independent of which
+// cell/arm the token lands under):
+//
+//   - linkopts: "libraries"/"libraryPath"-role fragments drop (static
+//     archives belong in deps — the single-config baseline path routes
+//     them through imports.LookupLinkPath; per-cell delta entries would
+//     leak bogus `linkopts = ["Debug/lib/libfoo.a"]` arms, LLVM-shape).
+//     Others re-anchor via reanchorLinkOptToken.
+//   - defines: convert-time absolute paths re-anchor / drop via
+//     reanchorDefineValue.
+//   - includes: absolute build-dir / source-dir paths relativize the
+//     same way the single-config includes handler does (a `$<CONFIG>`-
+//     dependent file(GENERATE) output dir must resolve where the
+//     recovered per-config genrule places it); system / out-of-tree
+//     absolutes drop (the toolchain supplies those) — otherwise the
+//     select would keep absolute throwaway-build-dir paths
+//     (/tmp/convert-element-build-*/..., SDL's per-config
+//     SDL_build_config.h dir).
+//   - everything else passes through.
+func filterFactForAttr(attr, fact, cmakeSrc, cmakeBuild string) (string, bool) {
+	tok := stripFactPrefix(fact)
+	switch attr {
+	case "linkopts":
+		if strings.HasPrefix(fact, "libraries|") ||
+			strings.HasPrefix(fact, "libraryPath|") {
+			return "", false
+		}
+		return reanchorLinkOptToken(tok, cmakeSrc, cmakeBuild)
+	case "defines":
+		return reanchorDefineValue(tok, cmakeSrc, cmakeBuild)
+	case "includes":
+		if rel, ok := relativeIfInsideRelaxed(cmakeBuild, tok); ok {
+			return rel, true
+		}
+		if rel, ok := relativeIfInside(cmakeSrc, tok); ok {
+			return rel, true
+		}
+		if !filepath.IsAbs(tok) {
+			return tok, true
+		}
+		return "", false
+	}
+	return tok, true
 }
 
 // configOnlyTargetNames returns the names of targets that appear in some
@@ -524,6 +530,15 @@ func toLower(s string) string {
 		out[i] = c
 	}
 	return string(out)
+}
+
+// NonFeatureConfigNames filters out config names recognized by
+// configfold.SanitizerFeature — those route through --features
+// rather than per-config selects. Exported for the option lift's 2D
+// fold, whose (config × option-value) grid spans the same
+// non-sanitizer config set the base multi-config fold selects over.
+func NonFeatureConfigNames(configs []string) []string {
+	return nonFeatureConfigNames(configs)
 }
 
 // nonFeatureConfigNames filters out config names recognized by

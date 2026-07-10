@@ -7,13 +7,13 @@ import (
 )
 
 func TestEmit_Empty(t *testing.T) {
-	if got := Emit(nil); got != nil {
-		t.Errorf("Emit(nil) = %q, want nil", got)
+	if got := Emit(nil, nil); got != nil {
+		t.Errorf("Emit(nil, nil) = %q, want nil", got)
 	}
 }
 
 func TestEmit_BoolShape(t *testing.T) {
-	body := Emit([]Option{{Name: "Zeta_Feature", Default: "False"}, {Name: "ALPHA", Default: "True"}})
+	body := Emit([]Option{{Name: "Zeta_Feature", Default: "False"}, {Name: "ALPHA", Default: "True"}}, nil)
 	s := string(body)
 	for _, want := range []string{
 		`load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")`,
@@ -44,7 +44,7 @@ func TestEmit_EnumShape(t *testing.T) {
 		Default:       "Ref",
 		Values:        []string{"Ref", "FAST-2"},
 		ValueSuffixes: map[string]string{"Ref": "ref", "FAST-2": "fast-2"},
-	}})
+	}}, nil)
 	s := string(body)
 	for _, want := range []string{
 		`load("@bazel_skylib//rules:common_settings.bzl", "string_flag")`,
@@ -66,15 +66,38 @@ func TestEmit_MixedLoads(t *testing.T) {
 	body := Emit([]Option{
 		{Name: "feat", Default: "True"},
 		{Name: "backend", Default: "a", Values: []string{"a", "b"}, ValueSuffixes: map[string]string{"a": "a", "b": "b"}},
-	})
+	}, nil)
 	if !strings.Contains(string(body), `load("@bazel_skylib//rules:common_settings.bzl", "bool_flag", "string_flag")`) {
 		t.Errorf("mixed set should load both symbols:\n%s", body)
 	}
 }
 
+// TestEmit_Groups pins the 2D fold's AND-group rendering: skylib's
+// selects.config_setting_group per group, deduplicated + sorted,
+// with the selects.bzl load present only when groups exist.
+func TestEmit_Groups(t *testing.T) {
+	body := Emit([]Option{{Name: "feat", Default: "True"}}, []Group{
+		{Name: "debug_and_feat_on", MatchAll: []string{"//config:debug", "//options:feat_on"}},
+		{Name: "debug_and_feat_on", MatchAll: []string{"//config:debug", "//options:feat_on"}}, // dup
+	})
+	s := string(body)
+	for _, want := range []string{
+		`load("@bazel_skylib//lib:selects.bzl", "selects")`,
+		"selects.config_setting_group(\n    name = \"debug_and_feat_on\",",
+		"match_all = [\n        \"//config:debug\",\n        \"//options:feat_on\",\n    ],",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("missing %q in:\n%s", want, s)
+		}
+	}
+	if strings.Count(s, "config_setting_group(") != 1 {
+		t.Errorf("dup group not deduplicated:\n%s", s)
+	}
+}
+
 func TestEmit_DedupAndStability(t *testing.T) {
 	in := []Option{{Name: "Foo", Default: "True"}, {Name: "FOO", Default: "False"}}
-	a, b := Emit(in), Emit(in)
+	a, b := Emit(in, nil), Emit(in, nil)
 	if !bytes.Equal(a, b) {
 		t.Errorf("Emit not byte-stable")
 	}

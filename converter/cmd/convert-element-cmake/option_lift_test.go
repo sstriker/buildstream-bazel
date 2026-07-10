@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/sstriker/buildstream-bazel/converter/internal/fileapi"
+	"github.com/sstriker/buildstream-bazel/converter/internal/lower"
 )
 
 func TestCmakeTruthy(t *testing.T) {
@@ -124,6 +125,56 @@ func TestFoldGroups_SplitsByPresenceSignature(t *testing.T) {
 			}
 		default:
 			t.Errorf("unexpected group cells: %v", g.cells)
+		}
+	}
+}
+
+// TestGroup2DCells_PartialEnumPresence pins the 2D analogue of
+// foldGroups: a target present under a VALUE subset (all configs)
+// folds over exactly its present values instead of being dropped —
+// dropping it would silently lose its per-value attribute arms.
+// Ragged (config-level) holes and single-value targets still drop.
+func TestGroup2DCells_PartialEnumPresence(t *testing.T) {
+	configs := []string{"Debug", "Release"}
+	ref, fast, turbo := "//options:backend_ref", "//options:backend_fast", "//options:backend_turbo"
+	valueArms := []string{ref, fast, turbo}
+	cellsOver := func(name string, values ...string) map[string]fileapi.Target {
+		out := map[string]fileapi.Target{}
+		for _, v := range values {
+			for _, c := range configs {
+				out[lower.Cell2DKey(c, v)] = fileapi.Target{Name: name}
+			}
+		}
+		return out
+	}
+	byCell := map[string]map[string]fileapi.Target{
+		"full":    cellsOver("full", ref, fast, turbo),
+		"partial": cellsOver("partial", ref, fast),
+		"single":  cellsOver("single", ref),
+	}
+	// Ragged: present under fast in Debug only (config-level hole).
+	byCell["ragged"] = cellsOver("ragged", ref)
+	byCell["ragged"][lower.Cell2DKey("Debug", fast)] = fileapi.Target{Name: "ragged"}
+
+	groups := group2DCells(byCell, configs, valueArms)
+	if len(groups) != 2 {
+		t.Fatalf("groups: got %d, want 2 (full-grid + ref/fast subset): %+v", len(groups), groups)
+	}
+	for _, g := range groups {
+		switch len(g.valueArms) {
+		case 3:
+			if len(g.byCell) != 1 || g.byCell["full"] == nil {
+				t.Errorf("full-grid group: %v", g.byCell)
+			}
+		case 2:
+			if g.valueArms[0] != ref || g.valueArms[1] != fast {
+				t.Errorf("subset group arms out of base-first order: %v", g.valueArms)
+			}
+			if len(g.byCell) != 1 || g.byCell["partial"] == nil {
+				t.Errorf("subset group must hold exactly the partial target: %v", g.byCell)
+			}
+		default:
+			t.Errorf("unexpected group: %+v", g)
 		}
 	}
 }

@@ -1136,7 +1136,7 @@ trees, optional-feature deps, codegen instances). Each member's
   real lifts with zero new machinery.
 
 - **Lift `option()` into `bool_flag`/`config_setting` selects — remaining:
-  multi-axis, write-a threading.** The single-axis lift
+  platform axis, write-a threading.** The single-axis lift
   SHIPPED (`--lift-options NAME[,NAME…]` + `--out-option-settings`, gate
   `meta-cmake-option-lift.sh`): cold flip configures per listed option —
   one for a BOOL `option()`, one per non-configured value for an enum
@@ -1167,19 +1167,25 @@ trees, optional-feature deps, codegen instances). Each member's
   family, concatenated (`ir.Package.SelectArmFamilies`;
   `splitSelectByFamily`), and content selects — which can't
   concatenate — enforce a single family per write_file
-  (`ApplyContentBakes`' skip + breadcrumb). **Remaining:**
-  (1) **Multi-axis composition** — `--lift-options` still rejects
-  `--build-types`: capturing option×config-conditional facts
-  (`if(WIN32 AND FOO)`-shaped, per-build-type option deltas) needs
-  multi-config flip configures and a 2D partition whose mixed-support
-  facts land on skylib `config_setting_group` AND-arms — additive
-  selects can't subtract, so pure //config:* arms must be computed
-  jointly with the option axis, not from the base reply alone. The
-  platform axis (the shipped `converter/elementfold` + `fold-element` +
-  `scripts/survey-multiplatform.sh` flow, whose constraint-label arms
-  share the same PerPlatform map) needs per-cell option flips in the
-  elementfold flow, the same AND-arm shape for
-  option×platform-conditional deltas, and a story for
+  (`ApplyContentBakes`' skip + breadcrumb). The option×config 2D fold
+  is SHIPPED (gate `meta-cmake-option-lift-2d.sh`): `--lift-options`
+  composes with `--build-types` — flips run the same multi-config
+  generator, and `lower.ApplyOptionFold2D` classifies each fact over
+  the (config × option-value) grid: pure-option facts land on
+  //options arms, pure-config facts stay on the base fold's //config
+  arms, and mixed-support facts (`$<$<AND:$<CONFIG:Debug>,
+  $<BOOL:${FOO}>>:…>`-shaped) move onto skylib `config_setting_group`
+  AND-arms emitted into the //options package — and are REMOVED from
+  the base fold's plain //config arm (and its local_defines
+  spelling), which would otherwise over-apply them under option
+  values outside the support, because additive selects can't
+  subtract.
+  **Remaining:**
+  (1) **Platform axis** — the shipped `converter/elementfold` +
+  `fold-element` + `scripts/survey-multiplatform.sh` flow (whose
+  constraint-label arms share the same PerPlatform map) needs
+  per-cell option flips in the elementfold flow, the same AND-arm
+  shape for option×platform-conditional deltas, and a story for
   platform-dependent option defaults (`option(FOO "…" ${WIN32})` — a
   single `bool_flag` default can't vary per platform). Pass count
   multiplies: M platforms × (1+N options) configures first-order, and

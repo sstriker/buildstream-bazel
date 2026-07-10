@@ -645,9 +645,14 @@ func TestParse_LiftOptions(t *testing.T) {
 		t.Errorf("OutOptionSettings = %q", args.OutOptionSettings)
 	}
 
+	// --lift-options + --build-types compose (2D fold); must parse.
+	stderr.Reset()
+	if _, code := Parse([]string{"--source-root", "/proj", "--build-types=Debug,Release", "--lift-options=FOO"}, &stderr); code != ExitSuccess {
+		t.Errorf("lift-options + build-types should parse: code=%d stderr=%q", code, stderr.String())
+	}
+
 	for name, argv := range map[string][]string{
 		"requires source-root":       {"--reply-dir", "/b/.cmake/api/v1/reply", "--lift-options=FOO"},
-		"excludes build-types":       {"--source-root", "/proj", "--build-types=Debug,Release", "--lift-options=FOO"},
 		"rejects malformed name":     {"--source-root", "/proj", "--lift-options=FOO=ON"},
 		"rejects whitespace in name": {"--source-root", "/proj", "--lift-options=FOO BAR"},
 	} {

@@ -92,10 +92,6 @@ func ApplyContentBakes(pkg *ir.Package, bakes map[string]map[string][]byte, reco
 		if len(perCell) == 0 {
 			continue
 		}
-		if conflictsContentFamily(pkg, t, family) {
-			skipped = append(skipped, t.Name)
-			continue
-		}
 		fileGenDriven := stringSliceContains(t.Tags, "cmake-codegen-driver=file_generate")
 		byLabel := make(map[string][]string, len(perCell))
 		differs := false
@@ -117,6 +113,13 @@ func ApplyContentBakes(pkg *ir.Package, bakes map[string]map[string][]byte, reco
 			byLabel[label] = lines
 		}
 		if !ok || !differs {
+			continue
+		}
+		// Family guard AFTER the differs gate: a cell body identical to
+		// the primary needs no arm, so it must not trip a cross-family
+		// skip (nor its breadcrumb).
+		if conflictsContentFamily(pkg, t, family) {
+			skipped = append(skipped, t.Name)
 			continue
 		}
 		if t.WriteFileContentByConfig == nil {

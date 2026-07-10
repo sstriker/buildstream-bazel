@@ -52,12 +52,23 @@ type Option struct {
 	ValueSuffixes map[string]string
 }
 
+// Group is one config_setting_group the 2D option×config fold's
+// mixed-support facts select on: Name is the //options-package
+// target name, MatchAll the conditions that must all hold (the
+// //config:<cfg> setting and the option-value setting). Rendered via
+// skylib's selects.config_setting_group.
+type Group struct {
+	Name     string
+	MatchAll []string
+}
+
 // Emit renders the //options package BUILD content for the given
-// lifted options. Names are lowercased to match lower's arm labels,
-// de-duplicated (first occurrence wins), and sorted for byte
-// stability. Returns nil when no options are supplied — no fold to
-// back, no //options package needed.
-func Emit(options []Option) []byte {
+// lifted options plus any AND-groups the 2D fold needs. Names are
+// lowercased to match lower's arm labels, de-duplicated (first
+// occurrence wins), and sorted for byte stability. Returns nil when
+// no options are supplied — no fold to back, no //options package
+// needed.
+func Emit(options []Option, groups []Group) []byte {
 	seen := map[string]bool{}
 	var opts []Option
 	needBool, needString := false, false
@@ -90,6 +101,9 @@ func Emit(options []Option) []byte {
 		b.WriteString(", \"string_flag\"")
 	}
 	b.WriteString(")\n")
+	if len(groups) > 0 {
+		b.WriteString("load(\"@bazel_skylib//lib:selects.bzl\", \"selects\")\n")
+	}
 
 	for _, o := range opts {
 		if len(o.Values) > 0 {
@@ -98,7 +112,37 @@ func Emit(options []Option) []byte {
 			emitBool(&b, o)
 		}
 	}
+	emitGroups(&b, groups)
 	return b.Bytes()
+}
+
+// emitGroups renders the 2D fold's AND-groups, deduplicated by name
+// and sorted for byte stability.
+func emitGroups(b *bytes.Buffer, groups []Group) {
+	seen := map[string]bool{}
+	var gs []Group
+	for _, g := range groups {
+		n := strings.ToLower(g.Name)
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		g.Name = n
+		gs = append(gs, g)
+	}
+	sort.Slice(gs, func(i, j int) bool { return gs[i].Name < gs[j].Name })
+	for _, g := range gs {
+		b.WriteString("\n")
+		b.WriteString("selects.config_setting_group(\n")
+		fmt.Fprintf(b, "    name = %q,\n", g.Name)
+		b.WriteString("    match_all = [\n")
+		for _, m := range g.MatchAll {
+			fmt.Fprintf(b, "        %q,\n", m)
+		}
+		b.WriteString("    ],\n")
+		b.WriteString("    visibility = [\"//visibility:public\"],\n")
+		b.WriteString(")\n")
+	}
 }
 
 func emitBool(b *bytes.Buffer, o Option) {

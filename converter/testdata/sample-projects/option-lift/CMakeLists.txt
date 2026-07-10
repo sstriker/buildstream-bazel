@@ -4,7 +4,7 @@ project(optionlift C)
 option(FOO_FEATURE "Enable the feature codepath" ON)
 
 set(BACKEND "ref" CACHE STRING "Backend implementation")
-set_property(CACHE BACKEND PROPERTY STRINGS ref fast)
+set_property(CACHE BACKEND PROPERTY STRINGS ref fast turbo)
 
 add_library(foo STATIC common.c)
 if(FOO_FEATURE)
@@ -15,9 +15,25 @@ if(BACKEND STREQUAL "fast")
   target_compile_definitions(foo PRIVATE USE_FAST_BACKEND=1)
 endif()
 
+# Option x config interaction: present only under (Debug AND FOO_FEATURE)
+# — the 2D fold's mixed-support shape (config_setting_group AND-arm).
+target_compile_definitions(foo PRIVATE
+  $<$<AND:$<CONFIG:Debug>,$<BOOL:${FOO_FEATURE}>>:FOO_DEBUG_EXTRA=1>)
+
 configure_file(cfg.h.in cfg.h)
 
 option(BUILD_EXTRA_TOOL "Build the extra tool" ON)
 if(BUILD_EXTRA_TOOL)
   add_executable(extra_tool tool.c)
+endif()
+
+# Partially-present enum target: exists under ref and fast but NOT
+# turbo (existence-gated), with a value-conditional define — its arms
+# must fold over exactly the present values, on both the 1D and the
+# 2D (--build-types) paths.
+if(NOT BACKEND STREQUAL "turbo")
+  add_library(partial STATIC partial.c)
+  if(BACKEND STREQUAL "fast")
+    target_compile_definitions(partial PRIVATE PARTIAL_FAST=1)
+  endif()
 endif()
