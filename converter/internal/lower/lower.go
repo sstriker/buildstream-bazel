@@ -6515,32 +6515,36 @@ func langSuffix(lang string) string {
 
 // optionsHeaderComments projects cmake option()-style cache entries
 // into a documentation block at the BUILD head. Detection: cache
-// entry Type=="BOOL" with the property HELPSTRING that came from
-// an option() declaration (cmake records the helpstring as the
-// option's description).
+// entry Type=="BOOL" (an option() declaration), or Type=="STRING"
+// carrying a STRINGS property (an enum toggle —
+// `set(… CACHE STRING …)` + `set_property(CACHE … PROPERTY
+// STRINGS …)`); both are the operator-facing toggle surface.
 //
 // Output shape:
 //
 //	# cmake options resolved at convert time (values baked in;
 //	# re-convert to change):
+//	#   - FOO_BACKEND = ref (Backend implementation)
 //	#   - FOO_ENABLE_TESTS = ON (Enable tests)
 //	#   - FOO_USE_GPU = OFF (Build with GPU acceleration)
 //
 // Operators see the toggle inventory and remember to re-convert
-// (or rewrite the BUILD) if they want a different value. cmake's
-// option() is configure-time-resolved; the Bazel equivalent
-// (bool_flag / config_setting select()s) requires re-emitting,
-// which is out of scope for the converter's one-shot lift.
+// (or rewrite the BUILD) if they want a different value. Options
+// lifted via --lift-options are relocated into a separate
+// build-time-flags block afterwards (AnnotateLiftedOptions); for
+// the rest, the Bazel equivalent (bool_flag / string_flag +
+// config_setting select()s) requires the lift's extra configures,
+// so unlisted options stay baked.
 //
 // Deterministic ordering: alphabetical by option name.
 func optionsHeaderComments(cache fileapi.Cache) []string {
 	type entry struct{ name, value, doc string }
 	var entries []entry
 	for _, e := range cache.Entries {
-		if e.Type != "BOOL" {
+		if e.Type != "BOOL" && !(e.Type == "STRING" && cacheEntryHasProp(e, "STRINGS")) {
 			continue
 		}
-		// Filter out cmake-internal BOOL entries; operator-defined
+		// Filter out cmake-internal entries; operator-defined
 		// option() declarations carry HELPSTRING. cmake builtins
 		// (CMAKE_VERBOSE_MAKEFILE etc.) also have HELPSTRING but
 		// start with `CMAKE_` — skip those to keep the list to
@@ -6573,6 +6577,17 @@ func optionsHeaderComments(cache fileapi.Cache) []string {
 		out = append(out, line)
 	}
 	return out
+}
+
+// cacheEntryHasProp reports whether a cache entry carries the named
+// property (e.g. STRINGS — the enum-option allowed-value list).
+func cacheEntryHasProp(e fileapi.CacheEntry, name string) bool {
+	for _, p := range e.Properties {
+		if p.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // packagePrefix returns the cmake package name when cmakeName is

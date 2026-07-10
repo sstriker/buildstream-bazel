@@ -54,6 +54,50 @@ func TestCanonicalizeFlipTarget_RewritesScratchPaths(t *testing.T) {
 	}
 }
 
+func TestResolveOptionSpecs(t *testing.T) {
+	cache := fileapi.Cache{Entries: []fileapi.CacheEntry{
+		{Name: "FEAT", Type: "BOOL", Value: "ON"},
+		{Name: "BACKEND", Type: "STRING", Value: "ref",
+			Properties: []fileapi.CacheEntryProp{{Name: "STRINGS", Value: "ref;fast;turbo"}}},
+		{Name: "FREEFORM", Type: "STRING", Value: "hello"},
+		{Name: "PATHY", Type: "FILEPATH", Value: "/x"},
+		{Name: "BAD_ENUM", Type: "STRING", Value: "zzz",
+			Properties: []fileapi.CacheEntryProp{{Name: "STRINGS", Value: "a;b"}}},
+	}}
+	specs, flips := resolveOptionSpecs([]string{"FEAT", "BACKEND", "FREEFORM", "PATHY", "BAD_ENUM", "MISSING"}, cache)
+	if len(specs) != 2 {
+		t.Fatalf("specs: got %d (%+v), want 2 (FEAT + BACKEND)", len(specs), specs)
+	}
+	if specs[0].name != "FEAT" || specs[0].enum || !specs[0].baseOn || specs[0].baseLabel != "//options:feat_on" {
+		t.Errorf("FEAT spec: %+v", specs[0])
+	}
+	if specs[1].name != "BACKEND" || !specs[1].enum || specs[1].baseValue != "ref" || len(specs[1].values) != 3 {
+		t.Errorf("BACKEND spec: %+v", specs[1])
+	}
+	// FEAT gets one flip (OFF); BACKEND two (fast, turbo).
+	if len(flips) != 3 {
+		t.Fatalf("flips: got %d (%+v), want 3", len(flips), flips)
+	}
+	if flips[0].setValue != "OFF" || flips[0].armLabel != "//options:feat_off" {
+		t.Errorf("FEAT flip: %+v", flips[0])
+	}
+	if flips[1].setValue != "fast" || flips[1].armLabel != "//options:backend_fast" {
+		t.Errorf("BACKEND flip 1: %+v", flips[1])
+	}
+	if flips[2].setValue != "turbo" || flips[2].armLabel != "//options:backend_turbo" {
+		t.Errorf("BACKEND flip 2: %+v", flips[2])
+	}
+}
+
+func TestEnumSpecOK_RejectsSuffixCollision(t *testing.T) {
+	if enumSpecOK("X", "a b", []string{"a b", "a_b"}) {
+		t.Errorf("values sanitizing to one suffix must be rejected")
+	}
+	if !enumSpecOK("X", "a", []string{"a", "b"}) {
+		t.Errorf("clean enum rejected")
+	}
+}
+
 func TestConfigTargetNameSetAndEquality(t *testing.T) {
 	cfgs := []fileapi.Configuration{{
 		Name: "Release",
