@@ -72,11 +72,11 @@ func astTargetStmtsByKind(t ir.Target, opts Options) ([]build.Expr, bool, error)
 	case ir.KindCCHash:
 		return oneErr(ccHashExpr(t))
 	case ir.KindFilegroup:
-		return oneErr(filegroupExpr(t))
+		return oneErr(filegroupExpr(t, opts.selectArmFamilies))
 	case ir.KindShBinary:
-		return one(shBinaryExpr(t))
+		return one(shBinaryExpr(t, opts.selectArmFamilies))
 	case ir.KindCCImport:
-		return one(ccImportExpr(t))
+		return one(ccImportExpr(t, opts.selectArmFamilies))
 	case ir.KindGenrule:
 		return one(genruleExpr(t))
 	case ir.KindNativeRule:
@@ -86,7 +86,7 @@ func astTargetStmtsByKind(t ir.Target, opts Options) ([]build.Expr, bool, error)
 	case ir.KindWriteFile:
 		return one(writeFileExpr(t))
 	case ir.KindPkgFiles:
-		return one(pkgFilesExpr(t))
+		return one(pkgFilesExpr(t, opts.selectArmFamilies))
 	case ir.KindCMakeConfigureFile:
 		return oneErr(cmakeConfigureFileExpr(t))
 	case ir.KindCCLibrary, ir.KindCCInterface, ir.KindCCBinary, ir.KindCCTest,
@@ -465,7 +465,7 @@ func ccHashExpr(t ir.Target) (*build.CallExpr, error) {
 
 // filegroupExpr is the AST form of emitFilegroup: srcs as a plain/select list
 // or glob(...); optional output_group, tags, visibility.
-func filegroupExpr(t ir.Target) (*build.CallExpr, error) {
+func filegroupExpr(t ir.Target, fams map[string]string) (*build.CallExpr, error) {
 	call, r := newCall("filegroup")
 	r.SetAttr("name", strExpr(t.Name))
 	if len(t.FilegroupGlob) > 0 {
@@ -474,7 +474,7 @@ func filegroupExpr(t ir.Target) (*build.CallExpr, error) {
 		}
 		r.SetAttr("srcs", globExpr(sortedCopy(t.FilegroupGlob)))
 	} else {
-		setIfNonNil(r, "srcs", attrExprAST(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")))
+		setIfNonNil(r, "srcs", attrExprAST(sortedCopy(t.Srcs), splitSelectByFamily(perPlatformAttr(t, "srcs"), fams)...))
 	}
 	if t.FilegroupOutputGroup != "" {
 		r.SetAttr("output_group", strExpr(t.FilegroupOutputGroup))
@@ -485,22 +485,22 @@ func filegroupExpr(t ir.Target) (*build.CallExpr, error) {
 }
 
 // shBinaryExpr is the AST form of emitShBinary.
-func shBinaryExpr(t ir.Target) *build.CallExpr {
+func shBinaryExpr(t ir.Target, fams map[string]string) *build.CallExpr {
 	call, r := newCall("sh_binary")
 	r.SetAttr("name", strExpr(t.Name))
-	setIfNonNil(r, "srcs", attrExprAST(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")))
+	setIfNonNil(r, "srcs", attrExprAST(sortedCopy(t.Srcs), splitSelectByFamily(perPlatformAttr(t, "srcs"), fams)...))
 	setListIfNonEmpty(r, "tags", sortedCopy(t.Tags))
 	setListIfNonEmpty(r, "visibility", nonDefaultVisibility(t.Visibility))
 	return call
 }
 
 // ccImportExpr is the AST form of emitCCImport.
-func ccImportExpr(t ir.Target) *build.CallExpr {
+func ccImportExpr(t ir.Target, fams map[string]string) *build.CallExpr {
 	call, r := newCall("cc_import")
 	r.SetAttr("name", strExpr(t.Name))
 	setIfNonNil(r, "static_library", scalarAttrExprAST(t.StaticLibrary, perPlatformScalarAttr(t, "static_library")))
 	setIfNonNil(r, "shared_library", scalarAttrExprAST(t.SharedLibrary, perPlatformScalarAttr(t, "shared_library")))
-	setIfNonNil(r, "hdrs", attrExprAST(sortedCopy(t.Hdrs), perPlatformAttr(t, "hdrs")))
+	setIfNonNil(r, "hdrs", attrExprAST(sortedCopy(t.Hdrs), splitSelectByFamily(perPlatformAttr(t, "hdrs"), fams)...))
 	setListIfNonEmpty(r, "tags", sortedCopy(t.Tags))
 	setListIfNonEmpty(r, "visibility", nonDefaultVisibility(t.Visibility))
 	return call
@@ -641,10 +641,10 @@ func writeFileExpr(t ir.Target) *build.CallExpr {
 }
 
 // pkgFilesExpr is the AST form of emitPkgFiles.
-func pkgFilesExpr(t ir.Target) *build.CallExpr {
+func pkgFilesExpr(t ir.Target, fams map[string]string) *build.CallExpr {
 	call, r := newCall("pkg_files")
 	r.SetAttr("name", strExpr(t.Name))
-	srcs, strip := pkgFilesSrcsExprAST(t)
+	srcs, strip := pkgFilesSrcsExprAST(t, fams)
 	if srcs == nil {
 		srcs = &build.ListExpr{} // template renders the always-present srcs as [] when empty
 	}
@@ -659,9 +659,9 @@ func pkgFilesExpr(t ir.Target) *build.CallExpr {
 
 // pkgFilesSrcsExprAST is the AST form of pkgFilesSrcsExpr: a plain/select list
 // or glob, plus the optional strip_prefix.from_pkg(...) call for the glob case.
-func pkgFilesSrcsExprAST(t ir.Target) (srcs build.Expr, strip build.Expr) {
+func pkgFilesSrcsExprAST(t ir.Target, fams map[string]string) (srcs build.Expr, strip build.Expr) {
 	if !t.PkgSrcsGlob {
-		return attrExprAST(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")), nil
+		return attrExprAST(sortedCopy(t.Srcs), splitSelectByFamily(perPlatformAttr(t, "srcs"), fams)...), nil
 	}
 	patterns := make([]string, 0, len(t.Srcs))
 	for _, d := range sortedCopy(t.Srcs) {
