@@ -173,8 +173,9 @@ func main() {
 	cmakeSrc := flag.String("cmake-src", "", "cmake source root (for include normalization, e.g. /tmp/zlib)")
 	cmakeBuild := flag.String("cmake-build", "", "cmake build dir (for include normalization, e.g. /tmp/zbuild)")
 	bazelPkg := flag.String("bazel-package", "", "converted element package (for include normalization, e.g. elements/zlib)")
-	cmakeReply := flag.String("cmake-codemodel", "", "cmake File API reply dir (for link-ORDER check; e.g. <build>/.cmake/api/v1/reply)")
-	aqueryLink := flag.String("aquery-link", "", "path to `bazel aquery --output=jsonproto mnemonic(CppLink,//...)` JSON (link-ORDER check)")
+	cmakeReply := flag.String("cmake-codemodel", "", "cmake File API reply dir (for the link-ORDER + link-GRAPH checks; e.g. <build>/.cmake/api/v1/reply)")
+	aqueryLink := flag.String("aquery-link", "", "path to `bazel aquery --output=jsonproto mnemonic(CppLink,//...)` JSON (link-ORDER + link-GRAPH checks)")
+	linkGraphJSON := flag.String("link-graph-json", "", "optional: write the link-graph (edge set) fidelity report here")
 	flag.Parse()
 	o := normOpts{cmakeSrc: *cmakeSrc, cmakeBuild: *cmakeBuild, bazelPkg: *bazelPkg}
 
@@ -204,14 +205,26 @@ func main() {
 		}
 	}
 
-	// Optional link-ORDER check (Q2): only when both cmake codemodel + CppLink
-	// aquery are supplied. Report-only, like the compile diff.
+	// Optional link-line checks (Q2 link-ORDER + Q3 link-GRAPH): only when
+	// both cmake codemodel + CppLink aquery are supplied. Load the two
+	// (potentially large) inputs ONCE and run both lenses on the shared
+	// in-memory data — same parse, same error handling. Report-only, like
+	// the compile diff.
 	if *cmakeReply != "" && *aqueryLink != "" {
-		lrep, err := linkOrderDiff(*cmakeReply, *aqueryLink)
+		reply, doc, err := loadLinkInputs(*cmakeReply, *aqueryLink)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "compile-commands-diff: link-order: %v\n", err)
+			fmt.Fprintf(os.Stderr, "compile-commands-diff: link inputs: %v\n", err)
 		} else {
-			lrep.print(os.Stdout)
+			compareLinkOrder(reply, doc).print(os.Stdout)
+			// A missing edge is a candidate silent drop, surfaced as the
+			// report's `dropped` count.
+			lgRep := compareLinkGraph(reply, doc)
+			lgRep.print(os.Stdout)
+			if *linkGraphJSON != "" {
+				if err := lgRep.writeJSON(*linkGraphJSON); err != nil {
+					fmt.Fprintf(os.Stderr, "compile-commands-diff: write %s: %v\n", *linkGraphJSON, err)
+				}
+			}
 		}
 	}
 }
