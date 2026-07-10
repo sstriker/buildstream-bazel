@@ -349,7 +349,14 @@ func dedupBaselineAgainstDeltas(tgt *ir.Target) {
 		return out
 	}
 	tgt.Copts = dedup(tgt.Copts, inDelta("copts"))
+	// Defines dedup spans BOTH spellings' arms: the folds route a
+	// define onto `defines` or `local_defines` arms depending on its
+	// original scope, and a token left in either flat list would still
+	// apply under non-matching arms.
 	defineArms := inDelta("defines")
+	for v := range inDelta("local_defines") {
+		defineArms[v] = true
+	}
 	tgt.Defines = dedup(tgt.Defines, defineArms)
 	tgt.LocalDefines = dedup(tgt.LocalDefines, defineArms)
 	tgt.LinkOpts = dedup(tgt.LinkOpts, inDelta("linkopts"))
