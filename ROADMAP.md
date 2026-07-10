@@ -1183,14 +1183,26 @@ trees, optional-feature deps, codegen instances). Each member's
   un-emittable from one convert — the primary lower never saw it — and
   surfaces as a re-convert-with-that-value breadcrumb. Opt-in
   allow-list by design; first-order only (each flip varies one option
-  from the baseline). **Remaining:** (1) **Multi-axis composition** —
-  `--lift-options` currently rejects `--build-types`, and the platform
-  axis (the shipped `converter/elementfold` + `fold-element` +
+  from the baseline). Multi-FAMILY select composition is shipped: arms
+  of different flags (two options; an option next to //config:* or a
+  constraint) can match simultaneously — one shared select() is an
+  "Illegal ambiguous match" — so the emitter renders one select() per
+  family, concatenated (`ir.Package.SelectArmFamilies`;
+  `splitSelectByFamily`), and content selects — which can't
+  concatenate — enforce a single family per write_file
+  (`ApplyContentBakes`' skip + breadcrumb). **Remaining:**
+  (1) **Multi-axis composition** — `--lift-options` still rejects
+  `--build-types`: capturing option×config-conditional facts
+  (`if(WIN32 AND FOO)`-shaped, per-build-type option deltas) needs
+  multi-config flip configures and a 2D partition whose mixed-support
+  facts land on skylib `config_setting_group` AND-arms — additive
+  selects can't subtract, so pure //config:* arms must be computed
+  jointly with the option axis, not from the base reply alone. The
+  platform axis (the shipped `converter/elementfold` + `fold-element` +
   `scripts/survey-multiplatform.sh` flow, whose constraint-label arms
   share the same PerPlatform map) needs per-cell option flips in the
-  elementfold flow, skylib `config_setting_group` for
-  option×config/option×platform-conditional deltas (`if(WIN32 AND FOO)`
-  can't AND config_settings in one select key), and a story for
+  elementfold flow, the same AND-arm shape for
+  option×platform-conditional deltas, and a story for
   platform-dependent option defaults (`option(FOO "…" ${WIN32})` — a
   single `bool_flag` default can't vary per platform). Pass count
   multiplies: M platforms × (1+N options) configures first-order, and

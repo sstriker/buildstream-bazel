@@ -358,6 +358,13 @@ func emitPkgFilesLoad(buf *bytes.Buffer, pkg *ir.Package) {
 // Options tunes the BUILD.bazel emission. Zero-value Options
 // preserves the legacy relative-path emission.
 type Options struct {
+	// selectArmFamilies is threaded from ir.Package.SelectArmFamilies
+	// by EmitWithOptions — arm-label → family key; see the ir field's
+	// doc. Unexported: callers don't set it, the package copies it
+	// from the emitted pkg so every render path (monolithic + split)
+	// sees the same map.
+	selectArmFamilies map[string]string
+
 	// SourceKey, when non-empty, prefixes every source path in
 	// emitted cc_library/cc_binary/cc_test `srcs = [...]` with
 	// "@src_<SourceKey>//:" so project B references the bytes
@@ -443,6 +450,7 @@ func Emit(pkg *ir.Package) ([]byte, error) {
 // matches what an operator hand-formatting via buildifier
 // would see post-conversion.
 func EmitWithOptions(pkg *ir.Package, opts Options) ([]byte, error) {
+	opts.selectArmFamilies = pkg.SelectArmFamilies
 	// Pre-emit constraint pass. Catches the small set of
 	// Bazel-side semantic violations that have produced real
 	// operator bugs (empty genrule cmd #193, duplicate deps
@@ -2020,28 +2028,44 @@ func ccTargetCall(t ir.Target, opts Options) (*build.CallExpr, error) {
 		hdrsSel = prefixSelectWithSourceLabel(hdrsSel, opts.SourceKey)
 	}
 
+	// Per-family select maps: arms of different flag families can
+	// match simultaneously, so each family renders as its own
+	// select() and attrExprAST concatenates them (see
+	// splitSelectByFamily). fam/escFam wrap the split for plain and
+	// token-escaped attrs respectively.
+	fam := func(sel map[string][]string) []map[string][]string {
+		return splitSelectByFamily(sel, opts.selectArmFamilies)
+	}
+	escFam := func(sel map[string][]string) []map[string][]string {
+		out := fam(sel)
+		for i := range out {
+			out[i] = escapeTokenizedPerPlatform(out[i])
+		}
+		return out
+	}
+
 	v := ccView{
 		RuleKind: t.Kind.String(),
 		Name:     t.Name,
-		SrcsExpr: attrExprAST(srcs, srcsSel),
+		SrcsExpr: attrExprAST(srcs, fam(srcsSel)...),
 		// module_srcs (fortran_library only): the module-defining Fortran
 		// sources, kept in the converter's topological order (NOT sorted — a
 		// module's provider must precede any provider that uses it).
-		ModuleSrcsExpr:             attrExprAST(append([]string(nil), t.ModuleSrcs...), nil),
-		HdrsExpr:                   attrExprAST(hdrs, hdrsSel),
-		TextualHdrsExpr:            attrExprAST(sortedCopy(t.TextualHdrs), perPlatformAttr(t, "textual_hdrs")),
-		IncludesExpr:               attrExprAST(includes, perPlatformAttr(t, "includes")),
+		ModuleSrcsExpr:             attrExprAST(append([]string(nil), t.ModuleSrcs...)),
+		HdrsExpr:                   attrExprAST(hdrs, fam(hdrsSel)...),
+		TextualHdrsExpr:            attrExprAST(sortedCopy(t.TextualHdrs), fam(perPlatformAttr(t, "textual_hdrs"))...),
+		IncludesExpr:               attrExprAST(includes, fam(perPlatformAttr(t, "includes"))...),
 		IncludePrefix:              t.IncludePrefix,
 		StripIncludePrefix:         t.StripIncludePrefix,
-		CoptsExpr:                  attrExprAST(copts, escapeTokenizedPerPlatform(perPlatformAttr(t, "copts"))),
-		DefinesExpr:                attrExprAST(defines, escapeTokenizedPerPlatform(perPlatformAttr(t, "defines"))),
-		LocalDefinesExpr:           attrExprAST(escapeTokenizedList(sortedCopy(t.LocalDefines)), escapeTokenizedPerPlatform(perPlatformAttr(t, "local_defines"))),
-		LinkoptsExpr:               attrExprAST(linkopts, escapeTokenizedPerPlatform(perPlatformAttr(t, "linkopts"))),
-		HostLinkoptsExpr:           attrExprAST(escapeTokenizedList(append([]string(nil), t.HostLinkOpts...)), escapeTokenizedPerPlatform(perPlatformAttr(t, "host_linkopts"))),
-		AdditionalLinkerInputsExpr: attrExprAST(t.AdditionalLinkerInputs, nil),
-		DepsExpr:                   attrExprAST(deps, perPlatformAttr(t, "deps")),
+		CoptsExpr:                  attrExprAST(copts, escFam(perPlatformAttr(t, "copts"))...),
+		DefinesExpr:                attrExprAST(defines, escFam(perPlatformAttr(t, "defines"))...),
+		LocalDefinesExpr:           attrExprAST(escapeTokenizedList(sortedCopy(t.LocalDefines)), escFam(perPlatformAttr(t, "local_defines"))...),
+		LinkoptsExpr:               attrExprAST(linkopts, escFam(perPlatformAttr(t, "linkopts"))...),
+		HostLinkoptsExpr:           attrExprAST(escapeTokenizedList(append([]string(nil), t.HostLinkOpts...)), escFam(perPlatformAttr(t, "host_linkopts"))...),
+		AdditionalLinkerInputsExpr: attrExprAST(t.AdditionalLinkerInputs),
+		DepsExpr:                   attrExprAST(deps, fam(perPlatformAttr(t, "deps"))...),
 		DynamicDepsExpr:            dynamicDepsExpr(t),
-		ImplementationDepsExpr:     attrExprAST(implementationDeps, perPlatformAttr(t, "implementation_deps")),
+		ImplementationDepsExpr:     attrExprAST(implementationDeps, fam(perPlatformAttr(t, "implementation_deps"))...),
 		Linkstatic:                 t.Linkstatic,
 		Alwayslink:                 t.Alwayslink,
 		// Defensive kind gate: `rdc` exists only on rules_cuda rules —

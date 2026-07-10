@@ -42,7 +42,10 @@ func astTargetStmts(t ir.Target, opts Options) ([]build.Expr, bool, error) {
 		if call, ok := stmts[0].(*build.CallExpr); ok {
 			r := &build.Rule{Call: call}
 			if r.Attr("target_compatible_with") == nil {
-				setIfNonNil(r, "target_compatible_with", attrExprAST(nil, sel))
+				// Split per family: two options gating one target are
+				// arms on different flags, and both matching in a
+				// single select() is an ambiguous-match error.
+				setIfNonNil(r, "target_compatible_with", attrExprAST(nil, splitSelectByFamily(sel, opts.selectArmFamilies)...))
 			}
 		}
 	}
@@ -69,11 +72,11 @@ func astTargetStmtsByKind(t ir.Target, opts Options) ([]build.Expr, bool, error)
 	case ir.KindCCHash:
 		return oneErr(ccHashExpr(t))
 	case ir.KindFilegroup:
-		return oneErr(filegroupExpr(t))
+		return oneErr(filegroupExpr(t, opts.selectArmFamilies))
 	case ir.KindShBinary:
-		return one(shBinaryExpr(t))
+		return one(shBinaryExpr(t, opts.selectArmFamilies))
 	case ir.KindCCImport:
-		return one(ccImportExpr(t))
+		return one(ccImportExpr(t, opts.selectArmFamilies))
 	case ir.KindGenrule:
 		return one(genruleExpr(t))
 	case ir.KindNativeRule:
@@ -83,7 +86,7 @@ func astTargetStmtsByKind(t ir.Target, opts Options) ([]build.Expr, bool, error)
 	case ir.KindWriteFile:
 		return one(writeFileExpr(t))
 	case ir.KindPkgFiles:
-		return one(pkgFilesExpr(t))
+		return one(pkgFilesExpr(t, opts.selectArmFamilies))
 	case ir.KindCMakeConfigureFile:
 		return oneErr(cmakeConfigureFileExpr(t))
 	case ir.KindCCLibrary, ir.KindCCInterface, ir.KindCCBinary, ir.KindCCTest,
@@ -246,20 +249,56 @@ func setIfNonNil(r *build.Rule, key string, e build.Expr) {
 // (the attribute is omitted). Since both this AST and a parse of attrExpr's
 // string are canonicalized by build.Format, only the STRUCTURE must match, not
 // the string spacing.
-func attrExprAST(flat []string, sel map[string][]string) build.Expr {
-	hasSel := len(sel) > 0
-	hasFlat := len(flat) > 0
-	if !hasSel && !hasFlat {
+func attrExprAST(flat []string, sels ...map[string][]string) build.Expr {
+	var expr build.Expr
+	if len(flat) > 0 {
+		expr = strListExpr(flat)
+	}
+	for _, sel := range sels {
+		if len(sel) == 0 {
+			continue
+		}
+		selExpr := selectListExpr(sel)
+		if expr == nil {
+			expr = selExpr
+		} else {
+			expr = &build.BinaryExpr{Op: "+", X: expr, Y: selExpr}
+		}
+	}
+	return expr
+}
+
+// splitSelectByFamily partitions one PerPlatform attr map into
+// per-family select maps, ordered by sorted family key ("" — the
+// unmapped family — first). Arms of one family are mutually
+// exclusive conditions (config_settings on one flag / constraint
+// setting); arms of different families can match simultaneously,
+// which Bazel rejects as an "Illegal ambiguous match" when they
+// share a select() — so each family gets its own select() and the
+// emitter concatenates them. A nil/empty families map yields the
+// single-map input back (pre-family behavior, byte-identical).
+func splitSelectByFamily(sel map[string][]string, families map[string]string) []map[string][]string {
+	if len(sel) == 0 {
 		return nil
 	}
-	if !hasSel {
-		return strListExpr(flat)
+	byFam := map[string]map[string][]string{}
+	var keys []string
+	for label, vs := range sel {
+		fam := families[label]
+		m, ok := byFam[fam]
+		if !ok {
+			m = map[string][]string{}
+			byFam[fam] = m
+			keys = append(keys, fam)
+		}
+		m[label] = vs
 	}
-	selExpr := selectListExpr(sel)
-	if hasFlat {
-		return &build.BinaryExpr{Op: "+", X: strListExpr(flat), Y: selExpr}
+	sort.Strings(keys)
+	out := make([]map[string][]string, 0, len(byFam))
+	for _, k := range keys {
+		out = append(out, byFam[k])
 	}
-	return selExpr
+	return out
 }
 
 // selectListExpr builds `select({k: [..], …, "//conditions:default": [..]})`
@@ -426,7 +465,7 @@ func ccHashExpr(t ir.Target) (*build.CallExpr, error) {
 
 // filegroupExpr is the AST form of emitFilegroup: srcs as a plain/select list
 // or glob(...); optional output_group, tags, visibility.
-func filegroupExpr(t ir.Target) (*build.CallExpr, error) {
+func filegroupExpr(t ir.Target, fams map[string]string) (*build.CallExpr, error) {
 	call, r := newCall("filegroup")
 	r.SetAttr("name", strExpr(t.Name))
 	if len(t.FilegroupGlob) > 0 {
@@ -435,7 +474,7 @@ func filegroupExpr(t ir.Target) (*build.CallExpr, error) {
 		}
 		r.SetAttr("srcs", globExpr(sortedCopy(t.FilegroupGlob)))
 	} else {
-		setIfNonNil(r, "srcs", attrExprAST(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")))
+		setIfNonNil(r, "srcs", attrExprAST(sortedCopy(t.Srcs), splitSelectByFamily(perPlatformAttr(t, "srcs"), fams)...))
 	}
 	if t.FilegroupOutputGroup != "" {
 		r.SetAttr("output_group", strExpr(t.FilegroupOutputGroup))
@@ -446,22 +485,22 @@ func filegroupExpr(t ir.Target) (*build.CallExpr, error) {
 }
 
 // shBinaryExpr is the AST form of emitShBinary.
-func shBinaryExpr(t ir.Target) *build.CallExpr {
+func shBinaryExpr(t ir.Target, fams map[string]string) *build.CallExpr {
 	call, r := newCall("sh_binary")
 	r.SetAttr("name", strExpr(t.Name))
-	setIfNonNil(r, "srcs", attrExprAST(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")))
+	setIfNonNil(r, "srcs", attrExprAST(sortedCopy(t.Srcs), splitSelectByFamily(perPlatformAttr(t, "srcs"), fams)...))
 	setListIfNonEmpty(r, "tags", sortedCopy(t.Tags))
 	setListIfNonEmpty(r, "visibility", nonDefaultVisibility(t.Visibility))
 	return call
 }
 
 // ccImportExpr is the AST form of emitCCImport.
-func ccImportExpr(t ir.Target) *build.CallExpr {
+func ccImportExpr(t ir.Target, fams map[string]string) *build.CallExpr {
 	call, r := newCall("cc_import")
 	r.SetAttr("name", strExpr(t.Name))
 	setIfNonNil(r, "static_library", scalarAttrExprAST(t.StaticLibrary, perPlatformScalarAttr(t, "static_library")))
 	setIfNonNil(r, "shared_library", scalarAttrExprAST(t.SharedLibrary, perPlatformScalarAttr(t, "shared_library")))
-	setIfNonNil(r, "hdrs", attrExprAST(sortedCopy(t.Hdrs), perPlatformAttr(t, "hdrs")))
+	setIfNonNil(r, "hdrs", attrExprAST(sortedCopy(t.Hdrs), splitSelectByFamily(perPlatformAttr(t, "hdrs"), fams)...))
 	setListIfNonEmpty(r, "tags", sortedCopy(t.Tags))
 	setListIfNonEmpty(r, "visibility", nonDefaultVisibility(t.Visibility))
 	return call
@@ -602,10 +641,10 @@ func writeFileExpr(t ir.Target) *build.CallExpr {
 }
 
 // pkgFilesExpr is the AST form of emitPkgFiles.
-func pkgFilesExpr(t ir.Target) *build.CallExpr {
+func pkgFilesExpr(t ir.Target, fams map[string]string) *build.CallExpr {
 	call, r := newCall("pkg_files")
 	r.SetAttr("name", strExpr(t.Name))
-	srcs, strip := pkgFilesSrcsExprAST(t)
+	srcs, strip := pkgFilesSrcsExprAST(t, fams)
 	if srcs == nil {
 		srcs = &build.ListExpr{} // template renders the always-present srcs as [] when empty
 	}
@@ -620,9 +659,9 @@ func pkgFilesExpr(t ir.Target) *build.CallExpr {
 
 // pkgFilesSrcsExprAST is the AST form of pkgFilesSrcsExpr: a plain/select list
 // or glob, plus the optional strip_prefix.from_pkg(...) call for the glob case.
-func pkgFilesSrcsExprAST(t ir.Target) (srcs build.Expr, strip build.Expr) {
+func pkgFilesSrcsExprAST(t ir.Target, fams map[string]string) (srcs build.Expr, strip build.Expr) {
 	if !t.PkgSrcsGlob {
-		return attrExprAST(sortedCopy(t.Srcs), perPlatformAttr(t, "srcs")), nil
+		return attrExprAST(sortedCopy(t.Srcs), splitSelectByFamily(perPlatformAttr(t, "srcs"), fams)...), nil
 	}
 	patterns := make([]string, 0, len(t.Srcs))
 	for _, d := range sortedCopy(t.Srcs) {

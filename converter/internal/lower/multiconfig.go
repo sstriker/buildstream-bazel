@@ -51,6 +51,14 @@ func lowerMultiConfigDeltas(pkg *ir.Package, byConfig map[string]map[string]file
 	if len(folds) == 0 {
 		return
 	}
+	// Register every per-config arm under the build_type flag's select
+	// family: //config:* arms are mutually exclusive with each other
+	// (one string_flag) but NOT with //options:* or platform arms, so
+	// the emitter renders each family as its own select() (see
+	// ir.Package.SelectArmFamilies).
+	for _, cfg := range nonFeatureConfigs {
+		registerSelectArmFamily(pkg, configLabel(cfg), "//config:build_type")
+	}
 
 	// Index pkg.Targets by name for fast match, and invert idToName for
 	// the per-config PCH owner lookups (byConfig is keyed by target ID).

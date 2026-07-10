@@ -28,7 +28,8 @@ func ApplyPerConfigBakes(pkg *ir.Package, bakes map[string]map[string][]byte, re
 		}
 		relabeled[rel] = m
 	}
-	return ApplyContentBakes(pkg, relabeled, recordedSrcDir, recordedBuildDir, labelRoot, "cmake-codegen-per-config-content")
+	applied, _ = ApplyContentBakes(pkg, relabeled, recordedSrcDir, recordedBuildDir, labelRoot, "cmake-codegen-per-config-content", "//config:build_type")
+	return applied
 }
 
 // ApplyContentBakes folds captured alternate-cell configure_file bodies into
@@ -57,6 +58,15 @@ func ApplyPerConfigBakes(pkg *ir.Package, bakes map[string]map[string][]byte, re
 // rule, so the target keeps the single primary body rather than emitting a
 // lying arm.
 //
+// family is the select family every supplied arm label belongs to
+// (see ir.Package.SelectArmFamilies). Unlike attribute selects —
+// which the emitter splits per family and concatenates — a content
+// select is ONE select (bodies aren't additive), so a target whose
+// existing arms belong to a DIFFERENT family can't honestly take
+// these: it lands in the skipped return (second value) and keeps its
+// existing arms, and the caller surfaces the drop. Applied arms are
+// registered under family so later callers see them.
+//
 // Each captured body is re-anchored with the SAME policy its target's
 // primary body got: file_generate-driven bakes go through
 // reanchorResponseContent (exec-root form + @BSB_GENDIR@ markers),
@@ -69,9 +79,9 @@ func ApplyPerConfigBakes(pkg *ir.Package, bakes map[string]map[string][]byte, re
 //
 // Returns the names of the targets that gained per-cell content, for the
 // caller's stderr surfacing.
-func ApplyContentBakes(pkg *ir.Package, bakes map[string]map[string][]byte, recordedSrcDir, recordedBuildDir, labelRoot, tag string) (applied []string) {
+func ApplyContentBakes(pkg *ir.Package, bakes map[string]map[string][]byte, recordedSrcDir, recordedBuildDir, labelRoot, tag, family string) (applied, skipped []string) {
 	if pkg == nil || len(bakes) == 0 {
-		return nil
+		return nil, nil
 	}
 	for i := range pkg.Targets {
 		t := &pkg.Targets[i]
@@ -80,6 +90,10 @@ func ApplyContentBakes(pkg *ir.Package, bakes map[string]map[string][]byte, reco
 		}
 		perCell := bakes[t.WriteFileOut]
 		if len(perCell) == 0 {
+			continue
+		}
+		if conflictsContentFamily(pkg, t, family) {
+			skipped = append(skipped, t.Name)
 			continue
 		}
 		fileGenDriven := stringSliceContains(t.Tags, "cmake-codegen-driver=file_generate")
@@ -115,9 +129,25 @@ func ApplyContentBakes(pkg *ir.Package, bakes map[string]map[string][]byte, reco
 		if !stringSliceContains(t.Tags, tag) {
 			t.Tags = append(t.Tags, tag)
 		}
+		for label := range byLabel {
+			registerSelectArmFamily(pkg, label, family)
+		}
 		applied = append(applied, t.Name)
 	}
-	return applied
+	return applied, skipped
+}
+
+// conflictsContentFamily reports whether the target already carries
+// content arms from a different select family — the shape a single
+// content select() can't compose (two families' conditions can match
+// simultaneously, and bodies aren't additive like list attrs).
+func conflictsContentFamily(pkg *ir.Package, t *ir.Target, family string) bool {
+	for label := range t.WriteFileContentByConfig {
+		if pkg.SelectArmFamilies[label] != family {
+			return true
+		}
+	}
+	return false
 }
 
 // equalLines reports element-wise equality of two line lists.

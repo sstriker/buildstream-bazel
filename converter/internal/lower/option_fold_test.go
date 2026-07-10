@@ -212,35 +212,53 @@ func TestApplyOptionFold_EnumThreeCells(t *testing.T) {
 	}
 }
 
-// TestApplyContentBakes_LabelKeyedMerge pins the shared content-bake
-// fold on the option axis: bodies keyed by final arm labels land on
-// WriteFileContentByConfig, merging with (not clobbering) arms an
-// earlier fold already placed.
-func TestApplyContentBakes_LabelKeyedMerge(t *testing.T) {
+// TestApplyContentBakes_FamilyMergeAndConflict pins the shared
+// content-bake fold's family rules: bodies keyed by final arm labels
+// land on WriteFileContentByConfig, merging with arms an earlier
+// SAME-family fold placed — but a target whose existing arms belong
+// to a DIFFERENT family is skipped (a content select is one select;
+// two families' conditions can match simultaneously and bodies
+// aren't additive).
+func TestApplyContentBakes_FamilyMergeAndConflict(t *testing.T) {
 	pkg := &ir.Package{Targets: []ir.Target{{
 		Name:             "cfg_h",
 		Kind:             ir.KindWriteFile,
 		WriteFileOut:     "cfg.h",
 		WriteFileContent: []string{"#define BACKEND ref"},
-		WriteFileContentByConfig: map[string][]string{
-			"//options:feat_off": {"#define BACKEND none"},
-		},
 	}}}
-	applied := ApplyContentBakes(pkg, map[string]map[string][]byte{
+	// First fold: backend arm applies + registers its family.
+	applied, skipped := ApplyContentBakes(pkg, map[string]map[string][]byte{
 		"cfg.h": {"//options:backend_fast": []byte("#define BACKEND fast")},
-	}, "", "", "", "cmake-codegen-per-option-content")
-	if len(applied) != 1 || applied[0] != "cfg_h" {
-		t.Fatalf("applied = %v", applied)
+	}, "", "", "", "cmake-codegen-per-option-content", "//options:backend")
+	if len(applied) != 1 || applied[0] != "cfg_h" || len(skipped) != 0 {
+		t.Fatalf("first fold: applied=%v skipped=%v", applied, skipped)
+	}
+	// Same family again (another value of the same option): merges.
+	applied, skipped = ApplyContentBakes(pkg, map[string]map[string][]byte{
+		"cfg.h": {"//options:backend_turbo": []byte("#define BACKEND turbo")},
+	}, "", "", "", "cmake-codegen-per-option-content", "//options:backend")
+	if len(applied) != 1 || len(skipped) != 0 {
+		t.Fatalf("same-family fold: applied=%v skipped=%v", applied, skipped)
 	}
 	byCfg := pkg.Targets[0].WriteFileContentByConfig
 	if got := byCfg["//options:backend_fast"]; len(got) != 1 || got[0] != "#define BACKEND fast" {
 		t.Errorf("fast arm: %v", got)
 	}
-	if got := byCfg["//options:feat_off"]; len(got) != 1 || got[0] != "#define BACKEND none" {
-		t.Errorf("pre-existing arm clobbered: %v", got)
+	if got := byCfg["//options:backend_turbo"]; len(got) != 1 || got[0] != "#define BACKEND turbo" {
+		t.Errorf("turbo arm (same-family merge): %v", got)
 	}
 	if !stringSliceContains(pkg.Targets[0].Tags, "cmake-codegen-per-option-content") {
 		t.Errorf("audit tag missing: %v", pkg.Targets[0].Tags)
+	}
+	// Different family (another option): skipped, arms unchanged.
+	applied, skipped = ApplyContentBakes(pkg, map[string]map[string][]byte{
+		"cfg.h": {"//options:feat_off": []byte("#define BACKEND none")},
+	}, "", "", "", "cmake-codegen-per-option-content", "//options:feat")
+	if len(applied) != 0 || len(skipped) != 1 || skipped[0] != "cfg_h" {
+		t.Fatalf("cross-family fold: applied=%v skipped=%v", applied, skipped)
+	}
+	if _, ok := pkg.Targets[0].WriteFileContentByConfig["//options:feat_off"]; ok {
+		t.Errorf("cross-family arm must not land: %v", pkg.Targets[0].WriteFileContentByConfig)
 	}
 }
 

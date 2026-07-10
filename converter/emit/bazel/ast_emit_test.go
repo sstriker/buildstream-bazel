@@ -116,7 +116,7 @@ func TestASTEmit_Filegroup(t *testing.T) {
 	for _, tc := range []ir.Target{plain, glob} {
 		tc := tc
 		t.Run(tc.Name, func(t *testing.T) {
-			call, err := filegroupExpr(tc)
+			call, err := filegroupExpr(tc, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -127,7 +127,7 @@ func TestASTEmit_Filegroup(t *testing.T) {
 
 func TestASTEmit_ShBinary(t *testing.T) {
 	tc := ir.Target{Kind: ir.KindShBinary, Name: "s", Srcs: []string{"run.sh"}, Tags: []string{"manual"}}
-	assertKindByteIdentical(t, shBinaryExpr(tc), func(b *bytes.Buffer) error { return emitShBinary(b, tc) })
+	assertKindByteIdentical(t, shBinaryExpr(tc, nil), func(b *bytes.Buffer) error { return emitShBinary(b, tc) })
 }
 
 func TestASTEmit_CCImport(t *testing.T) {
@@ -137,7 +137,7 @@ func TestASTEmit_CCImport(t *testing.T) {
 	} {
 		tc := tc
 		t.Run(tc.StaticLibrary+tc.SharedLibrary, func(t *testing.T) {
-			assertKindByteIdentical(t, ccImportExpr(tc), func(b *bytes.Buffer) error { return emitCCImport(b, tc) })
+			assertKindByteIdentical(t, ccImportExpr(tc, nil), func(b *bytes.Buffer) error { return emitCCImport(b, tc) })
 		})
 	}
 }
@@ -208,7 +208,7 @@ func TestASTEmit_PkgFiles(t *testing.T) {
 	for i, tc := range cases {
 		tc := tc
 		t.Run(string(rune('a'+i)), func(t *testing.T) {
-			assertKindByteIdentical(t, pkgFilesExpr(tc), func(b *bytes.Buffer) error { return emitPkgFiles(b, tc) })
+			assertKindByteIdentical(t, pkgFilesExpr(tc, nil), func(b *bytes.Buffer) error { return emitPkgFiles(b, tc) })
 		})
 	}
 }

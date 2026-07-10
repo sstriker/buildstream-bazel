@@ -276,6 +276,20 @@ type Package struct {
 	// — operators see the external-dep inventory at a glance.
 	HeaderComments []string
 
+	// SelectArmFamilies maps a PerPlatform select-arm label onto its
+	// FAMILY key — the flag / constraint_setting the arm's condition
+	// reads (e.g. every //options:foo_* arm maps to "//options:foo",
+	// every //config:* arm to "//config:build_type"). Arms of one
+	// family are mutually exclusive (config_settings on one flag);
+	// arms of DIFFERENT families can match simultaneously, which
+	// Bazel rejects as an "Illegal ambiguous match" when they share a
+	// select(). The emitter therefore renders one select() per family
+	// and concatenates them (`flat + select({...}) + select({...})`).
+	// Labels absent from the map share the "" family — the pre-family
+	// behavior — so packages without the map are emitted byte-
+	// identically.
+	SelectArmFamilies map[string]string
+
 	// SubPackages maps each real (codemodel-derived) target Name to
 	// the element-root-relative directory the cmake CMakeLists that
 	// declared it lived in ("" = the root package, e.g. "src/util"

@@ -284,6 +284,11 @@ func renderSplitPackage(pkg *ir.Package, targets []ir.Target, dir string, opts O
 	if dir == "" {
 		sub.HeaderComments = pkg.HeaderComments
 	}
+	// Every sub-package renders arms from the same fold, so the
+	// family map propagates whole (labels are globally unique).
+	if len(pkg.SelectArmFamilies) > 0 {
+		sub.SelectArmFamilies = pkg.SelectArmFamilies
+	}
 	subOpts := opts
 	subOpts.BazelPackagePath = joinPkgPath(base, dir)
 	body, err := EmitWithOptions(sub, subOpts)
