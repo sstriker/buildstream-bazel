@@ -85,6 +85,12 @@ grep -qF 'name = "foo_feature_off"' "$options_build" || fail "config_setting foo
 # Enum (STRING + STRINGS) option: string_flag + per-value settings,
 # defines arm, and the configure_file body as a content select().
 grep -qF '"//options:backend_fast": ["USE_FAST_BACKEND=1"]' "$build" || fail "enum defines select arm missing USE_FAST_BACKEND=1"
+# Multi-axis composition: foo's defines carry arms from TWO options
+# (BACKEND + FOO_FEATURE) — one shared select() would be an
+# "Illegal ambiguous match" whenever both flags' conditions hold, so
+# the emitter must render one select() per flag family, concatenated.
+foo_stanza=$(sed -n '/name = "foo"/,/^)/p' "$build")
+printf '%s' "$foo_stanza" | grep -qF '}) + select({' || fail "defines arms from two options share one select() (ambiguous-match shape)"
 grep -qF 'name = "backend"' "$options_build" || fail "//options string_flag missing"
 grep -qF 'build_setting_default = "ref"' "$options_build" || fail "string_flag default should be ref (configured value)"
 grep -qF '"ref",' "$options_build" || fail "string_flag values missing ref"

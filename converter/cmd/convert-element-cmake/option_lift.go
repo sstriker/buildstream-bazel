@@ -413,6 +413,18 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 		if lc == nil {
 			continue
 		}
+		// Register the option's arm labels under its flag's select
+		// family FIRST: two options' arms — or an option arm next to a
+		// //config:*/constraint arm — can match simultaneously, so the
+		// emitter renders one select() per family, concatenated
+		// (lower.RegisterOptionArms; ir.Package.SelectArmFamilies).
+		flagLabel := "//options:" + strings.ToLower(spec.name)
+		lower.RegisterOptionArms(pkg, flagLabel, spec.baseLabel)
+		for i := range job.flips {
+			if job.flips[i].spec == specIdx {
+				lower.RegisterOptionArms(pkg, flagLabel, job.flips[i].armLabel)
+			}
+		}
 		// Attribute fold per presence-signature group: a target absent
 		// under some arm folds over only its present cells (its
 		// existence there is the gate's job, not attribute arms').
@@ -422,7 +434,10 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 			armed = append(armed, lower.ApplyOptionFold(pkg, grp.byCell, grp.cells, srcRoot, hostBuildDir, idToName)...)
 		}
 		gated := lower.GateTargetExistence(pkg, lc.gates)
-		baked := lower.ApplyContentBakes(pkg, lc.bakes, srcRoot, hostBuildDir, a.BazelPackagePath, "cmake-codegen-per-option-content")
+		baked, bakeSkipped := lower.ApplyContentBakes(pkg, lc.bakes, srcRoot, hostBuildDir, a.BazelPackagePath, "cmake-codegen-per-option-content", flagLabel)
+		for _, name := range bakeSkipped {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: write_file %s already carries content arms from another select family (a content select can't compose families); keeping its existing arms.\n", spec.name, name)
+		}
 		if len(lc.flipOnly) > 0 {
 			names := sliceutil.SortedKeys(lc.flipOnly)
 			for _, name := range names {
@@ -437,7 +452,7 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 		fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: lifted to --//options:%s (default %s); %d target(s) gained select() arms, %d gained target_compatible_with gates, %d write_file body(ies) gained content arms.\n",
 			spec.name, strings.ToLower(spec.name), spec.cliDefault(), len(armed), len(gated), len(baked))
 		lifted = append(lifted, specOption(spec))
-		liftedLabels[spec.name] = "//options:" + strings.ToLower(spec.name)
+		liftedLabels[spec.name] = flagLabel
 	}
 	if len(lifted) == 0 {
 		return

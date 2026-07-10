@@ -42,7 +42,10 @@ func astTargetStmts(t ir.Target, opts Options) ([]build.Expr, bool, error) {
 		if call, ok := stmts[0].(*build.CallExpr); ok {
 			r := &build.Rule{Call: call}
 			if r.Attr("target_compatible_with") == nil {
-				setIfNonNil(r, "target_compatible_with", attrExprAST(nil, sel))
+				// Split per family: two options gating one target are
+				// arms on different flags, and both matching in a
+				// single select() is an ambiguous-match error.
+				setIfNonNil(r, "target_compatible_with", attrExprAST(nil, splitSelectByFamily(sel, opts.selectArmFamilies)...))
 			}
 		}
 	}
@@ -246,20 +249,56 @@ func setIfNonNil(r *build.Rule, key string, e build.Expr) {
 // (the attribute is omitted). Since both this AST and a parse of attrExpr's
 // string are canonicalized by build.Format, only the STRUCTURE must match, not
 // the string spacing.
-func attrExprAST(flat []string, sel map[string][]string) build.Expr {
-	hasSel := len(sel) > 0
-	hasFlat := len(flat) > 0
-	if !hasSel && !hasFlat {
+func attrExprAST(flat []string, sels ...map[string][]string) build.Expr {
+	var expr build.Expr
+	if len(flat) > 0 {
+		expr = strListExpr(flat)
+	}
+	for _, sel := range sels {
+		if len(sel) == 0 {
+			continue
+		}
+		selExpr := selectListExpr(sel)
+		if expr == nil {
+			expr = selExpr
+		} else {
+			expr = &build.BinaryExpr{Op: "+", X: expr, Y: selExpr}
+		}
+	}
+	return expr
+}
+
+// splitSelectByFamily partitions one PerPlatform attr map into
+// per-family select maps, ordered by sorted family key ("" — the
+// unmapped family — first). Arms of one family are mutually
+// exclusive conditions (config_settings on one flag / constraint
+// setting); arms of different families can match simultaneously,
+// which Bazel rejects as an "Illegal ambiguous match" when they
+// share a select() — so each family gets its own select() and the
+// emitter concatenates them. A nil/empty families map yields the
+// single-map input back (pre-family behavior, byte-identical).
+func splitSelectByFamily(sel map[string][]string, families map[string]string) []map[string][]string {
+	if len(sel) == 0 {
 		return nil
 	}
-	if !hasSel {
-		return strListExpr(flat)
+	byFam := map[string]map[string][]string{}
+	var keys []string
+	for label, vs := range sel {
+		fam := families[label]
+		m, ok := byFam[fam]
+		if !ok {
+			m = map[string][]string{}
+			byFam[fam] = m
+			keys = append(keys, fam)
+		}
+		m[label] = vs
 	}
-	selExpr := selectListExpr(sel)
-	if hasFlat {
-		return &build.BinaryExpr{Op: "+", X: strListExpr(flat), Y: selExpr}
+	sort.Strings(keys)
+	out := make([]map[string][]string, 0, len(byFam))
+	for _, k := range keys {
+		out = append(out, byFam[k])
 	}
-	return selExpr
+	return out
 }
 
 // selectListExpr builds `select({k: [..], …, "//conditions:default": [..]})`

@@ -142,6 +142,31 @@ func ApplyOptionFold(pkg *ir.Package, byCell map[string]map[string]fileapi.Targe
 	return lifted
 }
 
+// registerSelectArmFamily records one select-arm label's family on
+// the package (see ir.Package.SelectArmFamilies). Idempotent; lazy
+// map init.
+func registerSelectArmFamily(pkg *ir.Package, label, family string) {
+	if pkg.SelectArmFamilies == nil {
+		pkg.SelectArmFamilies = map[string]string{}
+	}
+	pkg.SelectArmFamilies[label] = family
+}
+
+// RegisterOptionArms records a lifted option's arm labels under its
+// flag's select family: arms of ONE option are mutually exclusive
+// (config_settings over one bool_flag/string_flag), arms of
+// DIFFERENT options — or an option arm next to a //config:* /
+// constraint arm — can match simultaneously, which Bazel rejects as
+// an "Illegal ambiguous match" inside a single select(). The family
+// map makes the emitter render one select() per family,
+// concatenated. Callers register EVERY arm label of the option
+// (base + flips) before folding.
+func RegisterOptionArms(pkg *ir.Package, flagLabel string, arms ...string) {
+	for _, arm := range arms {
+		registerSelectArmFamily(pkg, arm, flagLabel)
+	}
+}
+
 // IncompatibleLabel is the canonical constraint Bazel skips targets
 // on (`bazel build //...` prunes incompatible targets instead of
 // failing them) — the option lift's target-existence gate points
