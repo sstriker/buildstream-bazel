@@ -224,6 +224,15 @@ func (f *fold2D) classify(attr, fact string, cells map[string]bool, relabel map[
 		}
 	}
 
+	// Scope mirroring: a define the base fold (or its interface-scope
+	// pass) already routed to local_defines must keep that scope on
+	// the option/AND arms — re-emitting it under `defines` would
+	// widen a non-transitive define to transitive for consumers.
+	destAttr := attr
+	if attr == "defines" && f.tokenScopedLocal(token) {
+		destAttr = "local_defines"
+	}
+
 	switch {
 	case fullGrid && allVals && allCfgs:
 		return // baseline: flat attrs already carry it
@@ -235,7 +244,7 @@ func (f *fold2D) classify(attr, fact string, cells map[string]bool, relabel map[
 	case fullGrid && allCfgs:
 		// Pure option fact: same shape as the single-axis fold.
 		for v := range valSet {
-			f.addArm(attr, v, token)
+			f.addArm(destAttr, v, token)
 		}
 	default:
 		// Mixed support: one AND arm per supporting cell, and the
@@ -251,7 +260,7 @@ func (f *fold2D) classify(attr, fact string, cells map[string]bool, relabel map[
 				}
 				registerSelectArmFamily(f.pkg, label, f.groupFamily)
 			}
-			f.addArm(attr, label, token)
+			f.addArm(destAttr, label, token)
 		}
 		baseArm := f.valueArms[0]
 		for c := range cfgSet {
@@ -280,6 +289,26 @@ func (f *fold2D) addArm(attr, label, token string) {
 	}
 	f.tgt.PerPlatform[attr][label] = append(f.tgt.PerPlatform[attr][label], token)
 	f.changed = true
+}
+
+// tokenScopedLocal reports whether a define token currently lives in
+// the target's local_defines spelling — the flat LocalDefines list or
+// any PerPlatform["local_defines"] arm — meaning the base fold scoped
+// it non-transitive and the 2D fold's arms must mirror that.
+func (f *fold2D) tokenScopedLocal(token string) bool {
+	for _, v := range f.tgt.LocalDefines {
+		if v == token {
+			return true
+		}
+	}
+	for _, vs := range f.tgt.PerPlatform["local_defines"] {
+		for _, v := range vs {
+			if v == token {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // removeFromArm drops token from an existing arm (the base
