@@ -10,15 +10,20 @@
 # config_settings, and emits the backing //options package
 # (bool_flag + config_setting pair) via --out-option-settings.
 #
-# Drives convert-element-cmake --lift-options FOO_FEATURE against
-# converter/testdata/sample-projects/option-lift (an option gating a
-# private define + an extra source). Asserts (rendered BUILD): the
-# define and the source ride the //options:foo_feature_on arm and are
-# GONE from the flat baseline (the off arm must not compile them), and
-# the //options package carries the bool_flag with the configured
-# default. Bazel-build half (bazel >= 7): builds the library under both
-# flag values and asserts the feature object flips in and out of the
-# archive.
+# Drives convert-element-cmake --lift-options FOO_FEATURE,BACKEND
+# against converter/testdata/sample-projects/option-lift (a BOOL
+# option gating a private define + an extra source; an enum
+# STRING+STRINGS option gating a define + a configure_file body).
+# Asserts (rendered BUILD): the BOOL define and source ride the
+# //options:foo_feature_on arm and are GONE from the flat baseline
+# (the off arm must not compile them); the enum define rides the
+# //options:backend_fast arm; the configure_file body renders as a
+# write_file content select() with the fast arm's body and the
+# configured value as //conditions:default; and the //options package
+# carries the bool_flag + the string_flag (with values) and their
+# config_settings. Bazel-build half (bazel >= 7): builds the library
+# under both bool values (feature object flips in/out of the archive)
+# and both enum values (the generated header's BACKEND_NAME flips).
 
 set -eu
 
@@ -40,7 +45,7 @@ trap "rm -rf '$work_dir'" EXIT
 
 "$bin_dir/convert-element-cmake" \
     --source-root "$fixture" \
-    --lift-options FOO_FEATURE \
+    --lift-options FOO_FEATURE,BACKEND \
     --out-build "$work_dir/BUILD.bazel" \
     --out-option-settings "$work_dir/options-BUILD.bazel" \
     >"$work_dir/convert.stdout" 2>"$work_dir/convert.stderr" || {
@@ -68,12 +73,27 @@ if grep -qE 'local_defines = \[[^]]*FOO_FEATURE' "$build"; then
     fail "FOO_FEATURE=1 still in flat local_defines (off arm would carry it)"
 fi
 grep -qF 'cmake options lifted to build-time flags' "$build" || fail "lifted-options header block missing"
+grep -qF ' - BACKEND (//options:backend' "$build" || fail "BACKEND missing from the lifted-options header block"
 grep -qF 'name = "foo_feature"' "$options_build" || fail "//options bool_flag missing"
 grep -qF 'build_setting_default = True' "$options_build" || fail "bool_flag default should be True (configured ON)"
 grep -qF 'name = "foo_feature_on"' "$options_build" || fail "config_setting foo_feature_on missing"
 grep -qF 'name = "foo_feature_off"' "$options_build" || fail "config_setting foo_feature_off missing"
 
-echo "ok  meta-cmake-option-lift: option-gated define + source rendered as //options select() arms, flag package emitted"
+# Enum (STRING + STRINGS) option: string_flag + per-value settings,
+# defines arm, and the configure_file body as a content select().
+grep -qF '"//options:backend_fast": ["USE_FAST_BACKEND=1"]' "$build" || fail "enum defines select arm missing USE_FAST_BACKEND=1"
+grep -qF 'name = "backend"' "$options_build" || fail "//options string_flag missing"
+grep -qF 'build_setting_default = "ref"' "$options_build" || fail "string_flag default should be ref (configured value)"
+grep -qF '"ref",' "$options_build" || fail "string_flag values missing ref"
+grep -qF '"fast",' "$options_build" || fail "string_flag values missing fast"
+grep -qF 'name = "backend_ref"' "$options_build" || fail "config_setting backend_ref missing"
+grep -qF 'name = "backend_fast"' "$options_build" || fail "config_setting backend_fast missing"
+grep -qF 'content = select({' "$build" || fail "write_file content is not a select (per-option bake missing)"
+grep -qF '"#define BACKEND_NAME \"fast\""' "$build" || fail "fast arm body missing from content select"
+grep -qF '"#define BACKEND_NAME \"ref\""' "$build" || fail "ref (default) arm body missing from content select"
+grep -qF 'cmake-codegen-per-option-content' "$build" || fail "per-option content audit tag missing"
+
+echo "ok  meta-cmake-option-lift: bool + enum option arms, flag package, and per-option content select rendered"
 
 # --- Bazel-build half ---
 if command -v bazel >/dev/null; then
@@ -99,6 +119,8 @@ mkdir -p "$ws/options"
 cp "$fixture"/common.c "$fixture"/feature.c "$ws/"
 cp "$build" "$ws/BUILD.bazel"
 cp "$options_build" "$ws/options/BUILD.bazel"
+# The write_file rule provides cfg.h; the source-tree template isn't
+# needed in the test workspace.
 cat > "$ws/MODULE.bazel" <<'EOF'
 module(name = "optionlift", version = "0.0.0")
 bazel_dep(name = "rules_cc", version = "0.0.17")
@@ -131,4 +153,22 @@ check_arm() {
 check_arm true 1
 check_arm false 0
 
-echo "ok  meta-cmake-option-lift: feature object flips in/out of the archive per --//options:foo_feature (no cmake)"
+check_backend() {
+    value="$1"; want="$2"
+    # shellcheck disable=SC2086
+    if ! (cd "$ws" && "$BZL" --output_user_root="$bz_cache" ${META_BAZEL_STARTUP_ARGS:-} \
+            build ${META_BAZEL_BUILD_ARGS:-} --//options:backend="$value" //:gen_cfg_h) >"$work_dir/bazel-backend-$value.log" 2>&1; then
+        echo "FAIL: bazel build under --//options:backend=$value failed"
+        sed 's/^/   /' "$work_dir/bazel-backend-$value.log"
+        exit 1
+    fi
+    got=$(grep -h "BACKEND_NAME" "$ws/bazel-bin/cfg.h")
+    case "$got" in
+        *"\"$want\""*) ;;
+        *) echo "FAIL: --//options:backend=$value: generated header carries '$got', want \"$want\""; exit 1 ;;
+    esac
+}
+check_backend ref ref
+check_backend fast fast
+
+echo "ok  meta-cmake-option-lift: feature object + generated header flip per --//options flags (no cmake)"

@@ -18,44 +18,64 @@ import (
 	"github.com/sstriker/buildstream-bazel/converter/ir"
 )
 
-// The option lift (--lift-options; stages a+b of the option-lift
-// ROADMAP.md item) runs as the same LAUNCH/FINISH pair as the
-// per-config bake: one cold flip configure per lifted option — the
-// option's BOOL cache value inverted via -D — fired concurrently
-// with lowering, joined once the final IR is known. The fold half is
-// lower.ApplyOptionFold (attribute deltas → //options:<name>_{on,off}
-// select() arms); the render half reuses the existing PerPlatform
+// The option lift (--lift-options; the option-lift ROADMAP.md item)
+// runs as the same LAUNCH/FINISH pair as the per-config bake: cold
+// flip configures — the option's cache value changed via -D — fired
+// concurrently with lowering, joined once the final IR is known. A
+// BOOL option() gets ONE flip (the inverted value); an enum option
+// (STRING cache entry with a STRINGS allowed-value list) gets one
+// flip per non-configured value. The fold half is
+// lower.ApplyOptionFold (attribute deltas → //options select() arms
+// keyed by lower.OptionCellLabel / lower.OptionValueCellLabel) plus
+// lower.ApplyContentBakes (option-derived configure_file bodies →
+// write_file content select() arms — the per-config bake extended to
+// the option axis); the render half reuses the existing PerPlatform
 // select() emit unchanged.
 //
 // Guards, in order, each degrading per option (never failing the
 // convert):
 //
-//   - the option must be a BOOL cache entry in the primary reply
-//     (an option() / bool cache declaration) — else skip + warn;
-//   - the flip configure must succeed — else skip + warn with
+//   - the option must be a BOOL cache entry or a STRING cache entry
+//     with a STRINGS property in the primary reply — else skip+warn;
+//   - an enum's configured value must be in its STRINGS list, the
+//     list needs >=2 entries, and no two values may sanitize to the
+//     same label suffix — else skip + warn;
+//   - every flip configure must succeed — else skip + warn with
 //     cmake's own output;
-//   - the flip reply's TARGET NAME SET must equal the primary's —
+//   - every flip reply's TARGET NAME SET must equal the primary's —
 //     an option gating whole targets (if(FOO) add_executable(…))
-//     can't fold into attribute select()s (that's the roadmap's
-//     stage c: target-existence gating), so the option stays baked
+//     can't fold into attribute select()s (target-existence gating
+//     is the roadmap item's next stage), so the option stays baked
 //     with a breadcrumb;
-//   - the fold must land at least one arm — a flip that changes
-//     nothing attribute-shaped emits no flag (a toggle nobody reads
-//     would be noise).
+//   - the fold must land at least one attribute arm OR one content
+//     bake — an option that changes neither emits no flag (a toggle
+//     nobody reads would be noise).
 //
-// Successfully lifted options get their bool_flag + config_setting
-// pair in the --out-option-settings package and move out of the
-// "values baked in; re-convert to change" header block
+// Successfully lifted options get their flag + config_settings in
+// the --out-option-settings package and move out of the "values
+// baked in; re-convert to change" header block
 // (lower.AnnotateLiftedOptions).
 
-// optionLiftResult is one option's in-flight (then completed) flip
-// configure. Output is buffered and dumped only on failure, same as
+// optionSpec is one --lift-options entry resolved against the
+// primary reply's cache.
+type optionSpec struct {
+	name      string // cache-entry name, verbatim
+	enum      bool
+	baseValue string   // configured cache value, verbatim
+	baseOn    bool     // BOOL options: cmakeTruthy(baseValue)
+	values    []string // enum options: the STRINGS list, verbatim
+	baseLabel string   // arm label of the primary configure's cell
+}
+
+// optionFlip is one in-flight (then completed) flip configure.
+// Output is buffered and dumped only on failure, same as
 // perConfigResult.
-type optionLiftResult struct {
-	name   string // cmake option() cache-entry name, verbatim
-	baseOn bool   // the primary configure's resolved value
-	err    error
-	out    bytes.Buffer
+type optionFlip struct {
+	spec     int    // index into optionLiftJob.specs
+	setValue string // the -D value this flip configures with
+	armLabel string // the select() arm this flip's deltas land under
+	err      error
+	out      bytes.Buffer
 }
 
 // optionLiftJob is the handle for the speculatively-launched flip
@@ -63,7 +83,9 @@ type optionLiftResult struct {
 // nil-safe.
 type optionLiftJob struct {
 	buildDir  string
-	results   []optionLiftResult
+	specs     []optionSpec
+	flips     []optionFlip
+	idToName  map[string]string // flip replies' codemodel id→name, filled at collect time
 	cancel    context.CancelFunc
 	rec       *phaseRecorder
 	done      chan struct{}
@@ -72,13 +94,13 @@ type optionLiftJob struct {
 	cleanOnce sync.Once
 }
 
-// scratch names result i's flip-configure build dir. The index
-// prefix keeps distinct options collision-free even when their
-// sanitized names coincide (sanitizeConfigName maps every
-// non-alphanumeric rune to '_', so FOO-BAR and FOO_BAR would
-// otherwise share a dir and the concurrent configures would race).
+// scratch names flip i's build dir. The index prefix keeps distinct
+// flips collision-free even when their sanitized names coincide
+// (sanitizeConfigName maps every non-alphanumeric rune to '_', so
+// FOO-BAR and FOO_BAR — or two enum values — could otherwise share
+// a dir and the concurrent configures would race).
 func (j *optionLiftJob) scratch(i int) string {
-	return fmt.Sprintf("%s-opt-%d-%s", j.buildDir, i, sanitizeConfigName(j.results[i].name))
+	return fmt.Sprintf("%s-opt-%d-%s", j.buildDir, i, sanitizeConfigName(j.specs[j.flips[i].spec].name))
 }
 
 func (j *optionLiftJob) join() {
@@ -98,69 +120,153 @@ func (j *optionLiftJob) cleanup() {
 			j.cancel()
 		}
 		j.join()
-		for i := range j.results {
+		for i := range j.flips {
 			os.RemoveAll(j.scratch(i))
 		}
 	})
 }
 
-// startOptionLift resolves each --lift-options name against the
-// primary reply's cache and fires one flip configure per resolvable
-// option, concurrently with the lowering the caller is about to do.
-// Returns nil when nothing is liftable. The caller MUST
-// finishOptionLift the job and should `defer job.cleanup()` as the
-// early-error safety net.
-func startOptionLift(ctx context.Context, a cli.Args, r *fileapi.Reply, hostBuildDir string, rec *phaseRecorder) *optionLiftJob {
-	if hostBuildDir == "" || len(a.LiftOptions) == 0 || r == nil {
-		return nil
-	}
-	var specs []optionLiftResult
+// resolveOptionSpecs maps the --lift-options names onto specs +
+// flips via the primary reply's cache, applying every per-option
+// pre-gate (BOOL or STRING+STRINGS shape, enum value hygiene,
+// lowercased-name collisions).
+func resolveOptionSpecs(names []string, cache fileapi.Cache) ([]optionSpec, []optionFlip) {
+	var specs []optionSpec
+	var flips []optionFlip
 	seenLower := map[string]string{}
-	for _, name := range a.LiftOptions {
-		entry := r.Cache.Get(name)
-		if entry == nil || entry.Type != "BOOL" {
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s: no BOOL cache entry in the configure's cache (not an option() of this project?); keeping it baked.\n", name)
+	for _, name := range names {
+		entry := cache.Get(name)
+		if entry == nil {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s: no cache entry in the configure's cache (not an option of this project?); keeping it baked.\n", name)
 			continue
 		}
-		// The //options labels are lowercased; two spellings colliding
-		// there would emit one flag for two distinct cache entries.
 		if prev, dup := seenLower[strings.ToLower(name)]; dup {
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s collides with %s after lowercasing; keeping it baked.\n", name, prev)
 			continue
 		}
+		var spec optionSpec
+		switch {
+		case entry.Type == "BOOL":
+			baseOn := cmakeTruthy(entry.Value)
+			spec = optionSpec{name: name, baseValue: entry.Value, baseOn: baseOn, baseLabel: lower.OptionCellLabel(name, baseOn)}
+		case entry.Type == "STRING":
+			values := cacheStringsList(entry)
+			if len(values) == 0 {
+				fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s: STRING cache entry without a STRINGS allowed-value list (free-form strings have no finite arm set); keeping it baked.\n", name)
+				continue
+			}
+			if !enumSpecOK(name, entry.Value, values) {
+				continue
+			}
+			spec = optionSpec{name: name, enum: true, baseValue: entry.Value, values: values, baseLabel: lower.OptionValueCellLabel(name, entry.Value)}
+		default:
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s: cache type %s isn't liftable (BOOL, or STRING with a STRINGS property); keeping it baked.\n", name, entry.Type)
+			continue
+		}
 		seenLower[strings.ToLower(name)] = name
-		specs = append(specs, optionLiftResult{name: name, baseOn: cmakeTruthy(entry.Value)})
+		specIdx := len(specs)
+		specs = append(specs, spec)
+		if spec.enum {
+			for _, v := range spec.values {
+				if v == spec.baseValue {
+					continue
+				}
+				flips = append(flips, optionFlip{spec: specIdx, setValue: v, armLabel: lower.OptionValueCellLabel(name, v)})
+			}
+		} else {
+			flip := "ON"
+			if spec.baseOn {
+				flip = "OFF"
+			}
+			flips = append(flips, optionFlip{spec: specIdx, setValue: flip, armLabel: lower.OptionCellLabel(name, !spec.baseOn)})
+		}
 	}
-	if len(specs) == 0 {
+	return specs, flips
+}
+
+// enumSpecOK applies the enum-shape pre-gates: configured value in
+// the list, >=2 values, and sanitized-suffix uniqueness (two values
+// mapping to one suffix would collide on the config_setting name).
+func enumSpecOK(name, baseValue string, values []string) bool {
+	if len(values) < 2 {
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s: STRINGS lists %d value(s); nothing to toggle, keeping it baked.\n", name, len(values))
+		return false
+	}
+	inList := false
+	suffixes := map[string]string{}
+	for _, v := range values {
+		if v == baseValue {
+			inList = true
+		}
+		s := lower.SanitizeOptionValue(v)
+		if prev, dup := suffixes[s]; dup {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s: values %q and %q both sanitize to config_setting suffix %q; keeping it baked.\n", name, prev, v, s)
+			return false
+		}
+		suffixes[s] = v
+	}
+	if !inList {
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s: configured value %q is not in the STRINGS list %v; keeping it baked.\n", name, baseValue, values)
+		return false
+	}
+	return true
+}
+
+// cacheStringsList parses a cache entry's STRINGS property
+// (cmake's semicolon-joined allowed-value list for enum options).
+func cacheStringsList(entry *fileapi.CacheEntry) []string {
+	for _, p := range entry.Properties {
+		if p.Name != "STRINGS" {
+			continue
+		}
+		var values []string
+		for _, v := range strings.Split(p.Value, ";") {
+			if v = strings.TrimSpace(v); v != "" {
+				values = append(values, v)
+			}
+		}
+		return values
+	}
+	return nil
+}
+
+// startOptionLift resolves each --lift-options name against the
+// primary reply's cache and fires the flip configures concurrently
+// with the lowering the caller is about to do. Returns nil when
+// nothing is liftable. The caller MUST finishOptionLift the job and
+// should `defer job.cleanup()` as the early-error safety net.
+func startOptionLift(ctx context.Context, a cli.Args, r *fileapi.Reply, hostBuildDir string, rec *phaseRecorder) *optionLiftJob {
+	if hostBuildDir == "" || len(a.LiftOptions) == 0 || r == nil {
+		return nil
+	}
+	specs, flips := resolveOptionSpecs(a.LiftOptions, r.Cache)
+	if len(flips) == 0 {
 		return nil
 	}
 	liftCtx, cancel := context.WithCancel(ctx)
 	job := &optionLiftJob{
 		buildDir: hostBuildDir,
-		results:  specs,
+		specs:    specs,
+		flips:    flips,
 		cancel:   cancel,
 		rec:      rec,
 		done:     make(chan struct{}),
 	}
-	fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options: launching %d flip configure(s) concurrently with lowering.\n", len(specs))
+	fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options: launching %d flip configure(s) for %d option(s) concurrently with lowering.\n", len(flips), len(specs))
 	start := time.Now()
 	var wg sync.WaitGroup
-	for i := range job.results {
+	for i := range job.flips {
 		wg.Add(1)
-		go func(i int, res *optionLiftResult) {
+		go func(i int, flip *optionFlip) {
 			defer wg.Done()
-			flip := "ON"
-			if res.baseOn {
-				flip = "OFF"
-			}
 			extra := cmakeDefinesToMap(a.CmakeDefines)
 			if extra == nil {
 				extra = map[string]string{}
 			}
 			// The flip wins over an operator --cmake-define pinning the
-			// same option — the whole point of the pass is the inverted
+			// same option — the whole point of the pass is the changed
 			// view.
-			extra[res.name] = flip
+			extra[job.specs[flip.spec].name] = flip.setValue
 			_, cfgErr := cmakerun.Configure(liftCtx, cmakerun.Options{
 				SourceRoot:         a.SourceRoot,
 				BuildDir:           job.scratch(i),
@@ -168,11 +274,11 @@ func startOptionLift(ctx context.Context, a cli.Args, r *fileapi.Reply, hostBuil
 				ToolchainCMakeFile: a.ToolchainCMakeFile,
 				BuildType:          a.BuildType,
 				ExtraCacheVars:     extra,
-				Stdout:             &res.out,
-				Stderr:             &res.out,
+				Stdout:             &flip.out,
+				Stderr:             &flip.out,
 			})
-			res.err = cfgErr
-		}(i, &job.results[i])
+			flip.err = cfgErr
+		}(i, &job.flips[i])
 	}
 	go func() {
 		wg.Wait()
@@ -193,14 +299,25 @@ func finishSpeculativeConfigures(bakeJob *perConfigBakeJob, optJob *optionLiftJo
 	finishOptionLift(optJob, a, hostBuildDir, r, pkg)
 }
 
+// liftedCells is one option's loaded + guarded flip data, ready to
+// fold: the per-target cell views and the write_file bodies read
+// from each flip's scratch dir.
+type liftedCells struct {
+	cells  []string // baseLabel first, then each flip's arm label
+	byCell map[string]map[string]fileapi.Target
+	bakes  map[string]map[string][]byte // WriteFileOut rel → arm label → bytes
+}
+
 // finishOptionLift joins the flip configures and, per option: loads
-// the flip reply, applies the target-set guard, canonicalizes the
-// scratch build-dir paths onto the primary build dir, and folds the
-// attribute deltas into //options select() arms. Then it writes the
-// --out-option-settings package for the options that actually
-// lifted and relocates them in the header-comment inventory. A nil
-// job is a clean no-op; every per-option failure degrades to the
-// baked value with a stderr breadcrumb.
+// the flip replies, applies the target-set guard, canonicalizes the
+// scratch build-dir paths onto the primary build dir, folds the
+// attribute deltas into //options select() arms, and folds
+// option-derived configure_file bodies into write_file content
+// select() arms. Then it writes the --out-option-settings package
+// for the options that actually lifted and relocates them in the
+// header-comment inventory. A nil job is a clean no-op; every
+// per-option failure degrades to the baked value with a stderr
+// breadcrumb.
 func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fileapi.Reply, pkg *ir.Package) {
 	if job == nil {
 		return
@@ -213,75 +330,182 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 
 	srcRoot := absSourceRoot(a.SourceRoot)
 	baseNames := configTargetNameSet(r.Codemodel.Configurations)
+	writeFileOuts := packageWriteFileOuts(pkg)
 	var lifted []optionsettings.Option
 	liftedLabels := map[string]string{}
-	for i := range job.results {
-		res := &job.results[i]
-		if res.err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s: flip configure failed (%v); keeping it baked. cmake output:\n", res.name, res.err)
-			_, _ = os.Stderr.Write(res.out.Bytes())
+	for specIdx := range job.specs {
+		spec := &job.specs[specIdx]
+		lc := job.collectOption(specIdx, r, baseNames, writeFileOuts, hostBuildDir)
+		if lc == nil {
 			continue
 		}
-		scratchDir := job.scratch(i)
-		fr, err := fileapi.Load(filepath.Join(scratchDir, ".cmake", "api", "v1", "reply"))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s: flip configure produced no loadable File API reply (%v); keeping it baked.\n", res.name, err)
+		armed := lower.ApplyOptionFold(pkg, lc.byCell, lc.cells, srcRoot, hostBuildDir, replyIDToName(r, job))
+		baked := lower.ApplyContentBakes(pkg, lc.bakes, srcRoot, hostBuildDir, a.BazelPackagePath, "cmake-codegen-per-option-content")
+		if len(armed) == 0 && len(baked) == 0 {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: changing it folds no attribute delta and no configure_file body; no flag emitted, keeping it baked.\n", spec.name)
 			continue
 		}
-		// Target-set guard: an option that adds/removes targets can't
-		// fold into attribute select()s — that's target-existence
-		// gating (the option-lift roadmap item's stage c).
-		flipNames := configTargetNameSet(fr.Codemodel.Configurations)
-		if !stringSetsEqual(baseNames, flipNames) {
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: flipping changes the target set (%d -> %d targets); attribute select()s can't express conditional target existence, keeping it baked.\n", res.name, len(baseNames), len(flipNames))
-			continue
-		}
-		baseLabel := lower.OptionCellLabel(res.name, res.baseOn)
-		flipLabel := lower.OptionCellLabel(res.name, !res.baseOn)
-		byCell := map[string]map[string]fileapi.Target{}
-		for _, t := range r.Targets {
-			byCell[t.Name] = map[string]fileapi.Target{baseLabel: t}
-		}
-		for _, t := range fr.Targets {
-			canonicalizeFlipTarget(&t, scratchDir, hostBuildDir)
-			if byCell[t.Name] == nil {
-				byCell[t.Name] = map[string]fileapi.Target{}
-			}
-			byCell[t.Name][flipLabel] = t
-		}
-		idToName := map[string]string{}
-		for _, cfgs := range [][]fileapi.Configuration{r.Codemodel.Configurations, fr.Codemodel.Configurations} {
-			for _, cfg := range cfgs {
-				for _, tr := range cfg.Targets {
-					idToName[tr.Id] = tr.Name
-				}
-			}
-		}
-		armed := lower.ApplyOptionFold(pkg, byCell, []string{baseLabel, flipLabel}, srcRoot, hostBuildDir, idToName)
-		if len(armed) == 0 {
-			fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: flipping changes no foldable attribute; no flag emitted, keeping it baked.\n", res.name)
-			continue
-		}
-		fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: lifted to --//options:%s (default %s); %d target(s) gained select() arms: %s\n",
-			res.name, strings.ToLower(res.name), map[bool]string{true: "true", false: "false"}[res.baseOn], len(armed), strings.Join(armed, ", "))
-		lifted = append(lifted, optionsettings.Option{Name: res.name, Default: res.baseOn})
-		liftedLabels[res.name] = "//options:" + strings.ToLower(res.name)
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: lifted to --//options:%s (default %q); %d target(s) gained select() arms, %d write_file body(ies) gained content arms.\n",
+			spec.name, strings.ToLower(spec.name), spec.baseValue, len(armed), len(baked))
+		lifted = append(lifted, specOption(spec))
+		liftedLabels[spec.name] = "//options:" + strings.ToLower(spec.name)
 	}
 	if len(lifted) == 0 {
 		return
 	}
 	lower.AnnotateLiftedOptions(pkg, liftedLabels)
-	if a.OutOptionSettings != "" {
-		if body := optionsettings.Emit(lifted); body != nil {
-			if err := os.MkdirAll(filepath.Dir(a.OutOptionSettings), 0o755); err != nil {
-				fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: stage option-settings dir: %v\n", err)
-				return
+	writeOptionSettings(a.OutOptionSettings, lifted)
+}
+
+// collectOption loads + guards one spec's flip replies and reads its
+// write_file bodies. Returns nil (with a stderr breadcrumb) when any
+// flip failed, produced no reply, or changed the target set.
+func (j *optionLiftJob) collectOption(specIdx int, r *fileapi.Reply, baseNames map[string]bool, writeFileOuts []string, hostBuildDir string) *liftedCells {
+	spec := &j.specs[specIdx]
+	lc := &liftedCells{
+		cells:  []string{spec.baseLabel},
+		byCell: map[string]map[string]fileapi.Target{},
+		bakes:  map[string]map[string][]byte{},
+	}
+	for _, t := range r.Targets {
+		lc.byCell[t.Name] = map[string]fileapi.Target{spec.baseLabel: t}
+	}
+	flipCount := 0
+	for i := range j.flips {
+		flip := &j.flips[i]
+		if flip.spec != specIdx {
+			continue
+		}
+		flipCount++
+		if flip.err != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s: flip configure (=%s) failed (%v); keeping it baked. cmake output:\n", spec.name, flip.setValue, flip.err)
+			_, _ = os.Stderr.Write(flip.out.Bytes())
+			return nil
+		}
+		scratchDir := j.scratch(i)
+		fr, err := fileapi.Load(filepath.Join(scratchDir, ".cmake", "api", "v1", "reply"))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: --lift-options %s: flip configure (=%s) produced no loadable File API reply (%v); keeping it baked.\n", spec.name, flip.setValue, err)
+			return nil
+		}
+		// Target-set guard: an option value that adds/removes targets
+		// can't fold into attribute select()s — that's target-existence
+		// gating (the option-lift roadmap item's next stage).
+		flipNames := configTargetNameSet(fr.Codemodel.Configurations)
+		if !stringSetsEqual(baseNames, flipNames) {
+			fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: value %s changes the target set (%d -> %d targets); attribute select()s can't express conditional target existence, keeping it baked.\n", spec.name, flip.setValue, len(baseNames), len(flipNames))
+			return nil
+		}
+		lc.cells = append(lc.cells, flip.armLabel)
+		for _, t := range fr.Targets {
+			canonicalizeFlipTarget(&t, scratchDir, hostBuildDir)
+			if lc.byCell[t.Name] == nil {
+				lc.byCell[t.Name] = map[string]fileapi.Target{}
 			}
-			if err := os.WriteFile(a.OutOptionSettings, body, 0o644); err != nil {
-				fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: write option-settings: %v\n", err)
+			lc.byCell[t.Name][flip.armLabel] = t
+		}
+		j.flipIDToName(fr)
+		for _, rel := range writeFileOuts {
+			body, readErr := os.ReadFile(filepath.Join(scratchDir, filepath.FromSlash(rel)))
+			if readErr != nil {
+				continue // not produced under this value; coverage check below drops it
 			}
+			if lc.bakes[rel] == nil {
+				lc.bakes[rel] = map[string][]byte{}
+			}
+			lc.bakes[rel][flip.armLabel] = body
 		}
 	}
+	if flipCount == 0 {
+		return nil
+	}
+	// An output missing under SOME flip can't form an honest select —
+	// keep its single primary body instead (same coverage rule as the
+	// per-config bake).
+	for rel, m := range lc.bakes {
+		if len(m) != flipCount {
+			delete(lc.bakes, rel)
+		}
+	}
+	return lc
+}
+
+// flipIDToName accumulates a flip reply's id→name pairs into the
+// job-level map replyIDToName consults for the deps relabel.
+func (j *optionLiftJob) flipIDToName(fr *fileapi.Reply) {
+	if j.idToName == nil {
+		j.idToName = map[string]string{}
+	}
+	for _, cfg := range fr.Codemodel.Configurations {
+		for _, tr := range cfg.Targets {
+			j.idToName[tr.Id] = tr.Name
+		}
+	}
+}
+
+// replyIDToName merges the primary reply's and the collected flip
+// replies' codemodel id→name maps for ApplyOptionFold's deps
+// relabel.
+func replyIDToName(r *fileapi.Reply, j *optionLiftJob) map[string]string {
+	out := map[string]string{}
+	for _, cfg := range r.Codemodel.Configurations {
+		for _, tr := range cfg.Targets {
+			out[tr.Id] = tr.Name
+		}
+	}
+	for id, name := range j.idToName {
+		out[id] = name
+	}
+	return out
+}
+
+// specOption maps a lifted spec onto its emit/optionsettings entry.
+func specOption(spec *optionSpec) optionsettings.Option {
+	if spec.enum {
+		suffixes := make(map[string]string, len(spec.values))
+		for _, v := range spec.values {
+			suffixes[v] = lower.SanitizeOptionValue(v)
+		}
+		return optionsettings.Option{Name: spec.name, Default: spec.baseValue, Values: spec.values, ValueSuffixes: suffixes}
+	}
+	def := "False"
+	if spec.baseOn {
+		def = "True"
+	}
+	return optionsettings.Option{Name: spec.name, Default: def}
+}
+
+// writeOptionSettings emits the //options package to outPath (no-op
+// when the flag is unset). Failures warn rather than failing the
+// convert — the BUILD itself is already correct.
+func writeOptionSettings(outPath string, lifted []optionsettings.Option) {
+	if outPath == "" {
+		return
+	}
+	body := optionsettings.Emit(lifted)
+	if body == nil {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: stage option-settings dir: %v\n", err)
+		return
+	}
+	if err := os.WriteFile(outPath, body, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: warning: write option-settings: %v\n", err)
+	}
+}
+
+// packageWriteFileOuts collects the build-dir-relative output paths
+// of the package's write_file targets — the read-back set for the
+// per-option content bake.
+func packageWriteFileOuts(pkg *ir.Package) []string {
+	var outs []string
+	for i := range pkg.Targets {
+		if pkg.Targets[i].Kind == ir.KindWriteFile && pkg.Targets[i].WriteFileOut != "" {
+			outs = append(outs, pkg.Targets[i].WriteFileOut)
+		}
+	}
+	return outs
 }
 
 // configTargetNameSet collects the target NAME set of a codemodel's

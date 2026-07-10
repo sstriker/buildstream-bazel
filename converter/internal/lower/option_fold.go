@@ -35,12 +35,48 @@ func OptionCellLabel(option string, on bool) string {
 	return "//options:" + toLower(option) + suffix
 }
 
+// OptionValueCellLabel is OptionCellLabel's enum sibling: it maps a
+// lifted STRING cache option (a `set(… CACHE STRING …)` with a
+// STRINGS property) and one of its allowed values onto the arm
+// label //options:<name-lowercased>_<value-sanitized>. The backing
+// string_flag + per-value config_settings come from the same
+// emit/optionsettings package; the parity test pins the naming.
+// Value sanitization mirrors the target-name-safe subset: lowercase
+// with every rune outside [a-z0-9._-] mapped to '_'. Callers must
+// guard against two allowed values sanitizing to the same suffix
+// (skip the option) — the labels would collide.
+func OptionValueCellLabel(option, value string) string {
+	return "//options:" + toLower(option) + "_" + SanitizeOptionValue(value)
+}
+
+// SanitizeOptionValue maps an enum option's allowed value onto the
+// label-safe suffix OptionValueCellLabel uses: lowercased, with
+// every rune outside [a-z0-9._-] replaced by '_'.
+func SanitizeOptionValue(value string) string {
+	out := make([]byte, 0, len(value))
+	for i := 0; i < len(value); i++ {
+		c := value[i]
+		switch {
+		case c >= 'A' && c <= 'Z':
+			out = append(out, c+'a'-'A')
+		case (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-':
+			out = append(out, c)
+		default:
+			out = append(out, '_')
+		}
+	}
+	return string(out)
+}
+
 // ApplyOptionFold projects one lifted option's cross-value deltas
 // into PerPlatform-shaped select() arms on pkg.Targets. byCell maps
-// target NAME → arm label → that cell's codemodel view, with
-// exactly two cells per target: the primary configure's view under
-// OptionCellLabel(name, baseValue) and the flip configure's under
-// the inverted label. Keying on target name (not codemodel id)
+// target NAME → arm label → that cell's codemodel view: for a BOOL
+// option two cells (the primary configure's view under
+// OptionCellLabel(name, baseValue), the flip's under the inverted
+// label); for an enum option one cell per allowed value
+// (OptionValueCellLabel — the primary configure's view under the
+// configured value's label, one flip per other value). Keying on
+// target name (not codemodel id)
 // keeps the fold robust to any id drift between the two replies —
 // the caller's target-set guard has already established the name
 // sets match.
@@ -61,7 +97,7 @@ func OptionCellLabel(option string, on bool) string {
 // one) and no sanitizer filtering (option names aren't config
 // names).
 func ApplyOptionFold(pkg *ir.Package, byCell map[string]map[string]fileapi.Target, cells []string, cmakeSrc, cmakeBuild string, idToName map[string]string) []string {
-	if pkg == nil || len(byCell) == 0 || len(cells) != 2 {
+	if pkg == nil || len(byCell) == 0 || len(cells) < 2 {
 		return nil
 	}
 	folds := configfold.Project(byCell, cells)
@@ -127,17 +163,19 @@ const optionsBakedHeader = "cmake options resolved at convert time (values baked
 // optionsLiftedHeader introduces the lifted-options block
 // AnnotateLiftedOptions appends: these are real build-time toggles
 // now, so "re-convert to change" would be wrong for them.
-const optionsLiftedHeader = "cmake options lifted to build-time flags (toggle with --//options:<name>=true|false):"
+const optionsLiftedHeader = "cmake options lifted to build-time flags (toggle with --//options:<name>=<value>):"
 
 // AnnotateLiftedOptions rewrites pkg.HeaderComments after the
 // option fold's outcome is known: entries of the baked-options
 // inventory block whose option was successfully lifted move to a
 // separate "lifted to build-time flags" block, so the baked block's
 // "re-convert to change" claim stays true for exactly the options
-// it still applies to. lifted maps the cmake option name to the
-// bool_flag label backing it (e.g. "BUILD_TESTS" →
-// "//options:build_tests"). No-op when lifted is empty or the
-// baked block isn't present (e.g. a reply with no options).
+// it still applies to. A lifted option missing from the baked block
+// (or a package without the block at all) still gets its
+// lifted-block line — the flag exists either way, and the header is
+// the operator's inventory of it. lifted maps the cmake option name
+// to the flag label backing it (e.g. "BUILD_TESTS" →
+// "//options:build_tests"). No-op when lifted is empty.
 func AnnotateLiftedOptions(pkg *ir.Package, lifted map[string]string) {
 	if pkg == nil || len(lifted) == 0 {
 		return
@@ -149,10 +187,23 @@ func AnnotateLiftedOptions(pkg *ir.Package, lifted map[string]string) {
 			break
 		}
 	}
+	liftedLine := func(name string) string {
+		return "  - " + name + " (" + lifted[name] + ", default from this convert)"
+	}
 	if headerAt == -1 {
+		// No baked block to relocate from: append a standalone lifted
+		// block (sorted for determinism).
+		var moved []string
+		for name := range lifted {
+			moved = append(moved, liftedLine(name))
+		}
+		sort.Strings(moved)
+		pkg.HeaderComments = append(pkg.HeaderComments, "", optionsLiftedHeader)
+		pkg.HeaderComments = append(pkg.HeaderComments, moved...)
 		return
 	}
 	var kept, moved []string
+	seen := map[string]bool{}
 	i := headerAt + 1
 	for ; i < len(pkg.HeaderComments); i++ {
 		line := pkg.HeaderComments[i]
@@ -160,12 +211,21 @@ func AnnotateLiftedOptions(pkg *ir.Package, lifted map[string]string) {
 		if !ok {
 			break // end of the inventory block
 		}
-		if label, isLifted := lifted[name]; isLifted {
-			moved = append(moved, "  - "+name+" ("+label+", default from this convert)")
+		if _, isLifted := lifted[name]; isLifted {
+			seen[name] = true
+			moved = append(moved, liftedLine(name))
 		} else {
 			kept = append(kept, line)
 		}
 	}
+	// Lifted options the baked inventory didn't list still belong in
+	// the lifted block.
+	for name := range lifted {
+		if !seen[name] {
+			moved = append(moved, liftedLine(name))
+		}
+	}
+	sort.Strings(moved)
 	tail := pkg.HeaderComments[i:]
 	out := append([]string{}, pkg.HeaderComments[:headerAt]...)
 	if len(kept) > 0 {

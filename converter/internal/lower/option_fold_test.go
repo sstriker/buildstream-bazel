@@ -129,7 +129,7 @@ func TestApplyOptionFold_DedupsFlatBaseline(t *testing.T) {
 // the same parity contract TestConfigLabel_MatchesConfigSettingsEmit
 // pins for the multi-config fold.
 func TestOptionCellLabel_MatchesOptionSettingsEmit(t *testing.T) {
-	body := string(optionsettings.Emit([]optionsettings.Option{{Name: "Foo_Feature", Default: true}}))
+	body := string(optionsettings.Emit([]optionsettings.Option{{Name: "Foo_Feature", Default: "True"}}))
 	for _, on := range []bool{true, false} {
 		label := OptionCellLabel("Foo_Feature", on)
 		name := strings.TrimPrefix(label, "//options:")
@@ -139,6 +139,108 @@ func TestOptionCellLabel_MatchesOptionSettingsEmit(t *testing.T) {
 		if !strings.Contains(body, "name = \""+name+"\"") {
 			t.Errorf("emitted //options package lacks config_setting %q:\n%s", name, body)
 		}
+	}
+}
+
+// TestOptionValueCellLabel_MatchesOptionSettingsEmit is the enum
+// sibling of the parity test above: the fold's per-value arm labels
+// must name config_settings the emitted //options package declares.
+func TestOptionValueCellLabel_MatchesOptionSettingsEmit(t *testing.T) {
+	values := []string{"Ref", "FAST 2"}
+	suffixes := map[string]string{}
+	for _, v := range values {
+		suffixes[v] = SanitizeOptionValue(v)
+	}
+	body := string(optionsettings.Emit([]optionsettings.Option{{
+		Name: "Backend", Default: "Ref", Values: values, ValueSuffixes: suffixes,
+	}}))
+	for _, v := range values {
+		label := OptionValueCellLabel("Backend", v)
+		name := strings.TrimPrefix(label, "//options:")
+		if !strings.Contains(body, "name = \""+name+"\"") {
+			t.Errorf("emitted //options package lacks config_setting %q for value %q:\n%s", name, v, body)
+		}
+	}
+}
+
+func TestSanitizeOptionValue(t *testing.T) {
+	for in, want := range map[string]string{
+		"Ref":    "ref",
+		"FAST 2": "fast_2",
+		"a.b-c":  "a.b-c",
+		"x/y":    "x_y",
+	} {
+		if got := SanitizeOptionValue(in); got != want {
+			t.Errorf("SanitizeOptionValue(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestApplyOptionFold_EnumThreeCells pins the multi-cell (enum)
+// fold: per-value defines land under each value's arm; the value
+// whose cell agrees with every other cell contributes baseline only.
+func TestApplyOptionFold_EnumThreeCells(t *testing.T) {
+	pkg := &ir.Package{
+		Targets: []ir.Target{{Name: "foo", Kind: ir.KindCCLibrary}},
+	}
+	mk := func(def string) fileapi.Target {
+		defs := []fileapi.CompileDefine{{Define: "COMMON=1"}}
+		if def != "" {
+			defs = append(defs, fileapi.CompileDefine{Define: def})
+		}
+		return fileapi.Target{Name: "foo", CompileGroups: []fileapi.CompileGroup{{Language: "C", Defines: defs}}}
+	}
+	ref := OptionValueCellLabel("BACKEND", "ref")
+	fast := OptionValueCellLabel("BACKEND", "fast")
+	turbo := OptionValueCellLabel("BACKEND", "turbo")
+	byCell := map[string]map[string]fileapi.Target{
+		"foo": {ref: mk(""), fast: mk("USE_FAST=1"), turbo: mk("USE_TURBO=1")},
+	}
+	lifted := ApplyOptionFold(pkg, byCell, []string{ref, fast, turbo}, "", "", nil)
+	if len(lifted) != 1 {
+		t.Fatalf("lifted = %v", lifted)
+	}
+	defines := pkg.Targets[0].PerPlatform["defines"]
+	if got := defines["//options:backend_fast"]; len(got) != 1 || got[0] != "USE_FAST=1" {
+		t.Errorf("fast arm: %v", got)
+	}
+	if got := defines["//options:backend_turbo"]; len(got) != 1 || got[0] != "USE_TURBO=1" {
+		t.Errorf("turbo arm: %v", got)
+	}
+	if got, ok := defines["//options:backend_ref"]; ok {
+		t.Errorf("ref arm should be empty/absent (COMMON=1 is baseline): %v", got)
+	}
+}
+
+// TestApplyContentBakes_LabelKeyedMerge pins the shared content-bake
+// fold on the option axis: bodies keyed by final arm labels land on
+// WriteFileContentByConfig, merging with (not clobbering) arms an
+// earlier fold already placed.
+func TestApplyContentBakes_LabelKeyedMerge(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{
+		Name:             "cfg_h",
+		Kind:             ir.KindWriteFile,
+		WriteFileOut:     "cfg.h",
+		WriteFileContent: []string{"#define BACKEND ref"},
+		WriteFileContentByConfig: map[string][]string{
+			"//options:feat_off": {"#define BACKEND none"},
+		},
+	}}}
+	applied := ApplyContentBakes(pkg, map[string]map[string][]byte{
+		"cfg.h": {"//options:backend_fast": []byte("#define BACKEND fast")},
+	}, "", "", "", "cmake-codegen-per-option-content")
+	if len(applied) != 1 || applied[0] != "cfg_h" {
+		t.Fatalf("applied = %v", applied)
+	}
+	byCfg := pkg.Targets[0].WriteFileContentByConfig
+	if got := byCfg["//options:backend_fast"]; len(got) != 1 || got[0] != "#define BACKEND fast" {
+		t.Errorf("fast arm: %v", got)
+	}
+	if got := byCfg["//options:feat_off"]; len(got) != 1 || got[0] != "#define BACKEND none" {
+		t.Errorf("pre-existing arm clobbered: %v", got)
+	}
+	if !stringSliceContains(pkg.Targets[0].Tags, "cmake-codegen-per-option-content") {
+		t.Errorf("audit tag missing: %v", pkg.Targets[0].Tags)
 	}
 }
 
