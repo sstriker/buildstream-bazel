@@ -1159,7 +1159,7 @@ trees, optional-feature deps, codegen instances). Each member's
   real lifts with zero new machinery.
 
 - **Lift `option()` into `bool_flag`/`config_setting` selects — remaining:
-  target existence, multi-axis, write-a threading.** The single-axis lift
+  multi-axis, write-a threading.** The single-axis lift
   SHIPPED (`--lift-options NAME[,NAME…]` + `--out-option-settings`, gate
   `meta-cmake-option-lift.sh`): cold flip configures per listed option —
   one for a BOOL `option()`, one per non-configured value for an enum
@@ -1172,16 +1172,18 @@ trees, optional-feature deps, codegen instances). Each member's
   `configure_file`/`#cmakedefine` bodies folded into write_file content
   select() arms (`lower.ApplyContentBakes` — the per-config bake's fold
   shared across both axes), lifted options relocated out of the "values
-  baked in; re-convert to change" header block, and a target-set guard
-  that falls back to the baked value (with a breadcrumb) when changing
-  the option changes the target set. Opt-in allow-list by design;
-  first-order only (each flip varies one option from the baseline).
-  **Remaining:**
-  (1) **target-existence deltas** — options gating whole targets/subdirs
-  (`if(BUILD_TESTS) add_executable(…)`) hit the guard and stay baked;
-  lifting them needs `target_compatible_with = select({…})` (or
-  always-emit-and-accept-over-inclusion) since a `select()` can't make a
-  `cc_library` conditionally exist. (2) **Multi-axis composition** —
+  baked in; re-convert to change" header block, and **target-existence
+  gating**: a target the primary configure declares but a flip value
+  doesn't (`if(BUILD_TESTS) add_executable(…)`) renders unconditionally
+  with `target_compatible_with = select({<arm>:
+  ["@platforms//:incompatible"]})` (`lower.GateTargetExistence`) so
+  builds under that value skip it — targets can't be un-declared by a
+  select(), but they can be made incompatible. The inverse (a target
+  declared ONLY under a non-configured value) is inherently
+  un-emittable from one convert — the primary lower never saw it — and
+  surfaces as a re-convert-with-that-value breadcrumb. Opt-in
+  allow-list by design; first-order only (each flip varies one option
+  from the baseline). **Remaining:** (1) **Multi-axis composition** —
   `--lift-options` currently rejects `--build-types`, and the platform
   axis (the shipped `converter/elementfold` + `fold-element` +
   `scripts/survey-multiplatform.sh` flow, whose constraint-label arms
@@ -1193,7 +1195,7 @@ trees, optional-feature deps, codegen instances). Each member's
   single `bool_flag` default can't vary per platform). Pass count
   multiplies: M platforms × (1+N options) configures first-order, and
   `cmake_dependent_option` makes some option interactions mandatory.
-  (3) **write-a threading** — the pipeline doesn't thread `--lift-options`
+  (2) **write-a threading** — the pipeline doesn't thread `--lift-options`
   into the conversion genrule / emit the //options package the way it does
   `--build-types` + //config. Demand signal for each: a corpus member
   whose meaningful variation is an `option()` toggle the fixed-value lens

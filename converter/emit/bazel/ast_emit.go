@@ -498,6 +498,7 @@ func ccViewToCall(v ccView) *build.CallExpr {
 	setIfNonNil(r, "host_linkopts", v.HostLinkoptsExpr)
 	setIfNonNil(r, "additional_linker_inputs", v.AdditionalLinkerInputsExpr)
 	setIfNonNil(r, "deps", v.DepsExpr)
+	setIfNonNil(r, "target_compatible_with", v.TargetCompatibleWithExpr)
 	setIfNonNil(r, "dynamic_deps", v.DynamicDepsExpr)
 	setIfNonNil(r, "implementation_deps", v.ImplementationDepsExpr)
 	setListIfNonEmpty(r, "data", v.Data)
