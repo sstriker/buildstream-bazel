@@ -286,3 +286,76 @@ func TestExportDeps_WrapperSeedKeepsTransitiveDrop(t *testing.T) {
 		t.Errorf("dropped internal archive must leave a breadcrumb: %v", app.Tags)
 	}
 }
+
+// TestExportDeps_MixedSeedsAttributeWrapperInternal pins the deliberate
+// safe-direction behavior for a MIXED link — one directly-traced PREBUILT
+// seed (non-empty Deps) and one WRAPPER seed (empty Deps). seedsModelOwnDeps
+// is then false, so the gate uses the manifest closure only: a prebuilt
+// transitive archive (in the prebuilt seed's Deps) still drops, but a
+// wrapper-side internal archive (re-entering via the wrapper's INVISIBLE
+// Bazel closure) is ATTRIBUTED, not dropped. That over-specifies a
+// consumer-visible export label — the safe direction — because dropping it
+// on a guess would risk undefined symbols if it were really a direct entry.
+func TestExportDeps_MixedSeedsAttributeWrapperInternal(t *testing.T) {
+	res, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				// Prebuilt seed: bare cc_import, flattened Deps.
+				{CMakeTarget: "Pkg::p", BazelLabel: "//elements/pkg:p", Deps: []string{"//elements/pkg:pdep"}, LinkPaths: []string{"/opt/prefix/lib/libp.a"}},
+				{CMakeTarget: "Pkg::pdep", BazelLabel: "//elements/pkg:pdep", LinkPaths: []string{"/opt/prefix/lib/libpdep.a"}},
+				// Wrapper seed: empty Deps (transitivity in Bazel).
+				{CMakeTarget: "Pkg::w", BazelLabel: "//elements/pkg:w", LinkPaths: []string{"/opt/prefix/lib/libw.a"}},
+				// Wrapper's internal archive — re-enters via the wrapper's Bazel
+				// closure, which the manifest doesn't expose.
+				{CMakeTarget: "Pkg::winternal", BazelLabel: "//elements/pkg:winternal", LinkPaths: []string{"/opt/prefix/lib/libwinternal.a"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"app::@": {
+			Name: "app", Type: "EXECUTABLE",
+			Sources:       []fileapi.TargetSource{{Path: "m.c", CompileGroupIndex: 0}},
+			CompileGroups: []fileapi.CompileGroup{{Language: "C", SourceIndexes: []int{0}}},
+			Link: &fileapi.TargetLink{
+				Language: "C",
+				CommandFragments: []fileapi.CommandFragment{
+					{Fragment: "/opt/prefix/lib/libp.a", Role: "libraries"},         // traced prebuilt → wired
+					{Fragment: "/opt/prefix/lib/libpdep.a", Role: "libraries"},      // prebuilt closure → drop
+					{Fragment: "/opt/prefix/lib/libw.a", Role: "libraries"},         // traced wrapper → wired
+					{Fragment: "/opt/prefix/lib/libwinternal.a", Role: "libraries"}, // wrapper internal → attribute (safe)
+				},
+			},
+		}},
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "app::@", Name: "app"}},
+			}},
+		},
+	}
+	traceRaw := []byte(
+		`{"args":["app","PUBLIC","Pkg::p","Pkg::w"],"cmd":"target_link_libraries","file":"/s/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{Imports: res, TraceRaw: traceRaw, HostSourceRoot: "/s"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	app := exportDepsFind(t, pkg, "app")
+	// Prebuilt transitive archive drops via the closure (breadcrumb); its
+	// label still rides p's addExport closure.
+	if !stringSliceContains(app.Tags, "cmake-transitive-link-drop=Pkg::pdep") {
+		t.Errorf("prebuilt transitive archive must drop via the closure: %v", app.Tags)
+	}
+	// Wrapper internal is ATTRIBUTED (safe direction), NOT dropped.
+	if !stringSliceContains(app.Deps, "//elements/pkg:winternal") {
+		t.Errorf("mixed-seed wrapper internal must be attributed (safe over-spec): %v", app.Deps)
+	}
+	if stringSliceContains(app.Tags, "cmake-transitive-link-drop=Pkg::winternal") {
+		t.Errorf("wrapper internal must NOT drop in a mixed link (would risk undefined symbols): %v", app.Tags)
+	}
+}

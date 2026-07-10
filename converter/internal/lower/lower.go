@@ -3692,6 +3692,15 @@ func attributeUnresolvedLibPath(irt *ir.Target, rt *linkDepRouter, t *fileapi.Ta
 // imports manifest is available — the gate is then disabled (nil closure
 // matches nothing, seedsModelOwnDeps false) and every matched fragment is
 // attributed, the conservative direction.
+//
+// A MIXED link (some prebuilt seeds with non-empty Deps AND some wrapper
+// seeds with empty Deps) makes seedsModelOwnDeps false, so only the closure
+// gates: a wrapper seed's transitive internal archive — which re-enters via
+// the wrapper's Bazel closure, INVISIBLE to the manifest — is then
+// attributed rather than dropped. That over-specifies a consumer-visible
+// export label (benign, deduped by Bazel), which is the safe direction: a
+// per-seed rule can't soundly drop it (the wrapper closure isn't visible, so
+// dropping on a guess would risk undefined symbols if it were a real entry).
 func directTraceDepClosure(directTraceLibs map[string]bool, imports *manifest.Resolver) (closure map[string]bool, seedsModelOwnDeps bool) {
 	if len(directTraceLibs) == 0 || imports == nil {
 		return nil, false
