@@ -170,3 +170,23 @@ func TestApplyOptionFold2D_LocalDefineScopeMirrored(t *testing.T) {
 		t.Errorf("emptied local_defines config arm should prune: %v", pp)
 	}
 }
+
+// TestApplyOptionFold2D_FlatLocalDefineDedups pins that a define
+// routed onto local_defines arms leaves the flat LocalDefines list —
+// a token remaining there would apply under every arm.
+func TestApplyOptionFold2D_FlatLocalDefineDedups(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{
+		Name: "foo", Kind: ir.KindCCLibrary,
+		LocalDefines: []string{"FEAT=1"},
+		PerPlatform: map[string]map[string][]string{
+			"local_defines": {"//config:debug": {"FEAT=1"}},
+		},
+	}}}
+	byCell := grid2D(map[string][]string{
+		Cell2DKey("Debug", arms2D[0]): {"FEAT=1"},
+	})
+	ApplyOptionFold2D(pkg, byCell, cfgs2D, arms2D, "", "", nil, "//options:foo_feature")
+	if got := pkg.Targets[0].LocalDefines; len(got) != 0 {
+		t.Errorf("flat LocalDefines must dedup against the local_defines arms: %v", got)
+	}
+}
