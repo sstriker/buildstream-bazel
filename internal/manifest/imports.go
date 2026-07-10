@@ -420,8 +420,17 @@ func findElementForExport(im *Imports, ex *Export) string {
 // Resolver is the indexed manifest. Query methods are pure and concurrency-
 // safe (no mutation post-Load).
 type Resolver struct {
-	byCMakeTarget   map[string]*Export
-	byBazelLabel    map[string]*Export // for LinkDepClosure's Export.Deps walk
+	byCMakeTarget map[string]*Export
+	// byBazelLabel backs LinkDepClosure's Export.Deps walk. Unlike
+	// cmake_target, bazel_label is deliberately NOT unique: an alias export
+	// and its underlying target share one label (the harvester emits both
+	// names), so uniqueness here would reject valid manifests. Those two are
+	// the SAME Bazel target and so declare the same Deps — last-write-wins is
+	// exact for any consistent manifest. In the pathological case of two
+	// UNRELATED exports colliding on a label, last-write-wins under-
+	// approximates the closure, which is sound for the transitive-drop gate
+	// (it only ever over-attributes an entry edge, never drops a real one).
+	byBazelLabel    map[string]*Export
 	byElement       map[string]*Element
 	byLinkPath      map[string]*Export
 	byLinkLib       map[string]*Export
