@@ -138,3 +138,35 @@ func TestApplyOptionFold2D_PureReplacementStillLifts(t *testing.T) {
 		t.Errorf("AND arm: %v", got)
 	}
 }
+
+// TestApplyOptionFold2D_LocalDefineScopeMirrored pins scope
+// preservation: a define the base fold routed to local_defines keeps
+// that (non-transitive) spelling on the 2D fold's AND arms — landing
+// it under `defines` would widen it to transitive for consumers.
+func TestApplyOptionFold2D_LocalDefineScopeMirrored(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{
+		Name: "foo", Kind: ir.KindCCLibrary,
+		PerPlatform: map[string]map[string][]string{
+			"local_defines": {"//config:debug": {"FOO_DEBUG=1"}},
+		},
+	}}}
+	byCell := grid2D(map[string][]string{
+		Cell2DKey("Debug", arms2D[0]): {"FOO_DEBUG=1"},
+	})
+	lifted, _ := ApplyOptionFold2D(pkg, byCell, cfgs2D, arms2D, "", "", nil, "//options:foo_feature")
+	if !reflect.DeepEqual(lifted, []string{"foo"}) {
+		t.Fatalf("lifted = %v", lifted)
+	}
+	pp := pkg.Targets[0].PerPlatform
+	if got := pp["local_defines"]["//options:debug_and_foo_feature_on"]; len(got) != 1 || got[0] != "FOO_DEBUG=1" {
+		t.Errorf("AND arm must keep the local_defines scope: %v", pp)
+	}
+	if arms, ok := pp["defines"]; ok {
+		if _, bad := arms["//options:debug_and_foo_feature_on"]; bad {
+			t.Errorf("token widened to transitive defines: %v", arms)
+		}
+	}
+	if _, ok := pp["local_defines"]["//config:debug"]; ok {
+		t.Errorf("emptied local_defines config arm should prune: %v", pp)
+	}
+}
