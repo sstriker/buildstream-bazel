@@ -1305,7 +1305,6 @@ type ccView struct {
 	LocalDefinesExpr           build.Expr
 	LinkoptsExpr               build.Expr
 	AdditionalLinkerInputsExpr build.Expr
-	TargetCompatibleWithExpr   build.Expr
 	DepsExpr                   build.Expr
 	DynamicDepsExpr            build.Expr
 	ImplementationDepsExpr     build.Expr
@@ -2041,17 +2040,10 @@ func ccTargetCall(t ir.Target, opts Options) (*build.CallExpr, error) {
 		HostLinkoptsExpr:           attrExprAST(escapeTokenizedList(append([]string(nil), t.HostLinkOpts...)), escapeTokenizedPerPlatform(perPlatformAttr(t, "host_linkopts"))),
 		AdditionalLinkerInputsExpr: attrExprAST(t.AdditionalLinkerInputs, nil),
 		DepsExpr:                   attrExprAST(deps, perPlatformAttr(t, "deps")),
-		// target_compatible_with rides PerPlatform only (no flat form):
-		// the option lift's target-existence gating populates
-		// PerPlatform["target_compatible_with"] arms
-		// (["@platforms//:incompatible"] under the option values where
-		// cmake doesn't declare the target), and attrExprAST renders the
-		// bare select() with an empty //conditions:default.
-		TargetCompatibleWithExpr: attrExprAST(nil, perPlatformAttr(t, "target_compatible_with")),
-		DynamicDepsExpr:          dynamicDepsExpr(t),
-		ImplementationDepsExpr:   attrExprAST(implementationDeps, perPlatformAttr(t, "implementation_deps")),
-		Linkstatic:               t.Linkstatic,
-		Alwayslink:               t.Alwayslink,
+		DynamicDepsExpr:            dynamicDepsExpr(t),
+		ImplementationDepsExpr:     attrExprAST(implementationDeps, perPlatformAttr(t, "implementation_deps")),
+		Linkstatic:                 t.Linkstatic,
+		Alwayslink:                 t.Alwayslink,
 		// Defensive kind gate: `rdc` exists only on rules_cuda rules —
 		// rendering it on a cc_* rule is an analysis-time error.
 		CudaRdc:  t.CudaRdc && isCudaKind(t.Kind),

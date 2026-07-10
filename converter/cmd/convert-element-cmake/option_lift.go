@@ -75,6 +75,20 @@ type optionSpec struct {
 	baseLabel string   // arm label of the primary configure's cell
 }
 
+// cliDefault renders the spec's configured value the way the emitted
+// flag accepts it on the CLI: true/false for a bool_flag (the raw
+// cache value is ON/OFF, which --//options:<name>= would reject),
+// the cache string verbatim for an enum string_flag.
+func (s *optionSpec) cliDefault() string {
+	if s.enum {
+		return fmt.Sprintf("%q", s.baseValue)
+	}
+	if s.baseOn {
+		return "true"
+	}
+	return "false"
+}
+
 // optionFlip is one in-flight (then completed) flip configure.
 // Output is buffered and dumped only on failure, same as
 // perConfigResult.
@@ -420,8 +434,8 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 			fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: changing it folds no attribute delta, gates no target, and changes no configure_file body; no flag emitted, keeping it baked.\n", spec.name)
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: lifted to --//options:%s (default %q); %d target(s) gained select() arms, %d gained target_compatible_with gates, %d write_file body(ies) gained content arms.\n",
-			spec.name, strings.ToLower(spec.name), spec.baseValue, len(armed), len(gated), len(baked))
+		fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: lifted to --//options:%s (default %s); %d target(s) gained select() arms, %d gained target_compatible_with gates, %d write_file body(ies) gained content arms.\n",
+			spec.name, strings.ToLower(spec.name), spec.cliDefault(), len(armed), len(gated), len(baked))
 		lifted = append(lifted, specOption(spec))
 		liftedLabels[spec.name] = "//options:" + strings.ToLower(spec.name)
 	}
