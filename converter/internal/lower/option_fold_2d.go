@@ -97,7 +97,6 @@ func ApplyOptionFold2D(pkg *ir.Package, byCell map[string]map[string]fileapi.Tar
 		if !ok {
 			continue
 		}
-		before := perPlatformArmCount(tgt)
 		f2 := fold2D{
 			pkg: pkg, tgt: tgt,
 			configs: configs, valueArms: valueArms,
@@ -134,7 +133,11 @@ func ApplyOptionFold2D(pkg *ir.Package, byCell map[string]map[string]fileapi.Tar
 			}
 		}
 		pruneEmptyPerPlatform(tgt)
-		if perPlatformArmCount(tgt) > before {
+		// Lift on MUTATION, not on arm-count delta: a mixed fact can
+		// REPLACE a base-fold //config arm with an AND arm (count
+		// unchanged), and the package now references //options labels —
+		// skipping the flag/settings emit would break the BUILD.
+		if f2.changed {
 			lifted = append(lifted, fold.Name)
 		}
 	}
@@ -159,6 +162,9 @@ type fold2D struct {
 	cmakeSrc, cmakeBuild string
 	groupFamily          string
 	groups               map[string]OptionGroup
+	// changed records any arm mutation (add OR remove) — the lift
+	// signal; see ApplyOptionFold2D.
+	changed bool
 }
 
 // family classifies one fact family's partition. relabel, when
@@ -273,6 +279,7 @@ func (f *fold2D) addArm(attr, label, token string) {
 		f.tgt.PerPlatform[attr] = map[string][]string{}
 	}
 	f.tgt.PerPlatform[attr][label] = append(f.tgt.PerPlatform[attr][label], token)
+	f.changed = true
 }
 
 // removeFromArm drops token from an existing arm (the base
@@ -290,6 +297,9 @@ func (f *fold2D) removeFromArm(attr, label, token string) {
 		if v != token {
 			out = append(out, v)
 		}
+	}
+	if len(out) != len(vs) {
+		f.changed = true
 	}
 	arms[label] = out
 }

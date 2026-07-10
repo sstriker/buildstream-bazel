@@ -462,12 +462,13 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 		// existence there is the gate's job, not attribute arms').
 		idToName := replyIDToName(r, job)
 		var armed []string
+		var specGroups []optionsettings.Group
 		if nonFeatureConfigs != nil {
 			byCell2, valueArms := job.cells2D(specIdx, r, nonFeatureConfigs, hostBuildDir)
 			armed2, grps := lower.ApplyOptionFold2D(pkg, byCell2, nonFeatureConfigs, valueArms, srcRoot, hostBuildDir, idToName, flagLabel)
 			armed = armed2
 			for _, g := range grps {
-				groups = append(groups, optionsettings.Group{Name: g.Name, MatchAll: g.MatchAll})
+				specGroups = append(specGroups, optionsettings.Group{Name: g.Name, MatchAll: g.MatchAll})
 			}
 		} else {
 			for _, grp := range lc.foldGroups() {
@@ -498,6 +499,10 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 		fmt.Fprintf(os.Stderr, "convert-element-cmake: --lift-options %s: lifted to --//options:%s (default %s); %d target(s) gained select() arms, %d gained target_compatible_with gates, %d write_file body(ies) gained content arms.\n",
 			spec.name, strings.ToLower(spec.name), spec.cliDefault(), len(armed), len(gated), len(baked))
 		lifted = append(lifted, specOption(spec))
+		// Groups append only once the option is confirmed lifted: an
+		// unlifted option's groups would reference config_settings the
+		// package never declares.
+		groups = append(groups, specGroups...)
 		liftedLabels[spec.name] = flagLabel
 	}
 	if len(lifted) == 0 {

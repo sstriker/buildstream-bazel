@@ -107,3 +107,34 @@ func TestApplyOptionFold2D_MixedFact(t *testing.T) {
 		t.Errorf("group family: %q", fam)
 	}
 }
+
+// TestApplyOptionFold2D_PureReplacementStillLifts pins the lift
+// signal on arm MUTATION rather than arm-count delta: a mixed fact
+// that exactly replaces a base-fold //config arm with an AND arm
+// leaves the count unchanged, but the package now references
+// //options labels — skipping the flag emit would break the BUILD.
+func TestApplyOptionFold2D_PureReplacementStillLifts(t *testing.T) {
+	pkg := &ir.Package{Targets: []ir.Target{{
+		Name: "foo", Kind: ir.KindCCLibrary,
+		PerPlatform: map[string]map[string][]string{
+			"defines": {"//config:debug": {"FOO_DEBUG=1"}},
+		},
+	}}}
+	byCell := grid2D(map[string][]string{
+		Cell2DKey("Debug", arms2D[0]): {"FOO_DEBUG=1"},
+	})
+	lifted, groups := ApplyOptionFold2D(pkg, byCell, cfgs2D, arms2D, "", "", nil, "//options:foo_feature")
+	if !reflect.DeepEqual(lifted, []string{"foo"}) {
+		t.Fatalf("replacement must still lift: lifted=%v", lifted)
+	}
+	if len(groups) != 1 {
+		t.Fatalf("groups = %v", groups)
+	}
+	defines := pkg.Targets[0].PerPlatform["defines"]
+	if _, ok := defines["//config:debug"]; ok {
+		t.Errorf("emptied config arm should prune: %v", defines)
+	}
+	if got := defines["//options:debug_and_foo_feature_on"]; len(got) != 1 {
+		t.Errorf("AND arm: %v", got)
+	}
+}
