@@ -134,6 +134,19 @@ type Export struct {
 	// one breaks at the consumer's link).
 	Kind string `json:"kind,omitempty"`
 
+	// AlwaysLink marks an import whose archive is part of a cyclic
+	// static-archive SCC — mutual symbol references the declared dep graph
+	// doesn't encode. cmake breaks such a cycle by REPETITION (listing the
+	// archive more than once on the link line, or the `.pc` `Libs:` line
+	// repeating a `-l`, or a `$<LINK_GROUP:…>` genex); Bazel links each dep
+	// once, so a back-reference would be left unresolved. The wrapper
+	// generator emits `alwayslink = True` on this import's cc_import — every
+	// object is linked regardless of position, the Bazel-native equivalent
+	// of cmake's repetition. Set by the harvester when the produce-time
+	// evidence (`.pc` `Libs:` repetition, `$<LINK_GROUP:…>`) reveals the
+	// cycle; empty for the common acyclic case.
+	AlwaysLink bool `json:"alwayslink,omitempty"`
+
 	// InterfaceIncludes are package-relative include directories the
 	// import contributes to consumers. Lower copies these into the
 	// consumer's `includes` attribute when needed.

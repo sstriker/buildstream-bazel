@@ -2976,6 +2976,12 @@ func emitToIRDiagnostics(pkg *ir.Package, r *fileapi.Reply, g *ninja.Graph, opts
 	// reported as dropped.
 	routeTraceInterfaceLibDeps(pkg, traceLinkLibs, traceLinkScope)
 
+	// Cyclic static-archive SCCs: cmake repeats an archive on the link line
+	// to break a symbol cycle Bazel's single-position link can't. Set
+	// alwayslink on the in-codebase cc_library directly; surface a todo for
+	// a prebuilt whose wrapper the harvester didn't already flag AlwaysLink.
+	detectCyclicStaticArchives(r, pkg, opts.Imports, opts.HostPrefixDir, opts.Todos)
+
 	// Lens-3 coverage audit: dependency-coverage over the final
 	// package. Runs after every target (codemodel-derived + trace-
 	// synthesized interface libs + aliases) is in pkg.Targets so each

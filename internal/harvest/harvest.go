@@ -65,12 +65,13 @@ func HarvestWithRegistry(prefixDir, element, labelPkg string, registry map[strin
 		return nil, nil, fmt.Errorf("prefix %s is not a directory", prefixDir)
 	}
 	h := &harvester{
-		prefix:     prefixDir,
-		realPrefix: prefixDir,
-		labelPkg:   labelPkg,
-		registry:   registry,
-		byName:     map[string]*row{},
-		byPath:     map[string]*row{},
+		prefix:       prefixDir,
+		realPrefix:   prefixDir,
+		labelPkg:     labelPkg,
+		registry:     registry,
+		byName:       map[string]*row{},
+		byPath:       map[string]*row{},
+		cyclicGroups: map[string]bool{},
 	}
 	if rp, err := filepath.EvalSymlinks(prefixDir); err == nil {
 		h.realPrefix = rp
@@ -84,6 +85,7 @@ func HarvestWithRegistry(prefixDir, element, labelPkg string, registry map[strin
 	}
 	h.collectBareBinaries(element)
 	h.resolveDeps()
+	h.markCyclicGroups()
 	h.breakDepCycles()
 	return h.manifest(element), h.warnings, nil
 }
@@ -99,6 +101,7 @@ type row struct {
 	aliasOf     string   // alias rows point at their underlying target
 	origin      string   // provenance for diagnostics ("bundle", "pkgconfig <name>", "bin")
 	kind        string   // "" (library) or manifest.KindExecutable
+	alwayslink  bool     // archive is a cyclic static-archive SCC member (repetition / LINK_GROUP)
 }
 
 // mergeInto folds a same-library row harvested from another channel
@@ -214,6 +217,19 @@ func (h *harvester) claimantOf(r *row) *row {
 	return r
 }
 
+// markCyclicGroups flags every row named in a $<LINK_GROUP:…> genex
+// whole-archive: cmake brackets a cyclic static-archive SCC with
+// --start-group/--end-group, and the Bazel-native equivalent is alwayslink
+// on each member's cc_import so a back-reference resolves regardless of
+// position. Members that name no harvested row (a system lib) are ignored.
+func (h *harvester) markCyclicGroups() {
+	for name := range h.cyclicGroups {
+		if r := h.claimantOf(h.byName[name]); r != nil {
+			r.alwayslink = true
+		}
+	}
+}
+
 type harvester struct {
 	prefix     string
 	realPrefix string // EvalSymlinks(prefix) — base for canonicalized anchoring
@@ -223,6 +239,11 @@ type harvester struct {
 	byName     map[string]*row // cmake target / pc name → row
 	byPath     map[string]*row // canonicalKey(anchored path) → row (dedup pc-vs-bundle)
 	warnings   []string
+
+	// cyclicGroups is the set of cmake target names named inside a
+	// $<LINK_GROUP:…> genex — a cyclic static-archive SCC cmake links with
+	// --start-group. markCyclicGroups flags their rows alwayslink.
+	cyclicGroups map[string]bool
 }
 
 func (h *harvester) warnf(format string, args ...any) {
@@ -415,6 +436,7 @@ func (h *harvester) manifest(element string) *manifest.Imports {
 			CMakeTarget:       r.cmakeTarget,
 			BazelLabel:        h.label(underlying),
 			Kind:              kind,
+			AlwaysLink:        r.alwayslink,
 			InterfaceIncludes: r.includes,
 			LinkLibraries:     r.linkLibs,
 			LinkPaths:         r.linkPaths,

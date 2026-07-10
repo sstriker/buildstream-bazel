@@ -991,3 +991,85 @@ set_target_properties(App::app PROPERTIES
 		t.Errorf("registry: Foreign::util should resolve, not drop; got %v", warns1)
 	}
 }
+
+// harvestByName runs Harvest over an inline prefix and returns exports by
+// cmake target — a compact fixture helper for the cyclic-archive tests.
+func harvestByName(t *testing.T, element, pkgPath string, files map[string]string) (map[string]*manifest.Export, []string) {
+	t.Helper()
+	prefix := t.TempDir()
+	for rel, body := range files {
+		p := filepath.Join(prefix, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	im, warns, err := Harvest(prefix, element, pkgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]*manifest.Export{}
+	for _, ex := range im.Elements[0].Exports {
+		byName[ex.CMakeTarget] = ex
+	}
+	return byName, warns
+}
+
+// TestHarvest_PCLibRepetitionAlwaysLink: a `.pc` whose Libs line repeats the
+// package's OWN `-l` (pkg-config's way of breaking a cyclic static-archive
+// SCC) flags the export AlwaysLink, so wrappergen whole-archives it.
+func TestHarvest_PCLibRepetitionAlwaysLink(t *testing.T) {
+	byName, _ := harvestByName(t, "foo", "prebuilts/foo", map[string]string{
+		"lib/pkgconfig/foo.pc": "Name: foo\nVersion: 1.0\nLibs: -L${prefix}/lib -lfoo -lbar -lfoo\n",
+		"lib/libfoo.a":         "!<arch>\n",
+	})
+	foo := byName["pkgconfig::foo"]
+	if foo == nil {
+		t.Fatal("pkgconfig::foo missing")
+	}
+	if !foo.AlwaysLink {
+		t.Errorf("repeated self -lfoo must flag AlwaysLink: %+v", foo)
+	}
+}
+
+// TestHarvest_LinkGroupAlwaysLink: a $<LINK_GROUP:RESCAN,…> genex in
+// INTERFACE_LINK_LIBRARIES wires its members as deps AND flags each member
+// export AlwaysLink (the cyclic-SCC bracket). The wrapping target itself is
+// not marked.
+func TestHarvest_LinkGroupAlwaysLink(t *testing.T) {
+	byName, _ := harvestByName(t, "app", "prebuilts/app", map[string]string{
+		"lib/cmake/App/AppTargets.cmake": `add_library(App::b STATIC IMPORTED)
+set_target_properties(App::b PROPERTIES IMPORTED_LOCATION "${_IMPORT_PREFIX}/lib/libb.a")
+add_library(App::c STATIC IMPORTED)
+set_target_properties(App::c PROPERTIES IMPORTED_LOCATION "${_IMPORT_PREFIX}/lib/libc.a")
+add_library(App::app STATIC IMPORTED)
+set_target_properties(App::app PROPERTIES
+  IMPORTED_LOCATION "${_IMPORT_PREFIX}/lib/libapp.a"
+  INTERFACE_LINK_LIBRARIES "$<LINK_GROUP:RESCAN,App::b,App::c>"
+)
+`,
+		"lib/libb.a":   "!<arch>\n",
+		"lib/libc.a":   "!<arch>\n",
+		"lib/libapp.a": "!<arch>\n",
+	})
+	for _, m := range []string{"App::b", "App::c"} {
+		if ex := byName[m]; ex == nil || !ex.AlwaysLink {
+			t.Errorf("LINK_GROUP member %s must flag AlwaysLink: %+v", m, ex)
+		}
+	}
+	app := byName["App::app"]
+	if app == nil {
+		t.Fatal("App::app missing")
+	}
+	if app.AlwaysLink {
+		t.Errorf("the wrapping target must NOT be marked AlwaysLink: %+v", app)
+	}
+	// Members are wired as deps (not dropped).
+	for _, want := range []string{"//prebuilts/app:b", "//prebuilts/app:c"} {
+		if !sliceContains(app.Deps, want) {
+			t.Errorf("LINK_GROUP member must be wired as a dep %q: %v", want, app.Deps)
+		}
+	}
+}

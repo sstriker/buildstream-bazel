@@ -1112,6 +1112,22 @@ trees, optional-feature deps, codegen instances). Each member's
   (a macOS-framework-aware classifier). Demand signal: a harvested macOS prefix
   whose interface link line carries `-framework Foo`.
 
+- **Cyclic static-archive SCCs — consumer-only cycles + foreign-lib repetition.**
+  cmake breaks a cyclic static-archive SCC (mutual symbols the declared DAG
+  doesn't encode) by REPETITION; Bazel's single-position link can't, so the
+  Bazel-native fix is whole-archive (`alwayslink`). This now works end-to-end for
+  the evidence visible at HARVEST time — a `.pc` `Libs:` line repeating the
+  package's own `-l` and a `$<LINK_GROUP:…>` genex both flag `Export.AlwaysLink`,
+  which `wrappergen` stamps as `alwayslink = True` on the `cc_import` — and the
+  CONVERTER sets `alwayslink` directly on an in-codebase `cc_library` whose
+  archive it sees repeated on the codemodel link line, with an actionable todo
+  for a repeated PREBUILT the harvester didn't already flag. Residuals: (1) a
+  cycle visible ONLY in a consumer's codemodel (not expressed in `.pc`/`LINK_GROUP`)
+  still needs the operator to act on the `cyclic-static-archive` todo — the
+  converter can't reach the wrapper's `cc_import` (a converter→wrappergen feedback
+  channel would close it); (2) `.pc` repetition of a FOREIGN `-l` flags only this
+  package, not the foreign owner's export.
+
 - **Link-graph fidelity — external/find_package label matching (Bazel side).**
   The link-graph SET lens (`converter/cmd/compile-commands-diff/linkgraph.go`)
   compares per-binary link edges in the system-lib + project-archive identity

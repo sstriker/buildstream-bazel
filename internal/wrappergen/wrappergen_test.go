@@ -239,3 +239,36 @@ func TestGenerate_LinkLibrariesToLinkopts(t *testing.T) {
 		t.Errorf("wrapper linkopts must be emitted in SOURCE order (bare names -l-prefixed); want block:\n%s\n--- got ---\n%s", want, s)
 	}
 }
+
+// TestGenerate_AlwaysLinkCCImport: an Export flagged AlwaysLink (a cyclic
+// static-archive SCC member) gets alwayslink = True on its cc_import — the
+// Bazel whole-archive equivalent of cmake's link-line repetition.
+func TestGenerate_AlwaysLinkCCImport(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "Pkg::cyc", BazelLabel: "//old:cyc", AlwaysLink: true, LinkPaths: []string{"/opt/prefix/lib/libcyc.a"}},
+				{CMakeTarget: "Pkg::plain", BazelLabel: "//old:plain", LinkPaths: []string{"/opt/prefix/lib/libplain.a"}},
+			},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	want := `cc_import(
+    name = "cyc_archive",
+    static_library = "lib/libcyc.a",
+    alwayslink = True,`
+	if !strings.Contains(s, want) {
+		t.Errorf("AlwaysLink export must emit alwayslink on its cc_import:\n%s\n--- got ---\n%s", want, s)
+	}
+	// The plain sibling must NOT get alwayslink.
+	if strings.Contains(s, `static_library = "lib/libplain.a",
+    alwayslink = True,`) {
+		t.Errorf("plain export must not get alwayslink:\n%s", s)
+	}
+}

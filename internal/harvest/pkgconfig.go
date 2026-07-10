@@ -183,12 +183,18 @@ func (h *harvester) parsePC(name, pcdir, body string) (*row, []pcForeign) {
 func (h *harvester) applyPCLibs(r *row, name, libsField string) []pcForeign {
 	var searchDirs []string
 	var toks []pcForeign
+	// A `-l` repeated on the Libs line is pkg-config's way of breaking a
+	// cyclic static-archive SCC (a single-pass linker rescans the archive on
+	// the later occurrence). Count occurrences so the SELF archive can be
+	// flagged whole-archive (alwayslink) below — the Bazel-native equivalent.
+	libCount := map[string]int{}
 	for _, tok := range strings.Fields(libsField) {
 		switch {
 		case strings.HasPrefix(tok, "-L"):
 			searchDirs = append(searchDirs, strings.TrimPrefix(tok, "-L"))
 		case strings.HasPrefix(tok, "-l"):
 			lib := strings.TrimPrefix(tok, "-l")
+			libCount[lib]++
 			dirs := append(append([]string{}, searchDirs...),
 				filepath.Join(h.prefix, "lib"), filepath.Join(h.prefix, "lib64"))
 			var paths []string
@@ -240,6 +246,12 @@ func (h *harvester) applyPCLibs(r *row, name, libsField string) []pcForeign {
 			r.linkLibs = appendUnique(r.linkLibs, t.lib)
 			for _, p := range t.paths {
 				r.linkPaths = appendUnique(r.linkPaths, p)
+			}
+			// This package's OWN `-l` repeated on the Libs line → its
+			// archive is a cyclic static-archive SCC member. Flag it
+			// whole-archive so wrappergen emits alwayslink on the cc_import.
+			if libCount[t.lib] >= 2 {
+				r.alwayslink = true
 			}
 			continue
 		}
