@@ -3682,7 +3682,9 @@ func attributeUnresolvedLibPath(irt *ir.Target, rt *linkDepRouter, t *fileapi.Ta
 // by the directly-traced libs' export labels — the set an unnamed flattened
 // archive must fall in to be a SOUND transitive drop (it re-enters through a
 // directly-named export's closure). Returns nil when no trace covers the
-// target (the gate is then disabled and every matched fragment attributed).
+// target OR no imports manifest is available — in both cases the gate is
+// disabled (a nil closure matches nothing) and every matched fragment is
+// attributed, the conservative direction.
 func directTraceDepClosure(directTraceLibs map[string]bool, imports *manifest.Resolver) map[string]bool {
 	if len(directTraceLibs) == 0 || imports == nil {
 		return nil

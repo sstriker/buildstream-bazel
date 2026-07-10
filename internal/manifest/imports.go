@@ -572,7 +572,9 @@ func (r *Resolver) LookupCMakeTarget(name string) *Export {
 // (unreachable → must be wired or the link fails with undefined symbols).
 // Deps are verbatim labels; a manifest that leaves Deps empty (the wrapper
 // model, where transitivity lives in Bazel, not the manifest) yields just
-// the seeds, so every non-seed archive reads as an entry point.
+// the seeds, so every non-seed archive reads as an entry point. A nil
+// resolver yields the empty set (not the seeds) — there is no manifest to
+// resolve against.
 func (r *Resolver) LinkDepClosure(seeds []string) map[string]bool {
 	closure := map[string]bool{}
 	if r == nil {
