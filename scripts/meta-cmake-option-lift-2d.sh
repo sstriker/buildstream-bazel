@@ -10,7 +10,9 @@
 # pure-option facts land on //options arms, pure-config facts stay on
 # the base fold's //config arms, and mixed-support facts move onto
 # skylib config_setting_group AND-arms (emitted into the //options
-# package) while LEAVING the plain //config arm.
+# package) and are REMOVED from the base fold's plain //config arm,
+# which would otherwise over-apply them under option values outside
+# the support.
 #
 # Drives convert-element-cmake --build-types Debug,Release
 # --lift-options FOO_FEATURE,BACKEND,BUILD_EXTRA_TOOL against

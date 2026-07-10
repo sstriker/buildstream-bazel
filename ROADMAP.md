@@ -1198,8 +1198,11 @@ trees, optional-feature deps, codegen instances). Each member's
   //options arms, pure-config facts stay on the base fold's //config
   arms, and mixed-support facts (`$<$<AND:$<CONFIG:Debug>,
   $<BOOL:${FOO}>>:…>`-shaped) move onto skylib `config_setting_group`
-  AND-arms emitted into the //options package — while LEAVING the
-  plain //config arm, because additive selects can't subtract.
+  AND-arms emitted into the //options package — and are REMOVED from
+  the base fold's plain //config arm (and its local_defines
+  spelling), which would otherwise over-apply them under option
+  values outside the support, because additive selects can't
+  subtract.
   **Remaining:**
   (1) **Platform axis** — the shipped `converter/elementfold` +
   `fold-element` + `scripts/survey-multiplatform.sh` flow (whose
