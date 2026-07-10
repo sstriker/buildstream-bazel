@@ -120,6 +120,14 @@ printf '%s' "$tool_stanza" | grep -qF 'target_compatible_with = select({' || fai
 printf '%s' "$tool_stanza" | grep -qF '"//options:build_extra_tool_off": ["@platforms//:incompatible"]' || fail "extra_tool lacks the incompatible arm for build_extra_tool_off"
 grep -qF 'name = "build_extra_tool"' "$options_build" || fail "//options bool_flag for BUILD_EXTRA_TOOL missing"
 
+# Partially-present enum target: exists under ref+fast but not turbo.
+# Its per-value define folds over exactly the present values
+# (presence-signature grouping), and turbo gets the existence gate.
+partial_stanza=$(sed -n '/name = "partial"/,/^)/p' "$build")
+[ -n "$partial_stanza" ] || fail "partially-present enum target missing from the BUILD"
+printf '%s' "$partial_stanza" | grep -qF '"//options:backend_fast": ["PARTIAL_FAST=1"]' || fail "partial target's per-value arm missing"
+printf '%s' "$partial_stanza" | grep -qF '"//options:backend_turbo": ["@platforms//:incompatible"]' || fail "partial target lacks the turbo existence gate"
+
 echo "ok  meta-cmake-option-lift: bool + enum option arms, flag package, and per-option content select rendered"
 
 # --- Bazel-build half ---
@@ -143,7 +151,7 @@ fi
 
 ws="$work_dir/ws"
 mkdir -p "$ws/options"
-cp "$fixture"/common.c "$fixture"/feature.c "$fixture"/tool.c "$ws/"
+cp "$fixture"/common.c "$fixture"/feature.c "$fixture"/tool.c "$fixture"/partial.c "$ws/"
 cp "$build" "$ws/BUILD.bazel"
 cp "$options_build" "$ws/options/BUILD.bazel"
 # The write_file rule provides cfg.h; the source-tree template isn't

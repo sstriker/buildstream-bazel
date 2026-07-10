@@ -463,19 +463,16 @@ func finishOptionLift(job *optionLiftJob, a cli.Args, hostBuildDir string, r *fi
 		// pure-option facts land on //options arms, option x config-
 		// conditional facts on config_setting_group AND-arms (and leave
 		// the base fold's plain //config arms). Single-config runs keep
-		// the presence-signature-grouped single-axis fold: a target
-		// absent under some arm folds over only its present cells (its
-		// existence there is the gate's job, not attribute arms').
+		// the single-axis fold. Both paths group targets by presence
+		// signature first: a target absent under some arm folds over
+		// only its present cells (its existence there is the gate's
+		// job, not attribute arms').
 		idToName := replyIDToName(r, job)
 		var armed []string
 		var specGroups []optionsettings.Group
 		if nonFeatureConfigs != nil {
-			byCell2, valueArms := job.cells2D(specIdx, r, nonFeatureConfigs, hostBuildDir)
-			armed2, grps := lower.ApplyOptionFold2D(pkg, byCell2, nonFeatureConfigs, valueArms, srcRoot, hostBuildDir, idToName, flagLabel)
-			armed = armed2
-			for _, g := range grps {
-				specGroups = append(specGroups, optionsettings.Group{Name: g.Name, MatchAll: g.MatchAll})
-			}
+			armed, specGroups = fold2DGroups(pkg, job.cells2D(specIdx, r, nonFeatureConfigs, hostBuildDir),
+				nonFeatureConfigs, srcRoot, hostBuildDir, idToName, flagLabel)
 		} else {
 			for _, grp := range lc.foldGroups() {
 				armed = append(armed, lower.ApplyOptionFold(pkg, grp.byCell, grp.cells, srcRoot, hostBuildDir, idToName)...)
@@ -617,16 +614,24 @@ func (j *optionLiftJob) collectOption(specIdx int, r *fileapi.Reply, baseNames m
 	return lc
 }
 
+// fold2DGroup is one presence-signature slice of the 2D grid: every
+// target in byCell is present under exactly (configs × valueArms) — a
+// rectangular sub-grid over ALL configs and >= 2 option values.
+type fold2DGroup struct {
+	valueArms []string
+	byCell    map[string]map[string]fileapi.Target
+}
+
 // cells2D builds one spec's (config x option-value) grid for the 2D
-// fold: target NAME → Cell2DKey(config, valueArm) → view. Only
-// targets present in EVERY grid cell participate — value-level
-// absences are the existence gate's job (collectOption already
-// recorded them), and config-level absences are the base multi-config
-// fold's pre-existing config-only residual. Flip views canonicalize
+// fold — target NAME → Cell2DKey(config, valueArm) → view — and
+// splits it by presence signature, mirroring the 1D path's
+// foldGroups: a target absent under some option VALUE folds over only
+// its present values (its existence there is the gate's job, not
+// attribute arms'), so an enum-lifted target present under a value
+// subset still gains its per-value arms. Flip views canonicalize
 // their scratch-dir spellings onto the primary build dir, same as the
-// 1D path. Returns the grid plus the value-arm list (base first,
-// then each flip's arm in flip order).
-func (j *optionLiftJob) cells2D(specIdx int, r *fileapi.Reply, configs []string, hostBuildDir string) (map[string]map[string]fileapi.Target, []string) {
+// 1D path.
+func (j *optionLiftJob) cells2D(specIdx int, r *fileapi.Reply, configs []string, hostBuildDir string) []fold2DGroup {
 	spec := &j.specs[specIdx]
 	valueArms := []string{spec.baseLabel}
 	byCell := map[string]map[string]fileapi.Target{}
@@ -656,16 +661,82 @@ func (j *optionLiftJob) cells2D(specIdx int, r *fileapi.Reply, configs []string,
 		valueArms = append(valueArms, flip.armLabel)
 		add(flip.reply, flip.armLabel, j.scratch(i))
 	}
-	// Drop partially-present targets: the 2D classifier would read a
-	// missing cell as "fact absent" and route every fact of the
-	// target onto AND arms.
-	want := len(configs) * len(valueArms)
+	return group2DCells(byCell, configs, valueArms)
+}
+
+// group2DCells splits the raw 2D grid by per-target present-VALUE
+// signature. A value counts as present only when the target exists
+// under EVERY config of it: a ragged column (config-level absence) is
+// the base multi-config fold's pre-existing config-only residual, and
+// the 2D classifier would read the hole as "fact absent" and mint
+// bogus AND arms — such targets drop entirely, as do targets present
+// under fewer than two values (nothing to fold on the option axis;
+// existence there is the gate's job). Groups are returned in sorted
+// signature order for determinism; each keeps valueArms' base-first
+// flip order.
+func group2DCells(byCell map[string]map[string]fileapi.Target, configs, valueArms []string) []fold2DGroup {
+	bySig := map[string]*fold2DGroup{}
+	var sigs []string
 	for name, cells := range byCell {
-		if len(cells) != want {
-			delete(byCell, name)
+		var present []string
+		rectangular := true
+		for _, v := range valueArms {
+			n := 0
+			for _, c := range configs {
+				if _, ok := cells[lower.Cell2DKey(c, v)]; ok {
+					n++
+				}
+			}
+			switch n {
+			case 0:
+			case len(configs):
+				present = append(present, v)
+			default:
+				rectangular = false
+			}
+		}
+		if !rectangular || len(present) < 2 {
+			continue
+		}
+		sig := strings.Join(present, "\x00")
+		g, ok := bySig[sig]
+		if !ok {
+			g = &fold2DGroup{valueArms: present, byCell: map[string]map[string]fileapi.Target{}}
+			bySig[sig] = g
+			sigs = append(sigs, sig)
+		}
+		g.byCell[name] = cells
+	}
+	sort.Strings(sigs)
+	out := make([]fold2DGroup, 0, len(sigs))
+	for _, sig := range sigs {
+		out = append(out, *bySig[sig])
+	}
+	return out
+}
+
+// fold2DGroups runs the 2D fold once per presence-signature group,
+// concatenating the armed-target names (re-sorted: each target is in
+// exactly one group) and deduplicating the config_setting_groups —
+// two signature groups can mint the same AND-group, and emitting it
+// twice would redeclare the //options target.
+func fold2DGroups(pkg *ir.Package, grps []fold2DGroup, configs []string, srcRoot, hostBuildDir string, idToName map[string]string, flagLabel string) ([]string, []optionsettings.Group) {
+	var armed []string
+	var out []optionsettings.Group
+	seen := map[string]bool{}
+	for _, grp := range grps {
+		names, gs := lower.ApplyOptionFold2D(pkg, grp.byCell, configs, grp.valueArms, srcRoot, hostBuildDir, idToName, flagLabel)
+		armed = append(armed, names...)
+		for _, g := range gs {
+			if seen[g.Name] {
+				continue
+			}
+			seen[g.Name] = true
+			out = append(out, optionsettings.Group{Name: g.Name, MatchAll: g.MatchAll})
 		}
 	}
-	return byCell, valueArms
+	sort.Strings(armed)
+	return armed, out
 }
 
 // flipIDToName accumulates a flip reply's id→name pairs into the
