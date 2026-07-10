@@ -1125,6 +1125,28 @@ trees, optional-feature deps, codegen instances). Each member's
   lazy any-order resolution — a define-after-use `.pc` mis-expands to empty), and
   `$$` isn't unescaped to a literal `$`.
 
+- **cmake-bundle harvester: non-`-l` link flags have no manifest channel.**
+  `applyLinkEntry` (`internal/harvest/cmake_bundle.go`) now unwraps the genex
+  shapes that carry real link edges — `$<LINK_ONLY:x>`, `$<INSTALL_INTERFACE:x>`
+  (consumer-visible for an installed prefix), and nested-condition
+  `$<$<CONFIG:…>:x>` / `$<$<PLATFORM_ID:…>:x>` (wired UNCONDITIONALLY: a superset
+  link edge is sound) — instead of dropping config-conditional sibling deps;
+  `$<BUILD_INTERFACE:x>` is dropped silently (empty for that consumer). The
+  remaining drop is non-`-l` link *flags* in `INTERFACE_LINK_LIBRARIES`
+  (`-pthread`, `-Wl,--as-needed`, `-framework Foo`): they warn and drop because
+  the `Export` has no flag channel. `wrappergen` now emits `linkopts` from
+  `Export.LinkLibraries`, so the channel exists downstream — the gap is the
+  harvester routing these flags into `linkLibs`/a linkopts channel rather than
+  warn-dropping at classification time. Demand signal: a harvested prefix whose
+  interface link line carries a bare `-Wl,…`/`-framework` a consumer needs.
+  Sibling gap, same area: `applyProperty` pre-splits `INTERFACE_LINK_LIBRARIES`
+  on `;` before `applyLinkEntry` sees each entry, so a *multi-dep* conditional
+  genex (`$<$<CONFIG:Release>:a;b>`) arrives already broken into
+  `$<$<CONFIG:Release>:a` (warns+drops — no closing `>`) and `b>` (falls to the
+  link-lib default, a garbage `b>` lib). The single-dep per-config sibling shape
+  this thread targets is handled; closing the multi-dep case needs
+  genex-aware `;`-splitting upstream of the classifier.
+
 ## Later (research / open questions)
 
 - **`--lift-configure-file` default flip.** The lift tier is complete

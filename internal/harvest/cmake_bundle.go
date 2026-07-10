@@ -119,16 +119,42 @@ func (h *harvester) applyProperty(r *row, key, value string) {
 }
 
 // applyLinkEntry classifies one INTERFACE_LINK_LIBRARIES entry — the
-// DIRECT dependency vocabulary of cmake's export format. Genex
-// handling is deliberately conservative: $<LINK_ONLY:x> unwraps (it IS
-// a link dep; privacy is a consumer-side concern), anything else
-// generator-expression-shaped warns and drops.
+// DIRECT dependency vocabulary of cmake's export format. Genex handling
+// is deliberately conservative but must not silently drop real link
+// edges:
+//
+//   - $<LINK_ONLY:x> unwraps — it IS a link dep; privacy is a
+//     consumer-side concern.
+//   - $<INSTALL_INTERFACE:x> unwraps — this manifest describes an
+//     installed prefix, so the install half is the consumer-visible one.
+//   - $<BUILD_INTERFACE:x> is skipped silently — it is empty for an
+//     installed consumer, so dropping it is correct, not a lost edge.
+//   - $<$<CONFIG:...>:x>, $<$<PLATFORM_ID:...>:x> and other
+//     nested-condition genexes unwrap and wire the guarded dep
+//     UNCONDITIONALLY. A superset link edge is sound for a link
+//     manifest — over-linking never breaks a link, under-linking does —
+//     and it keeps config-conditional sibling deps from vanishing.
+//   - anything else generator-expression-shaped still warns and drops.
 func (h *harvester) applyLinkEntry(r *row, v string) {
 	v = strings.TrimSpace(v)
 	switch {
 	case v == "":
 	case strings.HasPrefix(v, "$<LINK_ONLY:") && strings.HasSuffix(v, ">"):
-		h.applyLinkEntry(r, v[len("$<LINK_ONLY:"):len(v)-1])
+		h.applyGenexContent(r, v[len("$<LINK_ONLY:"):len(v)-1])
+	case strings.HasPrefix(v, "$<INSTALL_INTERFACE:") && strings.HasSuffix(v, ">"):
+		h.applyGenexContent(r, v[len("$<INSTALL_INTERFACE:"):len(v)-1])
+	case strings.HasPrefix(v, "$<BUILD_INTERFACE:") && strings.HasSuffix(v, ">"):
+		// Build-tree-only; empty for an installed consumer. Skip silently
+		// — but only when well-formed. A malformed/truncated entry (no
+		// closing '>', e.g. a genex split on an unexpected ';') falls
+		// through to the generic warn path below so the parse issue
+		// surfaces instead of vanishing.
+	case strings.HasPrefix(v, "$<$<"):
+		if content, ok := conditionalGenexContent(v); ok {
+			h.applyGenexContent(r, content)
+		} else {
+			h.warnf("%s: generator expression in INTERFACE_LINK_LIBRARIES skipped: %s", r.cmakeTarget, v)
+		}
 	case strings.HasPrefix(v, "$<"):
 		h.warnf("%s: generator expression in INTERFACE_LINK_LIBRARIES skipped: %s", r.cmakeTarget, v)
 	case strings.Contains(v, "::"):
@@ -145,6 +171,43 @@ func (h *harvester) applyLinkEntry(r *row, v string) {
 		// Bare library name (pthread, m, dl): the -l vocabulary.
 		r.linkLibs = appendUnique(r.linkLibs, v)
 	}
+}
+
+// applyGenexContent re-classifies the guarded content of an unwrapped
+// generator expression. The content can be a ';'-separated list, and
+// each element can itself be a genex, so re-split and recurse.
+func (h *harvester) applyGenexContent(r *row, content string) {
+	for _, item := range strings.Split(content, ";") {
+		h.applyLinkEntry(r, item)
+	}
+}
+
+// conditionalGenexContent unwraps a condition-guarded generator
+// expression whose head is itself a genex — $<$<CONFIG:Release>:App::x>,
+// $<$<PLATFORM_ID:Linux>:m>. It returns everything after the outer
+// genex's first depth-0 ':' (the guarded content); ok is false when v is
+// not shaped like a nested-condition genex. The condition itself is
+// dropped by design: the guarded dep is wired unconditionally, a sound
+// over-approximation for a link manifest.
+func conditionalGenexContent(v string) (string, bool) {
+	if !strings.HasPrefix(v, "$<$<") || !strings.HasSuffix(v, ">") {
+		return "", false
+	}
+	inner := v[len("$<") : len(v)-1] // strip the outer $< >
+	depth := 0
+	for i := 0; i < len(inner); i++ {
+		switch inner[i] {
+		case '<':
+			depth++
+		case '>':
+			depth--
+		case ':':
+			if depth == 0 {
+				return inner[i+1:], true
+			}
+		}
+	}
+	return "", false
 }
 
 // cmakeCall is one parsed `name(args...)` invocation.
