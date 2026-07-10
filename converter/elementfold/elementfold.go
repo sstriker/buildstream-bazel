@@ -287,24 +287,37 @@ type groupSink struct {
 }
 
 // group mints (or reuses) the AND-group for (cell, armLabel) and
-// returns its select-arm label.
+// returns its select-arm label. Two DISTINCT (SelectKey, armLabel)
+// pairs can sanitize to one name (platform names "linux" vs "Linux",
+// punctuation-only differences); reusing the label would attach
+// items to the wrong AND-condition, so a colliding name
+// disambiguates with a deterministic numeric suffix.
 func (g *groupSink) group(c Cell, armLabel string) string {
-	name := sanitizeGroupPart(c.Platform.Name) + "_and_" + sanitizeGroupPart(armLabel)
-	label := ":" + name
-	if _, ok := g.defs[label]; !ok {
-		g.defs[label] = ir.Target{
-			Name:          name,
-			Kind:          ir.KindConfigSettingGroup,
-			GroupMatchAll: []string{c.Platform.SelectKey, armLabel},
-			Visibility:    []string{"//visibility:private"},
+	base := sanitizeGroupPart(c.Platform.Name) + "_and_" + sanitizeGroupPart(armLabel)
+	matchAll := []string{c.Platform.SelectKey, armLabel}
+	name := base
+	for i := 2; ; i++ {
+		label := ":" + name
+		existing, ok := g.defs[label]
+		if !ok {
+			g.defs[label] = ir.Target{
+				Name:          name,
+				Kind:          ir.KindConfigSettingGroup,
+				GroupMatchAll: matchAll,
+				Visibility:    []string{"//visibility:private"},
+			}
+			fam := g.families[armLabel]
+			if fam == "" {
+				fam = armLabel
+			}
+			g.families[label] = fam + "+platform"
+			return label
 		}
-		base := g.families[armLabel]
-		if base == "" {
-			base = armLabel
+		if sliceEqual(existing.GroupMatchAll, matchAll) {
+			return label
 		}
-		g.families[label] = base + "+platform"
+		name = fmt.Sprintf("%s_%d", base, i)
 	}
-	return label
 }
 
 // sorted returns the group targets in deterministic label order.
