@@ -272,3 +272,45 @@ func TestGenerate_AlwaysLinkCCImport(t *testing.T) {
 		t.Errorf("plain export must not get alwayslink:\n%s", s)
 	}
 }
+
+// TestGenerate_LinkClosurePreserved: the rewrite CLEARS Export.Deps (the
+// invariant) but preserves the FULL TRANSITIVE closure in LinkClosure,
+// remapped to the wrapper labels — so the consumer's transitive-drop gate
+// still has reachability after the deps move onto the wrapper cc_library.
+func TestGenerate_LinkClosurePreserved(t *testing.T) {
+	im := &manifest.Imports{Version: 1, Elements: []*manifest.Element{{
+		Name: "pkg",
+		Exports: []*manifest.Export{
+			{CMakeTarget: "P::a", BazelLabel: "//old:a", Deps: []string{"//old:b"}, LinkPaths: []string{"/opt/prefix/lib/liba.a"}},
+			{CMakeTarget: "P::b", BazelLabel: "//old:b", Deps: []string{"//old:c", "@ext//:x"}, LinkPaths: []string{"/opt/prefix/lib/libb.a"}},
+			{CMakeTarget: "P::c", BazelLabel: "//old:c", LinkPaths: []string{"/opt/prefix/lib/libc.a"}},
+		},
+	}}}
+	_, out, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]*manifest.Export{}
+	for _, ex := range out.Elements[0].Exports {
+		byName[ex.CMakeTarget] = ex
+	}
+	a := byName["P::a"]
+	if len(a.Deps) != 0 {
+		t.Errorf("Deps must clear (invariant): %v", a.Deps)
+	}
+	// a → b → {c, @ext//:x}: the FULL transitive closure (c is 2 hops),
+	// remapped to wrapper labels; external @ext//:x is a leaf, kept verbatim.
+	want := []string{"//prebuilts/pkg:b", "//prebuilts/pkg:c", "@ext//:x"}
+	if len(a.LinkClosure) != len(want) {
+		t.Fatalf("LinkClosure = %v, want %v", a.LinkClosure, want)
+	}
+	for i, w := range want {
+		if a.LinkClosure[i] != w {
+			t.Errorf("LinkClosure[%d] = %q, want %q (full = %v)", i, a.LinkClosure[i], w, a.LinkClosure)
+		}
+	}
+	// A leaf export gets no closure.
+	if len(byName["P::c"].LinkClosure) != 0 {
+		t.Errorf("leaf export must have empty LinkClosure: %v", byName["P::c"].LinkClosure)
+	}
+}

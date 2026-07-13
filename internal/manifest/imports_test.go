@@ -246,45 +246,50 @@ func TestResolver_NilAndEmpty(t *testing.T) {
 	}
 }
 
-// TestLinkDepClosure pins the ONE-LEVEL semantics: a seed contributes
-// itself plus its DIRECT Export.Deps, and deps-of-deps are NOT chased
-// (matching lower.addExport's verbatim one-level wiring — chasing would
-// drop an archive that never re-enters on a non-flattened manifest). It
-// also excludes an island and yields just the seed for a no-Deps export.
+// TestLinkDepClosure pins the reachability read: a seed contributes itself
+// plus its transitive closure — LinkClosure when present (the wrapper-
+// rewritten shape, already transitive), else Deps (the bare/hand-written
+// shape, flattened per the Deps contract). A seed with neither yields just
+// itself (a link entry point); an island is unreachable; nil is safe.
 func TestLinkDepClosure(t *testing.T) {
 	r, err := manifest.Index(&manifest.Imports{
 		Version: 1,
 		Elements: []*manifest.Element{{
 			Name: "pkg",
 			Exports: []*manifest.Export{
-				{CMakeTarget: "Pkg::a", BazelLabel: "//p:a", Deps: []string{"//p:b"}},
-				{CMakeTarget: "Pkg::b", BazelLabel: "//p:b", Deps: []string{"//p:c"}},
+				// Bare/flattened: closure read from Deps.
+				{CMakeTarget: "Pkg::a", BazelLabel: "//p:a", Deps: []string{"//p:b", "//p:c"}},
+				{CMakeTarget: "Pkg::b", BazelLabel: "//p:b"},
 				{CMakeTarget: "Pkg::c", BazelLabel: "//p:c"},
-				{CMakeTarget: "Pkg::z", BazelLabel: "//p:z"}, // island
+				// Wrapper-rewritten: Deps cleared, closure preserved in
+				// LinkClosure — which WINS over Deps when both are set.
+				{CMakeTarget: "Pkg::w", BazelLabel: "//p:w", LinkClosure: []string{"//p:wi"}, Deps: []string{"//p:ignored"}},
+				{CMakeTarget: "Pkg::wi", BazelLabel: "//p:wi"},
+				{CMakeTarget: "Pkg::z", BazelLabel: "//p:z"}, // island / entry point
 			},
 		}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Seed a → {a, its direct dep b}. c is b's dep (deps-of-deps) and must
-	// NOT be chased; z (island) is unreachable.
+	// Bare seed a → {a} ∪ Deps closure.
 	cl := r.LinkDepClosure([]string{"//p:a"})
-	for _, want := range []string{"//p:a", "//p:b"} {
+	for _, want := range []string{"//p:a", "//p:b", "//p:c"} {
 		if !cl[want] {
-			t.Errorf("closure missing direct edge %q: %v", want, cl)
+			t.Errorf("bare-seed closure missing %q: %v", want, cl)
 		}
 	}
-	if cl["//p:c"] {
-		t.Errorf("deps-of-deps //p:c must NOT be chased (one-level only): %v", cl)
+	// Wrapper seed w → {w} ∪ LinkClosure; Deps is ignored when LinkClosure set.
+	cl = r.LinkDepClosure([]string{"//p:w"})
+	if !cl["//p:w"] || !cl["//p:wi"] {
+		t.Errorf("wrapper-seed closure must read LinkClosure: %v", cl)
 	}
-	if cl["//p:z"] {
-		t.Errorf("island //p:z must not be reachable from //p:a: %v", cl)
+	if cl["//p:ignored"] {
+		t.Errorf("LinkClosure must win over Deps: %v", cl)
 	}
-	// A seed whose export declares no Deps yields just that seed (an entry
-	// point with no closure — also the per-export wrapper-model shape).
+	// A seed with neither Deps nor LinkClosure yields just itself.
 	if cl := r.LinkDepClosure([]string{"//p:z"}); len(cl) != 1 || !cl["//p:z"] {
-		t.Errorf("no-Deps seed closure must be just the seed: %v", cl)
+		t.Errorf("no-closure seed must yield just the seed: %v", cl)
 	}
 	// Nil resolver is safe.
 	var nilR *manifest.Resolver

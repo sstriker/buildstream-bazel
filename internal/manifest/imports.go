@@ -183,6 +183,21 @@ type Export struct {
 	// transitive closure, not just direct deps.
 	Deps []string `json:"deps,omitempty"`
 
+	// LinkClosure is the FULL transitive set of import labels that re-enter
+	// a consumer's link when it wires this export — READ-ONLY reachability
+	// info for the consumer's transitive-drop gate, NOT a wiring channel
+	// (the consumer wires Deps and its BazelLabel, never this). It exists to
+	// survive the wrapper-synthesis rewrite: that step CLEARS Deps (the
+	// closure moves onto the generated wrapper cc_library targets as real
+	// Bazel deps, per the Deps invariant), which would otherwise leave the
+	// consumer's reachability gate blind — unable to tell a transitive
+	// archive that re-enters through a wrapper's Bazel deps from a
+	// DIRECT-link entry point nothing pulls in. The wrapper generator
+	// populates it (the transitive closure it just materialized) as it
+	// clears Deps. Empty for a bare-cc_import export whose Deps already IS
+	// the flattened closure (the gate falls back to Deps there).
+	LinkClosure []string `json:"link_closure,omitempty"`
+
 	// LinkPaths is the set of absolute paths the cmake codemodel records
 	// for this import in `target.link.commandFragments[role="libraries"]`.
 	// The orchestrator populates these when it stages the synth-prefix
@@ -577,27 +592,24 @@ func (r *Resolver) LookupCMakeTarget(name string) *Export {
 }
 
 // LinkDepClosure returns the set of Bazel labels that RE-ENTER a consumer's
-// link when it wires the seed labels: the seeds themselves plus each seed's
-// DIRECT Export.Deps. It deliberately does NOT chase deps-of-deps — this
-// mirrors exactly what lowering wires (lower.addExport adds ex.Deps
-// verbatim, one level) and the Export.Deps contract (a listed label's own
-// Deps are never chased; a hand-written manifest must pre-flatten each
-// export's full closure into its Deps, so one level here already covers it).
+// link when it wires the seed labels: the seeds themselves plus each seed
+// export's transitive reachability closure. The closure of an export is its
+// LinkClosure (the FULL transitive set the wrapper generator preserved as it
+// cleared Deps) when present, else its Deps (which a bare-cc_import /
+// hand-written manifest already flattens to the full closure per the Deps
+// contract). Both are transitive-complete, so one level of lookup here
+// yields the whole reachable set — no chase needed.
+//
 // A consumer that static-links a flattened archive closure uses the result
 // to tell a transitive archive — one that re-enters through a directly-named
-// export's Deps and so is safe to drop — from a DIRECT-link entry point
+// export's closure and so is safe to drop — from a DIRECT-link entry point
 // nothing named pulls in (unreachable → must be wired or the link fails with
-// undefined symbols). A manifest that leaves Deps empty (the wrapper model,
-// where transitivity lives in Bazel, not the manifest) yields just the
-// seeds, so every non-seed archive reads as an entry point. A nil resolver
+// undefined symbols). Reading LinkClosure is what makes this work in the
+// real wrapper-rewritten pipeline: without it every export's Deps is empty
+// (the closure lives on the wrapper's Bazel deps), the gate would be blind,
+// and every non-seed archive would read as an entry point. A nil resolver
 // yields the empty set (not the seeds) — there is no manifest to resolve
 // against.
-//
-// Chasing transitively would be UNSOUND on a non-flattened manifest: it
-// could mark a label reachable through an intermediate export whose Deps
-// lowering never wires, dropping an archive that then fails to re-enter.
-// One level under-approximates instead — the safe direction (it only ever
-// over-attributes an entry edge, never drops a real one).
 func (r *Resolver) LinkDepClosure(seeds []string) map[string]bool {
 	closure := map[string]bool{}
 	if r == nil {
@@ -612,7 +624,11 @@ func (r *Resolver) LinkDepClosure(seeds []string) map[string]bool {
 		if ex == nil {
 			continue
 		}
-		for _, dep := range ex.Deps {
+		reach := ex.LinkClosure
+		if len(reach) == 0 {
+			reach = ex.Deps
+		}
+		for _, dep := range reach {
 			if dep != "" {
 				closure[dep] = true
 			}

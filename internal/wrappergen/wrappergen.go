@@ -371,6 +371,17 @@ func WrapperName(cmakeTarget string) string {
 // consume-and-clear half of the Export.Deps invariant. Unselected
 // elements pass through untouched.
 func rewriteManifest(im *manifest.Imports, element string, oldToNew map[string]string) *manifest.Imports {
+	byOldLabel := map[string]*manifest.Export{}
+	for _, el := range im.Elements {
+		if el == nil {
+			continue
+		}
+		for _, ex := range el.Exports {
+			if ex != nil && ex.BazelLabel != "" {
+				byOldLabel[ex.BazelLabel] = ex
+			}
+		}
+	}
 	out := &manifest.Imports{Version: im.Version}
 	for _, el := range im.Elements {
 		if el == nil {
@@ -387,6 +398,13 @@ func rewriteManifest(im *manifest.Imports, element string, oldToNew map[string]s
 				if n, ok := oldToNew[ex.BazelLabel]; ok {
 					cex.BazelLabel = n
 				}
+				// Preserve the reachability closure the consumer's
+				// transitive-drop gate needs BEFORE clearing the Deps that
+				// encode it: the wrapper cc_library carries these as real
+				// Bazel deps, so wiring them again (Deps) would over-emit —
+				// but the gate still needs to SEE them to tell a re-entering
+				// transitive archive from a direct-link entry point.
+				cex.LinkClosure = transitiveImportClosure(ex, byOldLabel, oldToNew)
 				cex.Deps = nil
 				exports = append(exports, &cex)
 			}
@@ -394,6 +412,43 @@ func rewriteManifest(im *manifest.Imports, element string, oldToNew map[string]s
 		}
 		out.Elements = append(out.Elements, &cel)
 	}
+	return out
+}
+
+// transitiveImportClosure returns the FULL transitive set of new (rewritten)
+// labels reachable from start's Deps by chasing in-manifest Deps edges.
+// External labels (no in-manifest export) are leaves. Nil when start has no
+// deps. The result is what the wrapper's Bazel deps resolve transitively —
+// the read-only reachability closure the consumer gate reads once Deps is
+// cleared.
+func transitiveImportClosure(start *manifest.Export, byOldLabel map[string]*manifest.Export, oldToNew map[string]string) []string {
+	if len(start.Deps) == 0 {
+		return nil
+	}
+	visited := map[string]bool{} // old labels
+	newSet := map[string]bool{}  // rewritten labels for output
+	stack := append([]string(nil), start.Deps...)
+	for len(stack) > 0 {
+		l := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if l == "" || visited[l] {
+			continue
+		}
+		visited[l] = true
+		nl := l
+		if n, ok := oldToNew[l]; ok {
+			nl = n
+		}
+		newSet[nl] = true
+		if dep := byOldLabel[l]; dep != nil {
+			stack = append(stack, dep.Deps...)
+		}
+	}
+	out := make([]string, 0, len(newSet))
+	for l := range newSet {
+		out = append(out, l)
+	}
+	sort.Strings(out)
 	return out
 }
 
