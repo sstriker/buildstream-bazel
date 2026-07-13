@@ -3624,10 +3624,14 @@ func attributeDirectTraceDeps(irt *ir.Target, tt targetTrace, lc targetLowerCtx)
 	}
 }
 
-// tagUnresolvedLinkArm records a direct-or-transitive link-line library the
-// manifest doesn't resolve and that isn't a toolchain system lib — a
-// manifest-producer (harvest/export) gap surfaced to the coverage / link-graph
-// fidelity lens rather than dropped silently (the "verify, don't assert" rule).
+// tagUnresolvedLinkArm records a library the manifest doesn't resolve and that
+// isn't a toolchain system lib — a manifest-producer (harvest/export) gap
+// surfaced to the coverage / link-graph fidelity lens rather than dropped
+// silently (the "verify, don't assert" rule). Called from two sites:
+// attributeDirectTraceDeps for an unresolved DIRECT trace arm (which covers a
+// STATIC_LIBRARY, whose Link.CommandFragments the fragment pass never sees),
+// and lowerLinkFragments for an unresolved link-line fragment (direct or
+// transitive).
 func tagUnresolvedLinkArm(irt *ir.Target, arm string) {
 	tag := "cmake-unresolved-link-arm=" + arm
 	if !stringSliceContains(irt.Tags, tag) {
@@ -3729,7 +3733,8 @@ func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 		// A manifest-resolvable archive is skipped: the trace pass attributes
 		// it if this target links it directly, and Bazel pulls it transitively
 		// otherwise. Running over the full link line (direct AND transitive)
-		// means a transitive edge the harvester missed still surfaces here.
+		// means an UNRESOLVED transitive library the harvester missed still
+		// surfaces here — one that resolves is deliberately not re-flagged.
 		anchored := path
 		if hostPrefix != "" && strings.HasPrefix(path, hostPrefix+string(filepath.Separator)) {
 			anchored = manifestPrefixAnchor + path[len(hostPrefix)+1:]
