@@ -3684,51 +3684,52 @@ func attributeUnresolvedLibPath(irt *ir.Target, rt *linkDepRouter, t *fileapi.Ta
 // roles to linkopts and attributing "libraries"-role fragments through
 // the imports manifest / find_package channels via the linkDepRouter.
 // Rationale comments are verbatim from the original inline block.
-// directTraceDepClosure builds the reachability inputs for the transitive-
-// drop gate from the directly-traced libs' manifest exports. It returns the
-// one-level Export.Deps closure (seeds + their direct Deps) AND whether the
-// seeds MODEL THEIR OWN DEPS in Bazel — i.e. there is at least one
-// manifest-export seed and every such seed has empty Deps. Per the
-// Export.Deps invariant, empty Deps means the label carries its closure as
-// real Bazel deps (the wrapper model), so a flattened archive re-enters
-// through Bazel transitivity; the gate then drops it exactly as it did
-// before this closure work, and the closure is the reachability signal only
-// for the prebuilt/flattened-manifest case where Deps actually carries the
-// closure. Returns (nil, false) when no trace covers the target or no
-// imports manifest is available — the gate is then disabled (nil closure
-// matches nothing, seedsModelOwnDeps false) and every matched fragment is
-// attributed, the conservative direction.
+
+// attributeExportLinkFragment applies the direct-link gate to a manifest-
+// matched library fragment (export = imports.LookupLinkPath hit) and either
+// attributes it or drops it with a breadcrumb.
 //
-// A MIXED link (some prebuilt seeds with non-empty Deps AND some wrapper
-// seeds with empty Deps) makes seedsModelOwnDeps false, so only the closure
-// gates: a wrapper seed's transitive internal archive — which re-enters via
-// the wrapper's Bazel closure, INVISIBLE to the manifest — is then
-// attributed rather than dropped. That over-specifies a consumer-visible
-// export label (benign, deduped by Bazel), which is the safe direction: a
-// per-seed rule can't soundly drop it (the wrapper closure isn't visible, so
-// dropping on a guess would risk undefined symbols if it were a real entry).
-func directTraceDepClosure(directTraceLibs map[string]bool, imports *manifest.Resolver) (closure map[string]bool, seedsModelOwnDeps bool) {
-	if len(directTraceLibs) == 0 || imports == nil {
-		return nil, false
-	}
-	var seeds []string
-	allEmpty := true
-	for lib := range directTraceLibs {
-		ex := imports.LookupCMakeTarget(lib)
-		if ex == nil || ex.BazelLabel == "" {
-			continue
+// Direct-link gate: when the trace covers this target (directTraceLibs
+// non-empty), attribute a flattened archive only if the target links it
+// DIRECTLY — either by name (export.CMakeTarget in the trace), by label (an
+// alias spelling of the same bazel_label, via directTraceLabels), or by path
+// (the raw fragment path in the trace, the find_package variable/path form).
+// Everything else is a transitive archive pulled by a directly-named public
+// dep; it re-enters through that dep's wrapper cc_library's own Bazel deps
+// (which the harvester captured from INTERFACE_LINK_LIBRARIES / .pc Requires),
+// so wiring it here would only over-specify the graph and can break on
+// restricted internal-target visibility. Bazel resolves that transitivity
+// itself — the single source of truth — so we keep only the DIRECT links and
+// let it pull the rest. When no trace covers this target (directTraceLibs
+// empty) the gate is disabled and every matched fragment is attributed,
+// preserving the offline-replay behavior.
+func attributeExportLinkFragment(irt *ir.Target, rt *linkDepRouter, export *manifest.Export, rawPath string, directTraceLibs, directTraceLabels map[string]bool, traceLinkScope map[string]string) {
+	if len(directTraceLibs) > 0 &&
+		!directTraceLibs[export.CMakeTarget] && !directTraceLibs[rawPath] &&
+		!directTraceLabels[export.BazelLabel] {
+		// Not a direct link → drop. Leave a breadcrumb so the drop is VISIBLE
+		// to the link-graph fidelity lens / coverage audit (matching the
+		// cmake-elided-link-fragment tag). If the harvester ever missed a
+		// transitive edge, this archive won't re-enter through any wrapper and
+		// the breadcrumb is where the gap surfaces — a harvest bug to fix at
+		// the harvest layer, not a reason to over-attribute here.
+		tag := "cmake-transitive-link-drop=" + export.CMakeTarget
+		if !stringSliceContains(irt.Tags, tag) {
+			irt.Tags = append(irt.Tags, tag)
 		}
-		seeds = append(seeds, ex.BazelLabel)
-		if len(ex.Deps) > 0 {
-			allEmpty = false
-		}
+		return
 	}
-	if len(seeds) == 0 {
-		// No traced lib resolves to a manifest export — gate disabled, per
-		// the (nil, false) contract; nothing to reason about, attribute all.
-		return nil, false
-	}
-	return imports.LinkDepClosure(seeds), allEmpty
+	// addExport (not bare add): the export's manifest-declared Deps ride along
+	// when present (a bare-cc_import / hand-written manifest that lists its own
+	// closure). Reached for every DIRECT link — named or pathed — the gate
+	// kept. Check BOTH spellings for the PRIVATE scope: traceLinkScope is keyed
+	// by the raw target_link_libraries arg, so a path-form direct link
+	// (`target_link_libraries(app PRIVATE /opt/.../libz.a)`) is keyed by
+	// rawPath, not export.CMakeTarget — miss it and a PRIVATE link mis-routes
+	// into Deps instead of ImplementationDeps.
+	private := scopeIsPrivate(traceLinkScope, export.CMakeTarget) ||
+		scopeIsPrivate(traceLinkScope, rawPath)
+	rt.addExport(export, private)
 }
 
 func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc targetLowerCtx) {
@@ -3754,19 +3755,30 @@ func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 	// flow through the directly-named public deps. Empty (no trace for
 	// this target) → the gate is disabled and every matched fragment
 	// is attributed, preserving the offline-replay behavior.
+	// The trace records this target's DIRECT links verbatim — both the
+	// namespaced names (`target_link_libraries(app Foo::foo)`) and the
+	// path/variable forms (`target_link_libraries(app ${FOO_LIBRARIES})`,
+	// which cmake --trace-expand records as the resolved path). So the set
+	// carries a directly-linked prebuilt whether it was named or pathed; the
+	// gate below just has to check BOTH spellings against it.
+	//
+	// directTraceLabels resolves each directly-named lib to its Bazel label,
+	// so an ALIAS spelling still counts as a direct link. The harvester emits
+	// both the alias and the underlying cmake names for one export, sharing a
+	// single bazel_label, but only one of them carries LinkPaths. When the
+	// trace names the alias and LookupLinkPath below returns the LinkPaths-
+	// owning claimant (a DIFFERENT CMakeTarget, SAME BazelLabel), the raw
+	// name/path checks miss it; the label check catches it.
 	directTraceLibs := map[string]bool{}
+	directTraceLabels := map[string]bool{}
 	for _, lib := range traceLinkLibs {
 		directTraceLibs[lib] = true
+		if imports != nil {
+			if ex := imports.LookupCMakeTarget(lib); ex != nil && ex.BazelLabel != "" {
+				directTraceLabels[ex.BazelLabel] = true
+			}
+		}
 	}
-	// Reachability inputs for the transitive-drop gate below. A flattened
-	// archive the target does NOT link directly is sound to drop when it
-	// re-enters through a directly-named export's closure — via Bazel
-	// transitivity when the seeds are wrapper labels that model their own
-	// deps (seedsModelOwnDeps), or via the manifest-declared Export.Deps
-	// closure for prebuilt/flattened seeds. One that re-enters through
-	// neither is a DIRECT-link entry point nothing named pulls in — attribute
-	// it, or the binary fails to link with undefined symbols.
-	directTraceClosure, seedsModelOwnDeps := directTraceDepClosure(directTraceLibs, imports)
 	for _, frag := range t.Link.CommandFragments {
 		// Non-library fragments (flags / libraryPath /
 		// frameworkPath / frameworks) route directly to
@@ -3829,55 +3841,12 @@ func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 				}
 			}
 		}
+		rawPath := path
 		if hostPrefix != "" && strings.HasPrefix(path, hostPrefix+string(filepath.Separator)) {
 			path = manifestPrefixAnchor + path[len(hostPrefix)+1:]
 		}
 		if export := imports.LookupLinkPath(path); export != nil {
-			// Gate on the direct-trace set: when the trace
-			// recorded this target's direct link libs, only
-			// attribute a flattened archive fragment if the
-			// target links it DIRECTLY. A transitive-only
-			// archive (in the static closure but not named in
-			// target_link_libraries) is dropped — it reaches
-			// the link through a directly-named public dep's
-			// own Bazel deps, with correct visibility. Skip
-			// the gate entirely when no trace covers this
-			// target (directTraceLibs empty).
-			if len(directTraceLibs) > 0 && !directTraceLibs[export.CMakeTarget] &&
-				(seedsModelOwnDeps || directTraceClosure[export.BazelLabel]) {
-				// SOUND drop: this flattened archive is not named directly,
-				// but it re-enters through a directly-named export's closure
-				// — either via Bazel transitivity when the seeds are wrapper
-				// labels that model their own deps (seedsModelOwnDeps: the
-				// common cc_library-wrapper manifest, where attributing every
-				// internal archive would only over-specify the graph), or via
-				// the manifest-declared Export.Deps closure for prebuilt/
-				// flattened seeds. Leave a breadcrumb rather than dropping
-				// silently — it keeps the drop VISIBLE to the link-graph
-				// fidelity lens / coverage audit (matching the
-				// cmake-elided-link-fragment tag the unresolved path leaves),
-				// so a genuinely lost edge shows up as a missing breadcrumb,
-				// not as nothing at all.
-				//
-				// The complementary case — prebuilt/flattened seeds and a
-				// matched archive NOT in the closure — is a DIRECT-link entry
-				// point nothing named pulls in; it falls through to
-				// rt.addExport below so its entry edge is recovered (dropping
-				// it would fail the link with undefined symbols).
-				tag := "cmake-transitive-link-drop=" + export.CMakeTarget
-				if !stringSliceContains(irt.Tags, tag) {
-					irt.Tags = append(irt.Tags, tag)
-				}
-				continue
-			}
-			// addExport (not bare add): the export's manifest-declared Deps
-			// ride along. Reached for a directly-named export AND for a
-			// non-directly-named archive the closure gate above found
-			// UNREACHABLE (a direct-link entry point) — in both cases the
-			// export's own declared closure is what the dropped transitive
-			// archives re-enter through, instead of the label's (often
-			// nonexistent) Bazel-side deps.
-			rt.addExport(export, scopeIsPrivate(traceLinkScope, export.CMakeTarget))
+			attributeExportLinkFragment(irt, rt, export, rawPath, directTraceLibs, directTraceLabels, traceLinkScope)
 			continue
 		}
 		attributeUnresolvedLibPath(irt, rt, t, path, imports, findPkgAttrib, traceLinkScope)
