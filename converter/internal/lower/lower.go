@@ -3544,13 +3544,17 @@ func routeNonAbsLibraryFragment(irt *ir.Target, rt *linkDepRouter, path string, 
 //     (link_libraries), the variable-only Find-module shape;
 //   - manifest link-lib name (the -l<name> <name> a producer claims).
 //
-// An arm that hits none is NOT attributed here and NOT flagged here — the
-// system-library -l<name> lift and the harvest-gap visibility tag live in
-// lowerLinkFragments, which sees every resolved link-line path (direct AND
-// transitive) and so catches a missed transitive edge this direct-only pass
-// can't. A bare unresolved name is an in-project target (wired by the
-// codemodel-dependencies channel) or a system lib; coverage.AuditLinkDeps is
-// the tripwire for a genuine drop.
+// An arm that hits none is classified here so nothing drops silently — even
+// for a STATIC_LIBRARY, whose lowerLinkFragments never runs (no Link section):
+// an un-claimed system-library path lifts to a bare -l<name>; a vendored
+// absolute path, or a namespaced import the (non-empty) manifest doesn't know,
+// is tagged cmake-unresolved-link-arm as a harvest/export gap. lowerLinkFragments
+// applies the SAME lift/tag over the full link line (direct AND transitive),
+// so a missed transitive edge this direct-only pass can't see still surfaces
+// there; the overlap on a linking target's direct arms is deduped. A bare
+// unresolved name is an in-project target (wired by the codemodel-dependencies
+// channel) or a system lib, so it is skipped; coverage.AuditLinkDeps is the
+// tripwire for a genuine in-codebase drop.
 func attributeDirectTraceDeps(irt *ir.Target, tt targetTrace, lc targetLowerCtx) {
 	traceLinkLibs, traceLinkScope := tt.traceLinkLibs, tt.traceLinkScope
 	if len(traceLinkLibs) == 0 {
@@ -3577,17 +3581,28 @@ func attributeDirectTraceDeps(irt *ir.Target, tt targetTrace, lc targetLowerCtx)
 				rt.addExport(export, private)
 				continue
 			}
-			// A system-library path whose <name> a producer element claims
-			// (the variable-only Find-module shape: ${<Pkg>_LIBRARIES} with no
-			// <Pkg>::<Pkg> target, resolved to the host libz.so path). Wire the
-			// producer label; the bare -l<name> lift for the un-claimed case is
-			// lowerLinkFragments' job.
+			// A toolchain system-library path. If a producer element claims the
+			// <name> (the variable-only Find-module shape: ${<Pkg>_LIBRARIES}
+			// with no <Pkg>::<Pkg> target, resolved to the host libz.so path)
+			// wire that label; otherwise lift to a bare -l<name> (the toolchain
+			// owns it). This mirrors lowerLinkFragments, and MUST run here too:
+			// a STATIC_LIBRARY has no Link section, so the fragment pass never
+			// runs for it, and a direct path-form arm would otherwise vanish.
 			if name := systemLibName(path); name != "" {
 				if export := imports.LookupLinkLibrary(name); export != nil {
 					rt.addExport(export, private)
+					continue
+				}
+				flag := "-l" + name
+				if !stringSliceContains(irt.LinkOpts, flag) {
+					irt.LinkOpts = append(irt.LinkOpts, flag)
 				}
 				continue
 			}
+			// A vendored absolute path the manifest doesn't carry — a harvest/
+			// export gap. Tag it (same as the fragment pass) so a direct
+			// path-form arm on a STATIC_LIBRARY still surfaces.
+			tagUnresolvedLinkArm(irt, path)
 			continue
 		}
 		// 3. manifest link-lib name (a producer claims the -l<name> <name>).
@@ -3595,8 +3610,17 @@ func attributeDirectTraceDeps(irt *ir.Target, tt targetTrace, lc targetLowerCtx)
 			rt.addExport(export, private)
 			continue
 		}
-		// 4. anything else (bare in-project name, unresolved system lib) is not
-		//    attributed here — see the function comment.
+		// 4. a namespaced import the manifest doesn't know is a harvest gap
+		//    (gated on a non-empty manifest so it fires only when the operator
+		//    opted in; without one every :: arm is unresolved). This also
+		//    covers a STATIC_LIBRARY, whose fragment pass never runs.
+		if strings.Contains(arm, "::") && !imports.Empty() {
+			tagUnresolvedLinkArm(irt, arm)
+			continue
+		}
+		// 5. bare name: an in-project target (wired by the codemodel-
+		//    dependencies channel) or a system lib — ambiguous, so skip;
+		//    coverage.AuditLinkDeps is the tripwire for a genuine drop.
 	}
 }
 

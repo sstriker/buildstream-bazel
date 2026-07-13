@@ -86,6 +86,47 @@ func TestExportDeps_TraceLinkChannel(t *testing.T) {
 	assertExportClosure(t, exportDepsFind(t, pkg, "consumer").Deps, "trace-link channel")
 }
 
+// TestExportDeps_StaticLibDirectPathArmsHandled pins that a STATIC_LIBRARY —
+// which has no Link section, so lowerLinkFragments never runs for it — still
+// has its DIRECT path-form trace arms classified by attributeDirectTraceDeps
+// itself: an un-claimed system-library path lifts to -l<name>, and a vendored
+// path the manifest doesn't carry surfaces as an unresolved-link-arm gap.
+// Without that, these direct deps would vanish silently (the fragment pass
+// can't cover a target with no link line).
+func TestExportDeps_StaticLibDirectPathArmsHandled(t *testing.T) {
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"mystatic::@": {
+			Name: "mystatic", Type: "STATIC_LIBRARY",
+			Sources:       []fileapi.TargetSource{{Path: "c.c", CompileGroupIndex: 0}},
+			CompileGroups: []fileapi.CompileGroup{{Language: "C", SourceIndexes: []int{0}}},
+		}},
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "mystatic::@", Name: "mystatic"}},
+			}},
+		},
+	}
+	// Direct path-form links on a static archive (no Link section in the
+	// codemodel): a system lib and a vendored path, neither in the manifest.
+	traceRaw := []byte(
+		`{"args":["mystatic","PRIVATE","/usr/lib/x86_64-linux-gnu/libz.so","/opt/vendor/lib/libfoo.so"],"cmd":"target_link_libraries","file":"/s/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{TraceRaw: traceRaw, HostSourceRoot: "/s"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := exportDepsFind(t, pkg, "mystatic")
+	// System lib → -lz linkopt (toolchain owns it).
+	if !stringSliceContains(tgt.LinkOpts, "-lz") {
+		t.Errorf("static-lib system-lib path arm must lift to -lz: %v", tgt.LinkOpts)
+	}
+	// Vendored path → harvest-gap tag, not a silent drop.
+	if !stringSliceContains(tgt.Tags, "cmake-unresolved-link-arm=/opt/vendor/lib/libfoo.so") {
+		t.Errorf("static-lib vendored path arm must surface as an unresolved-link-arm gap: %v", tgt.Tags)
+	}
+}
+
 // TestExportDeps_LinkPathChannel: a binary that links the export's archive
 // by PATH — the ${FOO_LIBRARIES} arm that --trace-expand records as the
 // resolved absolute path. attributeDirectTraceDeps resolves it via
