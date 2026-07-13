@@ -23,9 +23,10 @@
 # <Pkg>_LIBRARIES cmakeVars), so this gate no longer exercises a
 # dump-vars dual case.
 #
-# cmake-availability gating: skips cleanly when no cmake >= 3.24
-# is on PATH (the architectural floor for the converter's
-# --source-root configure).
+# cmake-availability gating: skips cleanly when no cmake is on
+# PATH. The converter's --source-root configure needs codemodel-v2
+# (cmake >= 3.24); this gate doesn't re-check the version — the
+# converter itself surfaces a below-floor cmake.
 
 set -eu
 

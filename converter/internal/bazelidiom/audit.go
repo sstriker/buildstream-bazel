@@ -242,9 +242,10 @@ func codegenTagToFinding(tag string) (code, msg string) {
 
 // auditCmakeElidedTags surfaces the audit-eligible link/include
 // silent-drop tags that signal operator action gaps: the #219
-// prefix-include drop and the unresolved-link-arm gap (a direct
-// target_link_libraries arm that resolved to no imports-manifest
-// import and isn't a toolchain system lib).
+// prefix-include drop and the unresolved-link-arm gap (a library
+// on the target's link line — direct OR pulled transitively — that
+// resolved to no imports-manifest import and isn't a toolchain
+// system lib).
 //
 // The pre-existing cmake-elided-* tags (build-dir-source,
 // missing-source, compiler-artifact) are intentionally not
@@ -285,7 +286,7 @@ func elidedTagToFinding(tag string) (code, msg string) {
 	case strings.HasPrefix(tag, "cmake-unresolved-link-arm="):
 		arm := strings.TrimPrefix(tag, "cmake-unresolved-link-arm=")
 		return "unresolved-link-arm",
-			"target's target_link_libraries names " + arm + " which resolves to no imports-manifest import and isn't a toolchain system lib — a manifest-producer (harvest/export) gap; the dep is missing from `deps` and the BUILD will link-fail. Fix: harvest the library at its producing element (so an exports.json entry maps its name/path to a real cc_import/cc_library label), or add it to the imports manifest"
+			"target's link line includes " + arm + " (linked directly, or pulled transitively via a dependency's INTERFACE_LINK_LIBRARIES) which resolves to no imports-manifest import and isn't a toolchain system lib — a manifest-producer (harvest/export) gap; the dep is missing from `deps` and the BUILD will link-fail. Fix: harvest the library at its producing element (so an exports.json entry maps its name/path to a real cc_import/cc_library label), or add it to the imports manifest"
 	case strings.HasPrefix(tag, "cmake-elided-prefix-include="):
 		path := strings.TrimPrefix(tag, "cmake-elided-prefix-include=")
 		return "unresolved-prefix-include",
