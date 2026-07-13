@@ -86,10 +86,51 @@ func TestExportDeps_TraceLinkChannel(t *testing.T) {
 	assertExportClosure(t, exportDepsFind(t, pkg, "consumer").Deps, "trace-link channel")
 }
 
-// TestExportDeps_LinkPathChannel: a binary whose flattened link line
-// names the export's archive (LookupLinkPath hit). The closure rides
-// the addExport — which is also what makes the trace-gated
-// transitive-only drop sound for prebuilt-backed labels (mechanism A).
+// TestExportDeps_StaticLibDirectPathArmsHandled pins that a STATIC_LIBRARY —
+// which has no Link section, so lowerLinkFragments never runs for it — still
+// has its DIRECT path-form trace arms classified by attributeDirectTraceDeps
+// itself: an un-claimed system-library path lifts to -l<name>, and a vendored
+// path the manifest doesn't carry surfaces as an unresolved-link-arm gap.
+// Without that, these direct deps would vanish silently (the fragment pass
+// can't cover a target with no link line).
+func TestExportDeps_StaticLibDirectPathArmsHandled(t *testing.T) {
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"mystatic::@": {
+			Name: "mystatic", Type: "STATIC_LIBRARY",
+			Sources:       []fileapi.TargetSource{{Path: "c.c", CompileGroupIndex: 0}},
+			CompileGroups: []fileapi.CompileGroup{{Language: "C", SourceIndexes: []int{0}}},
+		}},
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "mystatic::@", Name: "mystatic"}},
+			}},
+		},
+	}
+	// Direct path-form links on a static archive (no Link section in the
+	// codemodel): a system lib and a vendored path, neither in the manifest.
+	traceRaw := []byte(
+		`{"args":["mystatic","PRIVATE","/usr/lib/x86_64-linux-gnu/libz.so","/opt/vendor/lib/libfoo.so"],"cmd":"target_link_libraries","file":"/s/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{TraceRaw: traceRaw, HostSourceRoot: "/s"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := exportDepsFind(t, pkg, "mystatic")
+	// System lib → -lz linkopt (toolchain owns it).
+	if !stringSliceContains(tgt.LinkOpts, "-lz") {
+		t.Errorf("static-lib system-lib path arm must lift to -lz: %v", tgt.LinkOpts)
+	}
+	// Vendored path → harvest-gap tag, not a silent drop.
+	if !stringSliceContains(tgt.Tags, "cmake-unresolved-link-arm=/opt/vendor/lib/libfoo.so") {
+		t.Errorf("static-lib vendored path arm must surface as an unresolved-link-arm gap: %v", tgt.Tags)
+	}
+}
+
+// TestExportDeps_LinkPathChannel: a binary that links the export's archive
+// by PATH — the ${FOO_LIBRARIES} arm that --trace-expand records as the
+// resolved absolute path. attributeDirectTraceDeps resolves it via
+// LookupLinkPath and the export's declared closure rides the addExport.
 func TestExportDeps_LinkPathChannel(t *testing.T) {
 	r := &fileapi.Reply{
 		Targets: map[string]fileapi.Target{"app::@": {
@@ -112,21 +153,25 @@ func TestExportDeps_LinkPathChannel(t *testing.T) {
 			}},
 		},
 	}
-	pkg, err := ToIR(r, &ninja.Graph{}, Options{Imports: exportDepsResolver(t)})
+	// The trace links liba.a by PATH (find_package variable form).
+	traceRaw := []byte(
+		`{"args":["app","PUBLIC","/opt/prefix/lib/liba.a"],"cmd":"target_link_libraries","file":"/s/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{Imports: exportDepsResolver(t), TraceRaw: traceRaw, HostSourceRoot: "/s"})
 	if err != nil {
 		t.Fatalf("ToIR: %v", err)
 	}
 	assertExportClosure(t, exportDepsFind(t, pkg, "app").Deps, "link-path channel")
 }
 
-// TestExportDeps_PathFormDirectLinkRecovered pins the path-aware direct-link
-// gate in the REAL (wrapper-rewritten) shape — every Export.Deps empty, so
-// Bazel carries transitivity through the wrappers. app links Pkg::a by NAME
-// and Pkg::z by PATH (the find_package variable form the trace records as the
-// resolved path); Pkg::b is only a transitive archive. Both direct links are
-// kept; the transitive one drops (with a breadcrumb) and re-enters through
-// Pkg::a's wrapper cc_library's Bazel deps. This is the #806/#811 entry-point
-// fix with no precomputed closure — the path form is just another direct link.
+// TestExportDeps_PathFormDirectLinkRecovered pins trace-driven attribution in
+// the REAL (wrapper-rewritten) shape — every Export.Deps empty, so Bazel
+// carries transitivity through the wrappers. app links Pkg::a by NAME and
+// Pkg::z by PATH (the find_package variable form the trace records as the
+// resolved path); Pkg::b is only a transitive archive on the link line (no
+// trace arm). Both direct links are attributed from the trace; the transitive
+// one is simply not — it re-enters through Pkg::a's wrapper cc_library's own
+// Bazel deps. No gate, no breadcrumb: the direct arms are the whole source.
 func TestExportDeps_PathFormDirectLinkRecovered(t *testing.T) {
 	res, err := manifest.Index(&manifest.Imports{
 		Version: 1,
@@ -178,16 +223,10 @@ func TestExportDeps_PathFormDirectLinkRecovered(t *testing.T) {
 			t.Errorf("direct link %q must be kept: %v", want, app.Deps)
 		}
 	}
-	// The transitive archive is NOT attributed (Bazel pulls it via a's wrapper).
+	// The transitive archive is NOT attributed (Bazel pulls it via a's wrapper);
+	// it has no trace arm, so it is neither wired nor tagged.
 	if stringSliceContains(app.Deps, "//elements/pkg:b_import") {
 		t.Errorf("transitive Pkg::b must not be attributed (re-enters via a's wrapper): %v", app.Deps)
-	}
-	if !stringSliceContains(app.Tags, "cmake-transitive-link-drop=Pkg::b") {
-		t.Errorf("transitive Pkg::b must drop with a breadcrumb; tags=%v", app.Tags)
-	}
-	// The path-form direct link is kept, not dropped.
-	if stringSliceContains(app.Tags, "cmake-transitive-link-drop=Pkg::z") {
-		t.Errorf("path-form direct link Pkg::z must be kept, not dropped: %v", app.Tags)
 	}
 }
 
@@ -333,10 +372,11 @@ func TestExportDeps_DependencyChannel(t *testing.T) {
 
 // TestExportDeps_WrapperSeedKeepsTransitiveDrop guards the wrapper-model
 // case: when the directly-traced seed is a cc_library WRAPPER label whose
-// Export.Deps are empty (transitivity lives in Bazel), a non-directly-named
-// flattened archive re-enters via Bazel and must still DROP — attributing
-// every internal archive would over-specify the graph. The entry-edge
-// recovery applies only to prebuilt/flattened seeds (non-empty Deps).
+// Export.Deps are empty (transitivity lives in Bazel), a flattened archive
+// on the link line that the trace does NOT name is not attributed — it
+// re-enters via the wrapper's own Bazel deps. Attributing every internal
+// archive would over-specify the graph; here it simply never enters, because
+// only the direct trace arms are a dep source.
 func TestExportDeps_WrapperSeedKeepsTransitiveDrop(t *testing.T) {
 	res, err := manifest.Index(&manifest.Imports{
 		Version: 1,
@@ -384,31 +424,26 @@ func TestExportDeps_WrapperSeedKeepsTransitiveDrop(t *testing.T) {
 	if !stringSliceContains(app.Deps, "//elements/pkg:w") {
 		t.Errorf("directly-traced wrapper seed must be wired: %v", app.Deps)
 	}
-	// The internal archive re-enters via the wrapper's Bazel deps, so it must
-	// NOT be attributed as a direct dep — only breadcrumbed.
+	// The internal archive has no trace arm, so it is not attributed as a
+	// direct dep — it re-enters via the wrapper's own Bazel deps.
 	if stringSliceContains(app.Deps, "//elements/pkg:internal") {
-		t.Errorf("wrapper-model internal archive must DROP (re-enters via Bazel), not attribute: %v", app.Deps)
-	}
-	if !stringSliceContains(app.Tags, "cmake-transitive-link-drop=Pkg::internal") {
-		t.Errorf("dropped internal archive must leave a breadcrumb: %v", app.Tags)
+		t.Errorf("wrapper-model internal archive must not be attributed (re-enters via Bazel): %v", app.Deps)
 	}
 }
 
-// TestExportDeps_MixedSeedsDropWrapperInternal pins the path-aware gate on a
-// MIXED link: one directly-named PREBUILT seed (Pkg::p, whose manifest models
-// a flattened closure via non-empty Deps) and one directly-named WRAPPER seed
-// (Pkg::w, empty Deps — transitivity lives in Bazel). The gate itself is
-// uniform — it drops every fragment this target did not directly name, by
-// CMake target or by library path, leaving a breadcrumb. What differs
-// downstream is where a dropped archive's label re-enters:
+// TestExportDeps_MixedSeedsDropWrapperInternal pins trace-driven attribution
+// on a MIXED link: one directly-named PREBUILT seed (Pkg::p, whose manifest
+// models a flattened closure via non-empty Deps) and one directly-named
+// WRAPPER seed (Pkg::w, empty Deps — transitivity lives in Bazel). Only the
+// two directly-named arms are a dep source; the non-named archives on the link
+// line differ only in where their label re-enters:
 //
-//   - Pkg::pdep's fragment drops, but its label still rides in through
+//   - Pkg::pdep is not a trace arm, but its label still rides in through
 //     Pkg::p's addExport closure, because the prebuilt manifest listed it as
 //     one of p's flattened Deps.
-//   - Pkg::winternal's fragment drops and its label does NOT re-enter here,
-//     because the wrapper seed Pkg::w carries no Deps — winternal reaches the
-//     link only through w's invisible Bazel closure. Under the old
-//     seedsModelOwnDeps split this was over-attributed; Design B drops it.
+//   - Pkg::winternal is not a trace arm and does NOT re-enter here, because
+//     the wrapper seed Pkg::w carries no Deps — winternal reaches the link
+//     only through w's own (Bazel-resolved) closure.
 func TestExportDeps_MixedSeedsDropWrapperInternal(t *testing.T) {
 	res, err := manifest.Index(&manifest.Imports{
 		Version: 1,
@@ -466,15 +501,9 @@ func TestExportDeps_MixedSeedsDropWrapperInternal(t *testing.T) {
 	if !stringSliceContains(app.Deps, "//elements/pkg:w") {
 		t.Errorf("directly-named wrapper seed must be attributed: %v", app.Deps)
 	}
-	// Both non-directly-named fragments drop at the gate (breadcrumbs).
-	if !stringSliceContains(app.Tags, "cmake-transitive-link-drop=Pkg::pdep") {
-		t.Errorf("prebuilt transitive archive fragment must drop with a breadcrumb: %v", app.Tags)
-	}
-	if !stringSliceContains(app.Tags, "cmake-transitive-link-drop=Pkg::winternal") {
-		t.Errorf("wrapper internal fragment must drop with a breadcrumb: %v", app.Tags)
-	}
 	// pdep's label re-enters via p's flattened prebuilt closure; winternal's
-	// does not, because the wrapper seed w carries no manifest Deps.
+	// does not, because the wrapper seed w carries no manifest Deps. Neither is
+	// a trace arm, so neither is attributed directly.
 	if !stringSliceContains(app.Deps, "//elements/pkg:pdep") {
 		t.Errorf("prebuilt transitive archive must ride in via p's closure: %v", app.Deps)
 	}

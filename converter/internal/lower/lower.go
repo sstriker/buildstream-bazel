@@ -2070,7 +2070,6 @@ type recoveredArtifacts struct {
 	configureFiles   []configureFileOut
 	fileGenerates    []fileGenerateOut
 	genexTargets     map[string]genexeval.TargetInfo
-	findPkgAttrib    *findPackageAttrib
 }
 
 // seedConsumedDemand populates cc.ConsumedBuildRel (the codegen demand: the
@@ -2141,18 +2140,6 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 	// []executeProcessOut return is parallel to
 	// configureFileOut and feeds the same per-target
 	// attribution loop in lowerTarget below.
-	// find_package(X) variable-form attribution. cmake's older
-	// idiom `target_link_libraries(foo ${ZLIB_LIBRARIES})` resolves
-	// to absolute paths the codemodel records verbatim; without
-	// attribution back to ZLIB the lower's manifest lookup misses
-	// and the dep drops silently. buildFindPackageAttrib correlates
-	// configureLog find_package-v1 events with cmakeVars's
-	// `<Pkg>_LIBRARIES` lists so the Link.CommandFragments loop
-	// can route the path → package → manifest label (when an
-	// imports manifest entry exists) or surface a
-	// cmake-codegen-find-package-fallback tag (when it doesn't).
-	findPkgAttrib := buildFindPackageAttrib(opts.ConfigureLog, opts.CMakeVars)
-
 	// Merge cmakeVars (dump-vars hook output) with configureLog-
 	// derived try_compile / try_run result variables. cmakeVars
 	// covers the user-defined namespace; configureLog covers
@@ -2373,7 +2360,6 @@ func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Option
 		configureFiles:   configureFiles,
 		fileGenerates:    fileGenerates,
 		genexTargets:     genexTargets,
-		findPkgAttrib:    findPkgAttrib,
 	}, nil, nil
 }
 
@@ -3182,7 +3168,7 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		return fallbackPkg, nil
 	}
 	ra.executeProcesses = append(ra.executeProcesses, nestedOuts...)
-	executeProcesses, configureFiles, fileGenerates, genexTargets, findPkgAttrib := ra.executeProcesses, ra.configureFiles, ra.fileGenerates, ra.genexTargets, ra.findPkgAttrib
+	executeProcesses, configureFiles, fileGenerates, genexTargets := ra.executeProcesses, ra.configureFiles, ra.fileGenerates, ra.genexTargets
 
 	// Build the in-codebase id -> Bazel-rule-name map up front so dep
 	// lowering can map t.Dependencies[].Id to a label without re-walking
@@ -3214,7 +3200,6 @@ func ToIR(r *fileapi.Reply, g *ninja.Graph, opts Options) (*ir.Package, error) {
 		configureFiles:      configureFiles,
 		fileGenerates:       fileGenerates,
 		executeProcesses:    executeProcesses,
-		findPkgAttrib:       findPkgAttrib,
 		workspaceRoot:       workspaceRoot,
 		bazelPackagePath:    opts.BazelPackagePath,
 		generatedSources:    generatedSources,
@@ -3324,7 +3309,6 @@ type targetLowerCtx struct {
 	configureFiles   []configureFileOut
 	fileGenerates    []fileGenerateOut
 	executeProcesses []executeProcessOut
-	findPkgAttrib    *findPackageAttrib
 	workspaceRoot    string
 	bazelPackagePath string
 	generatedSources map[string]bool
@@ -3538,253 +3522,152 @@ func routeNonAbsLibraryFragment(irt *ir.Target, rt *linkDepRouter, path string, 
 	}
 }
 
-// attributeUnresolvedLibPath handles an absolute "libraries"-role
-// fragment the imports manifest didn't claim: find_package variable-form
-// attribution (with the system-lib -l<name> lift and the
-// find-package-fallback tag), then the #220 manifest-and-attribution-miss
-// path (system-lib lift, elided-fragment tag, attribution-missed tag).
-// Bodies and rationale comments are verbatim from the original inline
-// region.
-func attributeUnresolvedLibPath(irt *ir.Target, rt *linkDepRouter, t *fileapi.Target, path string, imports *manifest.Resolver, findPkgAttrib *findPackageAttrib, traceLinkScope map[string]string) {
-	// find_package variable-form attribution. The
-	// path didn't match a manifest entry directly;
-	// see whether configureLog + cmakeVars attribute
-	// it to a `find_package(X)` call. When attributed,
-	// try the manifest under the package's namespaced
-	// primary target (`<Pkg>::<Pkg>`) — that's the
-	// modern cmake export shape and is what the
-	// manifest typically registers. Falls back to a
-	// tag-only emission so operators see the missing
-	// dep even when the manifest has no matching
-	// entry.
-	if pkg := findPkgAttrib.Lookup(path); pkg != "" {
-		if export := imports.LookupCMakeTarget(pkg + "::" + pkg); export != nil {
-			rt.add(export.BazelLabel, scopeIsPrivate(traceLinkScope, export.CMakeTarget))
-			return
-		}
-		// No manifest hit. Before falling back to a
-		// tag-only elision, try the same lift the
-		// attribution-MISSED path uses below: if
-		// find_package resolved to a real SYSTEM library
-		// (e.g. find_package(ZLIB) → /usr/lib/.../libz.so),
-		// link it as `-l<name>` so the rule actually links
-		// against it. cmake found the lib on the host; the
-		// toolchain's library search path covers the standard
-		// system locations, so `-lz` resolves the same way at
-		// Bazel build time. Without this, a static-archive
-		// build looks fine (undefined symbols are legal in a
-		// .a) but every EXECUTABLE that pulls the compression
-		// code (LLVM's opt/llc → zlib's compress2/crc32/…)
-		// fails the final link. A producer element claiming
-		// the lib name (exports.json) still wins over the host
-		// -l<name>.
-		if name := systemLibName(path); name != "" {
-			if export := imports.LookupLinkLibrary(name); export != nil {
-				rt.add(export.BazelLabel, scopeIsPrivate(traceLinkScope, export.CMakeTarget))
-				return
-			}
-			flag := "-l" + name
-			if !stringSliceContains(irt.LinkOpts, flag) {
-				irt.LinkOpts = append(irt.LinkOpts, flag)
-			}
-			return
-		}
-		// Not a system lib (vendored / custom prefix); emit a
-		// fallback tag so operators see which package's link is
-		// unresolved. One tag per (pkg, path) pair — same
-		// package can show up across multiple paths (release +
-		// debug, main + dep libs).
-		tag := "cmake-codegen-find-package-fallback=" + pkg + "=" + filepath.Base(path)
-		if !stringSliceContains(irt.Tags, tag) {
-			irt.Tags = append(irt.Tags, tag)
-		}
-		return
-	}
-	// #220: abs-path link fragment that escapes both
-	// the imports manifest AND the find_package
-	// attribution. Either cmake hardcoded an absolute
-	// path that didn't flow through find_package
-	// (rare), or the imports manifest hasn't learned
-	// about this dep yet.
-	//
-	// For libraries under standard system locations
-	// (/usr/lib*, /lib*, /usr/local/lib*) the
-	// Bazel-idiomatic shape is `linkopts = ["-l<name>"]`
-	// — the toolchain's library search path covers
-	// these paths universally, and -l<name> lets the
-	// linker resolve via the same mechanism it'd use
-	// for any other system dep. Lift the path's
-	// basename → -l<name> so the rule actually links
-	// against the lib at Bazel build time instead of
-	// failing with undefined references. For non-
-	// standard paths (vendored installs at
-	// /opt/<vendor>/lib/..., custom prefixes) we keep
-	// the tag-only elision — those need an explicit
-	// -L<dir> the operator's imports manifest is the
-	// right home for.
-	if name := systemLibName(path); name != "" {
-		// B: variable-only Find modules (no <Pkg>::<Pkg>
-		// target) resolve via ${<Pkg>_LIBRARIES}, so the
-		// host-resolved fragment lands here. If a producer
-		// element claims this lib name (exports.json
-		// link_libraries), redirect to it instead of linking
-		// the host -l<name>.
-		if export := imports.LookupLinkLibrary(name); export != nil {
-			rt.addExport(export, scopeIsPrivate(traceLinkScope, export.CMakeTarget))
-			return
-		}
-		flag := "-l" + name
-		if !stringSliceContains(irt.LinkOpts, flag) {
-			irt.LinkOpts = append(irt.LinkOpts, flag)
-		}
-	} else {
-		// Emit the full path (post-manifestPrefixAnchor
-		// rewrite when the fragment was under hostPrefix)
-		// rather than the basename so multi-arch layouts
-		// (/usr/lib/x86_64-linux-gnu/libz.so vs
-		// /usr/lib/i386-linux-gnu/libz.so → both libz.so)
-		// don't collide on the dedup.
-		tag := "cmake-elided-link-fragment=" + path
-		if !stringSliceContains(irt.Tags, tag) {
-			irt.Tags = append(irt.Tags, tag)
-		}
-	}
-	// Dual to the cmake-codegen-find-package-fallback
-	// tag above: that one fires when find_package
-	// attribution SUCCEEDED but the imports manifest
-	// has no `<Pkg>::<Pkg>` entry. This sibling tag
-	// fires when find_package attribution itself
-	// MISSED — either the configureLog carried no
-	// find_package-v1 event (cmake < 3.32 OR cmake >=
-	// 3.32 with the event suppressed) AND cmakeVars
-	// didn't surface a `<Pkg>_FOUND` either (the
-	// --dump-vars=false path, or an out-of-fileapi
-	// cmake namespace). Gated on imports != Empty()
-	// so the tag only fires when the operator
-	// explicitly opted into find_package attribution
-	// (a manifest was provided). Without that gate
-	// the tag would fire on every cmake project that
-	// hard-codes an absolute link path with no
-	// manifest, drowning the audit signal.
-	//
-	// Parameterized on basename only (not full path)
-	// so operators can grep against the package's
-	// library-shape (libz.so) regardless of multi-
-	// arch host paths. The full-path anchor lives on
-	// the cmake-elided-link-fragment tag above.
-	if !imports.Empty() {
-		baseTag := "cmake-codegen-find-package-attribution-missed=" + filepath.Base(path)
-		if !stringSliceContains(irt.Tags, baseTag) {
-			irt.Tags = append(irt.Tags, baseTag)
-		}
-	}
-}
-
-// lowerLinkFragments walks t.Link.CommandFragments, routing non-library
-// roles to linkopts and attributing "libraries"-role fragments through
-// the imports manifest / find_package channels via the linkDepRouter.
-// Rationale comments are verbatim from the original inline block.
-
-// attributeExportLinkFragment applies the direct-link gate to a manifest-
-// matched library fragment (export = imports.LookupLinkPath hit) and either
-// attributes it or drops it with a breadcrumb.
+// attributeDirectTraceDeps attributes a target's DIRECT external dependencies
+// from its own expanded target_link_libraries trace — the single per-target
+// ATTRIBUTION source that replaces both the flattened-link-line gate and the
+// find_package attribution channel. cmake --trace-expand already expanded
+// ${VARs} and ;-split lists, so each arm is one resolved lib: a namespaced
+// name, a bare name, or an absolute path. Each is resolved against the imports
+// manifest and routed through the shared linkDepRouter (dedup + PUBLIC/PRIVATE
+// scope).
 //
-// Direct-link gate: when the trace covers this target (directTraceLibs
-// non-empty), attribute a flattened archive only if the target links it
-// DIRECTLY — either by name (export.CMakeTarget in the trace), by label (an
-// alias spelling of the same bazel_label, via directTraceLabels), or by path
-// (the raw fragment path in the trace, the find_package variable/path form).
-// Everything else is a transitive archive pulled by a directly-named public
-// dep; it re-enters through that dep's wrapper cc_library's own Bazel deps
-// (which the harvester captured from INTERFACE_LINK_LIBRARIES / .pc Requires),
-// so wiring it here would only over-specify the graph and can break on
-// restricted internal-target visibility. Bazel resolves that transitivity
-// itself — the single source of truth — so we keep only the DIRECT links and
-// let it pull the rest. When no trace covers this target (directTraceLibs
-// empty) the gate is disabled and every matched fragment is attributed,
-// preserving the offline-replay behavior.
-func attributeExportLinkFragment(irt *ir.Target, rt *linkDepRouter, export *manifest.Export, rawPath string, directTraceLibs, directTraceLabels map[string]bool, traceLinkScope map[string]string) {
-	if len(directTraceLibs) > 0 &&
-		!directTraceLibs[export.CMakeTarget] && !directTraceLibs[rawPath] &&
-		!directTraceLabels[export.BazelLabel] {
-		// Not a direct link → drop. Leave a breadcrumb so the drop is VISIBLE
-		// to the link-graph fidelity lens / coverage audit (matching the
-		// cmake-elided-link-fragment tag). If the harvester ever missed a
-		// transitive edge, this archive won't re-enter through any wrapper and
-		// the breadcrumb is where the gap surfaces — a harvest bug to fix at
-		// the harvest layer, not a reason to over-attribute here.
-		tag := "cmake-transitive-link-drop=" + export.CMakeTarget
-		if !stringSliceContains(irt.Tags, tag) {
-			irt.Tags = append(irt.Tags, tag)
-		}
+// Because target_link_libraries records DIRECT links only (never the
+// transitive .a closure that lands on the link line), no direct-vs-transitive
+// gate is needed: each target carries its own direct deps and Bazel
+// transitivity supplies the rest through the directly-named wrappers.
+//
+// Resolution per arm (first manifest hit wins):
+//   - manifest cmake target name (Foo::foo, or a bare name a producer exports);
+//   - absolute path (a ${FOO_LIBRARIES} arm --trace-expand resolved to a file)
+//     via LookupLinkPath, after anchoring the host prefix;
+//   - a system-library path whose <name> a producer element claims
+//     (link_libraries), the variable-only Find-module shape;
+//   - manifest link-lib name (the -l<name> <name> a producer claims).
+//
+// An arm that hits none is classified here so nothing drops silently — even
+// for a STATIC_LIBRARY, whose lowerLinkFragments never runs (no Link section):
+// an un-claimed system-library path lifts to a bare -l<name>; a vendored
+// absolute path, or a namespaced import the (non-empty) manifest doesn't know,
+// is tagged cmake-unresolved-link-arm as a harvest/export gap. lowerLinkFragments
+// applies the SAME lift/tag over the full link line (direct AND transitive),
+// so a missed transitive edge this direct-only pass can't see still surfaces
+// there; the overlap on a linking target's direct arms is deduped. A bare
+// unresolved name is an in-project target (wired by the codemodel-dependencies
+// channel) or a system lib, so it is skipped; coverage.AuditLinkDeps is the
+// tripwire for a genuine in-codebase drop.
+func attributeDirectTraceDeps(irt *ir.Target, tt targetTrace, lc targetLowerCtx) {
+	traceLinkLibs, traceLinkScope := tt.traceLinkLibs, tt.traceLinkScope
+	if len(traceLinkLibs) == 0 {
 		return
 	}
-	// addExport (not bare add): the export's manifest-declared Deps ride along
-	// when present (a bare-cc_import / hand-written manifest that lists its own
-	// closure). Reached for every DIRECT link — named or pathed — the gate
-	// kept. Check BOTH spellings for the PRIVATE scope: traceLinkScope is keyed
-	// by the raw target_link_libraries arg, so a path-form direct link
-	// (`target_link_libraries(app PRIVATE /opt/.../libz.a)`) is keyed by
-	// rawPath, not export.CMakeTarget — miss it and a PRIVATE link mis-routes
-	// into Deps instead of ImplementationDeps.
-	private := scopeIsPrivate(traceLinkScope, export.CMakeTarget) ||
-		scopeIsPrivate(traceLinkScope, rawPath)
-	rt.addExport(export, private)
+	imports := lc.imports
+	rt := newLinkDepRouter(irt)
+	for _, arm := range traceLinkLibs {
+		private := scopeIsPrivate(traceLinkScope, arm)
+		// 1. manifest cmake target name (namespaced, or a bare name a
+		//    producer element exports under its cmake_target).
+		if export := imports.LookupCMakeTarget(arm); export != nil {
+			rt.addExport(export, private)
+			continue
+		}
+		// 2. absolute path arm — the find_package variable/path form
+		//    (${FOO_LIBRARIES}) that --trace-expand resolved to a file.
+		if filepath.IsAbs(arm) {
+			path := arm
+			if hp := lc.hostPrefix; hp != "" && strings.HasPrefix(path, hp+string(filepath.Separator)) {
+				path = manifestPrefixAnchor + path[len(hp)+1:]
+			}
+			if export := imports.LookupLinkPath(path); export != nil {
+				rt.addExport(export, private)
+				continue
+			}
+			// A toolchain system-library path. If a producer element claims the
+			// <name> (the variable-only Find-module shape: ${<Pkg>_LIBRARIES}
+			// with no <Pkg>::<Pkg> target, resolved to the host libz.so path)
+			// wire that label; otherwise lift to a bare -l<name> (the toolchain
+			// owns it). This mirrors lowerLinkFragments, and MUST run here too:
+			// a STATIC_LIBRARY has no Link section, so the fragment pass never
+			// runs for it, and a direct path-form arm would otherwise vanish.
+			if name := systemLibName(path); name != "" {
+				if export := imports.LookupLinkLibrary(name); export != nil {
+					rt.addExport(export, private)
+					continue
+				}
+				flag := "-l" + name
+				if !stringSliceContains(irt.LinkOpts, flag) {
+					irt.LinkOpts = append(irt.LinkOpts, flag)
+				}
+				continue
+			}
+			// A vendored absolute path the manifest doesn't carry — a harvest/
+			// export gap. Tag it (same as the fragment pass) so a direct
+			// path-form arm on a STATIC_LIBRARY still surfaces.
+			tagUnresolvedLinkArm(irt, path)
+			continue
+		}
+		// 3. manifest link-lib name (a producer claims the -l<name> <name>).
+		if export := imports.LookupLinkLibrary(arm); export != nil {
+			rt.addExport(export, private)
+			continue
+		}
+		// 4. a namespaced import the manifest doesn't know is a harvest gap
+		//    (gated on a non-empty manifest so it fires only when the operator
+		//    opted in; without one every :: arm is unresolved). This also
+		//    covers a STATIC_LIBRARY, whose fragment pass never runs.
+		if strings.Contains(arm, "::") && !imports.Empty() {
+			tagUnresolvedLinkArm(irt, arm)
+			continue
+		}
+		// 5. bare name: an in-project target (wired by the codemodel-
+		//    dependencies channel) or a system lib — ambiguous, so skip;
+		//    coverage.AuditLinkDeps is the tripwire for a genuine drop.
+	}
 }
 
+// tagUnresolvedLinkArm records a library the manifest doesn't resolve and that
+// isn't a toolchain system lib — a manifest-producer (harvest/export) gap
+// surfaced to the coverage / link-graph fidelity lens rather than dropped
+// silently (the "verify, don't assert" rule). Called from two sites:
+// attributeDirectTraceDeps for an unresolved DIRECT trace arm (which covers a
+// STATIC_LIBRARY, whose Link.CommandFragments the fragment pass never sees),
+// and lowerLinkFragments for an unresolved link-line fragment (direct or
+// transitive).
+func tagUnresolvedLinkArm(irt *ir.Target, arm string) {
+	tag := "cmake-unresolved-link-arm=" + arm
+	if !stringSliceContains(irt.Tags, tag) {
+		irt.Tags = append(irt.Tags, tag)
+	}
+}
+
+// lowerLinkFragments walks t.Link.CommandFragments for the pieces that only
+// the link line carries: non-library roles (flags / libraryPath /
+// frameworkPath / frameworks → linkopts), the `-l<name>` / bare-flag shapes
+// cmake mis-files under the "libraries" role (routeNonAbsLibraryFragment), and
+// nested-cmake artifacts (a sub-build archive the outer project links by FILE,
+// which never appears in the imports manifest and has no target_link_libraries
+// arm the trace could carry).
+//
+// It deliberately does NOT attribute manifest / find_package library
+// fragments: a target's DIRECT external deps come from its expanded
+// target_link_libraries trace via attributeDirectTraceDeps, which is
+// inherently direct (the trace records direct links only, never the flattened
+// transitive .a closure that lands on the link line). An absolute library
+// fragment that is neither a nested artifact nor a directly-named trace arm is
+// a transitive archive — dropped here for free, because Bazel pulls it through
+// the directly-named wrapper's own deps.
 func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc targetLowerCtx) {
 	if t.Link == nil {
 		return
 	}
 	cmakeSrc, cmakeBuild, hostPrefix := lc.cmakeSrc, lc.cmakeBuild, lc.hostPrefix
-	imports, findPkgAttrib := lc.imports, lc.findPkgAttrib
-	traceLinkLibs, traceLinkScope := tt.traceLinkLibs, tt.traceLinkScope
+	imports := lc.imports
+	traceLinkScope := tt.traceLinkScope
 	rt := newLinkDepRouter(irt)
-	// Direct find_package deps the trace recorded for THIS target
-	// (target_link_libraries lib names). When present, they gate the
-	// link-fragment LookupLinkPath attribution below: an EXECUTABLE /
-	// SHARED lib static-links its WHOLE transitive .a closure, so
-	// cmake's Link.CommandFragments lists every archive — including
-	// internal ones a consumer never names directly (abseil's
-	// raw_logging_internal / spinlock_wait / strerror, pulled in by
-	// the public absl targets). Attributing each flattened archive as
-	// a DIRECT Bazel dep both over-specifies the graph and breaks on
-	// the internal targets' restricted visibility
-	// (`//absl:__subpackages__`). Bazel computes transitivity itself,
-	// so we only want the libs the target links DIRECTLY; the rest
-	// flow through the directly-named public deps. Empty (no trace for
-	// this target) → the gate is disabled and every matched fragment
-	// is attributed, preserving the offline-replay behavior.
-	// The trace records this target's DIRECT links verbatim — both the
-	// namespaced names (`target_link_libraries(app Foo::foo)`) and the
-	// path/variable forms (`target_link_libraries(app ${FOO_LIBRARIES})`,
-	// which cmake --trace-expand records as the resolved path). So the set
-	// carries a directly-linked prebuilt whether it was named or pathed; the
-	// gate below just has to check BOTH spellings against it.
-	//
-	// directTraceLabels resolves each directly-named lib to its Bazel label,
-	// so an ALIAS spelling still counts as a direct link. The harvester emits
-	// both the alias and the underlying cmake names for one export, sharing a
-	// single bazel_label, but only one of them carries LinkPaths. When the
-	// trace names the alias and LookupLinkPath below returns the LinkPaths-
-	// owning claimant (a DIFFERENT CMakeTarget, SAME BazelLabel), the raw
-	// name/path checks miss it; the label check catches it.
-	directTraceLibs := map[string]bool{}
-	directTraceLabels := map[string]bool{}
-	for _, lib := range traceLinkLibs {
-		directTraceLibs[lib] = true
-		if imports != nil {
-			if ex := imports.LookupCMakeTarget(lib); ex != nil && ex.BazelLabel != "" {
-				directTraceLabels[ex.BazelLabel] = true
-			}
-		}
-	}
 	for _, frag := range t.Link.CommandFragments {
 		// Non-library fragments (flags / libraryPath /
 		// frameworkPath / frameworks) route directly to
 		// linkopts. cmake's codemodel exposes the per-fragment
-		// role so we can attribute correctly; the existing
-		// "libraries"-only path below handles deps wiring.
+		// role so we can attribute correctly.
 		switch frag.Role {
 		case "flags":
 			appendLinkFlagTokens(irt, t, frag.Fragment, cmakeSrc, cmakeBuild)
@@ -3824,15 +3707,15 @@ func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 				rt.add(label, false)
 				continue
 			}
+			// `-l<name>` / bare linker flags cmake mis-filed under the
+			// "libraries" role (brotli -lm, googletest -lpthread, ${CMAKE_DL_LIBS}
+			// -ldl). Route to linkopts; a producer claiming the name wins.
 			routeNonAbsLibraryFragment(irt, rt, path, imports, traceLinkScope, cmakeSrc, cmakeBuild)
 			continue
 		}
-		// Nested-cmake artifact wiring: a fragment naming an archive the
-		// merged nested build produces (`<build>/subbuild/libX.a`) routes
-		// to the nested target's label — the codemodel records it as a
-		// raw path because the outer project links the FILE, not a
-		// target. Checked before the imports manifest (a nested artifact
-		// never matches one). See nested_cmake.go.
+		// Absolute library fragment. Nested-cmake artifacts wire to their
+		// merged target (the outer project links the FILE the sub-build
+		// produces, and no trace arm names it).
 		if len(lc.cc.NestedArtifactDeps) > 0 {
 			if rel, inside := relativeIfInside(lc.cmakeBuild, path); inside {
 				if label, hit := lc.cc.NestedArtifactDeps[rel]; hit {
@@ -3841,17 +3724,36 @@ func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 				}
 			}
 		}
-		rawPath := path
+		// Otherwise this pass does NOT attribute the fragment as a dep — deps
+		// are trace-driven (attributeDirectTraceDeps). It only handles the two
+		// link-line-only concerns:
+		//   - a toolchain system lib → -l<name> linkopt (unless a producer
+		//     claims the name, in which case the trace pass wired the label);
+		//   - an unresolved vendored path → a harvest/export-gap tag.
+		// A manifest-resolvable archive is skipped: the trace pass attributes
+		// it if this target links it directly, and Bazel pulls it transitively
+		// otherwise. Running over the full link line (direct AND transitive)
+		// means an UNRESOLVED transitive library the harvester missed still
+		// surfaces here — one that resolves is deliberately not re-flagged.
+		anchored := path
 		if hostPrefix != "" && strings.HasPrefix(path, hostPrefix+string(filepath.Separator)) {
-			path = manifestPrefixAnchor + path[len(hostPrefix)+1:]
+			anchored = manifestPrefixAnchor + path[len(hostPrefix)+1:]
 		}
-		if export := imports.LookupLinkPath(path); export != nil {
-			attributeExportLinkFragment(irt, rt, export, rawPath, directTraceLibs, directTraceLabels, traceLinkScope)
+		if imports.LookupLinkPath(anchored) != nil {
 			continue
 		}
-		attributeUnresolvedLibPath(irt, rt, t, path, imports, findPkgAttrib, traceLinkScope)
+		if name := systemLibName(anchored); name != "" {
+			if imports.LookupLinkLibrary(name) != nil {
+				continue // producer claims it; the trace pass wired the label
+			}
+			flag := "-l" + name
+			if !stringSliceContains(irt.LinkOpts, flag) {
+				irt.LinkOpts = append(irt.LinkOpts, flag)
+			}
+			continue
+		}
+		tagUnresolvedLinkArm(irt, anchored)
 	}
-
 }
 
 // lowerLinkAttribution lowers the link side of one target onto irt: the
@@ -3861,14 +3763,6 @@ func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 // are verbatim from lowerTarget's original inline region; the lc/tt
 // destructure mirrors lowerTarget's header so the code reads identically.
 func lowerLinkAttribution(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc targetLowerCtx) {
-	imports := lc.imports
-	traceLinkLibs, traceLinkScope := tt.traceLinkLibs, tt.traceLinkScope
-	// Out-of-tree link fragments. CMake records IMPORTED_LOCATION paths
-	// in t.Link.CommandFragments[role="libraries"] as resolved absolute
-	// paths under the synth-prefix tree. The orchestrator's imports
-	// manifest carries each export's link paths so we can rewrite those
-	// fragments to Bazel labels.
-	//
 	// INTERPROCEDURAL_OPTIMIZATION (cmake's per-target LTO toggle)
 	// surfaces in the codemodel as TargetArchive.LTO (STATIC_LIBRARY)
 	// or TargetLink.LTO (EXECUTABLE / SHARED_LIBRARY / MODULE_LIBRARY).
@@ -3882,37 +3776,19 @@ func lowerLinkAttribution(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc 
 			irt.Features = append(irt.Features, "lto")
 		}
 	}
+	// Link-line-only pieces: non-library-role linkopts, cmake's mis-filed
+	// `-l<name>` / bare flags, and nested-cmake artifacts. Deps proper come
+	// from the trace pass below (and the codemodel-dependencies channel that
+	// already ran in lowerTargetDeps).
 	lowerLinkFragments(irt, t, tt, lc)
 
-	// IMPORTED dep recovery from trace. Two channels miss find_package
-	// imports that the trace records as direct target_link_libraries:
-	//   - A STATIC archive runs no link step, so cmake's codemodel
-	//     records no Link.CommandFragments and no IMPORTED-target
-	//     Dependencies — both upstream channels are empty.
-	//   - A header-only IMPORTED target (no .a / .so on disk, e.g.
-	//     absl::flat_hash_map / absl::span) never appears as a link
-	//     fragment on ANY consumer, EXECUTABLE or SHARED included, so
-	//     the Link.CommandFragments attribution above can't reach it
-	//     even though the executable's sources #include its headers.
-	// The trace's target_link_libraries calls are the ground truth for
-	// both. For each direct lib name the trace records, look it up in
-	// the imports manifest; resolve hits are appended (deduped). Runs
-	// for every cc rule kind (the router's seen-map keeps the
-	// link-fragment path from double-adding the compiled libs it already
-	// wired on executables/shared libs); in-codebase target names already
-	// came in via t.Dependencies above and are covered by the seen-map
-	// too. PRIVATE routing keys on the trace keyword for the bare lib
-	// name (the call form the trace recorded), not the manifest's
-	// CMakeTarget.
-	if (t.Type == "STATIC_LIBRARY" || t.Type == "SHARED_LIBRARY" ||
-		t.Type == "MODULE_LIBRARY" || t.Type == "EXECUTABLE") && len(traceLinkLibs) > 0 {
-		rt := newLinkDepRouter(irt)
-		for _, lib := range traceLinkLibs {
-			if export := imports.LookupCMakeTarget(lib); export != nil {
-				rt.addExport(export, traceLinkScope != nil && traceLinkScope[lib] == "PRIVATE")
-			}
-		}
-	}
+	// Direct external deps from the expanded target_link_libraries trace —
+	// the single per-target source. Works uniformly for every cc rule kind
+	// including a STATIC archive (which runs no link step, so cmake records
+	// no Link.CommandFragments) and a header-only IMPORTED target (no .a/.so
+	// on disk, so it never appears as a link fragment on any consumer). The
+	// router's seen-map dedups against the codemodel deps already wired.
+	attributeDirectTraceDeps(irt, tt, lc)
 }
 
 // umbrellaReanchor derives the workspace-promotion umbrella prefix

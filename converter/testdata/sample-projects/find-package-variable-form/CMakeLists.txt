@@ -6,18 +6,13 @@ project(usepkg_var LANGUAGES C VERSION 0.1.0)
 # shape. This is the dominant cmake-external-dep pattern in
 # real-world projects (boost, llvm, most pre-3.0-idiom code).
 #
-# Before round-3's fix (PR #227, commit 5fccb3d), the cmake
-# codemodel recorded the resolved absolute path
-# (/usr/lib/x86_64-linux-gnu/libz.so) verbatim and the imports
-# manifest's per-path lookup missed because the manifest only
-# carried the namespaced ZLIB::ZLIB entry. The dep dropped
-# silently → BUILD link-failed at Bazel build time.
-#
-# Post-fix, the lower's findPackageAttrib correlates the
-# configureLog find_package-v1 event for ZLIB with the
-# `<PKG>_LIBRARIES` variable from cmakeVars (when DumpVars is on)
-# and routes the path to the manifest's ZLIB::ZLIB entry,
-# emitting //elements/zlib as a real dep.
+# cmake --trace-expand records the expanded arm as the resolved
+# absolute path (/usr/lib/x86_64-linux-gnu/libz.so); the lower's
+# attributeDirectTraceDeps lifts it via systemLibName to the
+# imports manifest's ZLIB entry (link_libraries: ["z"]), emitting
+# //elements/zlib as a real dep — a producer claiming the name
+# wins over a bare -lz. Without the trace-driven attribution the
+# dep dropped silently → BUILD link-failed at Bazel build time.
 #
 # This fixture pins that path at the live-cmake → codemodel →
 # lower → emit boundary so any future rework of the attribution

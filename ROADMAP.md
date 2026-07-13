@@ -18,9 +18,9 @@ transition cleanly.
   alignment** problem (release-cadence skew between the grpc pin and the protobuf
   pin), resolved by pinning protobuf to grpc-1.68's expected version (or bumping
   grpc to one matching protobuf 33.4) — NOT a converter-side regression to
-  bisect. The `cmake-codegen-find-package-attribution-missed=…` tags on the
-  emitted target are a downstream symptom of that broken build, not the root
-  cause; the find_package attribution path itself is exercised green elsewhere in
+  bisect. Any `cmake-unresolved-link-arm=…` tags on the emitted target are a
+  downstream symptom of that broken build, not the root cause; the
+  trace-driven link-dep attribution path itself is exercised green elsewhere in
   the corpus. (Mode-independent, so it neither blocks nor validates the SHARED
   work tracked under Next.)
 
@@ -458,9 +458,9 @@ transition cleanly.
   When a `find_package`/`target_link_libraries` link fragment resolves to a
   standard system library (`/usr/lib*`, `/lib*`, `/usr/local/lib*`) and the
   imports manifest has no entry for it, the lower lifts it to a `-l<name>`
-  linkopt (`converter/internal/lower/lower.go`: the `systemLibName(path)`
-  sites — the find_package-attributed branch AND the attribution-missed
-  branch). This is what makes LLVM's `opt`/`llc` link against host zlib. It
+  linkopt (`converter/internal/lower/lower.go`: the `systemLibName(anchored)`
+  site in `lowerLinkFragments`). This is what makes LLVM's `opt`/`llc` link
+  against host zlib. It
   is **not hermetic**: the build relies on the host toolchain's library
   search path containing `libz.so` etc. Today the lift is **silent** — there
   is no signal in the emitted BUILD that a target took a host dependency.

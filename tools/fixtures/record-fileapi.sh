@@ -20,9 +20,9 @@
 #                          // reply dir. Fixtures exercising the
 #                          // find_package variable-form attribution
 #                          // (boost ${ZLIB_LIBRARIES} idiom) need
-#                          // this so findPackageAttrib has the
-#                          // <PKG>_LIBRARIES values during offline
-#                          // replay.
+#                          // this so the trace's expanded
+#                          // ${<PKG>_LIBRARIES} link arms resolve
+#                          // during offline replay.
 #   }
 #
 # Absent file or absent key => default (false). Add new knobs as
@@ -59,8 +59,8 @@ record_one() {
     : >"$build/.cmake/api/v1/query/cache-v2"
     # configureLog-v1 (cmake 3.26+) records find_package /
     # try_compile / try_run / message events. Lower's
-    # findPackageHeaderComments + findPackageAttrib both consume
-    # it. The query file is harmless on older cmakes — the
+    # findPackageHeaderComments consumes it. The query file is
+    # harmless on older cmakes — the
     # server-side noop is documented as "the kind is unknown" and
     # the reply just omits the corresponding entry.
     : >"$build/.cmake/api/v1/query/configureLog-v1"
@@ -109,10 +109,10 @@ record_one() {
     # `dump_vars: true`, inject dump-vars.cmake via
     # -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES so the resulting
     # cmake-to-bazel.vars.dump lands in the reply dir. Fixtures
-    # exercising the find_package variable-form attribution
-    # (boost ${ZLIB_LIBRARIES} idiom) need the dump so lower's
-    # findPackageAttrib has the <PKG>_LIBRARIES values available
-    # during offline replay.
+    # exercising the find_package variable-form idiom
+    # (boost ${ZLIB_LIBRARIES}) capture the dump so the
+    # option-lift and header-comment recoveries have the
+    # <PKG> values available during offline replay.
     if [[ "$dump_vars" == "true" ]]; then
         local dumpvars_cmake="$REPO_ROOT/converter/internal/cmakerun/dump-vars.cmake"
         if [[ ! -f "$dumpvars_cmake" ]]; then
@@ -144,8 +144,8 @@ record_one() {
 
     # configureLog-v1's reply JSON points at CMakeConfigureLog.yaml
     # in the build dir; the YAML itself isn't part of the reply
-    # but lower's findPackageHeaderComments + findPackageAttrib
-    # consume it via fileapi.LoadConfigureLogYAML. Stash it next
+    # but lower's findPackageHeaderComments consumes it via
+    # fileapi.LoadConfigureLogYAML. Stash it next
     # to the JSON so offline replay finds the same path layout.
     if [[ -f "$build/CMakeFiles/CMakeConfigureLog.yaml" ]]; then
         mkdir -p "$out/CMakeFiles"

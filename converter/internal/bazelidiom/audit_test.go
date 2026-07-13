@@ -720,63 +720,6 @@ func TestAudit_CmakeCodegenLanguageOverrideTag(t *testing.T) {
 	}
 }
 
-func TestAudit_CmakeCodegenFindPackageFallback(t *testing.T) {
-	body := []byte(`cc_library(
-    name = "iostreams",
-    srcs = ["zlib.cpp"],
-    tags = ["cmake-codegen-find-package-fallback=ZLIB=libz.so"],
-)
-`)
-	findings, err := bazelidiom.Audit(body)
-	if err != nil {
-		t.Fatalf("Audit: %v", err)
-	}
-	found := false
-	for _, f := range findings {
-		if f.Code == "find-package-dep-unresolved" {
-			found = true
-			if !strings.Contains(f.Message, "ZLIB") {
-				t.Errorf("message should name ZLIB: %q", f.Message)
-			}
-		}
-	}
-	if !found {
-		t.Errorf("expected find-package-dep-unresolved; got %v", findings)
-	}
-}
-
-// TestAudit_CmakeCodegenFindPackageAttributionMissed pins the
-// audit finding for the dual case of the fallback tag above:
-// the operator opted into find_package attribution (manifest
-// provided) but neither cmake 3.32 find_package-v1 event nor
-// cmakeVars `<Pkg>_FOUND` surfaced — attribution couldn't fire.
-// The tag's basename anchor (libz.so) must appear in the
-// message so operators have a grep target.
-func TestAudit_CmakeCodegenFindPackageAttributionMissed(t *testing.T) {
-	body := []byte(`cc_library(
-    name = "iostreams",
-    srcs = ["zlib.cpp"],
-    tags = ["cmake-codegen-find-package-attribution-missed=libz.so"],
-)
-`)
-	findings, err := bazelidiom.Audit(body)
-	if err != nil {
-		t.Fatalf("Audit: %v", err)
-	}
-	found := false
-	for _, f := range findings {
-		if f.Code == "find-package-attribution-missed" {
-			found = true
-			if !strings.Contains(f.Message, "libz.so") {
-				t.Errorf("message should name libz.so: %q", f.Message)
-			}
-		}
-	}
-	if !found {
-		t.Errorf("expected find-package-attribution-missed; got %v", findings)
-	}
-}
-
 func TestAudit_CmakeCodegenInformationalTags_NoFinding(t *testing.T) {
 	// cmake-codegen-version=… and cmake-codegen-soversion=… are
 	// informational; no audit finding.
@@ -797,16 +740,17 @@ func TestAudit_CmakeCodegenInformationalTags_NoFinding(t *testing.T) {
 	}
 }
 
-// TestAudit_CmakeElidedLinkFragment pins the #220 audit
-// finding: the cmake-elided-link-fragment=<path> tag surfaces
-// as `unresolved-link-fragment` with the path in the message
-// so operators see which library needs imports-manifest
-// coverage.
-func TestAudit_CmakeElidedLinkFragment(t *testing.T) {
+// TestAudit_CmakeUnresolvedLinkArm pins the audit finding for a
+// direct target_link_libraries arm that resolved to no imports-
+// manifest import and isn't a toolchain system lib: the
+// cmake-unresolved-link-arm=<arm> tag surfaces as
+// `unresolved-link-arm` with the arm in the message so operators
+// see which library needs harvesting / imports-manifest coverage.
+func TestAudit_CmakeUnresolvedLinkArm(t *testing.T) {
 	body := []byte(`cc_binary(
     name = "tool",
     srcs = ["main.c"],
-    tags = ["cmake-elided-link-fragment=/opt/vendor/lib/libmystery.so"],
+    tags = ["cmake-unresolved-link-arm=/opt/vendor/lib/libmystery.so"],
 )
 `)
 	findings, err := bazelidiom.Audit(body)
@@ -815,15 +759,15 @@ func TestAudit_CmakeElidedLinkFragment(t *testing.T) {
 	}
 	found := false
 	for _, f := range findings {
-		if f.Code == "unresolved-link-fragment" {
+		if f.Code == "unresolved-link-arm" {
 			found = true
 			if !strings.Contains(f.Message, "/opt/vendor/lib/libmystery.so") {
-				t.Errorf("message should name the path: %q", f.Message)
+				t.Errorf("message should name the arm: %q", f.Message)
 			}
 		}
 	}
 	if !found {
-		t.Errorf("expected unresolved-link-fragment; got %v", findings)
+		t.Errorf("expected unresolved-link-arm; got %v", findings)
 	}
 }
 

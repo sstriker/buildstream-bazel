@@ -40,8 +40,8 @@ func TestE2E_ElidedLinkFragment_TagFires(t *testing.T) {
 	// tag should fire because:
 	//   - No imports manifest is provided (so LookupLinkPath
 	//     misses).
-	//   - cmake's find_package isn't invoked, so the
-	//     findPkgAttrib path doesn't attribute it.
+	//   - The path is outside the standard system locations, so
+	//     it isn't a toolchain -l<name> lift.
 	//   - The path lies outside hostPrefix (no HostPrefixDir
 	//     set on the converter invocation).
 	src := t.TempDir()
@@ -84,7 +84,7 @@ target_link_libraries(tool PRIVATE extlib)
 		t.Fatalf("read BUILD.bazel: %v", err)
 	}
 	got := string(body)
-	wantTag := "cmake-elided-link-fragment=" + externalLib
+	wantTag := "cmake-unresolved-link-arm=" + externalLib
 	if !strings.Contains(got, wantTag) {
 		t.Errorf("BUILD.bazel missing audit tag %q\n--- got ---\n%s", wantTag, got)
 	}

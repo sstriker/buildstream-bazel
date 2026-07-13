@@ -236,22 +236,16 @@ func codegenTagToFinding(tag string) (code, msg string) {
 		lang := strings.TrimPrefix(tag, "cmake-codegen-language-override=")
 		return "language-override-needs-split",
 			"target has set_source_files_properties(... LANGUAGE " + lang + ") on at least one source — Bazel cc_library compiles each source by its file extension; the override is silently dropped. Fix: rename the source to a " + lang + "-conventional extension or split the affected sources into a separate cc_library"
-	case strings.HasPrefix(tag, "cmake-codegen-find-package-fallback="):
-		rest := strings.TrimPrefix(tag, "cmake-codegen-find-package-fallback=")
-		return "find-package-dep-unresolved",
-			"target links a library resolved by find_package(" + rest + ") that has no imports-manifest entry — the dep is missing from `deps` and the BUILD will link-fail. Fix: add the package's namespaced target (e.g. `Pkg::Pkg`) to the imports manifest mapping to a real cc_import/cc_library label"
-	case strings.HasPrefix(tag, "cmake-codegen-find-package-attribution-missed="):
-		base := strings.TrimPrefix(tag, "cmake-codegen-find-package-attribution-missed=")
-		return "find-package-attribution-missed",
-			"target links an absolute-path library (" + base + ") and an imports manifest is loaded, but find_package attribution couldn't fire — no configureLog find_package-v1 event (cmake < 3.32 or event suppressed) AND no `<Pkg>_FOUND` in cmakeVars (--dump-vars=false). Fix: re-run with --dump-vars=true so the cmakeVars `<Pkg>_FOUND` fallback can attribute the path, OR add the library's link-path directly to the imports manifest entry"
 	}
 	return "", ""
 }
 
-// auditCmakeElidedTags surfaces cmake-elided-* tags that signal
-// operator action gaps. Sibling to auditCmakeCodegenTags;
-// scoped to the new audit-eligible elision tags (the #219
-// prefix-include and #220 link-fragment silent-drops).
+// auditCmakeElidedTags surfaces the audit-eligible link/include
+// silent-drop tags that signal operator action gaps: the #219
+// prefix-include drop and the unresolved-link-arm gap (a library
+// on the target's link line — direct OR pulled transitively — that
+// resolved to no imports-manifest import and isn't a toolchain
+// system lib).
 //
 // The pre-existing cmake-elided-* tags (build-dir-source,
 // missing-source, compiler-artifact) are intentionally not
@@ -261,7 +255,7 @@ func codegenTagToFinding(tag string) (code, msg string) {
 // cover that family.
 func auditCmakeElidedTags(rule, target string, call *build.CallExpr) []Finding {
 	tags := flatListContains(call, "tags", func(s string) bool {
-		return strings.HasPrefix(s, "cmake-elided-link-fragment=") ||
+		return strings.HasPrefix(s, "cmake-unresolved-link-arm=") ||
 			strings.HasPrefix(s, "cmake-elided-prefix-include=")
 	})
 	if len(tags) == 0 {
@@ -283,17 +277,16 @@ func auditCmakeElidedTags(rule, target string, call *build.CallExpr) []Finding {
 	return findings
 }
 
-// elidedTagToFinding maps a cmake-elided-* tag (in the audit-
-// eligible subset — see auditCmakeElidedTags) to an audit
-// finding (code, message). Returns ("", "") for tags that don't
-// match the audit-eligible subset, matching codegenTagToFinding's
-// shape.
+// elidedTagToFinding maps an audit-eligible link/include silent-drop
+// tag (see auditCmakeElidedTags) to an audit finding (code, message).
+// Returns ("", "") for tags outside the audit-eligible subset,
+// matching codegenTagToFinding's shape.
 func elidedTagToFinding(tag string) (code, msg string) {
 	switch {
-	case strings.HasPrefix(tag, "cmake-elided-link-fragment="):
-		path := strings.TrimPrefix(tag, "cmake-elided-link-fragment=")
-		return "unresolved-link-fragment",
-			"target links an absolute-path library (" + path + ") that's neither in the imports manifest nor attributable to a find_package call — the dep is missing from `deps` and the BUILD will link-fail. Fix: add the library to the imports manifest, or declare the producing element as a kind:bazel / kind:cmake dep"
+	case strings.HasPrefix(tag, "cmake-unresolved-link-arm="):
+		arm := strings.TrimPrefix(tag, "cmake-unresolved-link-arm=")
+		return "unresolved-link-arm",
+			"target's link line includes " + arm + " (linked directly, or pulled transitively via a dependency's INTERFACE_LINK_LIBRARIES) which resolves to no imports-manifest import and isn't a toolchain system lib — a manifest-producer (harvest/export) gap; the dep is missing from `deps` and the BUILD will link-fail. Fix: harvest the library at its producing element (so an exports.json entry maps its name/path to a real cc_import/cc_library label), or add it to the imports manifest"
 	case strings.HasPrefix(tag, "cmake-elided-prefix-include="):
 		path := strings.TrimPrefix(tag, "cmake-elided-prefix-include=")
 		return "unresolved-prefix-include",

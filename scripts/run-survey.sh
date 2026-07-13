@@ -755,8 +755,9 @@ for entry in $projects; do
     done
 
     # The survey runs each project standalone, so out-of-tree
-    # find_package(...) deps (e.g. protobuf's find_package(ZLIB))
-    # surface as honest find-package-dep-unresolved findings. In a
+    # find_package(...) deps to non-system sibling libraries surface as
+    # honest unresolved-link-arm findings (a system lib like zlib instead
+    # lifts to a -l<name> linkopt). In a
     # real .bst element graph these resolve through the orchestrated
     # producer→consumer export channel (write-a stages each kind:cmake
     # dep's exports.json + cmake-config bundle into the consumer's
