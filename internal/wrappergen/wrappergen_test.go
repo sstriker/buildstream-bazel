@@ -351,3 +351,48 @@ func TestGenerate_LinkClosureMixedSpelling(t *testing.T) {
 		}
 	}
 }
+
+// TestGenerate_LinkClosureIdempotent: re-running the rewrite over its own
+// output (Deps already cleared, LinkClosure present) must PRESERVE the
+// existing LinkClosure, not clobber it to nil — the gate would go blind on
+// the second pass otherwise.
+func TestGenerate_LinkClosureIdempotent(t *testing.T) {
+	im := &manifest.Imports{Version: 1, Elements: []*manifest.Element{{
+		Name: "pkg",
+		Exports: []*manifest.Export{
+			{CMakeTarget: "P::a", BazelLabel: "//old:a", Deps: []string{"//old:b"}, LinkPaths: []string{"/opt/prefix/lib/liba.a"}},
+			{CMakeTarget: "P::b", BazelLabel: "//old:b", Deps: []string{"//old:c"}, LinkPaths: []string{"/opt/prefix/lib/libb.a"}},
+			{CMakeTarget: "P::c", BazelLabel: "//old:c", LinkPaths: []string{"/opt/prefix/lib/libc.a"}},
+		},
+	}}}
+	find := func(m *manifest.Imports) *manifest.Export {
+		for _, ex := range m.Elements[0].Exports {
+			if ex.CMakeTarget == "P::a" {
+				return ex
+			}
+		}
+		t.Fatal("P::a missing")
+		return nil
+	}
+	_, out1, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a1 := find(out1)
+	if len(a1.LinkClosure) == 0 {
+		t.Fatalf("first pass must populate LinkClosure: %+v", a1)
+	}
+	_, out2, err := Generate(out1, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2 := find(out2)
+	if len(a2.LinkClosure) != len(a1.LinkClosure) {
+		t.Fatalf("re-run clobbered LinkClosure: pass1=%v pass2=%v", a1.LinkClosure, a2.LinkClosure)
+	}
+	for i := range a1.LinkClosure {
+		if a2.LinkClosure[i] != a1.LinkClosure[i] {
+			t.Errorf("re-run changed LinkClosure[%d]: %q vs %q", i, a1.LinkClosure[i], a2.LinkClosure[i])
+		}
+	}
+}

@@ -412,8 +412,14 @@ func rewriteManifest(im *manifest.Imports, element string, oldToNew map[string]s
 				// encode it: the wrapper cc_library carries these as real
 				// Bazel deps, so wiring them again (Deps) would over-emit —
 				// but the gate still needs to SEE them to tell a re-entering
-				// transitive archive from a direct-link entry point.
-				cex.LinkClosure = transitiveImportClosure(ex, byLabel, oldToNew)
+				// transitive archive from a direct-link entry point. Only
+				// recompute when there ARE Deps to chase; a re-run over
+				// already-cleared output keeps the LinkClosure it already
+				// carries (cex := *ex copied it) instead of clobbering it with
+				// nil — the rewrite stays idempotent.
+				if len(ex.Deps) > 0 {
+					cex.LinkClosure = transitiveImportClosure(ex, byLabel, oldToNew)
+				}
 				cex.Deps = nil
 				exports = append(exports, &cex)
 			}
