@@ -647,7 +647,8 @@ func TestEmit_FindPackage_Golden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, err := fileapi.Load("../../testdata/fileapi/find-package")
+	replyDir := "../../testdata/fileapi/find-package"
+	r, err := fileapi.Load(replyDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -655,7 +656,13 @@ func TestEmit_FindPackage_Golden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load imports manifest: %v", err)
 	}
-	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: src, Imports: imports})
+	// The ZLIB::ZLIB dep is attributed from the expanded
+	// target_link_libraries trace (LookupCMakeTarget → //elements/zlib:zlib).
+	traceRaw, err := os.ReadFile(filepath.Join(replyDir, "trace.jsonl"))
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: src, Imports: imports, TraceRaw: traceRaw})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -720,39 +727,18 @@ func TestEmit_FindPackageVariableForm_Golden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load imports manifest: %v", err)
 	}
-	cmakeVars, err := cmakerun.ReadVarsDumpFromReplyDir(replyDir)
+	// target_link_libraries(usepkg_var PUBLIC ${ZLIB_LIBRARIES}) records as
+	// the resolved host libz.so path in the trace; attributeDirectTraceDeps
+	// lifts it via systemLibName → the manifest's link_libraries:["z"] entry
+	// → //elements/zlib (a producer claiming the name wins over -lz).
+	traceRaw, err := os.ReadFile(filepath.Join(replyDir, "trace.jsonl"))
 	if err != nil {
-		t.Fatalf("read vars dump: %v", err)
+		t.Fatalf("read trace: %v", err)
 	}
-
-	yamlPath := filepath.Join(replyDir, "CMakeFiles", "CMakeConfigureLog.yaml")
-	configureLogEvents, err := fileapi.LoadConfigureLogYAML(yamlPath)
-	if err != nil {
-		t.Fatalf("load configureLog yaml: %v", err)
-	}
-	zlibPresent := false
-	for _, e := range configureLogEvents {
-		if e.Kind == "find_package-v1" && e.Found != nil && e.Found.Package == "ZLIB" {
-			zlibPresent = true
-			break
-		}
-	}
-	if !zlibPresent {
-		configureLogEvents = append(configureLogEvents, fileapi.Event{
-			Kind: "find_package-v1",
-			Found: &fileapi.EventFindPackageFound{
-				IsFound: true,
-				Package: "ZLIB",
-				Version: "1.3",
-			},
-		})
-	}
-
 	pkg, err := lower.ToIR(r, nil, lower.Options{
 		HostSourceRoot: src,
 		Imports:        imports,
-		CMakeVars:      cmakeVars,
-		ConfigureLog:   configureLogEvents,
+		TraceRaw:       traceRaw,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -782,14 +768,11 @@ func TestEmit_FindPackageVariableForm_Golden(t *testing.T) {
 }
 
 // TestEmit_FindPackageVariableForm_NoManifest_SystemLibLink confirms
-// that when the imports manifest has no entry for the find_package-
-// attributed library BUT the resolved fragment is a system library
-// (here ZLIB → /usr/lib/.../libz.so via the ${ZLIB_LIBRARIES}
-// variable form), the lower lifts it to a `-lz` linkopt rather than a
-// tag-only fallback — so the dependent actually links against it. The
-// tag-only fallback is reserved for non-system (vendored) fragments.
-//
-// Same configureLog-synthesis caveat as the parent test.
+// that with no imports manifest, a system-library path arm (here ZLIB →
+// /usr/lib/.../libz.so via the ${ZLIB_LIBRARIES} variable form recorded
+// by the trace) lifts to a `-lz` linkopt — the toolchain owns the system
+// lib — rather than surfacing as an unresolved-arm gap. The unresolved-arm
+// tag is reserved for non-system (vendored) paths and unknown imports.
 func TestEmit_FindPackageVariableForm_NoManifest_SystemLibLink(t *testing.T) {
 	src, err := filepath.Abs("../../testdata/sample-projects/find-package-variable-form")
 	if err != nil {
@@ -800,24 +783,16 @@ func TestEmit_FindPackageVariableForm_NoManifest_SystemLibLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmakeVars, err := cmakerun.ReadVarsDumpFromReplyDir(replyDir)
+	traceRaw, err := os.ReadFile(filepath.Join(replyDir, "trace.jsonl"))
 	if err != nil {
-		t.Fatalf("read vars dump: %v", err)
+		t.Fatalf("read trace: %v", err)
 	}
-	configureLogEvents := []fileapi.Event{{
-		Kind: "find_package-v1",
-		Found: &fileapi.EventFindPackageFound{
-			IsFound: true,
-			Package: "ZLIB",
-		},
-	}}
 	pkg, err := lower.ToIR(r, nil, lower.Options{
 		HostSourceRoot: src,
-		// No imports manifest — the fallback tag is exactly what
-		// surfaces the gap to operators when there's no manifest
-		// entry covering the find_package call.
-		CMakeVars:    cmakeVars,
-		ConfigureLog: configureLogEvents,
+		// No imports manifest — the system-lib path arm has no producer
+		// claiming the name, so it lifts to a -lz linkopt (the toolchain
+		// owns the system lib).
+		TraceRaw: traceRaw,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -842,20 +817,18 @@ func TestEmit_FindPackageVariableForm_NoManifest_SystemLibLink(t *testing.T) {
 		t.Errorf("system-lib find_package (variable form) should lift to -lz; got LinkOpts %v", found.LinkOpts)
 	}
 	for _, tag := range found.Tags {
-		if tag == "cmake-codegen-find-package-fallback=ZLIB=libz.so" {
-			t.Errorf("system lib should link, not tag-fallback; got Tags %v", found.Tags)
+		if strings.HasPrefix(tag, "cmake-unresolved-link-arm=") {
+			t.Errorf("system lib should link via -lz, not surface as an unresolved arm; got Tags %v", found.Tags)
 		}
 	}
 }
 
-// TestEmit_FindPackageVariableForm_LinkLibraryRedirect covers B: even
-// when find_package attribution misses entirely —
-//   - configureLog is empty (no find_package-v1 events)
-//   - cmakeVars is empty (--dump-vars=false path)
-//
-// the imports manifest's link_libraries:["z"] entry redirects the host
-// libz.so link fragment to //elements/zlib via LookupLinkLibrary. This
-// is the variable-only Find module path (find_package sets
+// TestEmit_FindPackageVariableForm_LinkLibraryRedirect covers the case
+// where the resolved system-library path arm's name is claimed by a
+// producer element: the imports manifest's link_libraries:["z"] entry
+// redirects the host libz.so path to //elements/zlib via LookupLinkLibrary
+// instead of a bare -lz. This is the variable-only Find module path
+// (find_package sets
 // <Pkg>_LIBRARIES, no <Pkg>::<Pkg> target): the link-library key, not a
 // namespaced target, carries the resolution. The attribution-missed
 // diagnostic the lower would otherwise emit is superseded — there's no
@@ -876,13 +849,14 @@ func TestEmit_FindPackageVariableForm_LinkLibraryRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load imports manifest: %v", err)
 	}
-	// Deliberately empty CMakeVars + ConfigureLog — the dual
-	// case where neither attribution source fires. The imports
-	// manifest IS loaded so the new attribution-missed tag's
-	// gating condition (manifest opted-in) is satisfied.
+	traceRaw, err := os.ReadFile(filepath.Join(replyDir, "trace.jsonl"))
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
 	pkg, err := lower.ToIR(r, nil, lower.Options{
 		HostSourceRoot: src,
 		Imports:        imports,
+		TraceRaw:       traceRaw,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -896,12 +870,9 @@ func TestEmit_FindPackageVariableForm_LinkLibraryRedirect(t *testing.T) {
 	if found == nil {
 		t.Fatal("usepkg_var not in pkg.Targets")
 	}
-	// B: even with find_package attribution missing (empty CMakeVars +
-	// ConfigureLog), the imports manifest declares link_libraries:["z"]
-	// for //elements/zlib, so the host libz.so fragment redirects to
-	// that producer label via LookupLinkLibrary instead of emitting the
-	// attribution-missed diagnostic. The link-library redirect IS the
-	// resolution.
+	// The host libz.so path arm is a system lib whose name the manifest
+	// claims (link_libraries:["z"] for //elements/zlib), so it redirects to
+	// that producer label via LookupLinkLibrary instead of a bare -lz.
 	hasDep := false
 	for _, d := range found.Deps {
 		if d == "//elements/zlib" {
@@ -912,11 +883,10 @@ func TestEmit_FindPackageVariableForm_LinkLibraryRedirect(t *testing.T) {
 	if !hasDep {
 		t.Errorf("Deps should include //elements/zlib via link-library redirect; got %v", found.Deps)
 	}
-	// No find-package diagnostic tag should fire — the dep resolved.
+	// No unresolved-arm tag should fire — the dep resolved.
 	for _, tag := range found.Tags {
-		if strings.HasPrefix(tag, "cmake-codegen-find-package-attribution-missed=") ||
-			strings.HasPrefix(tag, "cmake-codegen-find-package-fallback=") {
-			t.Errorf("resolved-via-link-library path should emit no find-package diagnostic tag: %v", found.Tags)
+		if strings.HasPrefix(tag, "cmake-unresolved-link-arm=") {
+			t.Errorf("resolved-via-link-library path should emit no unresolved-arm tag: %v", found.Tags)
 		}
 	}
 }

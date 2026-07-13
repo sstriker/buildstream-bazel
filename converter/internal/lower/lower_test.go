@@ -1551,12 +1551,18 @@ func TestToIR_ElidedLinkFragment(t *testing.T) {
 			},
 		},
 	}
-	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+	// The direct link is attributed from the expanded target_link_libraries
+	// trace; a vendored absolute path the manifest doesn't carry surfaces as
+	// an unresolved-link-arm gap.
+	traceRaw := []byte(
+		`{"args":["foo","PUBLIC","/opt/vendor/lib/libmystery.so"],"cmd":"target_link_libraries","file":"/src/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src", TraceRaw: traceRaw})
 	if err != nil {
 		t.Fatalf("ToIR: %v", err)
 	}
 	tgt := pkg.Targets[0]
-	want := "cmake-elided-link-fragment=/opt/vendor/lib/libmystery.so"
+	want := "cmake-unresolved-link-arm=/opt/vendor/lib/libmystery.so"
 	if !contains(tgt.Tags, want) {
 		t.Errorf("Tags = %v, want to contain %q", tgt.Tags, want)
 	}
@@ -1605,7 +1611,12 @@ func TestToIR_SystemLibsLiftToLinkOpts(t *testing.T) {
 			},
 		},
 	}
-	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+	// Two multi-arch system paths, both directly linked in the trace, lift to
+	// a single `-lz` linkopt (the toolchain owns the system lib).
+	traceRaw := []byte(
+		`{"args":["foo","PUBLIC","/usr/lib/x86_64-linux-gnu/libz.so","/usr/lib/i386-linux-gnu/libz.so"],"cmd":"target_link_libraries","file":"/src/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src", TraceRaw: traceRaw})
 	if err != nil {
 		t.Fatalf("ToIR: %v", err)
 	}
@@ -1624,22 +1635,23 @@ func TestToIR_SystemLibsLiftToLinkOpts(t *testing.T) {
 	if count != 1 {
 		t.Errorf("LinkOpts contained -lz %d times, want exactly 1; %v", count, tgt.LinkOpts)
 	}
-	// The cmake-elided-link-fragment tag must NOT fire for
-	// system libs — that elision was the pre-lift behaviour.
+	// The unresolved-link-arm tag must NOT fire for system libs —
+	// the toolchain owns them; they lift to a -l<name> linkopt.
 	for _, tag := range tgt.Tags {
 		if contains([]string{
-			"cmake-elided-link-fragment=/usr/lib/x86_64-linux-gnu/libz.so",
-			"cmake-elided-link-fragment=/usr/lib/i386-linux-gnu/libz.so",
+			"cmake-unresolved-link-arm=/usr/lib/x86_64-linux-gnu/libz.so",
+			"cmake-unresolved-link-arm=/usr/lib/i386-linux-gnu/libz.so",
 		}, tag) {
-			t.Errorf("system lib should NOT be elided post-lift; got tag %q", tag)
+			t.Errorf("system lib should NOT be an unresolved arm post-lift; got tag %q", tag)
 		}
 	}
 }
 
 // TestToIR_NonSystemLibPathStaysElided pins the conservative
 // half of the system-lib lift: a /opt/vendor/lib/... path (not
-// in the toolchain's default library search) keeps the elided
-// tag because the bare -l<name> wouldn't resolve.
+// in the toolchain's default library search) surfaces as an
+// unresolved-link-arm gap because the bare -l<name> wouldn't
+// resolve and the manifest doesn't carry it.
 func TestToIR_NonSystemLibPathStaysElided(t *testing.T) {
 	r := &fileapi.Reply{
 		Codemodel: fileapi.Codemodel{
@@ -1672,13 +1684,16 @@ func TestToIR_NonSystemLibPathStaysElided(t *testing.T) {
 			},
 		},
 	}
-	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
+	traceRaw := []byte(
+		`{"args":["foo","PUBLIC","/opt/vendor/lib/libmystery.so"],"cmd":"target_link_libraries","file":"/src/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src", TraceRaw: traceRaw})
 	if err != nil {
 		t.Fatalf("ToIR: %v", err)
 	}
 	tgt := pkg.Targets[0]
-	if !contains(tgt.Tags, "cmake-elided-link-fragment=/opt/vendor/lib/libmystery.so") {
-		t.Errorf("Tags = %v, want to contain elided tag for non-system path", tgt.Tags)
+	if !contains(tgt.Tags, "cmake-unresolved-link-arm=/opt/vendor/lib/libmystery.so") {
+		t.Errorf("Tags = %v, want to contain unresolved-link-arm tag for non-system path", tgt.Tags)
 	}
 }
 
