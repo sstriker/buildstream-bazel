@@ -191,6 +191,118 @@ func TestExportDeps_PathFormDirectLinkRecovered(t *testing.T) {
 	}
 }
 
+// TestExportDeps_AliasNameKeepsDirectLink pins the alias-label case: the
+// manifest carries two cmake names for ONE bazel_label — an alias export
+// (no LinkPaths) and the underlying claimant (LinkPaths). The trace names
+// the ALIAS, but LookupLinkPath returns the claimant (different CMakeTarget,
+// same BazelLabel). The direct-link gate must still KEEP the fragment — via
+// the resolved-label check — not drop it as transitive.
+func TestExportDeps_AliasNameKeepsDirectLink(t *testing.T) {
+	res, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				// Alias spelling the trace names — same label, no LinkPaths.
+				{CMakeTarget: "Pkg::Foo", BazelLabel: "//elements/pkg:foo", LinkLibraries: []string{"foo"}},
+				// Underlying claimant that owns the LinkPaths (LookupLinkPath hit).
+				{CMakeTarget: "Pkg::foo_impl", BazelLabel: "//elements/pkg:foo", LinkPaths: []string{"/opt/prefix/lib/libfoo.a"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"app::@": {
+			Name: "app", Type: "EXECUTABLE",
+			Sources:       []fileapi.TargetSource{{Path: "m.c", CompileGroupIndex: 0}},
+			CompileGroups: []fileapi.CompileGroup{{Language: "C", SourceIndexes: []int{0}}},
+			Link: &fileapi.TargetLink{
+				Language: "C",
+				CommandFragments: []fileapi.CommandFragment{
+					{Fragment: "/opt/prefix/lib/libfoo.a", Role: "libraries"},
+				},
+			},
+		}},
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "app::@", Name: "app"}},
+			}},
+		},
+	}
+	// Trace names the ALIAS Pkg::Foo, not the LinkPaths-owning Pkg::foo_impl.
+	traceRaw := []byte(
+		`{"args":["app","PUBLIC","Pkg::Foo"],"cmd":"target_link_libraries","file":"/s/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{Imports: res, TraceRaw: traceRaw, HostSourceRoot: "/s"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	app := exportDepsFind(t, pkg, "app")
+	if !stringSliceContains(app.Deps, "//elements/pkg:foo") {
+		t.Errorf("alias-named direct link must be kept via the label check: %v", app.Deps)
+	}
+	if stringSliceContains(app.Tags, "cmake-transitive-link-drop=Pkg::foo_impl") {
+		t.Errorf("alias-named direct link must NOT drop: %v", app.Tags)
+	}
+}
+
+// TestExportDeps_PathFormPrivateRoutesToImplDeps pins scope routing for a
+// PATH-form direct link: target_link_libraries(lib PRIVATE /opt/.../libz.a)
+// keys traceLinkScope by the raw path, not by the export's CMakeTarget. The
+// gate must consult BOTH spellings so the PRIVATE link lands in
+// ImplementationDeps, not Deps.
+func TestExportDeps_PathFormPrivateRoutesToImplDeps(t *testing.T) {
+	res, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "Pkg::z", BazelLabel: "//elements/pkg:z_import", LinkPaths: []string{"/opt/prefix/lib/libz.a"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"lib::@": {
+			Name: "lib", Type: "SHARED_LIBRARY",
+			Sources:       []fileapi.TargetSource{{Path: "m.c", CompileGroupIndex: 0}},
+			CompileGroups: []fileapi.CompileGroup{{Language: "C", SourceIndexes: []int{0}}},
+			Link: &fileapi.TargetLink{
+				Language: "C",
+				CommandFragments: []fileapi.CommandFragment{
+					{Fragment: "/opt/prefix/lib/libz.a", Role: "libraries"},
+				},
+			},
+		}},
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "lib::@", Name: "lib"}},
+			}},
+		},
+	}
+	// PRIVATE link, named by PATH — traceLinkScope keys off the raw path.
+	traceRaw := []byte(
+		`{"args":["lib","PRIVATE","/opt/prefix/lib/libz.a"],"cmd":"target_link_libraries","file":"/s/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{Imports: res, TraceRaw: traceRaw, HostSourceRoot: "/s"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	lib := exportDepsFind(t, pkg, "lib")
+	if !stringSliceContains(lib.ImplementationDeps, "//elements/pkg:z_import") {
+		t.Errorf("path-form PRIVATE link must route to ImplementationDeps: impl=%v deps=%v", lib.ImplementationDeps, lib.Deps)
+	}
+	if stringSliceContains(lib.Deps, "//elements/pkg:z_import") {
+		t.Errorf("path-form PRIVATE link must NOT land in public Deps: %v", lib.Deps)
+	}
+}
+
 // TestExportDeps_DependencyChannel: the codemodel-dependency channel
 // (an out-of-tree dep id resolved via LookupCMakeTarget) carries the
 // closure through the same seenDep dedup and scope routing as the
