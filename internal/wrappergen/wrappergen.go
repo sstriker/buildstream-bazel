@@ -371,14 +371,23 @@ func WrapperName(cmakeTarget string) string {
 // consume-and-clear half of the Export.Deps invariant. Unselected
 // elements pass through untouched.
 func rewriteManifest(im *manifest.Imports, element string, oldToNew map[string]string) *manifest.Imports {
-	byOldLabel := map[string]*manifest.Export{}
+	// Index by BOTH the original and rewritten label so the closure chase
+	// resolves a Deps entry whatever spelling it carries — a manifest may
+	// mix already-rewritten labels with old ones (the same tolerance
+	// checkDepCycles has), and treating a rewritten label as an external
+	// leaf would under-approximate LinkClosure.
+	byLabel := map[string]*manifest.Export{}
 	for _, el := range im.Elements {
 		if el == nil {
 			continue
 		}
 		for _, ex := range el.Exports {
-			if ex != nil && ex.BazelLabel != "" {
-				byOldLabel[ex.BazelLabel] = ex
+			if ex == nil || ex.BazelLabel == "" {
+				continue
+			}
+			byLabel[ex.BazelLabel] = ex
+			if n, ok := oldToNew[ex.BazelLabel]; ok {
+				byLabel[n] = ex
 			}
 		}
 	}
@@ -404,7 +413,7 @@ func rewriteManifest(im *manifest.Imports, element string, oldToNew map[string]s
 				// Bazel deps, so wiring them again (Deps) would over-emit —
 				// but the gate still needs to SEE them to tell a re-entering
 				// transitive archive from a direct-link entry point.
-				cex.LinkClosure = transitiveImportClosure(ex, byOldLabel, oldToNew)
+				cex.LinkClosure = transitiveImportClosure(ex, byLabel, oldToNew)
 				cex.Deps = nil
 				exports = append(exports, &cex)
 			}
@@ -415,32 +424,31 @@ func rewriteManifest(im *manifest.Imports, element string, oldToNew map[string]s
 	return out
 }
 
-// transitiveImportClosure returns the FULL transitive set of new (rewritten)
+// transitiveImportClosure returns the FULL transitive set of rewritten
 // labels reachable from start's Deps by chasing in-manifest Deps edges.
 // External labels (no in-manifest export) are leaves. Nil when start has no
 // deps. The result is what the wrapper's Bazel deps resolve transitively —
 // the read-only reachability closure the consumer gate reads once Deps is
-// cleared.
-func transitiveImportClosure(start *manifest.Export, byOldLabel map[string]*manifest.Export, oldToNew map[string]string) []string {
+// cleared. byLabel is indexed by both label spellings; visited keys on the
+// REWRITTEN label so an export reached via either spelling dedupes.
+func transitiveImportClosure(start *manifest.Export, byLabel map[string]*manifest.Export, oldToNew map[string]string) []string {
 	if len(start.Deps) == 0 {
 		return nil
 	}
-	visited := map[string]bool{} // old labels
-	newSet := map[string]bool{}  // rewritten labels for output
+	newSet := map[string]bool{} // rewritten labels — visited set AND output
 	stack := append([]string(nil), start.Deps...)
 	for len(stack) > 0 {
 		l := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if l == "" || visited[l] {
-			continue
-		}
-		visited[l] = true
 		nl := l
 		if n, ok := oldToNew[l]; ok {
 			nl = n
 		}
+		if nl == "" || newSet[nl] {
+			continue
+		}
 		newSet[nl] = true
-		if dep := byOldLabel[l]; dep != nil {
+		if dep := byLabel[l]; dep != nil {
 			stack = append(stack, dep.Deps...)
 		}
 	}

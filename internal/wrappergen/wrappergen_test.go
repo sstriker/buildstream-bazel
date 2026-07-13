@@ -314,3 +314,40 @@ func TestGenerate_LinkClosurePreserved(t *testing.T) {
 		t.Errorf("leaf export must have empty LinkClosure: %v", byName["P::c"].LinkClosure)
 	}
 }
+
+// TestGenerate_LinkClosureMixedSpelling: a Deps entry already in the
+// REWRITTEN label space (a manifest that mixes spellings, which
+// checkDepCycles also tolerates) is still chased transitively — indexing
+// exports by both spellings keeps it from being treated as an external leaf
+// (which would under-approximate LinkClosure).
+func TestGenerate_LinkClosureMixedSpelling(t *testing.T) {
+	im := &manifest.Imports{Version: 1, Elements: []*manifest.Element{{
+		Name: "pkg",
+		Exports: []*manifest.Export{
+			// a's dep is already spelled in the wrapper label space.
+			{CMakeTarget: "P::a", BazelLabel: "//old:a", Deps: []string{"//prebuilts/pkg:b"}, LinkPaths: []string{"/opt/prefix/lib/liba.a"}},
+			{CMakeTarget: "P::b", BazelLabel: "//old:b", Deps: []string{"//old:c"}, LinkPaths: []string{"/opt/prefix/lib/libb.a"}},
+			{CMakeTarget: "P::c", BazelLabel: "//old:c", LinkPaths: []string{"/opt/prefix/lib/libc.a"}},
+		},
+	}}}
+	_, out, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a *manifest.Export
+	for _, ex := range out.Elements[0].Exports {
+		if ex.CMakeTarget == "P::a" {
+			a = ex
+		}
+	}
+	// b reached via its NEW spelling, then c chased through b — both present.
+	want := []string{"//prebuilts/pkg:b", "//prebuilts/pkg:c"}
+	if len(a.LinkClosure) != len(want) {
+		t.Fatalf("LinkClosure = %v, want %v (mixed-spelling dep must chase transitively)", a.LinkClosure, want)
+	}
+	for i, w := range want {
+		if a.LinkClosure[i] != w {
+			t.Errorf("LinkClosure[%d] = %q, want %q (full = %v)", i, a.LinkClosure[i], w, a.LinkClosure)
+		}
+	}
+}
