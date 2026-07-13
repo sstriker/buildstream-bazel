@@ -1551,13 +1551,10 @@ func TestToIR_ElidedLinkFragment(t *testing.T) {
 			},
 		},
 	}
-	// The direct link is attributed from the expanded target_link_libraries
-	// trace; a vendored absolute path the manifest doesn't carry surfaces as
-	// an unresolved-link-arm gap.
-	traceRaw := []byte(
-		`{"args":["foo","PUBLIC","/opt/vendor/lib/libmystery.so"],"cmd":"target_link_libraries","file":"/src/CMakeLists.txt","line":3}` + "\n",
-	)
-	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src", TraceRaw: traceRaw})
+	// lowerLinkFragments scans Link.CommandFragments (independent of the
+	// trace): a vendored absolute path the manifest doesn't carry and that
+	// isn't a toolchain system lib surfaces as an unresolved-link-arm gap.
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
 	if err != nil {
 		t.Fatalf("ToIR: %v", err)
 	}
@@ -1611,12 +1608,10 @@ func TestToIR_SystemLibsLiftToLinkOpts(t *testing.T) {
 			},
 		},
 	}
-	// Two multi-arch system paths, both directly linked in the trace, lift to
-	// a single `-lz` linkopt (the toolchain owns the system lib).
-	traceRaw := []byte(
-		`{"args":["foo","PUBLIC","/usr/lib/x86_64-linux-gnu/libz.so","/usr/lib/i386-linux-gnu/libz.so"],"cmd":"target_link_libraries","file":"/src/CMakeLists.txt","line":3}` + "\n",
-	)
-	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src", TraceRaw: traceRaw})
+	// lowerLinkFragments scans Link.CommandFragments (independent of the
+	// trace): two multi-arch system-lib paths on the link line lift to a
+	// single `-lz` linkopt (the toolchain owns the system lib).
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
 	if err != nil {
 		t.Fatalf("ToIR: %v", err)
 	}
@@ -1684,10 +1679,7 @@ func TestToIR_NonSystemLibPathStaysElided(t *testing.T) {
 			},
 		},
 	}
-	traceRaw := []byte(
-		`{"args":["foo","PUBLIC","/opt/vendor/lib/libmystery.so"],"cmd":"target_link_libraries","file":"/src/CMakeLists.txt","line":3}` + "\n",
-	)
-	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src", TraceRaw: traceRaw})
+	pkg, err := lower.ToIR(r, nil, lower.Options{HostSourceRoot: "/src"})
 	if err != nil {
 		t.Fatalf("ToIR: %v", err)
 	}
