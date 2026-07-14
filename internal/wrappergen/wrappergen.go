@@ -89,7 +89,15 @@ func Generate(im *manifest.Imports, pkgPath, element string) ([]byte, *manifest.
 	for i, e := range entries {
 		exports[i] = e.ex
 	}
-	if err := checkDepCycles(exports, oldLabelToNew); err != nil {
+	// Route each export's LinkLibraries into linkopts vs dep edges (the
+	// producer-side verify-don't-assert fix) before the cycle check, so the
+	// link-derived deps are part of the graph it refuses cycles over.
+	archiveOwner, headerOnlyByName := buildLinkableIndexes(im)
+	routes := map[*manifest.Export]linkRoute{}
+	for _, e := range entries {
+		routes[e.ex] = routeLinkLibraries(e.ex, archiveOwner, headerOnlyByName, oldLabelToNew)
+	}
+	if err := checkDepCycles(exports, oldLabelToNew, routes); err != nil {
 		return nil, nil, err
 	}
 
@@ -109,7 +117,7 @@ func Generate(im *manifest.Imports, pkgPath, element string) ([]byte, *manifest.
 			renderExecutable(&b, e.name, e.ex)
 			continue
 		}
-		renderLibrary(&b, e.name, e.ex, oldLabelToNew)
+		renderLibrary(&b, e.name, e.ex, oldLabelToNew, routes[e.ex])
 	}
 
 	rewritten := rewriteManifest(im, element, oldLabelToNew)
@@ -143,8 +151,10 @@ func renderExecutable(b *strings.Builder, name string, ex *manifest.Export) {
 }
 
 // renderLibrary writes the cc_import (when an archive exists) and the
-// consumer-facing cc_library wrapper for one library export.
-func renderLibrary(b *strings.Builder, name string, ex *manifest.Export, oldLabelToNew map[string]string) {
+// consumer-facing cc_library wrapper for one library export. route carries the
+// LinkLibraries classification: routed linkopts (genuine externals only) plus
+// dep edges for LinkLibraries names the manifest owns.
+func renderLibrary(b *strings.Builder, name string, ex *manifest.Export, oldLabelToNew map[string]string, route linkRoute) {
 	archiveRel := archivePath(ex)
 	if archiveRel != "" {
 		fmt.Fprintf(b, "cc_import(\n    name = %q,\n", name+"_archive")
@@ -193,7 +203,7 @@ func renderLibrary(b *strings.Builder, name string, ex *manifest.Export, oldLabe
 		}
 		b.WriteString("    ],\n")
 	}
-	deps := wrapperDeps(ex, name, archiveRel, oldLabelToNew)
+	deps := wrapperDeps(ex, name, archiveRel, oldLabelToNew, route.deps)
 	if len(deps) > 0 {
 		b.WriteString("    deps = [\n")
 		for _, d := range deps {
@@ -201,14 +211,14 @@ func renderLibrary(b *strings.Builder, name string, ex *manifest.Export, oldLabe
 		}
 		b.WriteString("    ],\n")
 	}
-	// linkopts carry the harvested system-lib / -l<name> fragments
-	// (Export.LinkLibraries). Without these a consumer that pulls the
-	// wrapper still fails at the FINAL link on the leaf system libs the
-	// prebuilt needs — Threads::Threads → -lpthread, ${CMAKE_DL_LIBS} →
-	// -ldl, a bare m → -lm — even though the target-label deps resolved.
-	if lo := wrapperLinkopts(ex); len(lo) > 0 {
+	// linkopts carry the harvested GENUINE system-lib fragments only — the
+	// leaf -l<name> the prebuilt needs (Threads::Threads → -lpthread,
+	// ${CMAKE_DL_LIBS} → -ldl, a bare m → -lm). Names the manifest owns (this
+	// export's own archive, or a sibling/header-only export) are NOT here:
+	// they became the export's cc_import or a dep edge above (routeLinkLibraries).
+	if len(route.linkopts) > 0 {
 		b.WriteString("    linkopts = [\n")
-		for _, l := range lo {
+		for _, l := range route.linkopts {
 			fmt.Fprintf(b, "        %q,\n", l)
 		}
 		b.WriteString("    ],\n")
@@ -216,34 +226,169 @@ func renderLibrary(b *strings.Builder, name string, ex *manifest.Export, oldLabe
 	b.WriteString(")\n")
 }
 
-// wrapperLinkopts renders Export.LinkLibraries as cc_library linkopts. The
-// harvester stores these as bare lib names (`m`, `pthread`, `dl`) or already-flag
-// fragments (`-pthread`); a bare name gets a `-l` prefix, an existing flag passes
-// through. SOURCE ORDER is preserved (only deduped): linker argv order is
-// semantically significant — a positional `-Wl,--as-needed` / `--no-as-needed`
-// applies to the libs that follow it — and the harvester already builds
-// LinkLibraries deterministically, so this stays byte-stable without sorting.
-func wrapperLinkopts(ex *manifest.Export) []string {
+// linkRoute is the routed form of an export's LinkLibraries: the genuine
+// external/system fragments that become cc_library linkopts, and the manifest
+// exports a name resolved to that must become dep edges to their wrappers
+// instead.
+type linkRoute struct {
+	linkopts []string // -l<name> / passthrough flags, SOURCE order, deduped
+	deps     []string // wrapper labels (new/verbatim), from resolved names
+}
+
+// routeLinkLibraries classifies each Export.LinkLibraries entry instead of
+// blindly emitting it as -l<name> — the producer-side "verify, don't assert"
+// fix. A LinkLibraries name is one of three kinds:
+//
+//   - the export's OWN archive-provided name (libz.a → "z", the consumer-redirect
+//     name LookupLinkLibrary keys on): the cc_import already provides it, so it
+//     is NOT re-emitted as -lz;
+//   - another manifest export's archive-provided name, or a header-only export
+//     the manifest owns: a dep edge to that export's wrapper, never a -l flag
+//     (asserting a linkable lib<name> exists on the host when the manifest owns
+//     the archive is the assert-don't-verify bug this removes);
+//   - a genuine external/system bare name (`m`, `pthread`) or an already-formed
+//     flag (`-Wl,--as-needed`): the ONLY kind that stays a linkopt.
+//
+// SOURCE ORDER of the surviving linkopts is preserved (only deduped): linker
+// argv order is semantically significant (a positional `-Wl,--as-needed`
+// applies to the libs that follow it) and the harvester builds LinkLibraries
+// deterministically, so this stays byte-stable without sorting.
+func routeLinkLibraries(ex *manifest.Export, archiveOwner, headerOnlyByName map[string]*manifest.Export, oldToNew map[string]string) linkRoute {
+	var r linkRoute
 	if len(ex.LinkLibraries) == 0 {
-		return nil
+		return r
 	}
-	seen := map[string]bool{}
-	var out []string
+	self := providedLibName(archivePath(ex))
+	seenOpt := map[string]bool{}
+	seenDep := map[string]bool{}
 	for _, l := range ex.LinkLibraries {
 		l = strings.TrimSpace(l)
 		if l == "" {
 			continue
 		}
-		if !strings.HasPrefix(l, "-") {
-			l = "-l" + l
+		// Normalize to the bare lib name for classification. A `-l<name>`
+		// spelling (a hand-written manifest can carry one) must route the SAME
+		// as a bare `<name>` — otherwise it would bypass the resolver and
+		// reintroduce the self/sibling relink this change removes. Any other
+		// `-...` token (`-Wl,...`, `-pthread`, `-L<dir>`) is an opaque flag,
+		// never a manifest name — pass it through verbatim.
+		name := l
+		if strings.HasPrefix(l, "-") {
+			if rest, ok := strings.CutPrefix(l, "-l"); ok && rest != "" {
+				name = rest
+			} else {
+				if !seenOpt[l] {
+					seenOpt[l] = true
+					r.linkopts = append(r.linkopts, l)
+				}
+				continue
+			}
 		}
-		if seen[l] {
+		// The export's own archive provides this name — the cc_import covers
+		// it; do not re-link it as -l<name>. (The harvest flow's only real
+		// conflation: an export's LinkLibraries mixes its own archive name —
+		// kept for the consumer LookupLinkLibrary redirect — with its leaf
+		// system libs.)
+		if name == self {
 			continue
 		}
-		seen[l] = true
-		out = append(out, l)
+		// Another manifest export the name genuinely names: a sibling whose
+		// archive provides it, or a header-only export by its wrapper name.
+		// Wire a dep to that wrapper, never a -l flag. (Defensive: the harvest
+		// flow already routes cross-export references to deps, but hand-written
+		// manifests can put such a name in the -l channel.)
+		if b := archiveOwner[name]; b != nil && b != ex {
+			addWrapperDep(&r, seenDep, b, oldToNew)
+			continue
+		}
+		if b := headerOnlyByName[name]; b != nil && b != ex {
+			addWrapperDep(&r, seenDep, b, oldToNew)
+			continue
+		}
+		// Genuine external / system lib → -l<name>.
+		flag := "-l" + name
+		if !seenOpt[flag] {
+			seenOpt[flag] = true
+			r.linkopts = append(r.linkopts, flag)
+		}
 	}
-	return out
+	return r
+}
+
+// addWrapperDep records a dep to the export b's wrapper label (its rewritten
+// label when b is one of the exports being generated now, else its manifest
+// label verbatim — the cross-element pass-through wrapperDeps also uses).
+func addWrapperDep(r *linkRoute, seen map[string]bool, b *manifest.Export, oldToNew map[string]string) {
+	label := b.BazelLabel
+	if n, ok := oldToNew[b.BazelLabel]; ok {
+		label = n
+	}
+	if label == "" || seen[label] {
+		return
+	}
+	seen[label] = true
+	r.deps = append(r.deps, label)
+}
+
+// providedLibName returns the -l<name> a lib<name>.<ext> archive provides
+// (lib/libz.a → "z", libz.so.1.2.3 → "z"), or "" when the path isn't that
+// shape. This is the standard linker naming convention (-lz links libz.*), and
+// the signal wrappergen uses to tell a name the manifest OWNS (an archive)
+// from a genuine system leaf.
+func providedLibName(archiveRel string) string {
+	if archiveRel == "" {
+		return ""
+	}
+	base := path.Base(archiveRel)
+	if !strings.HasPrefix(base, "lib") {
+		return ""
+	}
+	rest := base[len("lib"):]
+	for _, ext := range []string{".a", ".so", ".dylib"} {
+		if i := strings.Index(rest, ext); i > 0 {
+			return rest[:i]
+		}
+	}
+	return ""
+}
+
+// buildLinkableIndexes maps, over the whole manifest, each archive-provided
+// -l name to its owning export (archiveOwner, e.g. libz.a → "z" → the zlib
+// export) and each header-only export's wrapper name to that export
+// (headerOnlyByName). routeLinkLibraries consults both to tell a name the
+// manifest OWNS (route to a dep) from a genuine system leaf (keep as -l).
+func buildLinkableIndexes(im *manifest.Imports) (archiveOwner, headerOnlyByName map[string]*manifest.Export) {
+	archiveOwner = map[string]*manifest.Export{}
+	headerOnlyByName = map[string]*manifest.Export{}
+	for _, el := range im.Elements {
+		if el == nil {
+			continue
+		}
+		for _, ex := range el.Exports {
+			if ex == nil {
+				continue
+			}
+			// First-write-wins on collisions, matching the imports resolver's
+			// LinkLibraries policy (internal/manifest/imports.go): two exports
+			// providing the same -l name (or wrapper name) is an authoring
+			// concern, and routing must not silently flip owners by iteration
+			// order.
+			if n := providedLibName(archivePath(ex)); n != "" {
+				if _, dup := archiveOwner[n]; !dup {
+					archiveOwner[n] = ex
+				}
+			} else if ex.Kind != manifest.KindExecutable {
+				// No archive → header-only / INTERFACE export; index it by its
+				// wrapper name so a raw -l reference to it routes to a dep.
+				if wn := WrapperName(ex.CMakeTarget); wn != "" {
+					if _, dup := headerOnlyByName[wn]; !dup {
+						headerOnlyByName[wn] = ex
+					}
+				}
+			}
+		}
+	}
+	return archiveOwner, headerOnlyByName
 }
 
 // checkDepCycles refuses manifests whose Deps close a cycle among the
@@ -252,7 +397,7 @@ func wrapperLinkopts(ex *manifest.Export) []string {
 // time; failing here names the cycle while the operator is still
 // looking at the manifest. Edges to labels outside the selected
 // exports can't cycle through the generated package and pass through.
-func checkDepCycles(exports []*manifest.Export, oldToNew map[string]string) error {
+func checkDepCycles(exports []*manifest.Export, oldToNew map[string]string, routes map[*manifest.Export]linkRoute) error {
 	byNewLabel := map[string]*manifest.Export{}
 	for _, ex := range exports {
 		byNewLabel[oldToNew[ex.BazelLabel]] = ex
@@ -268,10 +413,18 @@ func checkDepCycles(exports []*manifest.Export, oldToNew map[string]string) erro
 	visit = func(ex *manifest.Export) error {
 		state[ex] = gray
 		stack = append(stack, ex.CMakeTarget)
+		// Edges are the declared closure (old labels remapped) plus the
+		// link-derived deps (LinkLibraries names the manifest owns, already
+		// wrapper labels), so a cycle closed through either channel is caught.
+		edges := make([]string, 0, len(ex.Deps)+len(routes[ex].deps))
 		for _, d := range ex.Deps {
 			if n, ok := oldToNew[d]; ok {
 				d = n
 			}
+			edges = append(edges, d)
+		}
+		edges = append(edges, routes[ex].deps...)
+		for _, d := range edges {
 			target := byNewLabel[d]
 			if target == nil || target == ex {
 				continue
@@ -309,24 +462,32 @@ func checkDepCycles(exports []*manifest.Export, oldToNew map[string]string) erro
 
 // wrapperDeps assembles the wrapper's dep list: its own archive first,
 // then the declared closure with old export labels remapped onto their
-// wrappers (sorted; deduped; never self-referential).
-func wrapperDeps(ex *manifest.Export, name, archiveRel string, oldToNew map[string]string) []string {
+// wrappers, plus the link-derived deps (LinkLibraries names the manifest
+// owns, already wrapper labels) — sorted; deduped; never self-referential.
+func wrapperDeps(ex *manifest.Export, name, archiveRel string, oldToNew map[string]string, linkDeps []string) []string {
 	var out []string
 	seen := map[string]bool{}
 	if archiveRel != "" {
 		out = append(out, ":"+name+"_archive")
 		seen[":"+name+"_archive"] = true
 	}
+	self := oldToNew[ex.BazelLabel]
 	var closure []string
+	add := func(d string) {
+		if d == self || seen[d] {
+			return
+		}
+		seen[d] = true
+		closure = append(closure, d)
+	}
 	for _, d := range ex.Deps {
 		if n, ok := oldToNew[d]; ok {
 			d = n
 		}
-		if d == oldToNew[ex.BazelLabel] || seen[d] {
-			continue
-		}
-		seen[d] = true
-		closure = append(closure, d)
+		add(d)
+	}
+	for _, d := range linkDeps {
+		add(d)
 	}
 	sort.Strings(closure)
 	return append(out, closure...)

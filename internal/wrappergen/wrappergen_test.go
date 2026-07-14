@@ -240,6 +240,162 @@ func TestGenerate_LinkLibrariesToLinkopts(t *testing.T) {
 	}
 }
 
+// TestGenerate_LinkLibrariesSelfNameNotRelinked pins the self case: an
+// export whose LinkLibraries carries its OWN archive-provided name (libz.a →
+// "z", kept for the consumer LookupLinkLibrary redirect) alongside a genuine
+// leaf system lib ("m"). The cc_import already provides "z", so it must NOT be
+// re-emitted as -lz; only -lm survives as a linkopt.
+func TestGenerate_LinkLibrariesSelfNameNotRelinked(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "zlib",
+			Exports: []*manifest.Export{{
+				CMakeTarget:   "ZLIB::ZLIB",
+				BazelLabel:    "//old:zlib",
+				LinkPaths:     []string{"/opt/prefix/lib/libz.a"},
+				LinkLibraries: []string{"z", "m"},
+			}},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/zlib", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	if !strings.Contains(s, "\"-lm\"") {
+		t.Errorf("genuine leaf -lm must survive as a linkopt:\n%s", s)
+	}
+	if strings.Contains(s, "\"-lz\"") {
+		t.Errorf("the export's own archive name must NOT be re-linked as -lz (cc_import provides it):\n%s", s)
+	}
+	if !strings.Contains(s, "cc_import(") {
+		t.Errorf("expected a cc_import over libz.a:\n%s", s)
+	}
+}
+
+// TestGenerate_LinkLibrariesDashLNameNormalized pins that a `-l<name>`
+// spelling routes the SAME as a bare `<name>`: a hand-written manifest entry
+// `-lz` for the zlib export's own archive must NOT reintroduce the self relink
+// by slipping through as an opaque flag.
+func TestGenerate_LinkLibrariesDashLNameNormalized(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "zlib",
+			Exports: []*manifest.Export{{
+				CMakeTarget:   "ZLIB::ZLIB",
+				BazelLabel:    "//old:zlib",
+				LinkPaths:     []string{"/opt/prefix/lib/libz.a"},
+				LinkLibraries: []string{"-lz", "-lm"},
+			}},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/zlib", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	if strings.Contains(s, "\"-lz\"") {
+		t.Errorf("a -lz spelling of the export's own archive name must not slip through as a flag:\n%s", s)
+	}
+	if !strings.Contains(s, "\"-lm\"") {
+		t.Errorf("the genuine leaf -lm must survive:\n%s", s)
+	}
+}
+
+// TestGenerate_LinkLibrariesSiblingArchiveToDep pins kind 1: a LinkLibraries
+// name that is ANOTHER export's archive-provided name becomes a dep edge to
+// that export's wrapper, never a -l flag (the manifest owns the archive).
+func TestGenerate_LinkLibrariesSiblingArchiveToDep(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "Pkg::a", BazelLabel: "//old:a", LinkPaths: []string{"/opt/prefix/lib/liba.a"}, LinkLibraries: []string{"b", "m"}},
+				{CMakeTarget: "Pkg::b", BazelLabel: "//old:b", LinkPaths: []string{"/opt/prefix/lib/libb.a"}},
+			},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	if !strings.Contains(s, "\"//prebuilts/pkg:b\"") {
+		t.Errorf("sibling archive name b must become a dep on its wrapper //prebuilts/pkg:b:\n%s", s)
+	}
+	if strings.Contains(s, "\"-lb\"") {
+		t.Errorf("a manifest-owned archive name must NOT become a -l flag:\n%s", s)
+	}
+	if !strings.Contains(s, "\"-lm\"") {
+		t.Errorf("the genuine leaf -lm must still survive:\n%s", s)
+	}
+}
+
+// TestGenerate_LinkLibrariesCollisionFirstWriteWins pins that when two exports
+// provide the same archive -l name, routing picks the FIRST deterministically
+// (matching the imports resolver's first-write-wins LinkLibraries policy) and
+// does not flip owners by iteration order.
+func TestGenerate_LinkLibrariesCollisionFirstWriteWins(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "Pkg::a", BazelLabel: "//old:a", LinkPaths: []string{"/opt/prefix/lib/liba.a"}, LinkLibraries: []string{"dup"}},
+				// Two exports both provide libdup — first wins.
+				{CMakeTarget: "Pkg::b1", BazelLabel: "//old:b1", LinkPaths: []string{"/opt/prefix/lib/libdup.a"}},
+				{CMakeTarget: "Pkg::b2", BazelLabel: "//old:b2", LinkPaths: []string{"/opt/prefix/lib/libdup.a"}},
+			},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	// a's dep on "dup" must resolve to the first provider (b1),
+	// deterministically. The full wrapper label only ever appears where a
+	// references it (b1/b2's own rules use `:b1_archive` etc.), so asserting
+	// over the whole output is specific without fragile block slicing.
+	if !strings.Contains(s, "\"//prebuilts/pkg:b1\"") {
+		t.Errorf("collision must resolve to the first provider //prebuilts/pkg:b1:\n%s", s)
+	}
+	if strings.Contains(s, "\"//prebuilts/pkg:b2\"") {
+		t.Errorf("collision must NOT flip to the later provider b2:\n%s", s)
+	}
+}
+
+// TestGenerate_LinkLibrariesHeaderOnlyToDep pins kind 2: a LinkLibraries name
+// that resolves to a HEADER-ONLY export (no link_path) becomes a dep to that
+// export's wrapper (for its includes) and emits no -l.
+func TestGenerate_LinkLibrariesHeaderOnlyToDep(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "Pkg::a", BazelLabel: "//old:a", LinkPaths: []string{"/opt/prefix/lib/liba.a"}, LinkLibraries: []string{"hdr"}},
+				// Header-only: no LinkPaths; its wrapper name is "hdr".
+				{CMakeTarget: "Pkg::hdr", BazelLabel: "//old:hdr", InterfaceIncludes: []string{"include"}},
+			},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	if !strings.Contains(s, "\"//prebuilts/pkg:hdr\"") {
+		t.Errorf("header-only name hdr must become a dep on its wrapper //prebuilts/pkg:hdr:\n%s", s)
+	}
+	if strings.Contains(s, "\"-lhdr\"") {
+		t.Errorf("a header-only export name must NEVER become a -l flag:\n%s", s)
+	}
+}
+
 // TestGenerate_AlwaysLinkCCImport: an Export flagged AlwaysLink (a cyclic
 // static-archive SCC member) gets alwayslink = True on its cc_import — the
 // Bazel whole-archive equivalent of cmake's link-line repetition.
