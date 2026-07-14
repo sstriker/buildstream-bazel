@@ -92,10 +92,10 @@ func Generate(im *manifest.Imports, pkgPath, element string) ([]byte, *manifest.
 	// Route each export's LinkLibraries into linkopts vs dep edges (the
 	// producer-side verify-don't-assert fix) before the cycle check, so the
 	// link-derived deps are part of the graph it refuses cycles over.
-	archiveOwner, claimant := buildLinkableIndexes(im)
+	archiveOwner, headerOnlyByName := buildLinkableIndexes(im)
 	routes := map[*manifest.Export]linkRoute{}
 	for _, e := range entries {
-		routes[e.ex] = routeLinkLibraries(e.ex, archiveOwner, claimant, oldLabelToNew)
+		routes[e.ex] = routeLinkLibraries(e.ex, archiveOwner, headerOnlyByName, oldLabelToNew)
 	}
 	if err := checkDepCycles(exports, oldLabelToNew, routes); err != nil {
 		return nil, nil, err
@@ -266,21 +266,30 @@ func routeLinkLibraries(ex *manifest.Export, archiveOwner, headerOnlyByName map[
 		if l == "" {
 			continue
 		}
-		// An already-formed flag (`-Wl,...`, `-pthread`) is never a manifest
-		// name — pass it through verbatim.
+		// Normalize to the bare lib name for classification. A `-l<name>`
+		// spelling (a hand-written manifest can carry one) must route the SAME
+		// as a bare `<name>` — otherwise it would bypass the resolver and
+		// reintroduce the self/sibling relink this change removes. Any other
+		// `-...` token (`-Wl,...`, `-pthread`, `-L<dir>`) is an opaque flag,
+		// never a manifest name — pass it through verbatim.
+		name := l
 		if strings.HasPrefix(l, "-") {
-			if !seenOpt[l] {
-				seenOpt[l] = true
-				r.linkopts = append(r.linkopts, l)
+			if rest, ok := strings.CutPrefix(l, "-l"); ok && rest != "" {
+				name = rest
+			} else {
+				if !seenOpt[l] {
+					seenOpt[l] = true
+					r.linkopts = append(r.linkopts, l)
+				}
+				continue
 			}
-			continue
 		}
 		// The export's own archive provides this name — the cc_import covers
 		// it; do not re-link it as -l<name>. (The harvest flow's only real
 		// conflation: an export's LinkLibraries mixes its own archive name —
 		// kept for the consumer LookupLinkLibrary redirect — with its leaf
 		// system libs.)
-		if l == self {
+		if name == self {
 			continue
 		}
 		// Another manifest export the name genuinely names: a sibling whose
@@ -288,16 +297,16 @@ func routeLinkLibraries(ex *manifest.Export, archiveOwner, headerOnlyByName map[
 		// Wire a dep to that wrapper, never a -l flag. (Defensive: the harvest
 		// flow already routes cross-export references to deps, but hand-written
 		// manifests can put such a name in the -l channel.)
-		if b := archiveOwner[l]; b != nil && b != ex {
+		if b := archiveOwner[name]; b != nil && b != ex {
 			addWrapperDep(&r, seenDep, b, oldToNew)
 			continue
 		}
-		if b := headerOnlyByName[l]; b != nil && b != ex {
+		if b := headerOnlyByName[name]; b != nil && b != ex {
 			addWrapperDep(&r, seenDep, b, oldToNew)
 			continue
 		}
 		// Genuine external / system lib → -l<name>.
-		flag := "-l" + l
+		flag := "-l" + name
 		if !seenOpt[flag] {
 			seenOpt[flag] = true
 			r.linkopts = append(r.linkopts, flag)

@@ -274,6 +274,36 @@ func TestGenerate_LinkLibrariesSelfNameNotRelinked(t *testing.T) {
 	}
 }
 
+// TestGenerate_LinkLibrariesDashLNameNormalized pins that a `-l<name>`
+// spelling routes the SAME as a bare `<name>`: a hand-written manifest entry
+// `-lz` for the zlib export's own archive must NOT reintroduce the self relink
+// by slipping through as an opaque flag.
+func TestGenerate_LinkLibrariesDashLNameNormalized(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "zlib",
+			Exports: []*manifest.Export{{
+				CMakeTarget:   "ZLIB::ZLIB",
+				BazelLabel:    "//old:zlib",
+				LinkPaths:     []string{"/opt/prefix/lib/libz.a"},
+				LinkLibraries: []string{"-lz", "-lm"},
+			}},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/zlib", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	if strings.Contains(s, "\"-lz\"") {
+		t.Errorf("a -lz spelling of the export's own archive name must not slip through as a flag:\n%s", s)
+	}
+	if !strings.Contains(s, "\"-lm\"") {
+		t.Errorf("the genuine leaf -lm must survive:\n%s", s)
+	}
+}
+
 // TestGenerate_LinkLibrariesSiblingArchiveToDep pins kind 1: a LinkLibraries
 // name that is ANOTHER export's archive-provided name becomes a dep edge to
 // that export's wrapper, never a -l flag (the manifest owns the archive).
