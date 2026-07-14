@@ -242,15 +242,16 @@ func TestGenerate_LinkLibrariesToLinkopts(t *testing.T) {
 
 // TestGenerate_LinkLibrariesGenexUnwrapped pins shape 1: a generator-
 // expression-wrapped token is unwrapped before the lookup — `$<LINK_ONLY:sib>`
-// routes to sib's wrapper (never the nonsense flag `-l$<LINK_ONLY:sib>`), and
-// an unresolvable condition-only genex is dropped, not emitted.
+// routes to sib's wrapper (never the nonsense flag `-l$<LINK_ONLY:sib>`), a
+// condition-only genex is dropped, and an UNSUPPORTED form ($<TARGET_FILE:x>, a
+// path not a lib name) is dropped rather than unwrapped into a bogus -l.
 func TestGenerate_LinkLibrariesGenexUnwrapped(t *testing.T) {
 	im := &manifest.Imports{
 		Version: 1,
 		Elements: []*manifest.Element{{
 			Name: "pkg",
 			Exports: []*manifest.Export{
-				{CMakeTarget: "Pkg::a", BazelLabel: "//old:a", LinkPaths: []string{"/opt/prefix/lib/liba.a"}, LinkLibraries: []string{"$<LINK_ONLY:sib>", "$<PLATFORM_ID>", "m"}},
+				{CMakeTarget: "Pkg::a", BazelLabel: "//old:a", LinkPaths: []string{"/opt/prefix/lib/liba.a"}, LinkLibraries: []string{"$<LINK_ONLY:sib>", "$<PLATFORM_ID>", "$<TARGET_FILE:tool>", "m"}},
 				{CMakeTarget: "Pkg::sib", BazelLabel: "//old:sib", LinkPaths: []string{"/opt/prefix/lib/libsib.a"}},
 			},
 		}},
@@ -265,6 +266,9 @@ func TestGenerate_LinkLibrariesGenexUnwrapped(t *testing.T) {
 	}
 	if strings.Contains(s, "$<") {
 		t.Errorf("no generator expression may survive into a linkopt:\n%s", s)
+	}
+	if strings.Contains(s, "-ltool") {
+		t.Errorf("an unsupported genex ($<TARGET_FILE:tool>) must drop, not become -ltool:\n%s", s)
 	}
 	if !strings.Contains(s, "\"-lm\"") {
 		t.Errorf("the genuine leaf -lm must survive:\n%s", s)

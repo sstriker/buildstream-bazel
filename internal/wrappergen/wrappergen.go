@@ -357,25 +357,62 @@ func stripLibPrefix(k string) string {
 	return k
 }
 
-// unwrapGenex strips known generator-expression wrappers from a link token to
-// its guarded content (`$<LINK_ONLY:foo>` → "foo", nested
-// `$<$<CONFIG:Debug>:foo>` → "foo"), matching the harvester's conservative
-// unwrapping. Returns "" for a token that is still genex-shaped (or empty)
-// after unwrapping — not a linkable name, so the caller drops it rather than
-// emitting `-l$<...>`.
+// unwrapGenex strips the KNOWN link-dependency generator-expression wrappers
+// from a link token to its guarded content — `$<LINK_ONLY:foo>` and
+// `$<INSTALL_INTERFACE:foo>` → "foo", nested `$<$<CONFIG:Debug>:foo>` → "foo"
+// (the condition is dropped, a sound over-approximation for a link manifest).
+// This mirrors the harvester's INTERFACE_LINK_LIBRARIES handling
+// (internal/harvest/cmake_bundle.go). Any OTHER generator-expression form
+// (`$<BUILD_INTERFACE:...>` — empty for an installed consumer, `$<TARGET_FILE:x>`
+// — a path not a lib name, `$<LINK_GROUP:...>`, a bare condition), or a token
+// still genex-shaped after unwrapping, returns "" so the caller drops it rather
+// than emitting a nonsensical `-l$<...>` / `-l<path>`.
 func unwrapGenex(s string) string {
 	for strings.HasPrefix(s, "$<") && strings.HasSuffix(s, ">") {
-		inner := s[len("$<") : len(s)-len(">")]
-		i := strings.LastIndex(inner, ":")
-		if i < 0 {
-			return "" // e.g. $<PLATFORM_ID> — a condition, no linkable content
+		switch {
+		case strings.HasPrefix(s, "$<LINK_ONLY:"):
+			s = strings.TrimSpace(s[len("$<LINK_ONLY:") : len(s)-1])
+		case strings.HasPrefix(s, "$<INSTALL_INTERFACE:"):
+			s = strings.TrimSpace(s[len("$<INSTALL_INTERFACE:") : len(s)-1])
+		case strings.HasPrefix(s, "$<$<"):
+			content, ok := nestedCondGenexContent(s)
+			if !ok {
+				return ""
+			}
+			s = strings.TrimSpace(content)
+		default:
+			return "" // unsupported genex form → not a linkable name
 		}
-		s = strings.TrimSpace(inner[i+1:])
 	}
 	if s == "" || strings.Contains(s, "$<") {
-		return "" // malformed / still generator-expression-shaped
+		return ""
 	}
 	return s
+}
+
+// nestedCondGenexContent returns the guarded content of a nested-condition
+// generator expression (`$<$<CONFIG:Release>:foo>` → "foo"): everything after
+// the outer genex's first depth-0 ':'. ok is false when v isn't that shape.
+// Replicates the harvester's conditionalGenexContent.
+func nestedCondGenexContent(v string) (string, bool) {
+	if !strings.HasPrefix(v, "$<$<") || !strings.HasSuffix(v, ">") {
+		return "", false
+	}
+	inner := v[len("$<") : len(v)-1] // strip the outer $< >
+	depth := 0
+	for i := 0; i < len(inner); i++ {
+		switch inner[i] {
+		case '<':
+			depth++
+		case '>':
+			depth--
+		case ':':
+			if depth == 0 {
+				return inner[i+1:], true
+			}
+		}
+	}
+	return "", false
 }
 
 // addWrapperDep records a dep to the export b's wrapper label (its rewritten
