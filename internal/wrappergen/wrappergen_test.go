@@ -240,6 +240,106 @@ func TestGenerate_LinkLibrariesToLinkopts(t *testing.T) {
 	}
 }
 
+// TestGenerate_LinkLibrariesGenexUnwrapped pins shape 1: a generator-
+// expression-wrapped token is unwrapped before the lookup — `$<LINK_ONLY:sib>`
+// routes to sib's wrapper (never the nonsense flag `-l$<LINK_ONLY:sib>`), a
+// condition-only genex is dropped, and an UNSUPPORTED form ($<TARGET_FILE:x>, a
+// path not a lib name) is dropped rather than unwrapped into a bogus -l.
+func TestGenerate_LinkLibrariesGenexUnwrapped(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "Pkg::a", BazelLabel: "//old:a", LinkPaths: []string{"/opt/prefix/lib/liba.a"}, LinkLibraries: []string{"$<LINK_ONLY:sib>", "$<PLATFORM_ID>", "$<TARGET_FILE:tool>", "m"}},
+				{CMakeTarget: "Pkg::sib", BazelLabel: "//old:sib", LinkPaths: []string{"/opt/prefix/lib/libsib.a"}},
+			},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	if !strings.Contains(s, "\"//prebuilts/pkg:sib\"") {
+		t.Errorf("$<LINK_ONLY:sib> must unwrap and route to sib's wrapper:\n%s", s)
+	}
+	if strings.Contains(s, "$<") {
+		t.Errorf("no generator expression may survive into a linkopt:\n%s", s)
+	}
+	if strings.Contains(s, "-ltool") {
+		t.Errorf("an unsupported genex ($<TARGET_FILE:tool>) must drop, not become -ltool:\n%s", s)
+	}
+	if !strings.Contains(s, "\"-lm\"") {
+		t.Errorf("the genuine leaf -lm must survive:\n%s", s)
+	}
+}
+
+// TestGenerate_LinkLibrariesHeaderOnlyAltName pins shape 2: a header-only
+// export whose name carries a label-hostile rune (`+`) is still matched — the
+// token is folded the same way its wrapper name is, so it routes to a dep, not
+// `-lfoo+bar`.
+func TestGenerate_LinkLibrariesHeaderOnlyAltName(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "Pkg::a", BazelLabel: "//old:a", LinkPaths: []string{"/opt/prefix/lib/liba.a"}, LinkLibraries: []string{"foo+bar"}},
+				{CMakeTarget: "Pkg::foo+bar", BazelLabel: "//old:foobar", InterfaceIncludes: []string{"include"}},
+			},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	if !strings.Contains(s, "\"//prebuilts/pkg:foo_bar\"") {
+		t.Errorf("a header-only export with a + in its name must route to its wrapper //prebuilts/pkg:foo_bar:\n%s", s)
+	}
+	if strings.Contains(s, "-lfoo") {
+		t.Errorf("a header-only export name must never become a -l flag:\n%s", s)
+	}
+}
+
+// TestGenerate_LinkLibrariesSpellingMismatch pins shape 3: a token whose
+// spelling differs from the archive's provided -l name still resolves — `zlib`
+// via the CMake-target stem (ZLIB::ZLIB), `liblz4`/`libzstd` via the lib-prefix
+// strip — so each routes to a dep instead of a nonexistent `-lzlib` etc.
+func TestGenerate_LinkLibrariesSpellingMismatch(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "Pkg::a", BazelLabel: "//old:a", LinkPaths: []string{"/opt/prefix/lib/liba.a"}, LinkLibraries: []string{"zlib", "liblz4", "libzstd", "m"}},
+				{CMakeTarget: "ZLIB::ZLIB", BazelLabel: "//old:zlib", LinkPaths: []string{"/opt/prefix/lib/libz.a"}},
+				{CMakeTarget: "Pkg::lz4", BazelLabel: "//old:lz4", LinkPaths: []string{"/opt/prefix/lib/liblz4.a"}},
+				{CMakeTarget: "Pkg::zstd", BazelLabel: "//old:zstd", LinkPaths: []string{"/opt/prefix/lib/libzstd.a"}},
+			},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	for _, want := range []string{"//prebuilts/pkg:ZLIB", "//prebuilts/pkg:lz4", "//prebuilts/pkg:zstd"} {
+		if !strings.Contains(s, "\""+want+"\"") {
+			t.Errorf("spelling-mismatched token must route to %s:\n%s", want, s)
+		}
+	}
+	for _, bad := range []string{"-lzlib", "-lliblz4", "-llibzstd"} {
+		if strings.Contains(s, bad) {
+			t.Errorf("a manifest-owned lib must not fall through to %s:\n%s", bad, s)
+		}
+	}
+	if !strings.Contains(s, "\"-lm\"") {
+		t.Errorf("the genuine leaf -lm must still survive:\n%s", s)
+	}
+}
+
 // TestGenerate_LinkLibrariesSelfNameNotRelinked pins the self case: an
 // export whose LinkLibraries carries its OWN archive-provided name (libz.a →
 // "z", kept for the consumer LookupLinkLibrary redirect) alongside a genuine
