@@ -240,6 +240,72 @@ func TestGenerate_LinkLibrariesToLinkopts(t *testing.T) {
 	}
 }
 
+// TestGenerate_LinkLibrariesSelfProvidedNotRoutedToAlias pins that an export's
+// OWN provided name is skipped even when a same-named alias/sibling wins the
+// shared index key. Here the alias (Pkg::Z, keyed "z") is indexed first, so a
+// `b == ex` self-check would miss it and wire a spurious Pkg::z → Pkg::Z edge.
+// The self-check keys on the export's OWN provided names instead, so the
+// provider does not route its own name to the alias.
+func TestGenerate_LinkLibrariesSelfProvidedNotRoutedToAlias(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				// Alias (uppercase), indexed first → wins the "z" key.
+				{CMakeTarget: "Pkg::Z", BazelLabel: "//old:z_alias", LinkPaths: []string{"/opt/prefix/lib/libz.a"}},
+				// Provider linking its OWN name "z".
+				{CMakeTarget: "Pkg::z", BazelLabel: "//old:z", LinkPaths: []string{"/opt/prefix/lib/libz.a"}, LinkLibraries: []string{"z", "m"}},
+			},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	if strings.Contains(s, "\"//prebuilts/pkg:Z\"") {
+		t.Errorf("provider must not route its own name to the same-named alias:\n%s", s)
+	}
+	if strings.Contains(s, "\"-lz\"") {
+		t.Errorf("provider's own name must not be re-linked as -lz:\n%s", s)
+	}
+	if !strings.Contains(s, "\"-lm\"") {
+		t.Errorf("the genuine leaf -lm must survive:\n%s", s)
+	}
+}
+
+// TestGenerate_LinkLibrariesRouteCycleBroken pins that a cycle the
+// LinkLibraries routing introduces (two libraries each linking the other's -l
+// name) is BROKEN — not fatal. checkDepCycles only refuses declared Deps
+// cycles; the routed edge that closes the cycle is dropped so Bazel gets a
+// loadable, acyclic package.
+func TestGenerate_LinkLibrariesRouteCycleBroken(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "Pkg::a", BazelLabel: "//old:a", LinkPaths: []string{"/opt/prefix/lib/liba.a"}, LinkLibraries: []string{"b"}},
+				{CMakeTarget: "Pkg::b", BazelLabel: "//old:b", LinkPaths: []string{"/opt/prefix/lib/libb.a"}, LinkLibraries: []string{"a"}},
+			},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatalf("route-induced cycle must be broken, not fatal: %v", err)
+	}
+	s := string(build)
+	// Exactly one direction survives (a → b, kept first in sorted order); the
+	// back-edge is dropped to break the cycle.
+	if !strings.Contains(s, "\"//prebuilts/pkg:b\"") {
+		t.Errorf("the first routed edge a → b should be kept:\n%s", s)
+	}
+	if strings.Contains(s, "\"//prebuilts/pkg:a\"") {
+		t.Errorf("the cycle-closing back-edge b → a must be dropped:\n%s", s)
+	}
+}
+
 // TestGenerate_LinkLibrariesGenexUnwrapped pins shape 1: a generator-
 // expression-wrapped token is unwrapped before the lookup — `$<LINK_ONLY:sib>`
 // routes to sib's wrapper (never the nonsense flag `-l$<LINK_ONLY:sib>`), a
