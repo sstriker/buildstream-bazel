@@ -92,10 +92,10 @@ func Generate(im *manifest.Imports, pkgPath, element string) ([]byte, *manifest.
 	// Route each export's LinkLibraries into linkopts vs dep edges (the
 	// producer-side verify-don't-assert fix) before the cycle check, so the
 	// link-derived deps are part of the graph it refuses cycles over.
-	archiveOwner, headerOnlyByName := buildLinkableIndexes(im)
+	nameToExport := buildLinkableIndex(im)
 	routes := map[*manifest.Export]linkRoute{}
 	for _, e := range entries {
-		routes[e.ex] = routeLinkLibraries(e.ex, archiveOwner, headerOnlyByName, oldLabelToNew)
+		routes[e.ex] = routeLinkLibraries(e.ex, nameToExport, oldLabelToNew)
 	}
 	if err := checkDepCycles(exports, oldLabelToNew, routes); err != nil {
 		return nil, nil, err
@@ -253,12 +253,11 @@ type linkRoute struct {
 // argv order is semantically significant (a positional `-Wl,--as-needed`
 // applies to the libs that follow it) and the harvester builds LinkLibraries
 // deterministically, so this stays byte-stable without sorting.
-func routeLinkLibraries(ex *manifest.Export, archiveOwner, headerOnlyByName map[string]*manifest.Export, oldToNew map[string]string) linkRoute {
+func routeLinkLibraries(ex *manifest.Export, nameToExport map[string]*manifest.Export, oldToNew map[string]string) linkRoute {
 	var r linkRoute
 	if len(ex.LinkLibraries) == 0 {
 		return r
 	}
-	self := providedLibName(archivePath(ex))
 	seenOpt := map[string]bool{}
 	seenDep := map[string]bool{}
 	for _, l := range ex.LinkLibraries {
@@ -266,42 +265,46 @@ func routeLinkLibraries(ex *manifest.Export, archiveOwner, headerOnlyByName map[
 		if l == "" {
 			continue
 		}
-		// Normalize to the bare lib name for classification. A `-l<name>`
-		// spelling (a hand-written manifest can carry one) must route the SAME
-		// as a bare `<name>` — otherwise it would bypass the resolver and
-		// reintroduce the self/sibling relink this change removes. Any other
-		// `-...` token (`-Wl,...`, `-pthread`, `-L<dir>`) is an opaque flag,
-		// never a manifest name — pass it through verbatim.
-		name := l
-		if strings.HasPrefix(l, "-") {
-			if rest, ok := strings.CutPrefix(l, "-l"); ok && rest != "" {
+		// Unwrap a generator expression FIRST (`$<LINK_ONLY:foo>` → "foo"), so
+		// a wrapped name OR flag is classified by its content. A token that
+		// stays genex-shaped after unwrapping is not linkable — skip it rather
+		// than emit the nonsense flag `-l$<...>`.
+		name := unwrapGenex(l)
+		if name == "" {
+			continue
+		}
+		// A `-l<name>` spelling (a hand-written manifest can carry one) must
+		// route the SAME as a bare `<name>` — else it bypasses the resolver
+		// and reintroduces the self/sibling relink. Any other `-...` token
+		// (`-Wl,...`, `-pthread`, `-L<dir>`) is an opaque flag, never a
+		// manifest name — pass it through verbatim.
+		if strings.HasPrefix(name, "-") {
+			if rest, ok := strings.CutPrefix(name, "-l"); ok && rest != "" {
 				name = rest
 			} else {
-				if !seenOpt[l] {
-					seenOpt[l] = true
-					r.linkopts = append(r.linkopts, l)
+				if !seenOpt[name] {
+					seenOpt[name] = true
+					r.linkopts = append(r.linkopts, name)
 				}
 				continue
 			}
 		}
-		// The export's own archive provides this name — the cc_import covers
-		// it; do not re-link it as -l<name>. (The harvest flow's only real
-		// conflation: an export's LinkLibraries mixes its own archive name —
-		// kept for the consumer LookupLinkLibrary redirect — with its leaf
-		// system libs.)
-		if name == self {
-			continue
-		}
-		// Another manifest export the name genuinely names: a sibling whose
-		// archive provides it, or a header-only export by its wrapper name.
-		// Wire a dep to that wrapper, never a -l flag. (Defensive: the harvest
-		// flow already routes cross-export references to deps, but hand-written
-		// manifests can put such a name in the -l channel.)
-		if b := archiveOwner[name]; b != nil && b != ex {
-			addWrapperDep(&r, seenDep, b, oldToNew)
-			continue
-		}
-		if b := headerOnlyByName[name]; b != nil && b != ex {
+		// Resolve the name against the manifest, normalizing BOTH the token and
+		// the index keys to a canonical form (fold runes + lowercase, and a
+		// lib-prefix-stripped variant), so every spelling routes uniformly:
+		// `$<LINK_ONLY:foo>` (unwrapped above), a `+` in a header-only name,
+		// and lib-name mismatches (`zlib`→`z` via the CMake-target stem,
+		// `liblz4`→`lz4` / `libzstd`→`zstd` via the lib strip).
+		if b := lookupLinkable(nameToExport, name); b != nil {
+			// The export's own name — the cc_import / this wrapper already
+			// provides it; neither re-link it as -l nor add a self-dep.
+			if b == ex {
+				continue
+			}
+			// A sibling archive or a header-only export the manifest owns → a
+			// dep edge to its wrapper, never a -l flag (asserting a linkable
+			// lib<name> exists on the host when the manifest owns it is the
+			// assert-don't-verify bug this removes).
 			addWrapperDep(&r, seenDep, b, oldToNew)
 			continue
 		}
@@ -313,6 +316,66 @@ func routeLinkLibraries(ex *manifest.Export, archiveOwner, headerOnlyByName map[
 		}
 	}
 	return r
+}
+
+// lookupLinkable resolves a link-library name against the normalized index,
+// trying the canonical key and its lib-prefix-stripped form (so `liblz4` finds
+// the `lz4` export). Returns nil for a genuine external/system name.
+func lookupLinkable(nameToExport map[string]*manifest.Export, name string) *manifest.Export {
+	k := normLinkKey(name)
+	if k == "" {
+		return nil
+	}
+	if b := nameToExport[k]; b != nil {
+		return b
+	}
+	if stripped := stripLibPrefix(k); stripped != k {
+		if b := nameToExport[stripped]; b != nil {
+			return b
+		}
+	}
+	return nil
+}
+
+// normLinkKey folds a link-library name (or an export's provided name) to the
+// canonical key link routing matches on: WrapperName's label-hostile-rune
+// folding (so a `+` in a name matches its wrapper) then lowercased (so
+// `ZLIB`/`zlib` unify). WrapperName also strips a `::` namespace, harmless for
+// a bare token.
+func normLinkKey(s string) string {
+	return strings.ToLower(WrapperName(s))
+}
+
+// stripLibPrefix drops a leading `lib` from a canonical key so a token spelled
+// with the library filename prefix (`liblz4`, `libzstd`) matches the export's
+// -l name (`lz4`, `zstd`). Leaves keys without the prefix (e.g. `zlib`, which
+// resolves via the CMake-target stem instead) untouched.
+func stripLibPrefix(k string) string {
+	if rest, ok := strings.CutPrefix(k, "lib"); ok && rest != "" {
+		return rest
+	}
+	return k
+}
+
+// unwrapGenex strips known generator-expression wrappers from a link token to
+// its guarded content (`$<LINK_ONLY:foo>` → "foo", nested
+// `$<$<CONFIG:Debug>:foo>` → "foo"), matching the harvester's conservative
+// unwrapping. Returns "" for a token that is still genex-shaped (or empty)
+// after unwrapping — not a linkable name, so the caller drops it rather than
+// emitting `-l$<...>`.
+func unwrapGenex(s string) string {
+	for strings.HasPrefix(s, "$<") && strings.HasSuffix(s, ">") {
+		inner := s[len("$<") : len(s)-len(">")]
+		i := strings.LastIndex(inner, ":")
+		if i < 0 {
+			return "" // e.g. $<PLATFORM_ID> — a condition, no linkable content
+		}
+		s = strings.TrimSpace(inner[i+1:])
+	}
+	if s == "" || strings.Contains(s, "$<") {
+		return "" // malformed / still generator-expression-shaped
+	}
+	return s
 }
 
 // addWrapperDep records a dep to the export b's wrapper label (its rewritten
@@ -352,43 +415,41 @@ func providedLibName(archiveRel string) string {
 	return ""
 }
 
-// buildLinkableIndexes maps, over the whole manifest, each archive-provided
-// -l name to its owning export (archiveOwner, e.g. libz.a → "z" → the zlib
-// export) and each header-only export's wrapper name to that export
-// (headerOnlyByName). routeLinkLibraries consults both to tell a name the
-// manifest OWNS (route to a dep) from a genuine system leaf (keep as -l).
-func buildLinkableIndexes(im *manifest.Imports) (archiveOwner, headerOnlyByName map[string]*manifest.Export) {
-	archiveOwner = map[string]*manifest.Export{}
-	headerOnlyByName = map[string]*manifest.Export{}
+// buildLinkableIndex maps, over the whole manifest, every canonical link-name
+// key to the export that owns it — so routeLinkLibraries can tell a name the
+// manifest OWNS (route to a dep) from a genuine system leaf (keep as -l). Each
+// non-executable export is keyed under both its CMake-target stem (catches the
+// `zlib` → `z` class, where the target is `ZLIB::ZLIB`) and, when it ships an
+// archive, its provided -l name (`libz.a` → `z`). Keys are normalized
+// (normLinkKey) so the lookup can match any token spelling. First-write-wins
+// on collisions, matching the imports resolver's LinkLibraries policy
+// (internal/manifest/imports.go): two exports claiming the same name is an
+// authoring concern, and routing must not flip owners by iteration order.
+func buildLinkableIndex(im *manifest.Imports) map[string]*manifest.Export {
+	nameToExport := map[string]*manifest.Export{}
+	put := func(key string, ex *manifest.Export) {
+		if key == "" {
+			return
+		}
+		if _, dup := nameToExport[key]; !dup {
+			nameToExport[key] = ex
+		}
+	}
 	for _, el := range im.Elements {
 		if el == nil {
 			continue
 		}
 		for _, ex := range el.Exports {
-			if ex == nil {
+			// An executable export is a filegroup, not a linkable cc target —
+			// never a -l dep target.
+			if ex == nil || ex.Kind == manifest.KindExecutable {
 				continue
 			}
-			// First-write-wins on collisions, matching the imports resolver's
-			// LinkLibraries policy (internal/manifest/imports.go): two exports
-			// providing the same -l name (or wrapper name) is an authoring
-			// concern, and routing must not silently flip owners by iteration
-			// order.
-			if n := providedLibName(archivePath(ex)); n != "" {
-				if _, dup := archiveOwner[n]; !dup {
-					archiveOwner[n] = ex
-				}
-			} else if ex.Kind != manifest.KindExecutable {
-				// No archive → header-only / INTERFACE export; index it by its
-				// wrapper name so a raw -l reference to it routes to a dep.
-				if wn := WrapperName(ex.CMakeTarget); wn != "" {
-					if _, dup := headerOnlyByName[wn]; !dup {
-						headerOnlyByName[wn] = ex
-					}
-				}
-			}
+			put(normLinkKey(ex.CMakeTarget), ex)
+			put(normLinkKey(providedLibName(archivePath(ex))), ex)
 		}
 	}
-	return archiveOwner, headerOnlyByName
+	return nameToExport
 }
 
 // checkDepCycles refuses manifests whose Deps close a cycle among the
