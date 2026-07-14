@@ -356,14 +356,15 @@ func TestGenerate_LinkLibrariesCollisionFirstWriteWins(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(build)
-	// a's dep on "dup" must resolve to the first provider (b1), deterministically.
-	aBlock := s[strings.Index(s, "name = \"a\","):]
-	aBlock = aBlock[:strings.Index(aBlock, "\n)")]
-	if !strings.Contains(aBlock, "\"//prebuilts/pkg:b1\"") {
-		t.Errorf("collision must resolve to the first provider //prebuilts/pkg:b1:\n%s", aBlock)
+	// a's dep on "dup" must resolve to the first provider (b1),
+	// deterministically. The full wrapper label only ever appears where a
+	// references it (b1/b2's own rules use `:b1_archive` etc.), so asserting
+	// over the whole output is specific without fragile block slicing.
+	if !strings.Contains(s, "\"//prebuilts/pkg:b1\"") {
+		t.Errorf("collision must resolve to the first provider //prebuilts/pkg:b1:\n%s", s)
 	}
-	if strings.Contains(aBlock, "\"//prebuilts/pkg:b2\"") {
-		t.Errorf("collision must NOT flip to the later provider b2:\n%s", aBlock)
+	if strings.Contains(s, "\"//prebuilts/pkg:b2\"") {
+		t.Errorf("collision must NOT flip to the later provider b2:\n%s", s)
 	}
 }
 
