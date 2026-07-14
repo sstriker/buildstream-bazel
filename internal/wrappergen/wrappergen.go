@@ -368,12 +368,23 @@ func buildLinkableIndexes(im *manifest.Imports) (archiveOwner, headerOnlyByName 
 			if ex == nil {
 				continue
 			}
+			// First-write-wins on collisions, matching the imports resolver's
+			// LinkLibraries policy (internal/manifest/imports.go): two exports
+			// providing the same -l name (or wrapper name) is an authoring
+			// concern, and routing must not silently flip owners by iteration
+			// order.
 			if n := providedLibName(archivePath(ex)); n != "" {
-				archiveOwner[n] = ex
+				if _, dup := archiveOwner[n]; !dup {
+					archiveOwner[n] = ex
+				}
 			} else if ex.Kind != manifest.KindExecutable {
 				// No archive → header-only / INTERFACE export; index it by its
 				// wrapper name so a raw -l reference to it routes to a dep.
-				headerOnlyByName[WrapperName(ex.CMakeTarget)] = ex
+				if wn := WrapperName(ex.CMakeTarget); wn != "" {
+					if _, dup := headerOnlyByName[wn]; !dup {
+						headerOnlyByName[wn] = ex
+					}
+				}
 			}
 		}
 	}

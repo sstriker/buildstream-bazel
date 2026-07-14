@@ -334,6 +334,39 @@ func TestGenerate_LinkLibrariesSiblingArchiveToDep(t *testing.T) {
 	}
 }
 
+// TestGenerate_LinkLibrariesCollisionFirstWriteWins pins that when two exports
+// provide the same archive -l name, routing picks the FIRST deterministically
+// (matching the imports resolver's first-write-wins LinkLibraries policy) and
+// does not flip owners by iteration order.
+func TestGenerate_LinkLibrariesCollisionFirstWriteWins(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "Pkg::a", BazelLabel: "//old:a", LinkPaths: []string{"/opt/prefix/lib/liba.a"}, LinkLibraries: []string{"dup"}},
+				// Two exports both provide libdup — first wins.
+				{CMakeTarget: "Pkg::b1", BazelLabel: "//old:b1", LinkPaths: []string{"/opt/prefix/lib/libdup.a"}},
+				{CMakeTarget: "Pkg::b2", BazelLabel: "//old:b2", LinkPaths: []string{"/opt/prefix/lib/libdup.a"}},
+			},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	// a's dep on "dup" must resolve to the first provider (b1), deterministically.
+	aBlock := s[strings.Index(s, "name = \"a\","):]
+	aBlock = aBlock[:strings.Index(aBlock, "\n)")]
+	if !strings.Contains(aBlock, "\"//prebuilts/pkg:b1\"") {
+		t.Errorf("collision must resolve to the first provider //prebuilts/pkg:b1:\n%s", aBlock)
+	}
+	if strings.Contains(aBlock, "\"//prebuilts/pkg:b2\"") {
+		t.Errorf("collision must NOT flip to the later provider b2:\n%s", aBlock)
+	}
+}
+
 // TestGenerate_LinkLibrariesHeaderOnlyToDep pins kind 2: a LinkLibraries name
 // that resolves to a HEADER-ONLY export (no link_path) becomes a dep to that
 // export's wrapper (for its includes) and emits no -l.
