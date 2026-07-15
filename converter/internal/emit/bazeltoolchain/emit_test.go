@@ -85,6 +85,67 @@ func TestEmit_HelloWorldFixture(t *testing.T) {
 	}
 }
 
+// TestEmit_PerLanguageCompileFlagRouting pins that the base compile flags
+// route per source language — CMAKE_C_FLAGS (_COMPILE_FLAGS) at the C compile
+// actions and CMAKE_CXX_FLAGS (_CXX_FLAGS) at the C++ compile actions — rather
+// than lumping the C flags onto every compile action (which leaked a C-only
+// flag onto C++ compiles).
+func TestEmit_PerLanguageCompileFlagRouting(t *testing.T) {
+	r, err := fileapi.Load("../../../testdata/fileapi/hello-world")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	m, err := toolchain.FromReply(r)
+	if err != nil {
+		t.Fatalf("FromReply: %v", err)
+	}
+	m.HostPlatform = toolchain.Platform{OS: "Linux", CPU: "x86_64"}
+	m.TargetPlatform = m.HostPlatform
+	b, err := Emit(m, Config{PackageName: "toolchain"})
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	cfg := string(b.Files["cc_toolchain_config.bzl"])
+
+	// The C action set exists, includes c-compile, and excludes c++-compile.
+	cBlock := between(t, cfg, "_C_COMPILE_ACTIONS = [", "]")
+	if !strings.Contains(cBlock, `"c-compile"`) {
+		t.Errorf("_C_COMPILE_ACTIONS must include c-compile:\n%s", cBlock)
+	}
+	if strings.Contains(cBlock, `"c++-compile"`) {
+		t.Errorf("_C_COMPILE_ACTIONS must NOT include c++-compile (that leaks CMAKE_C_FLAGS onto C++):\n%s", cBlock)
+	}
+	// The base-flags feature routes compile_flags to the C actions and
+	// cxx_flags to the C++ actions.
+	feat := between(t, cfg, "def _default_compile_flags_feature(", "return feature(")
+	if !strings.Contains(feat, "actions = _C_COMPILE_ACTIONS") {
+		t.Errorf("default_compile_flags must route the C base flags to _C_COMPILE_ACTIONS:\n%s", feat)
+	}
+	if !strings.Contains(feat, "actions = _CXX_COMPILE_ACTIONS") {
+		t.Errorf("default_compile_flags must route the C++ base flags to _CXX_COMPILE_ACTIONS:\n%s", feat)
+	}
+	if strings.Contains(feat, "actions = _ALL_COMPILE_ACTIONS") {
+		t.Errorf("default_compile_flags must not route the base flags to _ALL_COMPILE_ACTIONS:\n%s", feat)
+	}
+}
+
+// between returns the substring of s strictly between the first occurrence of
+// open and the next occurrence of close after it; it fails the test if either
+// marker is absent (guarding against index panics on a format change).
+func between(t *testing.T, s, open, close string) string {
+	t.Helper()
+	i := strings.Index(s, open)
+	if i < 0 {
+		t.Fatalf("marker %q not found:\n%s", open, s)
+	}
+	rest := s[i+len(open):]
+	j := strings.Index(rest, close)
+	if j < 0 {
+		t.Fatalf("closing marker %q not found after %q:\n%s", close, open, s)
+	}
+	return rest[:j]
+}
+
 // TestEmit_HardeningFeaturesOff is the no-op baseline: with
 // Config.HardeningFeatures = false (the default), the emitted
 // cc_toolchain_config.bzl carries no fortify_source /
