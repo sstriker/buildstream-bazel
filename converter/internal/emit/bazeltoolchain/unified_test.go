@@ -223,11 +223,19 @@ func TestEmitUnified_CXXFlagsRouteToCXXOnlyActions(t *testing.T) {
 	for _, want := range []string{
 		"_CXX_COMPILE_ACTIONS = [",
 		`"c++-compile",`,
+		// The C base flags route to the C actions specifically, not every
+		// compile action — so CMAKE_C_FLAGS (`-Wall` here, but also a C-only
+		// `-std=gnu11`) does not leak onto C++ compiles.
+		"_C_COMPILE_ACTIONS = [",
 		"_default_compile_flags_feature(ctx.attr.compile_flags, ctx.attr.cxx_flags, ctx.attr.link_flags)",
 	} {
 		if !strings.Contains(cfg, want) {
 			t.Errorf("cc_toolchain_config.bzl missing %q\n%s", want, cfg)
 		}
+	}
+	feat := between(t, cfg, "def _default_compile_flags_feature(", "return feature(")
+	if !strings.Contains(feat, "actions = _C_COMPILE_ACTIONS") || strings.Contains(feat, "actions = _ALL_COMPILE_ACTIONS") {
+		t.Errorf("unified default_compile_flags must route C base flags to _C_COMPILE_ACTIONS, not _ALL_COMPILE_ACTIONS:\n%s", feat)
 	}
 
 	// And the rule instance carries the CXX-only flag bytes.

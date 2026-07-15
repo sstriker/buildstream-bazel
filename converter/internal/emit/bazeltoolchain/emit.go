@@ -301,11 +301,26 @@ func writeToolchainConfigConstants(buf *bytes.Buffer) {
     "lto-backend",
 ]
 
+# C++-only subset — routes the C++ base flags (CMAKE_CXX_FLAGS) to C++
+# compile actions specifically.
 _CXX_COMPILE_ACTIONS = [
     "c++-compile",
     "c++-header-parsing",
     "c++-module-compile",
     "c++-module-codegen",
+]
+
+# Non-C++ subset (_ALL_COMPILE_ACTIONS minus _CXX_COMPILE_ACTIONS) — routes the
+# C base flags (CMAKE_C_FLAGS) to c-compile specifically, plus assemble / LTO
+# (which this toolchain models no separate flag set for). Keeping the two
+# language flag sets on their own actions is what cmake does per source
+# language; the old shared-_ALL_COMPILE_ACTIONS slot leaked a C-only flag
+# (e.g. -std=gnu11 in CMAKE_C_FLAGS) onto C++ compiles.
+_C_COMPILE_ACTIONS = [
+    "assemble",
+    "preprocess-assemble",
+    "c-compile",
+    "lto-backend",
 ]
 
 _ALL_LINK_ACTIONS = [
@@ -332,7 +347,7 @@ def _default_compile_flags_feature(compile_flags, cxx_flags, link_flags):
     flag_sets = []
     if compile_flags:
         flag_sets.append(flag_set(
-            actions = _ALL_COMPILE_ACTIONS,
+            actions = _C_COMPILE_ACTIONS,
             flag_groups = [flag_group(flags = compile_flags)],
         ))
     if cxx_flags:
@@ -412,12 +427,14 @@ func emitConfigBzl(m *toolchain.Model, rt *toolchain.ResolvedToolchain, cfg Conf
 
 	// Action sets — copied from cc_toolchain_config_lib's standard
 	// constants. Inlined here so the .bzl has no transitive load
-	// dependency beyond cc_toolchain_config_lib itself.
-	// _CXX_COMPILE_ACTIONS is the C++-only subset; we use it to
-	// route _CXX_FLAGS at C++ compile actions specifically (cmake
-	// puts -std=c++20 / -stdlib=... into CMAKE_CXX_FLAGS, not
-	// CMAKE_C_FLAGS — the unified default_compile_flags feature
-	// alone would drop them silently).
+	// dependency beyond cc_toolchain_config_lib itself. The base flags
+	// route per language: _COMPILE_FLAGS (CMAKE_C_FLAGS) at
+	// _C_COMPILE_ACTIONS (c-compile + assemble/LTO) and _CXX_FLAGS
+	// (CMAKE_CXX_FLAGS) at _CXX_COMPILE_ACTIONS — mirroring cmake, which
+	// compiles each source language with its own CMAKE_<LANG>_FLAGS.
+	// Routing _COMPILE_FLAGS (the full CMAKE_C_FLAGS) at the shared
+	// _ALL_COMPILE_ACTIONS instead leaked a C-only flag (-std=gnu11)
+	// onto C++ compiles, which already carry the full CMAKE_CXX_FLAGS.
 	writeToolchainConfigConstants(&buf)
 	buf.WriteString(`def _impl(ctx):
     features = [

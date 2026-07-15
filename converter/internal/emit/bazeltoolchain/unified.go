@@ -377,15 +377,26 @@ func emitUnifiedConfigBzl(plats []PlatformToolchain, cfg UnifiedConfig) ([]byte,
     "lto-backend",
 ]
 
-# C++-only subset, used to route ctx.attr.cxx_flags to C++ actions
-# specifically. cmake puts -std=c++20 / -stdlib=... into
-# CMAKE_CXX_FLAGS rather than CMAKE_C_FLAGS, so a single shared
-# default_compile_flags slot would drop them silently.
+# C++-only subset — routes ctx.attr.cxx_flags (CMAKE_CXX_FLAGS) to C++
+# compile actions specifically. cmake puts -std=c++20 / -stdlib=... into
+# CMAKE_CXX_FLAGS rather than CMAKE_C_FLAGS.
 _CXX_COMPILE_ACTIONS = [
     "c++-compile",
     "c++-header-parsing",
     "c++-module-compile",
     "c++-module-codegen",
+]
+
+# Non-C++ subset (_ALL_COMPILE_ACTIONS minus _CXX_COMPILE_ACTIONS) — routes
+# ctx.attr.compile_flags (CMAKE_C_FLAGS) to c-compile specifically, plus
+# assemble / LTO. Keeping each language's flags on its own actions matches
+# cmake per source language; the old shared slot leaked a C-only flag onto
+# C++ compiles.
+_C_COMPILE_ACTIONS = [
+    "assemble",
+    "preprocess-assemble",
+    "c-compile",
+    "lto-backend",
 ]
 
 _ALL_LINK_ACTIONS = [
@@ -412,7 +423,7 @@ def _default_compile_flags_feature(compile_flags, cxx_flags, link_flags):
     flag_sets = []
     if compile_flags:
         flag_sets.append(flag_set(
-            actions = _ALL_COMPILE_ACTIONS,
+            actions = _C_COMPILE_ACTIONS,
             flag_groups = [flag_group(flags = compile_flags)],
         ))
     if cxx_flags:
