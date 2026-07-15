@@ -621,10 +621,12 @@ func primaryLanguage(m *toolchain.Model) toolchain.Language {
 
 // mergedTools fills in the standard Bazel tool_paths slots from the
 // model's Tools struct, falling back to PATH names ("ar", "strip",
-// ...) when cmake didn't set the variable. The single "gcc" slot is the
-// C compiler; the C++ compiler is wired separately via action_configs
-// on the C++ actions (see _cxx_action_configs), since tool_paths has no
-// per-language compiler slot.
+// ...) when cmake didn't set the variable. The single "gcc"/"cpp" slot
+// is the PRIMARY language's compiler (primaryLanguage: C when the model
+// has C, else the sole language — e.g. the CXX driver for a C++-only
+// model). tool_paths has no per-language compiler slot, so when a model
+// has BOTH C and C++ the C++ compiler is wired separately via
+// action_configs on the C++ actions (see _cxx_action_configs).
 func mergedTools(m *toolchain.Model) map[string]string {
 	c := primaryLanguage(m)
 	return map[string]string{
