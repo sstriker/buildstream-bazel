@@ -64,7 +64,7 @@ func TestEmit_HelloWorldFixture(t *testing.T) {
 	for _, want := range []string{
 		`load("@rules_cc//cc/common:cc_common.bzl", "cc_common")`,
 		`@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl`,
-		`"feature", "flag_group", "flag_set", "tool_path"`,
+		`"action_config", "feature", "flag_group", "flag_set", "tool", "tool_path"`,
 		`_TARGET_CPU = "x86_64"`,
 		`_COMPILER = "gnu"`,
 		`_TOOL_PATHS = {`,
@@ -144,6 +144,66 @@ func between(t *testing.T, s, open, close string) string {
 		t.Fatalf("closing marker %q not found after %q:\n%s", close, open, s)
 	}
 	return rest[:j]
+}
+
+// TestEmit_CXXCompilerRoutedToCXXActions pins that the C++ compiler driver
+// (g++/clang++) is wired to the C++ compile+link actions via action_config,
+// while the single tool_paths "gcc" slot stays the C compiler — so a C++
+// binary links libstdc++ instead of failing on undefined std:: symbols.
+func TestEmit_CXXCompilerRoutedToCXXActions(t *testing.T) {
+	m := &toolchain.Model{
+		HostPlatform:   toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+		TargetPlatform: toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+		Languages: map[string]toolchain.Language{
+			"C":   {CompilerID: "GNU", CompilerPath: "/usr/bin/cc"},
+			"CXX": {CompilerID: "GNU", CompilerPath: "/usr/bin/c++"},
+		},
+	}
+	b, err := Emit(m, Config{PackageName: "toolchain"})
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	cfg := string(b.Files["cc_toolchain_config.bzl"])
+
+	for _, want := range []string{
+		`_CXX_COMPILER = "/usr/bin/c++"`,
+		`"gcc": "/usr/bin/cc"`, // tool_paths C compiler slot
+		`action_configs = _cxx_action_configs(_CXX_COMPILER)`,
+		`def _cxx_action_configs(cxx_compiler):`,
+		`action_config(action_name = name, enabled = True, tools = cxx_tools)`,
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("cc_toolchain_config.bzl missing %q\n%s", want, cfg)
+		}
+	}
+	// The C++ action set covers both compile and link.
+	names := between(t, cfg, "_CXX_ACTION_NAMES = [", "]")
+	for _, a := range []string{`"c++-compile"`, `"c++-link-executable"`, `"c++-link-dynamic-library"`} {
+		if !strings.Contains(names, a) {
+			t.Errorf("_CXX_ACTION_NAMES must include %s:\n%s", a, names)
+		}
+	}
+}
+
+// TestEmit_CxxOnlyToolchainNoActionConfigs: a C-only model leaves _CXX_COMPILER
+// empty, so _cxx_action_configs returns [] and the C++ actions fall back to the
+// C driver (correct — no libstdc++ needed).
+func TestEmit_CxxOnlyToolchainNoActionConfigs(t *testing.T) {
+	m := &toolchain.Model{
+		HostPlatform:   toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+		TargetPlatform: toolchain.Platform{OS: "Linux", CPU: "x86_64"},
+		Languages: map[string]toolchain.Language{
+			"C": {CompilerID: "GNU", CompilerPath: "/usr/bin/cc"},
+		},
+	}
+	b, err := Emit(m, Config{PackageName: "toolchain"})
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	cfg := string(b.Files["cc_toolchain_config.bzl"])
+	if !strings.Contains(cfg, `_CXX_COMPILER = ""`) {
+		t.Errorf("C-only toolchain must leave _CXX_COMPILER empty:\n%s", cfg)
+	}
 }
 
 // TestEmit_HardeningFeaturesOff is the no-op baseline: with
