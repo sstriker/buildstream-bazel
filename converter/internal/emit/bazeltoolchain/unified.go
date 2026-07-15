@@ -301,9 +301,14 @@ func emitToolchainsBuild(plats []PlatformToolchain, cfg UnifiedConfig) ([]byte, 
 		emitListAttr(&b, "cxx_builtin_include_directories", unionStrings(cMost.BuiltinIncludeDirs, cxx.BuiltinIncludeDirs))
 		emitDictAttr(&b, "tool_paths", tools)
 		// The C++ compiler driver, wired to the C++ actions via action_config
-		// (the C driver in tool_paths["gcc"] can't link libstdc++). Empty for a
-		// C-only platform → those actions fall back to the C driver.
-		fmt.Fprintf(&b, "    cxx_compiler = %q,\n", cxx.CompilerPath)
+		// (the C driver in tool_paths["gcc"] can't link libstdc++). Omitted for
+		// a C-only platform — the attr defaults to "", so _cxx_action_configs
+		// returns [] and the C++ actions fall back to the C driver; omitting it
+		// also keeps toolchains/BUILD.bazel byte-minimal (as builtin_sysroot
+		// does above).
+		if cxx.CompilerPath != "" {
+			fmt.Fprintf(&b, "    cxx_compiler = %q,\n", cxx.CompilerPath)
+		}
 		emitListAttr(&b, "compile_flags", cMost.BaseFlags)
 		emitListAttr(&b, "cxx_flags", cxx.BaseFlags)
 		emitListAttr(&b, "link_flags", cMost.LinkFlags)

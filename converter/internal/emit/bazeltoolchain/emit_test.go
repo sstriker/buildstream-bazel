@@ -185,10 +185,10 @@ func TestEmit_CXXCompilerRoutedToCXXActions(t *testing.T) {
 	}
 }
 
-// TestEmit_CxxOnlyToolchainNoActionConfigs: a C-only model leaves _CXX_COMPILER
-// empty, so _cxx_action_configs returns [] and the C++ actions fall back to the
-// C driver (correct — no libstdc++ needed).
-func TestEmit_CxxOnlyToolchainNoActionConfigs(t *testing.T) {
+// TestEmit_COnlyModelNoActionConfigs: a model with only the C language leaves
+// _CXX_COMPILER empty, so _cxx_action_configs returns [] and the C++ actions
+// fall back to the C driver (correct — no libstdc++ needed).
+func TestEmit_COnlyModelNoActionConfigs(t *testing.T) {
 	m := &toolchain.Model{
 		HostPlatform:   toolchain.Platform{OS: "Linux", CPU: "x86_64"},
 		TargetPlatform: toolchain.Platform{OS: "Linux", CPU: "x86_64"},
