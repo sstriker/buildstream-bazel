@@ -300,6 +300,15 @@ func emitToolchainsBuild(plats []PlatformToolchain, cfg UnifiedConfig) ([]byte, 
 		}
 		emitListAttr(&b, "cxx_builtin_include_directories", unionStrings(cMost.BuiltinIncludeDirs, cxx.BuiltinIncludeDirs))
 		emitDictAttr(&b, "tool_paths", tools)
+		// The C++ compiler driver, wired to the C++ actions via action_config
+		// (the C driver in tool_paths["gcc"] can't link libstdc++). Omitted for
+		// a C-only platform — the attr defaults to "", so _cxx_action_configs
+		// returns [] and the C++ actions fall back to the C driver; omitting it
+		// also keeps toolchains/BUILD.bazel byte-minimal (as builtin_sysroot
+		// does above).
+		if cxx.CompilerPath != "" {
+			fmt.Fprintf(&b, "    cxx_compiler = %q,\n", cxx.CompilerPath)
+		}
 		emitListAttr(&b, "compile_flags", cMost.BaseFlags)
 		emitListAttr(&b, "cxx_flags", cxx.BaseFlags)
 		emitListAttr(&b, "link_flags", cMost.LinkFlags)
@@ -364,81 +373,10 @@ func emitUnifiedConfigBzl(plats []PlatformToolchain, cfg UnifiedConfig) ([]byte,
 	// Bazel 9 stripped the cc_common built-in global; load it from rules_cc.
 	b.WriteString(`load("@rules_cc//cc/common:cc_common.bzl", "cc_common")` + "\n")
 	b.WriteString(`load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl",` + "\n")
-	b.WriteString(`     "feature", "flag_group", "flag_set", "tool_path")` + "\n\n")
+	b.WriteString(`     "action_config", "feature", "flag_group", "flag_set", "tool", "tool_path")` + "\n\n")
 
-	b.WriteString(`_ALL_COMPILE_ACTIONS = [
-    "assemble",
-    "preprocess-assemble",
-    "c-compile",
-    "c++-compile",
-    "c++-header-parsing",
-    "c++-module-compile",
-    "c++-module-codegen",
-    "lto-backend",
-]
-
-# C++-only subset — routes ctx.attr.cxx_flags (CMAKE_CXX_FLAGS) to C++
-# compile actions specifically. cmake puts -std=c++20 / -stdlib=... into
-# CMAKE_CXX_FLAGS rather than CMAKE_C_FLAGS.
-_CXX_COMPILE_ACTIONS = [
-    "c++-compile",
-    "c++-header-parsing",
-    "c++-module-compile",
-    "c++-module-codegen",
-]
-
-# Non-C++ subset (_ALL_COMPILE_ACTIONS minus _CXX_COMPILE_ACTIONS) — routes
-# ctx.attr.compile_flags (CMAKE_C_FLAGS) to c-compile specifically, plus
-# assemble / LTO. Keeping each language's flags on its own actions matches
-# cmake per source language; the old shared slot leaked a C-only flag onto
-# C++ compiles.
-_C_COMPILE_ACTIONS = [
-    "assemble",
-    "preprocess-assemble",
-    "c-compile",
-    "lto-backend",
-]
-
-_ALL_LINK_ACTIONS = [
-    "c++-link-executable",
-    "c++-link-dynamic-library",
-    "c++-link-nodeps-dynamic-library",
-]
-
-def _feature_with_flags(name, enabled, compile_flags, link_flags):
-    flag_sets = []
-    if compile_flags:
-        flag_sets.append(flag_set(
-            actions = _ALL_COMPILE_ACTIONS,
-            flag_groups = [flag_group(flags = compile_flags)],
-        ))
-    if link_flags:
-        flag_sets.append(flag_set(
-            actions = _ALL_LINK_ACTIONS,
-            flag_groups = [flag_group(flags = link_flags)],
-        ))
-    return feature(name = name, enabled = enabled, flag_sets = flag_sets)
-
-def _default_compile_flags_feature(compile_flags, cxx_flags, link_flags):
-    flag_sets = []
-    if compile_flags:
-        flag_sets.append(flag_set(
-            actions = _C_COMPILE_ACTIONS,
-            flag_groups = [flag_group(flags = compile_flags)],
-        ))
-    if cxx_flags:
-        flag_sets.append(flag_set(
-            actions = _CXX_COMPILE_ACTIONS,
-            flag_groups = [flag_group(flags = cxx_flags)],
-        ))
-    if link_flags:
-        flag_sets.append(flag_set(
-            actions = _ALL_LINK_ACTIONS,
-            flag_groups = [flag_group(flags = link_flags)],
-        ))
-    return feature(name = "default_compile_flags", enabled = True, flag_sets = flag_sets)
-
-def _impl(ctx):
+	writeUnifiedConfigConstants(&b)
+	b.WriteString(`def _impl(ctx):
     features = [
         _default_compile_flags_feature(ctx.attr.compile_flags, ctx.attr.cxx_flags, ctx.attr.link_flags),
 `)
@@ -459,6 +397,7 @@ def _impl(ctx):
         abi_libc_version = ctx.attr.abi_libc_version,
         builtin_sysroot = ctx.attr.builtin_sysroot or None,
         tool_paths = [tool_path(name = name, path = path) for name, path in ctx.attr.tool_paths.items()],
+        action_configs = _cxx_action_configs(ctx.attr.cxx_compiler),
         cxx_builtin_include_directories = ctx.attr.cxx_builtin_include_directories,
         features = features,
     )]
@@ -477,6 +416,7 @@ cc_toolchain_config = rule(
         "builtin_sysroot": attr.string(default = ""),
         "cxx_builtin_include_directories": attr.string_list(default = []),
         "tool_paths": attr.string_dict(default = {}),
+        "cxx_compiler": attr.string(default = ""),
         "compile_flags": attr.string_list(default = []),
         "cxx_flags": attr.string_list(default = []),
         "link_flags": attr.string_list(default = []),
@@ -566,4 +506,111 @@ func defaultLibcFor(osName string) string {
 		return "macosx"
 	}
 	return "unknown"
+}
+
+// writeUnifiedConfigConstants emits the static action-set constants and
+// feature/action-config builder helpers shared by the unified toolchain
+// config rule (byte-identical across platforms; only the _impl feature list
+// is attr-driven). Extracted so emitUnifiedConfigBzl stays under the
+// function-length lint.
+func writeUnifiedConfigConstants(b *bytes.Buffer) {
+	b.WriteString(`_ALL_COMPILE_ACTIONS = [
+    "assemble",
+    "preprocess-assemble",
+    "c-compile",
+    "c++-compile",
+    "c++-header-parsing",
+    "c++-module-compile",
+    "c++-module-codegen",
+    "lto-backend",
+]
+
+# C++-only subset — routes ctx.attr.cxx_flags (CMAKE_CXX_FLAGS) to C++
+# compile actions specifically. cmake puts -std=c++20 / -stdlib=... into
+# CMAKE_CXX_FLAGS rather than CMAKE_C_FLAGS.
+_CXX_COMPILE_ACTIONS = [
+    "c++-compile",
+    "c++-header-parsing",
+    "c++-module-compile",
+    "c++-module-codegen",
+]
+
+# Non-C++ subset (_ALL_COMPILE_ACTIONS minus _CXX_COMPILE_ACTIONS) — routes
+# ctx.attr.compile_flags (CMAKE_C_FLAGS) to c-compile specifically, plus
+# assemble / LTO. Keeping each language's flags on its own actions matches
+# cmake per source language; the old shared slot leaked a C-only flag onto
+# C++ compiles.
+_C_COMPILE_ACTIONS = [
+    "assemble",
+    "preprocess-assemble",
+    "c-compile",
+    "lto-backend",
+]
+
+_ALL_LINK_ACTIONS = [
+    "c++-link-executable",
+    "c++-link-dynamic-library",
+    "c++-link-nodeps-dynamic-library",
+]
+
+def _feature_with_flags(name, enabled, compile_flags, link_flags):
+    flag_sets = []
+    if compile_flags:
+        flag_sets.append(flag_set(
+            actions = _ALL_COMPILE_ACTIONS,
+            flag_groups = [flag_group(flags = compile_flags)],
+        ))
+    if link_flags:
+        flag_sets.append(flag_set(
+            actions = _ALL_LINK_ACTIONS,
+            flag_groups = [flag_group(flags = link_flags)],
+        ))
+    return feature(name = name, enabled = enabled, flag_sets = flag_sets)
+
+def _default_compile_flags_feature(compile_flags, cxx_flags, link_flags):
+    flag_sets = []
+    if compile_flags:
+        flag_sets.append(flag_set(
+            actions = _C_COMPILE_ACTIONS,
+            flag_groups = [flag_group(flags = compile_flags)],
+        ))
+    if cxx_flags:
+        flag_sets.append(flag_set(
+            actions = _CXX_COMPILE_ACTIONS,
+            flag_groups = [flag_group(flags = cxx_flags)],
+        ))
+    if link_flags:
+        flag_sets.append(flag_set(
+            actions = _ALL_LINK_ACTIONS,
+            flag_groups = [flag_group(flags = link_flags)],
+        ))
+    return feature(name = "default_compile_flags", enabled = True, flag_sets = flag_sets)
+
+# C++ actions run the C++ compiler driver (g++/clang++) rather than the single
+# tool_paths "gcc" slot: the C driver compiles .cpp by extension but does NOT
+# link libstdc++, so a C++ binary linked through it fails with undefined std::
+# symbols. Routing the C++ compile AND link actions here links every C++ (and
+# mixed) target with the C++ driver, matching cmake's linker-language choice.
+# Empty cxx_compiler (no C++ language) → no configs → those actions fall back
+# to the C driver, correct for a C-only toolchain.
+_CXX_ACTION_NAMES = [
+    "c++-compile",
+    "c++-header-parsing",
+    "c++-module-compile",
+    "c++-module-codegen",
+    "c++-link-executable",
+    "c++-link-dynamic-library",
+    "c++-link-nodeps-dynamic-library",
+]
+
+def _cxx_action_configs(cxx_compiler):
+    if not cxx_compiler:
+        return []
+    cxx_tools = [tool(path = cxx_compiler)]
+    return [
+        action_config(action_name = name, enabled = True, tools = cxx_tools)
+        for name in _CXX_ACTION_NAMES
+    ]
+
+`)
 }

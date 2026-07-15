@@ -362,6 +362,32 @@ def _default_compile_flags_feature(compile_flags, cxx_flags, link_flags):
         ))
     return feature(name = "default_compile_flags", enabled = True, flag_sets = flag_sets)
 
+# C++ actions run the C++ compiler driver (g++/clang++) rather than the single
+# tool_paths "gcc" slot: the C driver compiles .cpp by extension but does NOT
+# link libstdc++, so a C++ binary linked through it fails with undefined std::
+# symbols. Routing the C++ compile AND link actions here links every C++ (and
+# mixed) target with the C++ driver, matching cmake's linker-language choice.
+# Empty cxx_compiler (no C++ language) → no configs → those actions fall back
+# to the C driver, correct for a C-only toolchain.
+_CXX_ACTION_NAMES = [
+    "c++-compile",
+    "c++-header-parsing",
+    "c++-module-compile",
+    "c++-module-codegen",
+    "c++-link-executable",
+    "c++-link-dynamic-library",
+    "c++-link-nodeps-dynamic-library",
+]
+
+def _cxx_action_configs(cxx_compiler):
+    if not cxx_compiler:
+        return []
+    cxx_tools = [tool(path = cxx_compiler)]
+    return [
+        action_config(action_name = name, enabled = True, tools = cxx_tools)
+        for name in _CXX_ACTION_NAMES
+    ]
+
 `)
 }
 
@@ -373,7 +399,7 @@ func emitConfigBzl(m *toolchain.Model, rt *toolchain.ResolvedToolchain, cfg Conf
 	// create_cc_toolchain_config_info resolves.
 	buf.WriteString(`load("@rules_cc//cc/common:cc_common.bzl", "cc_common")` + "\n")
 	buf.WriteString(`load("@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl",` + "\n")
-	buf.WriteString(`     "feature", "flag_group", "flag_set", "tool_path")` + "\n")
+	buf.WriteString(`     "action_config", "feature", "flag_group", "flag_set", "tool", "tool_path")` + "\n")
 	buf.WriteString("\n")
 
 	cMost := primaryLanguage(m)
@@ -399,6 +425,12 @@ func emitConfigBzl(m *toolchain.Model, rt *toolchain.ResolvedToolchain, cfg Conf
 	includes := unionStrings(cMost.BuiltinIncludeDirs, cxx.BuiltinIncludeDirs)
 	emitStringListConst(&buf, "_CXX_BUILTIN_INCLUDE_DIRECTORIES", includes)
 	emitStringMapConst(&buf, "_TOOL_PATHS", tools)
+	// The C++ compiler driver (g++/clang++). tool_paths has a single "gcc"
+	// slot used for every action, but the C driver doesn't link libstdc++ —
+	// so C++ compile+link actions get their own action_config pointing here
+	// (empty → no C++ language probed → those actions fall back to the C
+	// driver, correct for a C-only toolchain).
+	fmt.Fprintf(&buf, "_CXX_COMPILER = %q\n", cxx.CompilerPath)
 	buf.WriteString("\n")
 
 	// Always-on flags (default_compile_flags).
@@ -468,6 +500,7 @@ func emitConfigBzl(m *toolchain.Model, rt *toolchain.ResolvedToolchain, cfg Conf
         abi_version = _ABI_VERSION,
         abi_libc_version = _ABI_LIBC_VERSION,
         tool_paths = [tool_path(name = name, path = path) for name, path in _TOOL_PATHS.items()],
+        action_configs = _cxx_action_configs(_CXX_COMPILER),
         cxx_builtin_include_directories = _CXX_BUILTIN_INCLUDE_DIRECTORIES,
         features = features,
     )]
@@ -588,13 +621,15 @@ func primaryLanguage(m *toolchain.Model) toolchain.Language {
 
 // mergedTools fills in the standard Bazel tool_paths slots from the
 // model's Tools struct, falling back to PATH names ("ar", "strip",
-// ...) when cmake didn't set the variable. Compilers come from the
-// per-language CompilerPath.
+// ...) when cmake didn't set the variable. The single "gcc"/"cpp" slot
+// is the PRIMARY language's compiler (primaryLanguage: C when the model
+// has C, else the sole language — e.g. the CXX driver for a C++-only
+// model). tool_paths has no per-language compiler slot, so when a model
+// has BOTH C and C++ the C++ compiler is wired separately via
+// action_configs on the C++ actions (see _cxx_action_configs).
 func mergedTools(m *toolchain.Model) map[string]string {
 	c := primaryLanguage(m)
-	cxx := m.Languages["CXX"]
-
-	out := map[string]string{
+	return map[string]string{
 		"ar":      orDefault(m.Tools.AR, "/usr/bin/ar"),
 		"ld":      orDefault(m.Tools.Linker, "/usr/bin/ld"),
 		"cpp":     orDefault(c.CompilerPath, "/usr/bin/cpp"),
@@ -605,13 +640,6 @@ func mergedTools(m *toolchain.Model) map[string]string {
 		"objdump": orDefault(m.Tools.Objdump, "/usr/bin/objdump"),
 		"strip":   orDefault(m.Tools.Strip, "/usr/bin/strip"),
 	}
-	if cxx.CompilerPath != "" {
-		// cc_toolchain_config doesn't have a separate g++ slot; the
-		// gcc tool path is used for both. CXX flags differ at the
-		// flag-set level, not the tool level.
-		_ = cxx
-	}
-	return out
 }
 
 func unionStrings(a, b []string) []string {

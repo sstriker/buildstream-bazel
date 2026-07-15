@@ -238,10 +238,25 @@ func TestEmitUnified_CXXFlagsRouteToCXXOnlyActions(t *testing.T) {
 		t.Errorf("unified default_compile_flags must route C base flags to _C_COMPILE_ACTIONS, not _ALL_COMPILE_ACTIONS:\n%s", feat)
 	}
 
-	// And the rule instance carries the CXX-only flag bytes.
+	// The C++ compiler is wired to the C++ actions via action_config so C++
+	// links pull libstdc++ (the tool_paths "gcc" slot is the C driver).
+	for _, want := range []string{
+		`def _cxx_action_configs(cxx_compiler):`,
+		`action_configs = _cxx_action_configs(ctx.attr.cxx_compiler)`,
+		`"cxx_compiler": attr.string(default = "")`,
+	} {
+		if !strings.Contains(cfg, want) {
+			t.Errorf("cc_toolchain_config.bzl missing %q\n%s", want, cfg)
+		}
+	}
+
+	// And the rule instance carries the CXX-only flag bytes + the C++ compiler.
 	tcB := string(b.Files["toolchains/BUILD.bazel"])
 	if !strings.Contains(tcB, "cxx_flags = [\n        \"-std=c++20\",") {
 		t.Errorf("toolchains/BUILD.bazel missing cxx_flags = [\"-std=c++20\"]:\n%s", tcB)
+	}
+	if !strings.Contains(tcB, `cxx_compiler = "/usr/bin/clang++"`) {
+		t.Errorf("toolchains/BUILD.bazel missing cxx_compiler = /usr/bin/clang++:\n%s", tcB)
 	}
 }
 
