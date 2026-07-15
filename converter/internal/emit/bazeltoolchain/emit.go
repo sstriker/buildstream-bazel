@@ -431,9 +431,10 @@ func emitConfigBzl(m *toolchain.Model, rt *toolchain.ResolvedToolchain, cfg Conf
 	// route per language: _COMPILE_FLAGS (CMAKE_C_FLAGS) at
 	// _C_COMPILE_ACTIONS (c-compile + assemble/LTO) and _CXX_FLAGS
 	// (CMAKE_CXX_FLAGS) at _CXX_COMPILE_ACTIONS — mirroring cmake, which
-	// compiles each source language with its own CMAKE_<LANG>_FLAGS. A
-	// single shared _ALL_COMPILE_ACTIONS slot would leak a C-only flag
-	// (-std=gnu11) onto C++ and drop a C++-only flag (-std=c++20) from C.
+	// compiles each source language with its own CMAKE_<LANG>_FLAGS.
+	// Routing _COMPILE_FLAGS (the full CMAKE_C_FLAGS) at the shared
+	// _ALL_COMPILE_ACTIONS instead leaked a C-only flag (-std=gnu11)
+	// onto C++ compiles, which already carry the full CMAKE_CXX_FLAGS.
 	writeToolchainConfigConstants(&buf)
 	buf.WriteString(`def _impl(ctx):
     features = [
