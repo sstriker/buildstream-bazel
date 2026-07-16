@@ -517,3 +517,36 @@ func TestLookupArchiveBasename(t *testing.T) {
 		t.Errorf("non-archive token must not resolve: %v", ex)
 	}
 }
+
+// TestLookupArchiveBasename_LinkLibrariesArchiveFragment covers the index
+// asymmetry fix: an export whose archive is named ONLY by an archive-shaped
+// link_libraries entry (a `:libNAME.a` label fragment or a bare `libNAME.a`),
+// with no link_paths, must still be reachable by the consumer's basename
+// fallback. Before the fix, indexLinkLibs canon-indexed such an entry verbatim
+// (`:libfoo.a`) instead of under its provided name (`foo`), so
+// LookupArchiveBasename — which strips to the provided name — never found it.
+func TestLookupArchiveBasename_LinkLibrariesArchiveFragment(t *testing.T) {
+	r, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				// pkg-config-sourced export: archive named by a leading-colon
+				// label fragment, no link_paths.
+				{CMakeTarget: "Pkg::foo", BazelLabel: "//p:foo", LinkLibraries: []string{":libfoo.a"}},
+				// bare libNAME.a fragment, hyphen where the wrapper name would
+				// use underscore — must fold and resolve.
+				{CMakeTarget: "Pkg::bar", BazelLabel: "//p:bar", LinkLibraries: []string{"libbar-baz.a"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ex := r.LookupArchiveBasename("/opt/prefix/lib/libfoo.a"); ex == nil || ex.BazelLabel != "//p:foo" {
+		t.Errorf(":libfoo.a link_libraries fragment must resolve libfoo.a to //p:foo: %v", ex)
+	}
+	if ex := r.LookupArchiveBasename("/opt/prefix/lib/libbar_baz.a"); ex == nil || ex.BazelLabel != "//p:bar" {
+		t.Errorf("libbar-baz.a link_libraries fragment must resolve libbar_baz.a to //p:bar via fold: %v", ex)
+	}
+}

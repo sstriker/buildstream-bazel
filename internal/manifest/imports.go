@@ -617,7 +617,21 @@ func (r *Resolver) indexLinkLibs(ex *Export, firstWins bool) {
 	}
 	for _, ll := range ex.LinkLibraries {
 		put(r.byLinkLib, ll)
-		if t := strings.TrimSpace(ll); t != "" && !strings.HasPrefix(t, "-") {
+		t := strings.TrimSpace(ll)
+		if t == "" || strings.HasPrefix(t, "-") {
+			continue
+		}
+		// An archive-shaped entry (a `:libfoo.a` label fragment, or a bare
+		// `libfoo.a`) canon-indexes under the NAME it provides ("foo"), the
+		// same normalization LinkPaths basenames get above and the consumer's
+		// LookupArchiveBasename applies — otherwise a `:libfoo.a` would index
+		// under the useless canon key ":libfoo.a" and an export whose archive
+		// is named ONLY by a link_libraries fragment (no link_paths, e.g. a
+		// pkg-config-sourced export) would be unreachable by the basename
+		// fallback. A bare provided name ("foo") indexes as itself.
+		if name := ProvidedLibName(t); name != "" {
+			put(r.byLinkLibCanon, CanonLibName(name))
+		} else {
 			put(r.byLinkLibCanon, CanonLibName(t))
 		}
 	}
