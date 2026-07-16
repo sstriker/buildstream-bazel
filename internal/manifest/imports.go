@@ -291,6 +291,7 @@ func LoadMerged(paths ...string) (*Resolver, error) {
 		byUmbrellaIncRt: map[string]string{},
 		byToolBasename:  map[string]string{},
 		byToolPath:      map[string]string{},
+		dependedOn:      map[string]bool{},
 	}
 	for _, p := range paths {
 		if p == "" {
@@ -361,6 +362,7 @@ func Index(im *Imports) (*Resolver, error) {
 		byUmbrellaIncRt: map[string]string{},
 		byToolBasename:  map[string]string{},
 		byToolPath:      map[string]string{},
+		dependedOn:      map[string]bool{},
 	}
 	for _, el := range im.Elements {
 		if el == nil || el.Name == "" {
@@ -427,6 +429,7 @@ type Resolver struct {
 	byUmbrellaIncRt map[string]string  // find_package include root → umbrella label
 	byToolBasename  map[string]string  // codegen tool basename → bazel label
 	byToolPath      map[string]string  // codegen tool abs/relative-multi path → label
+	dependedOn      map[string]bool    // every label that appears in some Export.Deps — the "is depended on by anyone" set
 }
 
 // addTool registers one Tool entry into the resolver's by-basename / by-path
@@ -501,6 +504,7 @@ func NewResolver() *Resolver {
 		byUmbrellaIncRt: map[string]string{},
 		byToolBasename:  map[string]string{},
 		byToolPath:      map[string]string{},
+		dependedOn:      map[string]bool{},
 	}
 }
 
@@ -596,6 +600,23 @@ func (r *Resolver) LookupArchiveBasename(path string) *Export {
 	return r.byLinkLibCanon[CanonLibName(name)]
 }
 
+// ArchiveIsOrphan reports whether a resolved export's label is an ORPHAN — no
+// other export declares a dependency on it. An orphan archive reaches a
+// consuming target's flattened link line but re-enters through nothing: no
+// export's Deps carries it, so Bazel transitivity via a directly-linked wrapper
+// can never supply it. The consumer's link-fragment pass uses this to decide
+// the narrow case it must wire directly (rather than leave to transitive
+// re-entry): a non-orphan transitive archive stays suppressed — it arrives
+// through whoever depends on it — while a true orphan is attributed as a
+// safety net for a harvest completeness gap. Returns false for a nil resolver
+// (no manifest → nothing to defend) and for the empty label.
+func (r *Resolver) ArchiveIsOrphan(label string) bool {
+	if r == nil || label == "" {
+		return false
+	}
+	return !r.dependedOn[label]
+}
+
 // indexLinkLibs registers an export under its link-library keys: the exact
 // byLinkLib index (verbatim names, for the -l<name> redirect) and the
 // canonical byLinkLibCanon index — keyed by every LinkLibraries name AND by
@@ -604,6 +625,14 @@ func (r *Resolver) LookupArchiveBasename(path string) *Export {
 // firstWins picks the collision policy: Index (true, first-write-wins) vs
 // LoadMerged (false, last-wins), matching the existing byLinkLib behavior.
 func (r *Resolver) indexLinkLibs(ex *Export, firstWins bool) {
+	// Every label an export lists in Deps is "depended on by someone" — the set
+	// ArchiveIsOrphan consults. A link-line archive whose export label is in
+	// this set re-enters transitively through whoever declared the dep, so the
+	// consumer's safety net leaves it suppressed; one that is NOT in it is an
+	// orphan the safety net must wire directly.
+	for _, d := range ex.Deps {
+		r.dependedOn[d] = true
+	}
 	put := func(m map[string]*Export, k string) {
 		if k == "" {
 			return

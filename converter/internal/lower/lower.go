@@ -3752,6 +3752,11 @@ func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 			anchored = manifestPrefixAnchor + path[len(hostPrefix)+1:]
 		}
 		if imports.LookupLinkPath(anchored) != nil {
+			// Resolved → don't tag a gap. Attribution is not this pass's job:
+			// a directly-linked archive is wired by the trace pass, a non-orphan
+			// transitive re-enters via its wrapper, and a true orphan is wired by
+			// attributeOrphanLinkArchives AFTER the trace pass (so it can't steal
+			// scope from a trace arm — see there).
 			continue
 		}
 		if name := systemLibName(anchored); name != "" {
@@ -3767,8 +3772,8 @@ func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 		// The exact path missed byLinkPath, but the archive basename
 		// (libNAME.a → NAME) may still name a harvested export the manifest
 		// carries under a different path spelling. Manifest-known → don't tag
-		// it a gap (the trace pass attributes it if directly linked; a
-		// transitive one re-enters via its wrapper).
+		// it a gap; orphan wiring for it happens in attributeOrphanLinkArchives
+		// after the trace pass, same as the exact-path branch above.
 		if imports.LookupArchiveBasename(anchored) != nil {
 			continue
 		}
@@ -3809,6 +3814,80 @@ func lowerLinkAttribution(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc 
 	// on disk, so it never appears as a link fragment on any consumer). The
 	// router's seen-map dedups against the codemodel deps already wired.
 	attributeDirectTraceDeps(irt, tt, lc)
+
+	// Safety net for orphan link-line archives. Runs LAST, after the trace pass,
+	// so its router's seen-map already carries every trace- and codemodel-wired
+	// dep (plus ride-along Export.Deps). A manifest-resolvable archive on the
+	// flattened link line that no export depends on (an orphan) re-enters through
+	// nothing; without this it would drop silently. Ordering after the trace pass
+	// is load-bearing: an orphan that IS also a direct trace arm is already wired
+	// there with its keyword scope, so the seen-map makes this a no-op and the
+	// net never steals scope from a trace arm. See attributeOrphanLinkArchives.
+	attributeOrphanLinkArchives(irt, t, lc)
+}
+
+// attributeOrphanLinkArchives wires ORPHAN archives on a target's flattened link
+// line — manifest-resolvable ones that no export declares a dep on
+// (Resolver.ArchiveIsOrphan), so Bazel transitivity through a directly-linked
+// wrapper can never supply them. It is the consumer safety net for a harvest
+// completeness gap (the root fix records the missing X→foo edge, which turns the
+// archive into a non-orphan that re-enters normally; until then, this keeps it
+// from vanishing). Two properties keep it from over-attributing:
+//
+//   - Runs AFTER attributeDirectTraceDeps, so the router's seen-map holds the
+//     trace-wired deps: an orphan that is ALSO a direct trace arm is already
+//     wired (with the trace's PUBLIC/PRIVATE scope) and addExport is a no-op —
+//     the net never downgrades a trace arm's scope.
+//   - Skips NON-orphans: a transitive archive some export depends on re-enters
+//     through that wrapper, so deps stay trace-driven and every transitive .a is
+//     not blindly added as a direct dep.
+//
+// Scope is PRIVATE (implementation deps where the rule kind allows): an archive
+// reaching only the flattened link line, never the target_link_libraries trace,
+// is by cmake's modeling a private link artifact — a PUBLIC/INTERFACE link would
+// surface in the trace and be wired there.
+func attributeOrphanLinkArchives(irt *ir.Target, t *fileapi.Target, lc targetLowerCtx) {
+	if t.Link == nil {
+		return
+	}
+	imports := lc.imports
+	if imports.Empty() {
+		return
+	}
+	hostPrefix := lc.hostPrefix
+	rt := newLinkDepRouter(irt)
+	for _, frag := range t.Link.CommandFragments {
+		if frag.Role != "libraries" {
+			continue
+		}
+		path := strings.TrimSpace(frag.Fragment)
+		if path == "" || !filepath.IsAbs(path) {
+			continue // non-abs shapes are lowerLinkFragments' concern (linkopts / nested)
+		}
+		anchored := path
+		if hostPrefix != "" && strings.HasPrefix(path, hostPrefix+string(filepath.Separator)) {
+			anchored = manifestPrefixAnchor + path[len(hostPrefix)+1:]
+		}
+		export := imports.LookupLinkPath(anchored)
+		if export == nil {
+			// A toolchain system-library path is owned by the toolchain (or, if a
+			// producer claims the name, was wired by the trace pass); not an
+			// archive orphan. Only the custom-prefix archive falls to basename.
+			if systemLibName(anchored) != "" {
+				continue
+			}
+			export = imports.LookupArchiveBasename(anchored)
+		}
+		if export == nil {
+			continue // unresolved: lowerLinkFragments already tagged it a gap
+		}
+		if !imports.ArchiveIsOrphan(export.BazelLabel) {
+			continue // non-orphan: re-enters via whoever depends on it
+		}
+		// Orphan → wire it. addExport is a no-op if the trace pass already wired
+		// the label (the orphan-and-direct-trace-arm case), preserving its scope.
+		rt.addExport(export, true)
+	}
 }
 
 // umbrellaReanchor derives the workspace-promotion umbrella prefix

@@ -550,3 +550,43 @@ func TestLookupArchiveBasename_LinkLibrariesArchiveFragment(t *testing.T) {
 		t.Errorf("libbar-baz.a link_libraries fragment must resolve libbar_baz.a to //p:bar via fold: %v", ex)
 	}
 }
+
+// TestArchiveIsOrphan pins the depended-on set the consumer safety net keys on:
+// a label some export lists in Deps is NON-orphan (re-enters transitively); one
+// no export depends on is an orphan the consumer must wire directly.
+func TestArchiveIsOrphan(t *testing.T) {
+	r, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				// p declares a dep on pdep → pdep is depended on (non-orphan).
+				{CMakeTarget: "Pkg::p", BazelLabel: "//p:p", Deps: []string{"//p:pdep"}, LinkPaths: []string{"/opt/prefix/lib/libp.a"}},
+				{CMakeTarget: "Pkg::pdep", BazelLabel: "//p:pdep", LinkPaths: []string{"/opt/prefix/lib/libpdep.a"}},
+				// orphan: no export depends on its label.
+				{CMakeTarget: "Pkg::orphan", BazelLabel: "//p:orphan", LinkPaths: []string{"/opt/prefix/lib/liborphan.a"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ArchiveIsOrphan("//p:pdep") {
+		t.Errorf("//p:pdep is depended on by //p:p; must not be an orphan")
+	}
+	if !r.ArchiveIsOrphan("//p:orphan") {
+		t.Errorf("//p:orphan is depended on by no export; must be an orphan")
+	}
+	// A label the manifest doesn't know at all is trivially depended on by
+	// nobody → orphan; and the empty label / nil resolver are non-orphan.
+	if !r.ArchiveIsOrphan("//p:unknown") {
+		t.Errorf("unknown label must be an orphan (depended on by no export)")
+	}
+	if r.ArchiveIsOrphan("") {
+		t.Errorf("empty label must not be an orphan")
+	}
+	var nilR *manifest.Resolver
+	if nilR.ArchiveIsOrphan("//p:p") {
+		t.Errorf("nil resolver must report non-orphan")
+	}
+}

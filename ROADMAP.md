@@ -32,6 +32,20 @@ transition cleanly.
 
 ## Next
 
+- **Harvest completeness: record the missing X→foo archive dep edge (orphan
+  root fix).** When an export X's `INTERFACE_LINK_LIBRARIES` names a separately-
+  harvested archive by a raw `libfoo.a` / `:libfoo.a` fragment (not `NS::foo`),
+  `applyLinkEntry` currently ABSORBS foo into X's own `link_libraries` /
+  `link_paths` instead of recording a dep edge X→foo — so foo's own export ends
+  up depended on by no one (an orphan). The consumer now WIRES such orphans
+  defensively (`Resolver.ArchiveIsOrphan` + `attributeOrphanLinkArchives`, the
+  safety net), but the principled fix is producer-side: mirror `resolvePCForeign`
+  — in a deferred pass (after all `byPath` SELF-claims register), look up the
+  archive's owner and record the edge, so foo becomes a non-orphan that re-enters
+  transitively with no consumer special-casing. Turns the safety net into a
+  rarely-fired backstop and keeps the emitted graph minimal. Needs the deferred
+  pass + updates to the #819 `applyLinkEntry` absorb tests.
+
 - **Faithful SHARED-library conversion (`cc_shared_library`) — remaining:
   LLVM re-green + edge cases.** The WHOLE POINT of shared is FIDELITY —
   to build what cmake would actually build (the survey forces
