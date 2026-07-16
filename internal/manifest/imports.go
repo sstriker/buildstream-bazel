@@ -339,6 +339,7 @@ func LoadMerged(paths ...string) (*Resolver, error) {
 			}
 		}
 	}
+	r.rebuildDependedOn()
 	return r, nil
 }
 
@@ -397,6 +398,7 @@ func Index(im *Imports) (*Resolver, error) {
 			r.indexLinkLibs(ex, true)
 		}
 	}
+	r.rebuildDependedOn()
 	// Strict: a duplicate tool match is an authoring ambiguity, surfaced here
 	// rather than silently won by last-write (mirrors the cmake_target rule).
 	for _, tl := range im.Tools {
@@ -600,6 +602,23 @@ func (r *Resolver) LookupArchiveBasename(path string) *Export {
 	return r.byLinkLibCanon[CanonLibName(name)]
 }
 
+// rebuildDependedOn recomputes the "depended on by someone" set from the FINAL
+// winning exports (byCMakeTarget, which is last-wins in LoadMerged and unique in
+// Index) rather than accumulating it during indexing. Building it incrementally
+// would keep the Deps of an export that LoadMerged later OVERRODE (a base
+// convention replaced by a producer --exports-in doc): the stale dep would mark
+// a label non-orphan even though the winning export no longer depends on it,
+// suppressing the safety net and reintroducing the silent drop LoadMerged exists
+// to prevent. Called once after all exports are indexed.
+func (r *Resolver) rebuildDependedOn() {
+	r.dependedOn = map[string]bool{}
+	for _, ex := range r.byCMakeTarget {
+		for _, d := range ex.Deps {
+			r.dependedOn[d] = true
+		}
+	}
+}
+
 // ArchiveIsOrphan reports whether a resolved export's label is an ORPHAN — no
 // other export declares a dependency on it. An orphan archive reaches a
 // consuming target's flattened link line but re-enters through nothing: no
@@ -625,14 +644,6 @@ func (r *Resolver) ArchiveIsOrphan(label string) bool {
 // firstWins picks the collision policy: Index (true, first-write-wins) vs
 // LoadMerged (false, last-wins), matching the existing byLinkLib behavior.
 func (r *Resolver) indexLinkLibs(ex *Export, firstWins bool) {
-	// Every label an export lists in Deps is "depended on by someone" — the set
-	// ArchiveIsOrphan consults. A link-line archive whose export label is in
-	// this set re-enters transitively through whoever declared the dep, so the
-	// consumer's safety net leaves it suppressed; one that is NOT in it is an
-	// orphan the safety net must wire directly.
-	for _, d := range ex.Deps {
-		r.dependedOn[d] = true
-	}
 	put := func(m map[string]*Export, k string) {
 		if k == "" {
 			return

@@ -590,6 +590,61 @@ func TestExportDeps_NonOrphanTransitiveStaysSuppressed(t *testing.T) {
 	}
 }
 
+// TestAttributeOrphanLinkArchives_SkipsNestedArtifact pins that the orphan
+// safety net does NOT re-process a nested-cmake artifact lowerLinkFragments
+// already wired to its merged target. A sub-build archive inside cmakeBuild
+// (.../subbuild/libfoo.a) that shares a basename with an imported orphan export
+// (Pkg::foo, providing "foo") must resolve to the nested target ONLY — the net
+// must not additionally wire the external //elements/pkg:foo.
+func TestAttributeOrphanLinkArchives_SkipsNestedArtifact(t *testing.T) {
+	res, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				// Orphan import providing "foo" by basename — would resolve
+				// libfoo.a if the nested skip did not fire.
+				{CMakeTarget: "Pkg::foo", BazelLabel: "//elements/pkg:foo", LinkLibraries: []string{"foo"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tt := &fileapi.Target{
+		Link: &fileapi.TargetLink{
+			CommandFragments: []fileapi.CommandFragment{
+				{Fragment: "/b/subbuild/libfoo.a", Role: "libraries"},
+			},
+		},
+	}
+	newLC := func(nested map[string]string) targetLowerCtx {
+		return targetLowerCtx{
+			cmakeBuild: "/b",
+			imports:    res,
+			cc:         &codegenContext{NestedArtifactDeps: nested},
+		}
+	}
+	wired := func(irt *ir.Target) bool {
+		return stringSliceContains(irt.Deps, "//elements/pkg:foo") ||
+			stringSliceContains(irt.ImplementationDeps, "//elements/pkg:foo")
+	}
+	// Nested artifact present → the external foo must NOT be wired.
+	nestedTgt := &ir.Target{Name: "app", Kind: ir.KindCCBinary}
+	attributeOrphanLinkArchives(nestedTgt, tt, newLC(map[string]string{"subbuild/libfoo.a": "//nested:foo"}))
+	if wired(nestedTgt) {
+		t.Errorf("nested artifact basename-colliding with imported foo must NOT wire the external dep: deps=%v impl=%v", nestedTgt.Deps, nestedTgt.ImplementationDeps)
+	}
+	// Control: with no nested mapping, the same fragment IS an orphan import →
+	// wired. This proves the skip above is what suppresses the false positive,
+	// not some unrelated non-resolution.
+	plainTgt := &ir.Target{Name: "app", Kind: ir.KindCCBinary}
+	attributeOrphanLinkArchives(plainTgt, tt, newLC(nil))
+	if !wired(plainTgt) {
+		t.Errorf("without a nested mapping the orphan import must be wired (control): deps=%v", plainTgt.Deps)
+	}
+}
+
 // TestExportDeps_AbsolutePathBasenameFallback pins mode-2: a direct absolute
 // archive arm whose EXACT path isn't in the manifest's link_paths still
 // resolves to its wrapper by the archive basename — via a link_libraries name,

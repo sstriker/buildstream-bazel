@@ -112,6 +112,36 @@ func TestLoadMerged_ProducerWins(t *testing.T) {
 	}
 }
 
+// TestLoadMerged_OverriddenDepsNotStaleInOrphanSet pins that ArchiveIsOrphan
+// reflects the WINNING export's Deps, not a stale contribution from an
+// overridden one. The base convention makes Foo::foo depend on //p:dep; the
+// producer overrides Foo::foo to depend on nothing. //p:dep must then be an
+// orphan (the winner drops it) — otherwise the merged resolver would suppress
+// the consumer's safety net and reintroduce a silent drop.
+func TestLoadMerged_OverriddenDepsNotStaleInOrphanSet(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "imports.json")
+	prod := filepath.Join(dir, "exports.json")
+	if err := os.WriteFile(base, []byte(`{"version":1,"elements":[
+		{"name":"foo","exports":[
+			{"cmake_target":"Foo::foo","bazel_label":"//p:foo","deps":["//p:dep"]}]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Producer overrides Foo::foo and no longer depends on //p:dep.
+	if err := os.WriteFile(prod, []byte(`{"version":1,"elements":[
+		{"name":"foo","exports":[
+			{"cmake_target":"Foo::foo","bazel_label":"//p:foo"}]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := manifest.LoadMerged(base, prod)
+	if err != nil {
+		t.Fatalf("LoadMerged: %v", err)
+	}
+	if !r.ArchiveIsOrphan("//p:dep") {
+		t.Errorf("//p:dep must be an orphan: the winning Foo::foo dropped the dep; the overridden base export's stale dep must not linger")
+	}
+}
+
 // TestLoadMerged_SkipsEmptyPaths lets callers pass an empty base
 // (no --imports-manifest) followed by producer docs.
 func TestLoadMerged_SkipsEmptyPaths(t *testing.T) {

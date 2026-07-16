@@ -3864,6 +3864,18 @@ func attributeOrphanLinkArchives(irt *ir.Target, t *fileapi.Target, lc targetLow
 		if path == "" || !filepath.IsAbs(path) {
 			continue // non-abs shapes are lowerLinkFragments' concern (linkopts / nested)
 		}
+		// A nested-cmake artifact (a sub-build archive inside cmakeBuild) is
+		// already wired to its merged target by lowerLinkFragments. Skip it here
+		// so a basename collision with an imported archive (both `.../libfoo.a`)
+		// can't make LookupArchiveBasename resolve it and wire a spurious
+		// external dep on top of the nested one.
+		if len(lc.cc.NestedArtifactDeps) > 0 {
+			if rel, inside := relativeIfInside(lc.cmakeBuild, path); inside {
+				if _, hit := lc.cc.NestedArtifactDeps[rel]; hit {
+					continue
+				}
+			}
+		}
 		anchored := path
 		if hostPrefix != "" && strings.HasPrefix(path, hostPrefix+string(filepath.Separator)) {
 			anchored = manifestPrefixAnchor + path[len(hostPrefix)+1:]
