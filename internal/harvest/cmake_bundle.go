@@ -182,25 +182,69 @@ func (h *harvester) applyLinkEntry(r *row, v string) {
 		}
 		// An archive named by a bare filename (`libNAME.a`) or a `:libNAME.a`
 		// label fragment (the latter from a `$<$<cond>::libNAME.a>` genex
-		// unwrap) rather than a resolvable path. Emit the CONSISTENT export
-		// shape a well-formed export carries — the bare provided lib name in
-		// linkLibs PLUS the probed archive path in linkPaths when the install
-		// carries it — instead of dropping the raw fragment into linkLibs with
-		// NO linkPaths (which leaves the consumer's path-keyed lookup nothing
-		// to match, so the wrapper dep is never wired).
-		if name := manifest.ProvidedLibName(v); name != "" {
-			r.linkLibs = appendUnique(r.linkLibs, name)
-			var probed []string
-			for _, dir := range []string{filepath.Join(h.prefix, "lib"), filepath.Join(h.prefix, "lib64")} {
-				probed = h.appendProbedArtifacts(probed, dir, name)
-			}
-			for _, p := range probed {
-				r.linkPaths = appendUnique(r.linkPaths, p)
-			}
+		// unwrap) rather than a resolvable path. Defer it to
+		// resolveBundleArchives, which runs once every channel's SELF claims are
+		// registered: if ANOTHER row owns the archive it becomes a DIRECT dep
+		// edge on that owner (X links foo → X depends on foo's export, not X
+		// absorbing foo — otherwise foo's export is depended on by no one, an
+		// orphan); an unowned archive keeps the #819 consistent shape (bare name
+		// in linkLibs + probed path in linkPaths). Resolving here would be
+		// premature — first-parse order must not decide ownership.
+		if manifest.ProvidedLibName(v) != "" {
+			r.bundleArch = appendUnique(r.bundleArch, v)
 			return
 		}
 		// Bare library name (pthread, m, dl): the -l vocabulary.
 		r.linkLibs = appendUnique(r.linkLibs, v)
+	}
+}
+
+// resolveBundleArchives settles the INTERFACE_LINK_LIBRARIES archive fragments
+// applyLinkEntry deferred, once every channel's SELF claims (bundle
+// IMPORTED_LOCATIONs, .pc artifacts) are registered in byPath. An archive
+// ANOTHER row owns turns into a DIRECT dep edge on that owner: X's export names
+// foo's archive by a raw `libfoo.a` fragment instead of `NS::foo`, but it IS a
+// dependency — recording the edge keeps foo's own export from becoming an ORPHAN
+// (depended on by no one, the gap the consumer safety net exists to catch). The
+// provided name also joins the OWNER's link_libraries so the consumer's
+// LookupLinkLibrary redirect lands there. An unowned archive keeps the
+// consistent self-description shape (provided name in link_libraries + probed
+// path in link_paths) and claims its paths — the only description the prefix has.
+func (h *harvester) resolveBundleArchives() {
+	for _, r := range h.rows {
+		if r.aliasOf != "" {
+			continue
+		}
+		for _, frag := range r.bundleArch {
+			name := manifest.ProvidedLibName(frag)
+			if name == "" {
+				continue
+			}
+			var probed []string
+			for _, dir := range []string{filepath.Join(h.prefix, "lib"), filepath.Join(h.prefix, "lib64")} {
+				probed = h.appendProbedArtifacts(probed, dir, name)
+			}
+			var owner *row
+			for _, p := range probed {
+				if prev := h.claimantOf(h.byPath[h.canonicalKey(p)]); prev != nil && prev != r {
+					owner = prev
+					break
+				}
+			}
+			if owner != nil {
+				owner.linkLibs = appendUnique(owner.linkLibs, name)
+				r.depRefs = append(r.depRefs, owner.cmakeTarget)
+				h.warnf("%s: INTERFACE_LINK_LIBRARIES archive %s resolves to an artifact %s owns; recorded as a dep edge, not absorbed", r.cmakeTarget, frag, owner.cmakeTarget)
+				continue
+			}
+			r.linkLibs = appendUnique(r.linkLibs, name)
+			for _, p := range probed {
+				r.linkPaths = appendUnique(r.linkPaths, p)
+				if k := h.canonicalKey(p); h.byPath[k] == nil {
+					h.byPath[k] = r
+				}
+			}
+		}
 	}
 }
 

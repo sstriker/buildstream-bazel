@@ -84,6 +84,7 @@ func HarvestWithRegistry(prefixDir, element, labelPkg string, registry map[strin
 		return nil, nil, err
 	}
 	h.collectBareBinaries(element)
+	h.resolveBundleArchives()
 	h.resolveDeps()
 	h.markCyclicGroups()
 	h.breakDepCycles()
@@ -98,6 +99,7 @@ type row struct {
 	linkLibs    []string
 	depRefs     []string // cmake `NS::x` or pc names, resolved late
 	deps        []string // resolved labels
+	bundleArch  []string // INTERFACE_LINK_LIBRARIES archive fragments (libNAME.a / :libNAME.a), resolved late
 	aliasOf     string   // alias rows point at their underlying target
 	origin      string   // provenance for diagnostics ("bundle", "pkgconfig <name>", "bin")
 	kind        string   // "" (library) or manifest.KindExecutable
