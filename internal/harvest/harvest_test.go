@@ -1085,6 +1085,10 @@ func TestApplyLinkEntry_ArchiveLabelFragmentToBareName(t *testing.T) {
 	r := &row{cmakeTarget: "Pkg::a"}
 	h.applyLinkEntry(r, ":libfoo.a")
 	h.applyLinkEntry(r, "libbar.a")
+	// applyLinkEntry defers archive fragments; resolveBundleArchives settles
+	// them. No other row owns these archives → the self-description shape.
+	h.rows = []*row{r}
+	h.resolveBundleArchives()
 	want := []string{"foo", "bar"}
 	if len(r.linkLibs) != len(want) {
 		t.Fatalf("linkLibs = %v, want %v (bare provided names, no raw fragment)", r.linkLibs, want)
@@ -1115,6 +1119,10 @@ func TestApplyLinkEntry_ArchiveNameProbesPath(t *testing.T) {
 	h := &harvester{prefix: prefix, byName: map[string]*row{}, byPath: map[string]*row{}}
 	r := &row{cmakeTarget: "Pkg::a"}
 	h.applyLinkEntry(r, ":libfoo.a")
+	// No other row owns libfoo.a → resolveBundleArchives absorbs it (the
+	// install carries the archive, so link_paths gets the anchored path).
+	h.rows = []*row{r}
+	h.resolveBundleArchives()
 	if len(r.linkLibs) != 1 || r.linkLibs[0] != "foo" {
 		t.Errorf("link_libraries = %v, want [foo]", r.linkLibs)
 	}
@@ -1127,5 +1135,55 @@ func TestApplyLinkEntry_ArchiveNameProbesPath(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("link_paths = %v, want to contain %q (probed archive)", r.linkPaths, want)
+	}
+}
+
+// TestResolveBundleArchives_OwnedArchiveBecomesDepEdge is the root fix (2a):
+// when another row OWNS the archive an INTERFACE_LINK_LIBRARIES fragment names,
+// the consumer row records a DIRECT dep edge on that owner instead of absorbing
+// the archive — so the owner's export is depended on (not an orphan) and
+// re-enters transitively, no consumer safety net needed.
+func TestResolveBundleArchives_OwnedArchiveBecomesDepEdge(t *testing.T) {
+	prefix := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(prefix, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prefix, "lib", "libfoo.a"), []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := &harvester{prefix: prefix, realPrefix: prefix, byName: map[string]*row{}, byPath: map[string]*row{}}
+	// Owner row: Pkg::foo owns lib/libfoo.a (its IMPORTED_LOCATION, registered
+	// in byPath via addRow).
+	owner := &row{cmakeTarget: "Pkg::foo", linkPaths: []string{manifest.PrefixAnchor + "lib/libfoo.a"}}
+	h.addRow(owner)
+	// Consumer row: Pkg::a's INTERFACE_LINK_LIBRARIES names foo's archive by a
+	// raw fragment rather than Pkg::foo.
+	consumer := &row{cmakeTarget: "Pkg::a"}
+	h.addRow(consumer)
+	h.applyLinkEntry(consumer, ":libfoo.a")
+
+	h.resolveBundleArchives()
+
+	has := func(ss []string, want string) bool {
+		for _, s := range ss {
+			if s == want {
+				return true
+			}
+		}
+		return false
+	}
+	// The consumer records a dep edge on the owner, NOT an absorbed archive.
+	if !has(consumer.depRefs, "Pkg::foo") {
+		t.Errorf("consumer depRefs = %v, want to contain owner Pkg::foo", consumer.depRefs)
+	}
+	for _, p := range consumer.linkPaths {
+		if strings.Contains(p, "libfoo.a") {
+			t.Errorf("consumer must NOT absorb the owned archive into link_paths: %v", consumer.linkPaths)
+		}
+	}
+	// The provided name joins the OWNER's link_libraries (LookupLinkLibrary
+	// redirect lands on the owner).
+	if !has(owner.linkLibs, "foo") {
+		t.Errorf("owner linkLibs = %v, want to contain foo", owner.linkLibs)
 	}
 }

@@ -196,7 +196,7 @@ func TestExportDeps_PathFormDirectLinkRecovered(t *testing.T) {
 				Language: "C",
 				CommandFragments: []fileapi.CommandFragment{
 					{Fragment: "/opt/prefix/lib/liba.a", Role: "libraries"}, // direct by NAME → keep
-					{Fragment: "/opt/prefix/lib/libb.a", Role: "libraries"}, // transitive → drop
+					{Fragment: "/opt/prefix/lib/libb.a", Role: "libraries"}, // transitive ORPHAN → safety net
 					{Fragment: "/opt/prefix/lib/libz.a", Role: "libraries"}, // direct by PATH → keep
 				},
 			},
@@ -223,10 +223,13 @@ func TestExportDeps_PathFormDirectLinkRecovered(t *testing.T) {
 			t.Errorf("direct link %q must be kept: %v", want, app.Deps)
 		}
 	}
-	// The transitive archive is NOT attributed (Bazel pulls it via a's wrapper);
-	// it has no trace arm, so it is neither wired nor tagged.
-	if stringSliceContains(app.Deps, "//elements/pkg:b_import") {
-		t.Errorf("transitive Pkg::b must not be attributed (re-enters via a's wrapper): %v", app.Deps)
+	// libb.a is an ORPHAN: no export declares a dep on //elements/pkg:b_import,
+	// so transitive re-entry can never supply it. The fragment pass's safety net
+	// wires it directly (a harvest completeness gap) rather than dropping it
+	// silently. (When harvest records the real X→b edge, b becomes a non-orphan
+	// and rides in through X instead — see TestExportDeps_NonOrphanTransitive*.)
+	if !stringSliceContains(app.Deps, "//elements/pkg:b_import") {
+		t.Errorf("orphan transitive Pkg::b must be wired by the safety net: %v", app.Deps)
 	}
 }
 
@@ -377,15 +380,21 @@ func TestExportDeps_DependencyChannel(t *testing.T) {
 // re-enters via the wrapper's own Bazel deps. Attributing every internal
 // archive would over-specify the graph; here it simply never enters, because
 // only the direct trace arms are a dep source.
-func TestExportDeps_WrapperSeedKeepsTransitiveDrop(t *testing.T) {
+// TestExportDeps_OrphanArchiveWiredBySafetyNet pins the consumer safety net: an
+// archive on the flattened link line that resolves to an export NO other export
+// depends on (an orphan — a harvest completeness gap) is wired directly by
+// lowerLinkFragments rather than dropped. Without the net it would vanish: it is
+// not a direct trace arm, and no wrapper's manifest closure carries it.
+func TestExportDeps_OrphanArchiveWiredBySafetyNet(t *testing.T) {
 	res, err := manifest.Index(&manifest.Imports{
 		Version: 1,
 		Elements: []*manifest.Element{{
 			Name: "pkg",
 			Exports: []*manifest.Export{
-				// Wrapper seed: label models its own deps in Bazel, Deps empty.
+				// Directly-traced seed.
 				{CMakeTarget: "Pkg::w", BazelLabel: "//elements/pkg:w", LinkPaths: []string{"/opt/prefix/lib/libw.a"}},
-				// Internal archive on the flattened line, not named, also a wrapper.
+				// Orphan archive on the flattened line: no export depends on its
+				// label, so nothing re-enters it → the safety net must wire it.
 				{CMakeTarget: "Pkg::internal", BazelLabel: "//elements/pkg:internal", LinkPaths: []string{"/opt/prefix/lib/libinternal.a"}},
 			},
 		}},
@@ -402,7 +411,7 @@ func TestExportDeps_WrapperSeedKeepsTransitiveDrop(t *testing.T) {
 				Language: "C",
 				CommandFragments: []fileapi.CommandFragment{
 					{Fragment: "/opt/prefix/lib/libw.a", Role: "libraries"},        // directly traced → wired
-					{Fragment: "/opt/prefix/lib/libinternal.a", Role: "libraries"}, // transitive via Bazel → drop
+					{Fragment: "/opt/prefix/lib/libinternal.a", Role: "libraries"}, // orphan → safety net
 				},
 			},
 		}},
@@ -422,29 +431,29 @@ func TestExportDeps_WrapperSeedKeepsTransitiveDrop(t *testing.T) {
 	}
 	app := exportDepsFind(t, pkg, "app")
 	if !stringSliceContains(app.Deps, "//elements/pkg:w") {
-		t.Errorf("directly-traced wrapper seed must be wired: %v", app.Deps)
+		t.Errorf("directly-traced seed must be wired: %v", app.Deps)
 	}
-	// The internal archive has no trace arm, so it is not attributed as a
-	// direct dep — it re-enters via the wrapper's own Bazel deps.
-	if stringSliceContains(app.Deps, "//elements/pkg:internal") {
-		t.Errorf("wrapper-model internal archive must not be attributed (re-enters via Bazel): %v", app.Deps)
+	// The orphan archive has no trace arm and no export depends on its label, so
+	// the safety net wires it directly — otherwise it would drop silently.
+	if !stringSliceContains(app.Deps, "//elements/pkg:internal") {
+		t.Errorf("orphan archive must be wired by the safety net: %v", app.Deps)
 	}
 }
 
-// TestExportDeps_MixedSeedsDropWrapperInternal pins trace-driven attribution
-// on a MIXED link: one directly-named PREBUILT seed (Pkg::p, whose manifest
-// models a flattened closure via non-empty Deps) and one directly-named
-// WRAPPER seed (Pkg::w, empty Deps — transitivity lives in Bazel). Only the
-// two directly-named arms are a dep source; the non-named archives on the link
-// line differ only in where their label re-enters:
+// TestExportDeps_MixedPrebuiltClosureAndOrphan pins the two ways a non-trace-arm
+// archive on the flattened link line gets wired, side by side: one directly-named
+// PREBUILT seed (Pkg::p, whose manifest models a flattened closure via non-empty
+// Deps) and one directly-named seed (Pkg::w, empty Deps):
 //
-//   - Pkg::pdep is not a trace arm, but its label still rides in through
-//     Pkg::p's addExport closure, because the prebuilt manifest listed it as
-//     one of p's flattened Deps.
-//   - Pkg::winternal is not a trace arm and does NOT re-enter here, because
-//     the wrapper seed Pkg::w carries no Deps — winternal reaches the link
-//     only through w's own (Bazel-resolved) closure.
-func TestExportDeps_MixedSeedsDropWrapperInternal(t *testing.T) {
+//   - Pkg::pdep is not a trace arm, but its label rides in through Pkg::p's
+//     addExport closure — the prebuilt manifest listed it among p's Deps, so it
+//     is a NON-orphan; the safety net leaves it to that ride-along (does not
+//     double-wire it).
+//   - Pkg::winternal is not a trace arm and NO export depends on its label — an
+//     orphan. Transitive re-entry can never supply it, so the safety net wires
+//     it directly (a harvest completeness gap). When harvest records the real
+//     w→winternal edge it becomes a non-orphan and rides in through w instead.
+func TestExportDeps_MixedPrebuiltClosureAndOrphan(t *testing.T) {
 	res, err := manifest.Index(&manifest.Imports{
 		Version: 1,
 		Elements: []*manifest.Element{{
@@ -473,9 +482,9 @@ func TestExportDeps_MixedSeedsDropWrapperInternal(t *testing.T) {
 				Language: "C",
 				CommandFragments: []fileapi.CommandFragment{
 					{Fragment: "/opt/prefix/lib/libp.a", Role: "libraries"},         // traced prebuilt → wired
-					{Fragment: "/opt/prefix/lib/libpdep.a", Role: "libraries"},      // prebuilt closure → drop
-					{Fragment: "/opt/prefix/lib/libw.a", Role: "libraries"},         // traced wrapper → wired
-					{Fragment: "/opt/prefix/lib/libwinternal.a", Role: "libraries"}, // wrapper internal → attribute (safe)
+					{Fragment: "/opt/prefix/lib/libpdep.a", Role: "libraries"},      // non-orphan → rides in via p
+					{Fragment: "/opt/prefix/lib/libw.a", Role: "libraries"},         // traced seed → wired
+					{Fragment: "/opt/prefix/lib/libwinternal.a", Role: "libraries"}, // orphan → safety net
 				},
 			},
 		}},
@@ -501,14 +510,138 @@ func TestExportDeps_MixedSeedsDropWrapperInternal(t *testing.T) {
 	if !stringSliceContains(app.Deps, "//elements/pkg:w") {
 		t.Errorf("directly-named wrapper seed must be attributed: %v", app.Deps)
 	}
-	// pdep's label re-enters via p's flattened prebuilt closure; winternal's
-	// does not, because the wrapper seed w carries no manifest Deps. Neither is
-	// a trace arm, so neither is attributed directly.
+	// pdep (non-orphan) re-enters via p's flattened prebuilt closure — the safety
+	// net leaves it to that ride-along. winternal (orphan) is wired directly by
+	// the safety net. Both land in deps, via different mechanisms.
 	if !stringSliceContains(app.Deps, "//elements/pkg:pdep") {
-		t.Errorf("prebuilt transitive archive must ride in via p's closure: %v", app.Deps)
+		t.Errorf("non-orphan transitive archive must ride in via p's closure: %v", app.Deps)
 	}
-	if stringSliceContains(app.Deps, "//elements/pkg:winternal") {
-		t.Errorf("wrapper internal must NOT be attributed (re-enters via w's Bazel closure): %v", app.Deps)
+	if !stringSliceContains(app.Deps, "//elements/pkg:winternal") {
+		t.Errorf("orphan archive must be wired by the safety net: %v", app.Deps)
+	}
+}
+
+// TestExportDeps_NonOrphanTransitiveStaysSuppressed proves the safety net's
+// scope guard: a transitive archive on the link line that SOME export depends on
+// (here Pkg::x declares a dep on Pkg::si) is a NON-orphan, so the fragment pass
+// leaves it suppressed even when the depending export is not itself linked by
+// this target — it trusts si to re-enter through x wherever x is used, rather
+// than adding every transitive .a as a direct dep. This is the guard that keeps
+// deps trace-driven; without it the net would over-attribute.
+func TestExportDeps_NonOrphanTransitiveStaysSuppressed(t *testing.T) {
+	res, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				// Directly-traced seed.
+				{CMakeTarget: "Pkg::w", BazelLabel: "//elements/pkg:w", LinkPaths: []string{"/opt/prefix/lib/libw.a"}},
+				// x depends on si → si is a NON-orphan. x is NOT linked here.
+				{CMakeTarget: "Pkg::x", BazelLabel: "//elements/pkg:x", Deps: []string{"//elements/pkg:si"}, LinkPaths: []string{"/opt/prefix/lib/libx.a"}},
+				{CMakeTarget: "Pkg::si", BazelLabel: "//elements/pkg:si", LinkPaths: []string{"/opt/prefix/lib/libsi.a"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"app::@": {
+			Name: "app", Type: "EXECUTABLE",
+			Sources:       []fileapi.TargetSource{{Path: "m.c", CompileGroupIndex: 0}},
+			CompileGroups: []fileapi.CompileGroup{{Language: "C", SourceIndexes: []int{0}}},
+			Link: &fileapi.TargetLink{
+				Language: "C",
+				CommandFragments: []fileapi.CommandFragment{
+					{Fragment: "/opt/prefix/lib/libw.a", Role: "libraries"},  // directly traced → wired
+					{Fragment: "/opt/prefix/lib/libsi.a", Role: "libraries"}, // non-orphan transitive → suppressed
+				},
+			},
+		}},
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "app::@", Name: "app"}},
+			}},
+		},
+	}
+	traceRaw := []byte(
+		`{"args":["app","PUBLIC","Pkg::w"],"cmd":"target_link_libraries","file":"/s/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{Imports: res, TraceRaw: traceRaw, HostSourceRoot: "/s"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	app := exportDepsFind(t, pkg, "app")
+	if !stringSliceContains(app.Deps, "//elements/pkg:w") {
+		t.Errorf("directly-traced seed must be wired: %v", app.Deps)
+	}
+	// si is depended on by x → non-orphan → the safety net must NOT wire it, and
+	// x is not linked here so there is no ride-along either. si stays out.
+	if stringSliceContains(app.Deps, "//elements/pkg:si") {
+		t.Errorf("non-orphan transitive si must stay suppressed (not safety-net-wired): %v", app.Deps)
+	}
+	// Nor is it tagged an unresolved gap — it resolved fine, it just re-enters
+	// elsewhere.
+	for _, tag := range app.Tags {
+		if tag == "cmake-unresolved-link-arm=/opt/prefix/lib/libsi.a" {
+			t.Errorf("non-orphan si must not be tagged unresolved: %v", app.Tags)
+		}
+	}
+}
+
+// TestAttributeOrphanLinkArchives_SkipsNestedArtifact pins that the orphan
+// safety net does NOT re-process a nested-cmake artifact lowerLinkFragments
+// already wired to its merged target. A sub-build archive inside cmakeBuild
+// (.../subbuild/libfoo.a) that shares a basename with an imported orphan export
+// (Pkg::foo, providing "foo") must resolve to the nested target ONLY — the net
+// must not additionally wire the external //elements/pkg:foo.
+func TestAttributeOrphanLinkArchives_SkipsNestedArtifact(t *testing.T) {
+	res, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				// Orphan import providing "foo" by basename — would resolve
+				// libfoo.a if the nested skip did not fire.
+				{CMakeTarget: "Pkg::foo", BazelLabel: "//elements/pkg:foo", LinkLibraries: []string{"foo"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tt := &fileapi.Target{
+		Link: &fileapi.TargetLink{
+			CommandFragments: []fileapi.CommandFragment{
+				{Fragment: "/b/subbuild/libfoo.a", Role: "libraries"},
+			},
+		},
+	}
+	newLC := func(nested map[string]string) targetLowerCtx {
+		return targetLowerCtx{
+			cmakeBuild: "/b",
+			imports:    res,
+			cc:         &codegenContext{NestedArtifactDeps: nested},
+		}
+	}
+	wired := func(irt *ir.Target) bool {
+		return stringSliceContains(irt.Deps, "//elements/pkg:foo") ||
+			stringSliceContains(irt.ImplementationDeps, "//elements/pkg:foo")
+	}
+	// Nested artifact present → the external foo must NOT be wired.
+	nestedTgt := &ir.Target{Name: "app", Kind: ir.KindCCBinary}
+	attributeOrphanLinkArchives(nestedTgt, tt, newLC(map[string]string{"subbuild/libfoo.a": "//nested:foo"}))
+	if wired(nestedTgt) {
+		t.Errorf("nested artifact basename-colliding with imported foo must NOT wire the external dep: deps=%v impl=%v", nestedTgt.Deps, nestedTgt.ImplementationDeps)
+	}
+	// Control: with no nested mapping, the same fragment IS an orphan import →
+	// wired. This proves the skip above is what suppresses the false positive,
+	// not some unrelated non-resolution.
+	plainTgt := &ir.Target{Name: "app", Kind: ir.KindCCBinary}
+	attributeOrphanLinkArchives(plainTgt, tt, newLC(nil))
+	if !wired(plainTgt) {
+		t.Errorf("without a nested mapping the orphan import must be wired (control): deps=%v", plainTgt.Deps)
 	}
 }
 

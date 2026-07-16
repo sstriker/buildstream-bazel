@@ -112,6 +112,36 @@ func TestLoadMerged_ProducerWins(t *testing.T) {
 	}
 }
 
+// TestLoadMerged_OverriddenDepsNotStaleInOrphanSet pins that ArchiveIsOrphan
+// reflects the WINNING export's Deps, not a stale contribution from an
+// overridden one. The base convention makes Foo::foo depend on //p:dep; the
+// producer overrides Foo::foo to depend on nothing. //p:dep must then be an
+// orphan (the winner drops it) — otherwise the merged resolver would suppress
+// the consumer's safety net and reintroduce a silent drop.
+func TestLoadMerged_OverriddenDepsNotStaleInOrphanSet(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "imports.json")
+	prod := filepath.Join(dir, "exports.json")
+	if err := os.WriteFile(base, []byte(`{"version":1,"elements":[
+		{"name":"foo","exports":[
+			{"cmake_target":"Foo::foo","bazel_label":"//p:foo","deps":["//p:dep"]}]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Producer overrides Foo::foo and no longer depends on //p:dep.
+	if err := os.WriteFile(prod, []byte(`{"version":1,"elements":[
+		{"name":"foo","exports":[
+			{"cmake_target":"Foo::foo","bazel_label":"//p:foo"}]}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := manifest.LoadMerged(base, prod)
+	if err != nil {
+		t.Fatalf("LoadMerged: %v", err)
+	}
+	if !r.ArchiveIsOrphan("//p:dep") {
+		t.Errorf("//p:dep must be an orphan: the winning Foo::foo dropped the dep; the overridden base export's stale dep must not linger")
+	}
+}
+
 // TestLoadMerged_SkipsEmptyPaths lets callers pass an empty base
 // (no --imports-manifest) followed by producer docs.
 func TestLoadMerged_SkipsEmptyPaths(t *testing.T) {
@@ -515,5 +545,78 @@ func TestLookupArchiveBasename(t *testing.T) {
 	// A non-archive token → nil.
 	if ex := r.LookupArchiveBasename("pthread"); ex != nil {
 		t.Errorf("non-archive token must not resolve: %v", ex)
+	}
+}
+
+// TestLookupArchiveBasename_LinkLibrariesArchiveFragment covers the index
+// asymmetry fix: an export whose archive is named ONLY by an archive-shaped
+// link_libraries entry (a `:libNAME.a` label fragment or a bare `libNAME.a`),
+// with no link_paths, must still be reachable by the consumer's basename
+// fallback. Before the fix, indexLinkLibs canon-indexed such an entry verbatim
+// (`:libfoo.a`) instead of under its provided name (`foo`), so
+// LookupArchiveBasename — which strips to the provided name — never found it.
+func TestLookupArchiveBasename_LinkLibrariesArchiveFragment(t *testing.T) {
+	r, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				// pkg-config-sourced export: archive named by a leading-colon
+				// label fragment, no link_paths.
+				{CMakeTarget: "Pkg::foo", BazelLabel: "//p:foo", LinkLibraries: []string{":libfoo.a"}},
+				// bare libNAME.a fragment, hyphen where the wrapper name would
+				// use underscore — must fold and resolve.
+				{CMakeTarget: "Pkg::bar", BazelLabel: "//p:bar", LinkLibraries: []string{"libbar-baz.a"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ex := r.LookupArchiveBasename("/opt/prefix/lib/libfoo.a"); ex == nil || ex.BazelLabel != "//p:foo" {
+		t.Errorf(":libfoo.a link_libraries fragment must resolve libfoo.a to //p:foo: %v", ex)
+	}
+	if ex := r.LookupArchiveBasename("/opt/prefix/lib/libbar_baz.a"); ex == nil || ex.BazelLabel != "//p:bar" {
+		t.Errorf("libbar-baz.a link_libraries fragment must resolve libbar_baz.a to //p:bar via fold: %v", ex)
+	}
+}
+
+// TestArchiveIsOrphan pins the depended-on set the consumer safety net keys on:
+// a label some export lists in Deps is NON-orphan (re-enters transitively); one
+// no export depends on is an orphan the consumer must wire directly.
+func TestArchiveIsOrphan(t *testing.T) {
+	r, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				// p declares a dep on pdep → pdep is depended on (non-orphan).
+				{CMakeTarget: "Pkg::p", BazelLabel: "//p:p", Deps: []string{"//p:pdep"}, LinkPaths: []string{"/opt/prefix/lib/libp.a"}},
+				{CMakeTarget: "Pkg::pdep", BazelLabel: "//p:pdep", LinkPaths: []string{"/opt/prefix/lib/libpdep.a"}},
+				// orphan: no export depends on its label.
+				{CMakeTarget: "Pkg::orphan", BazelLabel: "//p:orphan", LinkPaths: []string{"/opt/prefix/lib/liborphan.a"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ArchiveIsOrphan("//p:pdep") {
+		t.Errorf("//p:pdep is depended on by //p:p; must not be an orphan")
+	}
+	if !r.ArchiveIsOrphan("//p:orphan") {
+		t.Errorf("//p:orphan is depended on by no export; must be an orphan")
+	}
+	// A label the manifest doesn't know at all is trivially depended on by
+	// nobody → orphan; and the empty label / nil resolver are non-orphan.
+	if !r.ArchiveIsOrphan("//p:unknown") {
+		t.Errorf("unknown label must be an orphan (depended on by no export)")
+	}
+	if r.ArchiveIsOrphan("") {
+		t.Errorf("empty label must not be an orphan")
+	}
+	var nilR *manifest.Resolver
+	if nilR.ArchiveIsOrphan("//p:p") {
+		t.Errorf("nil resolver must report non-orphan")
 	}
 }

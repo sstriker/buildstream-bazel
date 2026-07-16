@@ -291,6 +291,7 @@ func LoadMerged(paths ...string) (*Resolver, error) {
 		byUmbrellaIncRt: map[string]string{},
 		byToolBasename:  map[string]string{},
 		byToolPath:      map[string]string{},
+		dependedOn:      map[string]bool{},
 	}
 	for _, p := range paths {
 		if p == "" {
@@ -338,6 +339,7 @@ func LoadMerged(paths ...string) (*Resolver, error) {
 			}
 		}
 	}
+	r.rebuildDependedOn()
 	return r, nil
 }
 
@@ -361,6 +363,7 @@ func Index(im *Imports) (*Resolver, error) {
 		byUmbrellaIncRt: map[string]string{},
 		byToolBasename:  map[string]string{},
 		byToolPath:      map[string]string{},
+		dependedOn:      map[string]bool{},
 	}
 	for _, el := range im.Elements {
 		if el == nil || el.Name == "" {
@@ -395,6 +398,7 @@ func Index(im *Imports) (*Resolver, error) {
 			r.indexLinkLibs(ex, true)
 		}
 	}
+	r.rebuildDependedOn()
 	// Strict: a duplicate tool match is an authoring ambiguity, surfaced here
 	// rather than silently won by last-write (mirrors the cmake_target rule).
 	for _, tl := range im.Tools {
@@ -427,6 +431,7 @@ type Resolver struct {
 	byUmbrellaIncRt map[string]string  // find_package include root → umbrella label
 	byToolBasename  map[string]string  // codegen tool basename → bazel label
 	byToolPath      map[string]string  // codegen tool abs/relative-multi path → label
+	dependedOn      map[string]bool    // every label that appears in some Export.Deps — the "is depended on by anyone" set
 }
 
 // addTool registers one Tool entry into the resolver's by-basename / by-path
@@ -501,6 +506,7 @@ func NewResolver() *Resolver {
 		byUmbrellaIncRt: map[string]string{},
 		byToolBasename:  map[string]string{},
 		byToolPath:      map[string]string{},
+		dependedOn:      map[string]bool{},
 	}
 }
 
@@ -596,6 +602,40 @@ func (r *Resolver) LookupArchiveBasename(path string) *Export {
 	return r.byLinkLibCanon[CanonLibName(name)]
 }
 
+// rebuildDependedOn recomputes the "depended on by someone" set from the FINAL
+// winning exports (byCMakeTarget, which is last-wins in LoadMerged and unique in
+// Index) rather than accumulating it during indexing. Building it incrementally
+// would keep the Deps of an export that LoadMerged later OVERRODE (a base
+// convention replaced by a producer --exports-in doc): the stale dep would mark
+// a label non-orphan even though the winning export no longer depends on it,
+// suppressing the safety net and reintroducing the silent drop LoadMerged exists
+// to prevent. Called once after all exports are indexed.
+func (r *Resolver) rebuildDependedOn() {
+	r.dependedOn = map[string]bool{}
+	for _, ex := range r.byCMakeTarget {
+		for _, d := range ex.Deps {
+			r.dependedOn[d] = true
+		}
+	}
+}
+
+// ArchiveIsOrphan reports whether a resolved export's label is an ORPHAN — no
+// other export declares a dependency on it. An orphan archive reaches a
+// consuming target's flattened link line but re-enters through nothing: no
+// export's Deps carries it, so Bazel transitivity via a directly-linked wrapper
+// can never supply it. The consumer's link-fragment pass uses this to decide
+// the narrow case it must wire directly (rather than leave to transitive
+// re-entry): a non-orphan transitive archive stays suppressed — it arrives
+// through whoever depends on it — while a true orphan is attributed as a
+// safety net for a harvest completeness gap. Returns false for a nil resolver
+// (no manifest → nothing to defend) and for the empty label.
+func (r *Resolver) ArchiveIsOrphan(label string) bool {
+	if r == nil || label == "" {
+		return false
+	}
+	return !r.dependedOn[label]
+}
+
 // indexLinkLibs registers an export under its link-library keys: the exact
 // byLinkLib index (verbatim names, for the -l<name> redirect) and the
 // canonical byLinkLibCanon index — keyed by every LinkLibraries name AND by
@@ -617,7 +657,21 @@ func (r *Resolver) indexLinkLibs(ex *Export, firstWins bool) {
 	}
 	for _, ll := range ex.LinkLibraries {
 		put(r.byLinkLib, ll)
-		if t := strings.TrimSpace(ll); t != "" && !strings.HasPrefix(t, "-") {
+		t := strings.TrimSpace(ll)
+		if t == "" || strings.HasPrefix(t, "-") {
+			continue
+		}
+		// An archive-shaped entry (a `:libfoo.a` label fragment, or a bare
+		// `libfoo.a`) canon-indexes under the NAME it provides ("foo"), the
+		// same normalization LinkPaths basenames get above and the consumer's
+		// LookupArchiveBasename applies — otherwise a `:libfoo.a` would index
+		// under the useless canon key ":libfoo.a" and an export whose archive
+		// is named ONLY by a link_libraries fragment (no link_paths, e.g. a
+		// pkg-config-sourced export) would be unreachable by the basename
+		// fallback. A bare provided name ("foo") indexes as itself.
+		if name := ProvidedLibName(t); name != "" {
+			put(r.byLinkLibCanon, CanonLibName(name))
+		} else {
 			put(r.byLinkLibCanon, CanonLibName(t))
 		}
 	}
