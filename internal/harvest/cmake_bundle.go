@@ -180,6 +180,25 @@ func (h *harvester) applyLinkEntry(r *row, v string) {
 			r.linkPaths = appendUnique(r.linkPaths, anchored)
 			return
 		}
+		// An archive named by a bare filename (`libNAME.a`) or a `:libNAME.a`
+		// label fragment (the latter from a `$<$<cond>::libNAME.a>` genex
+		// unwrap) rather than a resolvable path. Emit the CONSISTENT export
+		// shape a well-formed export carries — the bare provided lib name in
+		// linkLibs PLUS the probed archive path in linkPaths when the install
+		// carries it — instead of dropping the raw fragment into linkLibs with
+		// NO linkPaths (which leaves the consumer's path-keyed lookup nothing
+		// to match, so the wrapper dep is never wired).
+		if name := manifest.ProvidedLibName(v); name != "" {
+			r.linkLibs = appendUnique(r.linkLibs, name)
+			var probed []string
+			for _, dir := range []string{filepath.Join(h.prefix, "lib"), filepath.Join(h.prefix, "lib64")} {
+				probed = h.appendProbedArtifacts(probed, dir, name)
+			}
+			for _, p := range probed {
+				r.linkPaths = appendUnique(r.linkPaths, p)
+			}
+			return
+		}
 		// Bare library name (pthread, m, dl): the -l vocabulary.
 		r.linkLibs = appendUnique(r.linkLibs, v)
 	}

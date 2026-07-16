@@ -3599,6 +3599,18 @@ func attributeDirectTraceDeps(irt *ir.Target, tt targetTrace, lc targetLowerCtx)
 				}
 				continue
 			}
+			// Basename fallback: the exact path missed byLinkPath, but the
+			// archive's own basename (libNAME.a → NAME) may still name a
+			// harvested export — the exact link_paths entry can be absent (a
+			// relocated install path, or a harvest that recorded the provided
+			// name but not the path). Spelling-tolerant (case + hyphen/
+			// underscore), so a wrapper label spelled foo_bar matches
+			// libfoo-bar.a. Anchoring doesn't touch the basename, so try the
+			// raw arm.
+			if export := imports.LookupArchiveBasename(arm); export != nil {
+				rt.addExport(export, private)
+				continue
+			}
 			// A vendored absolute path the manifest doesn't carry — a harvest/
 			// export gap. Tag it (same as the fragment pass) so a direct
 			// path-form arm on a STATIC_LIBRARY still surfaces.
@@ -3750,6 +3762,14 @@ func lowerLinkFragments(irt *ir.Target, t *fileapi.Target, tt targetTrace, lc ta
 			if !stringSliceContains(irt.LinkOpts, flag) {
 				irt.LinkOpts = append(irt.LinkOpts, flag)
 			}
+			continue
+		}
+		// The exact path missed byLinkPath, but the archive basename
+		// (libNAME.a → NAME) may still name a harvested export the manifest
+		// carries under a different path spelling. Manifest-known → don't tag
+		// it a gap (the trace pass attributes it if directly linked; a
+		// transitive one re-enters via its wrapper).
+		if imports.LookupArchiveBasename(anchored) != nil {
 			continue
 		}
 		tagUnresolvedLinkArm(irt, anchored)

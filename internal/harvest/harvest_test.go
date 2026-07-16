@@ -1073,3 +1073,59 @@ set_target_properties(App::app PROPERTIES
 		}
 	}
 }
+
+// TestApplyLinkEntry_ArchiveLabelFragmentToBareName pins mode-1: an
+// INTERFACE_LINK_LIBRARIES entry that names an archive by a `:libNAME.a` label
+// fragment (from a $<$<cond>::libNAME.a> genex unwrap) or a bare `libNAME.a`
+// filename is emitted as the CONSISTENT shape — the bare provided lib name in
+// link_libraries — not dropped raw, so the consumer's basename/name lookup can
+// resolve it.
+func TestApplyLinkEntry_ArchiveLabelFragmentToBareName(t *testing.T) {
+	h := &harvester{byName: map[string]*row{}, byPath: map[string]*row{}}
+	r := &row{cmakeTarget: "Pkg::a"}
+	h.applyLinkEntry(r, ":libfoo.a")
+	h.applyLinkEntry(r, "libbar.a")
+	want := []string{"foo", "bar"}
+	if len(r.linkLibs) != len(want) {
+		t.Fatalf("linkLibs = %v, want %v (bare provided names, no raw fragment)", r.linkLibs, want)
+	}
+	for i, w := range want {
+		if r.linkLibs[i] != w {
+			t.Errorf("linkLibs[%d] = %q, want %q", i, r.linkLibs[i], w)
+		}
+	}
+	for _, l := range r.linkLibs {
+		if strings.HasPrefix(l, ":") || strings.HasSuffix(l, ".a") {
+			t.Errorf("raw archive fragment leaked into link_libraries: %q", l)
+		}
+	}
+}
+
+// TestApplyLinkEntry_ArchiveNameProbesPath: when the install carries the
+// archive, the label-fragment path also populates link_paths (the anchored
+// absolute path), so the exact-path consumer lookup resolves directly.
+func TestApplyLinkEntry_ArchiveNameProbesPath(t *testing.T) {
+	prefix := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(prefix, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prefix, "lib", "libfoo.a"), []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := &harvester{prefix: prefix, byName: map[string]*row{}, byPath: map[string]*row{}}
+	r := &row{cmakeTarget: "Pkg::a"}
+	h.applyLinkEntry(r, ":libfoo.a")
+	if len(r.linkLibs) != 1 || r.linkLibs[0] != "foo" {
+		t.Errorf("link_libraries = %v, want [foo]", r.linkLibs)
+	}
+	want := manifest.PrefixAnchor + "lib/libfoo.a"
+	found := false
+	for _, p := range r.linkPaths {
+		if p == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("link_paths = %v, want to contain %q (probed archive)", r.linkPaths, want)
+	}
+}
