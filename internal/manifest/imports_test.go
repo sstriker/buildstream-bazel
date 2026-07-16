@@ -450,3 +450,70 @@ func TestAddToolConventions(t *testing.T) {
 		t.Error("empty match should error")
 	}
 }
+
+// TestProvidedLibName pins the archive-basename → -l<name> derivation and the
+// non-archive rejections.
+func TestProvidedLibName(t *testing.T) {
+	cases := map[string]string{
+		"/opt/prefix/lib/libz.a": "z",
+		"libz.so.1.2.3":          "z",
+		":libNAME.a":             "NAME",
+		"/x/lib/libfoo-bar.a":    "foo-bar",
+		"pthread":                "", // bare -l name, not an archive
+		"-lz":                    "", // flag
+		"lib.a":                  "", // empty name
+		"/x/notalib.a":           "", // no lib prefix
+	}
+	for in, want := range cases {
+		if got := manifest.ProvidedLibName(in); got != want {
+			t.Errorf("ProvidedLibName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestCanonLibName pins the spelling-tolerant folding (case + hyphen/underscore).
+func TestCanonLibName(t *testing.T) {
+	for _, in := range []string{"Foo-Bar", "foo_bar", "FOO-BAR", "foo-bar"} {
+		if got := manifest.CanonLibName(in); got != "foo_bar" {
+			t.Errorf("CanonLibName(%q) = %q, want foo_bar", in, got)
+		}
+	}
+}
+
+// TestLookupArchiveBasename: an absolute archive arm whose exact path isn't in
+// byLinkPath still resolves to its export by basename — via a link_paths
+// basename OR a link_libraries name — and spelling-tolerantly (libfoo-bar.a
+// matches a "foo_bar" link_libraries name).
+func TestLookupArchiveBasename(t *testing.T) {
+	r, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "Pkg::z", BazelLabel: "//p:z", LinkPaths: []string{"/opt/prefix/lib/libz.a"}},
+				{CMakeTarget: "Pkg::foo", BazelLabel: "//p:foo", LinkLibraries: []string{"foo_bar"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Resolves by the export's own link_paths basename, even for a DIFFERENT
+	// absolute path spelling (relocated install) — only the basename matters.
+	if ex := r.LookupArchiveBasename("/some/other/prefix/lib/libz.a"); ex == nil || ex.BazelLabel != "//p:z" {
+		t.Errorf("libz.a basename must resolve to //p:z: %v", ex)
+	}
+	// Resolves by a link_libraries name, spelling-tolerant: archive libfoo-bar.a
+	// (basename → foo-bar) matches the "foo_bar" name.
+	if ex := r.LookupArchiveBasename("/x/lib/libfoo-bar.a"); ex == nil || ex.BazelLabel != "//p:foo" {
+		t.Errorf("libfoo-bar.a must resolve to //p:foo via hyphen/underscore fold: %v", ex)
+	}
+	// An archive no export provides → nil (not a false positive).
+	if ex := r.LookupArchiveBasename("/x/lib/libunknown.a"); ex != nil {
+		t.Errorf("unknown archive must not resolve: %v", ex)
+	}
+	// A non-archive token → nil.
+	if ex := r.LookupArchiveBasename("pthread"); ex != nil {
+		t.Errorf("non-archive token must not resolve: %v", ex)
+	}
+}

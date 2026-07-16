@@ -287,6 +287,7 @@ func LoadMerged(paths ...string) (*Resolver, error) {
 		byElement:       map[string]*Element{},
 		byLinkPath:      map[string]*Export{},
 		byLinkLib:       map[string]*Export{},
+		byLinkLibCanon:  map[string]*Export{},
 		byUmbrellaIncRt: map[string]string{},
 		byToolBasename:  map[string]string{},
 		byToolPath:      map[string]string{},
@@ -325,9 +326,7 @@ func LoadMerged(paths ...string) (*Resolver, error) {
 				for _, lp := range ex.LinkPaths {
 					r.byLinkPath[lp] = ex
 				}
-				for _, ll := range ex.LinkLibraries {
-					r.byLinkLib[ll] = ex
-				}
+				r.indexLinkLibs(ex, false)
 			}
 		}
 		// Last-wins on tool-match collisions across merged docs (the same
@@ -358,6 +357,7 @@ func Index(im *Imports) (*Resolver, error) {
 		byElement:       map[string]*Element{},
 		byLinkPath:      map[string]*Export{},
 		byLinkLib:       map[string]*Export{},
+		byLinkLibCanon:  map[string]*Export{},
 		byUmbrellaIncRt: map[string]string{},
 		byToolBasename:  map[string]string{},
 		byToolPath:      map[string]string{},
@@ -392,17 +392,7 @@ func Index(im *Imports) (*Resolver, error) {
 			for _, lp := range ex.LinkPaths {
 				r.byLinkPath[lp] = ex
 			}
-			for _, ll := range ex.LinkLibraries {
-				// First-write-wins on link-library collisions:
-				// two elements both exposing `-lz` is a manifest
-				// authoring concern, not something we want to
-				// surface as a hard error here. The cmake side
-				// already has a similar tolerance (link_paths
-				// can collide too).
-				if _, dup := r.byLinkLib[ll]; !dup {
-					r.byLinkLib[ll] = ex
-				}
-			}
+			r.indexLinkLibs(ex, true)
 		}
 	}
 	// Strict: a duplicate tool match is an authoring ambiguity, surfaced here
@@ -433,9 +423,10 @@ type Resolver struct {
 	byElement       map[string]*Element
 	byLinkPath      map[string]*Export
 	byLinkLib       map[string]*Export
-	byUmbrellaIncRt map[string]string // find_package include root → umbrella label
-	byToolBasename  map[string]string // codegen tool basename → bazel label
-	byToolPath      map[string]string // codegen tool abs/relative-multi path → label
+	byLinkLibCanon  map[string]*Export // canonical (case + hyphen/underscore folded) lib name → export; also fed by LinkPaths basenames
+	byUmbrellaIncRt map[string]string  // find_package include root → umbrella label
+	byToolBasename  map[string]string  // codegen tool basename → bazel label
+	byToolPath      map[string]string  // codegen tool abs/relative-multi path → label
 }
 
 // addTool registers one Tool entry into the resolver's by-basename / by-path
@@ -506,6 +497,7 @@ func NewResolver() *Resolver {
 		byElement:       map[string]*Element{},
 		byLinkPath:      map[string]*Export{},
 		byLinkLib:       map[string]*Export{},
+		byLinkLibCanon:  map[string]*Export{},
 		byUmbrellaIncRt: map[string]string{},
 		byToolBasename:  map[string]string{},
 		byToolPath:      map[string]string{},
@@ -582,6 +574,84 @@ func (r *Resolver) LookupLinkLibrary(name string) *Export {
 		return nil
 	}
 	return r.byLinkLib[name]
+}
+
+// LookupArchiveBasename resolves an absolute archive path (or a bare
+// lib<name>.<ext> basename / :lib<name>.<ext> label fragment) to its export by
+// the -l<name> its basename provides — the spelling-tolerant fallback for an
+// absolute link arm whose EXACT path isn't in byLinkPath (a relocated install
+// path, a harvest that recorded the name but not the path, or an arm reaching
+// a target through a trace section that isn't path-keyed). Both sides are
+// canonicalized (case + hyphen/underscore folded), so a wrapper whose
+// link_libraries names "foo_bar" still matches an archive libfoo-bar.a.
+// Returns nil when the basename isn't an archive or no export provides it.
+func (r *Resolver) LookupArchiveBasename(path string) *Export {
+	if r == nil {
+		return nil
+	}
+	name := ProvidedLibName(path)
+	if name == "" {
+		return nil
+	}
+	return r.byLinkLibCanon[CanonLibName(name)]
+}
+
+// indexLinkLibs registers an export under its link-library keys: the exact
+// byLinkLib index (verbatim names, for the -l<name> redirect) and the
+// canonical byLinkLibCanon index — keyed by every LinkLibraries name AND by
+// each LinkPaths archive's provided name, all case/hyphen-underscore folded —
+// so LookupArchiveBasename can recover the export from an archive basename.
+// firstWins picks the collision policy: Index (true, first-write-wins) vs
+// LoadMerged (false, last-wins), matching the existing byLinkLib behavior.
+func (r *Resolver) indexLinkLibs(ex *Export, firstWins bool) {
+	put := func(m map[string]*Export, k string) {
+		if k == "" {
+			return
+		}
+		if firstWins {
+			if _, dup := m[k]; dup {
+				return
+			}
+		}
+		m[k] = ex
+	}
+	for _, ll := range ex.LinkLibraries {
+		put(r.byLinkLib, ll)
+		if t := strings.TrimSpace(ll); t != "" && !strings.HasPrefix(t, "-") {
+			put(r.byLinkLibCanon, CanonLibName(t))
+		}
+	}
+	for _, lp := range ex.LinkPaths {
+		if name := ProvidedLibName(lp); name != "" {
+			put(r.byLinkLibCanon, CanonLibName(name))
+		}
+	}
+}
+
+// ProvidedLibName derives the -l<name> a lib<name>.<ext> archive provides:
+// libz.a → "z", libz.so.1.2.3 → "z", /opt/prefix/lib/libfoo-bar.a → "foo-bar",
+// a `:libNAME.a` label fragment → "NAME". Returns "" when the token isn't a
+// lib<name>.<ext> archive (a bare -l name like "pthread", or a flag).
+func ProvidedLibName(s string) string {
+	s = strings.TrimPrefix(strings.TrimSpace(s), ":")
+	base := filepath.Base(s)
+	if !strings.HasPrefix(base, "lib") {
+		return ""
+	}
+	rest := base[len("lib"):]
+	for _, ext := range []string{".a", ".so", ".dylib"} {
+		if i := strings.Index(rest, ext); i > 0 {
+			return rest[:i]
+		}
+	}
+	return ""
+}
+
+// CanonLibName folds a lib name to a spelling-tolerant key: lowercased with
+// hyphen and underscore unified, so a label/archive spelling mismatch
+// (libfoo-bar.a vs a "foo_bar" link_libraries name) still matches.
+func CanonLibName(s string) string {
+	return strings.ToLower(strings.ReplaceAll(s, "-", "_"))
 }
 
 // LookupElement returns an element by name, or nil if none.

@@ -511,3 +511,57 @@ func TestExportDeps_MixedSeedsDropWrapperInternal(t *testing.T) {
 		t.Errorf("wrapper internal must NOT be attributed (re-enters via w's Bazel closure): %v", app.Deps)
 	}
 }
+
+// TestExportDeps_AbsolutePathBasenameFallback pins mode-2: a direct absolute
+// archive arm whose EXACT path isn't in the manifest's link_paths still
+// resolves to its wrapper by the archive basename — via a link_libraries name,
+// and spelling-tolerantly (libfoo-bar.a matches a "foo_bar" name). A
+// STATIC_LIBRARY (no link section) exercises the trace pass specifically.
+func TestExportDeps_AbsolutePathBasenameFallback(t *testing.T) {
+	res, err := manifest.Index(&manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				// Provides "foo" by NAME only — NOT by the arm's exact path.
+				{CMakeTarget: "Pkg::foo", BazelLabel: "//elements/pkg:foo", LinkLibraries: []string{"foo"}},
+				// Provides "foo_bar" by NAME; the arm spells it libfoo-bar.a.
+				{CMakeTarget: "Pkg::foobar", BazelLabel: "//elements/pkg:foobar", LinkLibraries: []string{"foo_bar"}},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &fileapi.Reply{
+		Targets: map[string]fileapi.Target{"mystatic::@": {
+			Name: "mystatic", Type: "STATIC_LIBRARY",
+			Sources:       []fileapi.TargetSource{{Path: "c.c", CompileGroupIndex: 0}},
+			CompileGroups: []fileapi.CompileGroup{{Language: "C", SourceIndexes: []int{0}}},
+		}},
+		Codemodel: fileapi.Codemodel{
+			Configurations: []fileapi.Configuration{{
+				Name:    "Release",
+				Targets: []fileapi.ConfigTargetRef{{Id: "mystatic::@", Name: "mystatic"}},
+			}},
+		},
+	}
+	traceRaw := []byte(
+		`{"args":["mystatic","PUBLIC","/opt/prefix/lib/libfoo.a","/opt/prefix/lib/libfoo-bar.a"],"cmd":"target_link_libraries","file":"/s/CMakeLists.txt","line":3}` + "\n",
+	)
+	pkg, err := ToIR(r, &ninja.Graph{}, Options{Imports: res, TraceRaw: traceRaw, HostSourceRoot: "/s"})
+	if err != nil {
+		t.Fatalf("ToIR: %v", err)
+	}
+	tgt := exportDepsFind(t, pkg, "mystatic")
+	for _, want := range []string{"//elements/pkg:foo", "//elements/pkg:foobar"} {
+		if !stringSliceContains(tgt.Deps, want) {
+			t.Errorf("basename fallback must attribute %q: deps=%v", want, tgt.Deps)
+		}
+	}
+	for _, tag := range tgt.Tags {
+		if tag == "cmake-unresolved-link-arm=/opt/prefix/lib/libfoo.a" || tag == "cmake-unresolved-link-arm=/opt/prefix/lib/libfoo-bar.a" {
+			t.Errorf("basename-resolved archive must not be tagged unresolved: %v", tgt.Tags)
+		}
+	}
+}
