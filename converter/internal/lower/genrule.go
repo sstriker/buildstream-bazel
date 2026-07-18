@@ -280,6 +280,18 @@ type codegenContext struct {
 	CMakeVars         map[string]string
 	LiftConfigureFile bool
 
+	// CCompiler / CxxCompiler / ARTool / NMTool are the project's toolchain
+	// tool paths (CMAKE_C_COMPILER / CMAKE_CXX_COMPILER / CMAKE_AR / CMAKE_NM
+	// from the CMake cache). rewriteToolFromTarget routes a genrule tool token
+	// equal to one of them to the Bazel cc_toolchain make-var ($(CC), the
+	// $(dirname $(CC))-sibling C++ driver, $(AR), $(NM)) + a current_cc_toolchain
+	// dep, instead of a non-hermetic prebuilt lift — so a custom command that
+	// invokes the compiler runs through the same toolchain as normal compiles.
+	CCompiler   string
+	CxxCompiler string
+	ARTool      string
+	NMTool      string
+
 	// LiftDownload mirrors --lift-download (Options.LiftDownload): when
 	// true, bakeBuildDirFile rewires a recovered file(DOWNLOAD) producer
 	// to a genrule sourcing @<repo>//file from an http_file repo instead
@@ -1156,7 +1168,7 @@ func (cc *codegenContext) emitRecoveredGenrule(b *ninja.Build, cmd, cmakeSrc, bu
 	// native rule is higher-fidelity than the swapped genrule, so the recognizer
 	// keys on the pre-swap driver. See standalone_genrules.go for the same guard.
 	preToolSwapCmd := rewrittenCmd
-	rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName, cc.ExecArtifacts, cc.Imports, cc.HostPrefixDir)
+	rewrittenCmd, tools, toolchains := rewriteToolFromTarget(rewrittenCmd, cc.ArtifactToName, cc.ExecArtifacts, cc.Imports, cc.HostPrefixDir, cc.toolchainTools())
 	// A tool the swap lifted to $(execpath <label>) + tools must not also remain
 	// in srcs (it'd be both a src and a tool). The standalone + workdir emission
 	// paths drop it; do the same here so the per-target path stays consistent.
@@ -1214,14 +1226,15 @@ func (cc *codegenContext) emitRecoveredGenrule(b *ninja.Build, cmd, cmakeSrc, bu
 	srcs = append(srcs, responseFileGeneratedHdrs(srcs, cc, cc.BazelPackagePath)...)
 	srcs = append(srcs, responseFileSourceHdrGroups(srcs, cc, cc.BazelPackagePath, cmakeSrc)...)
 	gen := ir.Target{
-		Name:         name,
-		Kind:         ir.KindGenrule,
-		GenruleCmd:   rewrittenCmd,
-		GenruleOuts:  outs,
-		GenruleTools: tools,
-		Srcs:         srcs,
-		Tags:         tags,
-		Visibility:   []string{"//visibility:private"},
+		Name:              name,
+		Kind:              ir.KindGenrule,
+		GenruleCmd:        rewrittenCmd,
+		GenruleOuts:       outs,
+		GenruleTools:      tools,
+		GenruleToolchains: toolchains,
+		Srcs:              srcs,
+		Tags:              tags,
+		Visibility:        []string{"//visibility:private"},
 	}
 	// Route the final emit through the shared recognizer chokepoint: a consumed
 	// codegen custom-command a recognizer claims (a protoc add_custom_command

@@ -115,6 +115,7 @@ func genruleExpr(t ir.Target) *build.CallExpr {
 	r.SetAttr("outs", strListExpr(sortedCopy(t.GenruleOuts)))
 	r.SetAttr("cmd", strExpr(t.GenruleCmd))
 	setListIfNonEmpty(r, "tools", sortedCopy(t.GenruleTools))
+	setListIfNonEmpty(r, "toolchains", sortedCopy(t.GenruleToolchains))
 	setListIfNonEmpty(r, "tags", sortedCopy(t.Tags))
 	setListIfNonEmpty(r, "visibility", nonDefaultVisibility(t.Visibility))
 	return call

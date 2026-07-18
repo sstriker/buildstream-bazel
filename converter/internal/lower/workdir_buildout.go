@@ -91,19 +91,20 @@ func tryWorkdirBuildOutGenrule(b *ninja.Build, cmd string, srcs, outs []string, 
 	}
 
 	body := rewriteGenruleCmd(cmd, cmakeSrc, buildDir, umbrellaPrefix, bazelPackagePath)
-	body, tools := rewriteToolFromTarget(body, artifactToName, cc.ExecArtifacts, cc.Imports, cc.HostPrefixDir)
+	body, tools, toolchains := rewriteToolFromTarget(body, artifactToName, cc.ExecArtifacts, cc.Imports, cc.HostPrefixDir, cc.toolchainTools())
 	srcs = dropLiftedToolSrcs(srcs, tools, artifactToName)
 
 	name := genruleNameFor(b, buildDir)
 	gen := ir.Target{
-		Name:         name,
-		Kind:         ir.KindGenrule,
-		Srcs:         srcs,
-		GenruleOuts:  outs,
-		GenruleCmd:   buildWorkdirBuildOutGenrule(body, filepath.ToSlash(wd), srcs, outs, srcBase),
-		GenruleTools: tools,
-		Tags:         []string{"cmake-codegen-standalone-custom-command", "cmake-codegen-workdir-buildout"},
-		Visibility:   []string{"//visibility:private"},
+		Name:              name,
+		Kind:              ir.KindGenrule,
+		Srcs:              srcs,
+		GenruleOuts:       outs,
+		GenruleCmd:        buildWorkdirBuildOutGenrule(body, filepath.ToSlash(wd), srcs, outs, srcBase),
+		GenruleTools:      tools,
+		GenruleToolchains: toolchains,
+		Tags:              []string{"cmake-codegen-standalone-custom-command", "cmake-codegen-workdir-buildout"},
+		Visibility:        []string{"//visibility:private"},
 	}
 	for _, o := range outs {
 		cc.OutToGenrule[o] = name

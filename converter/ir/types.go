@@ -908,6 +908,13 @@ type Target struct {
 	// input — see lower/configure_file.go.
 	GenruleTools []string
 
+	// GenruleToolchains are toolchain labels added to the genrule's
+	// `toolchains` attribute so the cmd can expand cc_toolchain make-vars
+	// ($(CC) / $(AR) / $(NM)). Populated when rewriteToolFromTarget routes a
+	// custom command's compiler/archiver token to the toolchain make-var
+	// instead of a non-hermetic prebuilt lift (currentCcToolchain).
+	GenruleToolchains []string
+
 	// GlobSrcGroups, on a KindGenrule, records source-file groups whose
 	// members came from a cmake file(GLOB)/file(GLOB_RECURSE) call — the
 	// generic globbing-genrule shape, where a genrule's inputs are a glob
