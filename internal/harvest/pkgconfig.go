@@ -195,8 +195,7 @@ func (h *harvester) applyPCLibs(r *row, name, libsField string) []pcForeign {
 		case strings.HasPrefix(tok, "-l"):
 			lib := strings.TrimPrefix(tok, "-l")
 			libCount[lib]++
-			dirs := append(append([]string{}, searchDirs...),
-				filepath.Join(h.prefix, "lib"), filepath.Join(h.prefix, "lib64"))
+			dirs := append(append([]string{}, searchDirs...), h.probeLibDirs()...)
 			var paths []string
 			for _, d := range dirs {
 				paths = h.appendProbedArtifacts(paths, d, lib)
@@ -287,6 +286,33 @@ func (h *harvester) appendProbedArtifacts(paths []string, dir, lib string) []str
 		}
 	}
 	return paths
+}
+
+// probeLibDirs returns the prefix-relative library directories the archive probe
+// scans, covering the common multilib layouts so an archive that lives in a
+// variant dir still resolves to a link_path:
+//
+//   - lib, lib64, lib32, libx32 — the standard {default,64,32,x32-ABI} split;
+//   - lib/<triplet> — Debian/Ubuntu multiarch (lib/x86_64-linux-gnu,
+//     lib/aarch64-linux-gnu, …). The triplet varies by arch, so glob rather
+//     than guess; appendProbedArtifacts stats each candidate, so a non-lib
+//     match here is harmless (it just won't contain lib<name>.{a,so}).
+//
+// The caller may prepend channel-specific search dirs (a .pc's own -L dirs).
+func (h *harvester) probeLibDirs() []string {
+	var dirs []string
+	for _, d := range []string{"lib", "lib64", "lib32", "libx32"} {
+		dirs = append(dirs, filepath.Join(h.prefix, d))
+	}
+	if matches, _ := filepath.Glob(filepath.Join(h.prefix, "lib", "*-*-*")); len(matches) > 0 {
+		sort.Strings(matches)
+		for _, m := range matches {
+			if st, err := os.Stat(m); err == nil && st.IsDir() {
+				dirs = append(dirs, m)
+			}
+		}
+	}
+	return dirs
 }
 
 // splitPCRequires splits a Requires list — comma- or space-separated

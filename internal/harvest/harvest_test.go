@@ -1174,6 +1174,63 @@ func TestNormalizeArchiveLinkLibs_FragmentToNameAndPath(t *testing.T) {
 	}
 }
 
+// TestProbeLibDirs_CoversMultilib: the probe scans the standard multilib
+// layouts (lib, lib64, lib32, libx32) plus the Debian/Ubuntu multiarch triplet
+// subdir of lib/.
+func TestProbeLibDirs_CoversMultilib(t *testing.T) {
+	prefix := t.TempDir()
+	triplet := filepath.Join(prefix, "lib", "x86_64-linux-gnu")
+	if err := os.MkdirAll(triplet, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := &harvester{prefix: prefix}
+	got := map[string]bool{}
+	for _, d := range h.probeLibDirs() {
+		got[d] = true
+	}
+	for _, want := range []string{
+		filepath.Join(prefix, "lib"),
+		filepath.Join(prefix, "lib64"),
+		filepath.Join(prefix, "lib32"),
+		filepath.Join(prefix, "libx32"),
+		triplet,
+	} {
+		if !got[want] {
+			t.Errorf("probeLibDirs missing %q; got %v", want, h.probeLibDirs())
+		}
+	}
+}
+
+// TestNormalizeArchiveLinkLibs_MultilibTripletDir: an archive that lives in a
+// multiarch triplet dir (lib/x86_64-linux-gnu) — not the bare lib/ — still
+// resolves to a link_path so it is cc_import-able.
+func TestNormalizeArchiveLinkLibs_MultilibTripletDir(t *testing.T) {
+	prefix := t.TempDir()
+	triplet := filepath.Join(prefix, "lib", "x86_64-linux-gnu")
+	if err := os.MkdirAll(triplet, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(triplet, "libfoo.a"), []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := &harvester{prefix: prefix, realPrefix: prefix, byName: map[string]*row{}, byPath: map[string]*row{}}
+	r := &row{cmakeTarget: "pkgconfig::foo", linkLibs: []string{":libfoo.a"}}
+	h.addRow(r)
+
+	h.normalizeArchiveLinkLibs()
+
+	want := manifest.PrefixAnchor + "lib/x86_64-linux-gnu/libfoo.a"
+	found := false
+	for _, p := range r.linkPaths {
+		if p == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("multiarch-triplet archive must be probed into link_paths: %v", r.linkPaths)
+	}
+}
+
 // TestResolveBundleArchives_OwnedArchiveBecomesDepEdge is the root fix (2a):
 // when another row OWNS the archive an INTERFACE_LINK_LIBRARIES fragment names,
 // the consumer row records a DIRECT dep edge on that owner instead of absorbing

@@ -326,7 +326,7 @@ func (h *harvester) normalizeArchiveLinkLibs() {
 			}
 			r.linkLibs[i] = name
 			rewrote = true
-			for _, dir := range []string{filepath.Join(h.prefix, "lib"), filepath.Join(h.prefix, "lib64")} {
+			for _, dir := range h.probeLibDirs() {
 				for _, p := range h.appendProbedArtifacts(nil, dir, name) {
 					r.linkPaths = appendUnique(r.linkPaths, p)
 					if k := h.canonicalKey(p); h.byPath[k] == nil {
