@@ -221,7 +221,7 @@ func (h *harvester) resolveBundleArchives() {
 				continue
 			}
 			var probed []string
-			for _, dir := range []string{filepath.Join(h.prefix, "lib"), filepath.Join(h.prefix, "lib64")} {
+			for _, dir := range h.probeLibDirs() {
 				probed = h.appendProbedArtifacts(probed, dir, name)
 			}
 			var owner *row

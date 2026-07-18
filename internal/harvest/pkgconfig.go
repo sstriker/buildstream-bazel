@@ -188,6 +188,9 @@ func (h *harvester) applyPCLibs(r *row, name, libsField string) []pcForeign {
 	// the later occurrence). Count occurrences so the SELF archive can be
 	// flagged whole-archive (alwayslink) below — the Bazel-native equivalent.
 	libCount := map[string]int{}
+	// The prefix multilib dirs are invariant per invocation; compute them once
+	// (each call globs/stats the tree) rather than per -l token.
+	libDirs := h.probeLibDirs()
 	for _, tok := range strings.Fields(libsField) {
 		switch {
 		case strings.HasPrefix(tok, "-L"):
@@ -195,8 +198,7 @@ func (h *harvester) applyPCLibs(r *row, name, libsField string) []pcForeign {
 		case strings.HasPrefix(tok, "-l"):
 			lib := strings.TrimPrefix(tok, "-l")
 			libCount[lib]++
-			dirs := append(append([]string{}, searchDirs...),
-				filepath.Join(h.prefix, "lib"), filepath.Join(h.prefix, "lib64"))
+			dirs := append(append([]string{}, searchDirs...), libDirs...)
 			var paths []string
 			for _, d := range dirs {
 				paths = h.appendProbedArtifacts(paths, d, lib)
@@ -287,6 +289,47 @@ func (h *harvester) appendProbedArtifacts(paths []string, dir, lib string) []str
 		}
 	}
 	return paths
+}
+
+// probeLibDirs returns the prefix-relative library directories the archive probe
+// scans, covering the common multilib layouts so an archive that lives in a
+// variant dir still resolves to a link_path:
+//
+//   - lib, lib64, lib32, libx32 — the standard {default,64,32,x32-ABI} split;
+//   - lib/<triplet> — Debian/Ubuntu multiarch (lib/x86_64-linux-gnu,
+//     lib/aarch64-linux-gnu, …). The triplet varies by arch, so lib/'s subdirs
+//     are ENUMERATED (os.ReadDir) and filtered by triplet shape rather than
+//     guessed; appendProbedArtifacts stats each candidate, so a non-lib dir here
+//     is harmless (it just won't contain lib<name>.{a,so}).
+//
+// The result is invariant per harvester instance and MEMOIZED, so the ReadDir
+// runs once regardless of how many archive fragments probe. The caller may
+// prepend channel-specific search dirs (a .pc's own -L dirs).
+func (h *harvester) probeLibDirs() []string {
+	if h.libDirsMemo != nil {
+		return h.libDirsMemo
+	}
+	var dirs []string
+	for _, d := range []string{"lib", "lib64", "lib32", "libx32"} {
+		dirs = append(dirs, filepath.Join(h.prefix, d))
+	}
+	// Debian/Ubuntu multiarch: lib/<triplet>/ (arch-os-abi, e.g.
+	// x86_64-linux-gnu). Enumerate lib/'s subdirs rather than glob, so a prefix
+	// path containing glob metacharacters can't mis-match or swallow an error;
+	// a triplet has at least two hyphens, which excludes ordinary subdirs.
+	libDir := filepath.Join(h.prefix, "lib")
+	if ents, err := os.ReadDir(libDir); err == nil {
+		var triplets []string
+		for _, e := range ents {
+			if e.IsDir() && strings.Count(e.Name(), "-") >= 2 {
+				triplets = append(triplets, filepath.Join(libDir, e.Name()))
+			}
+		}
+		sort.Strings(triplets)
+		dirs = append(dirs, triplets...)
+	}
+	h.libDirsMemo = dirs
+	return dirs
 }
 
 // splitPCRequires splits a Requires list — comma- or space-separated
