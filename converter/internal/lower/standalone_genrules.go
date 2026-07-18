@@ -183,13 +183,6 @@ func customTargetStampName(o string, allByName map[string]bool) string {
 	return ""
 }
 
-// filterCustomTargetStamps drops add_custom_target completion-stamp paths
-// (`<dir>/CMakeFiles/<name>`) from a genrule's outputs. The stamp is cmake
-// bookkeeping the recovered command never writes; declaring it as a genrule out
-// fails the action with "declared output ... was not created". A stamp-only
-// target then falls through to the empty-outs drop (a pure side-effect with no
-// Bazel artifact form). Real artifact outputs are kept, so the genrule declares
-// only what the command actually produces.
 // standaloneEdgeOuts derives a standalone custom-command edge's genrule outputs
 // and reports whether the edge is a NON-ALL add_custom_target's stamp (→ the
 // `manual` tag), captured before the stamp is filtered:
@@ -217,11 +210,19 @@ func standaloneEdgeOuts(b *ninja.Build, buildDir string, cc *codegenContext, cus
 	return dedupSorted(outs), nonAllStamp
 }
 
+// filterCustomTargetStamps drops add_custom_target completion-stamp paths
+// (`<dir>/CMakeFiles/<name>`) from a genrule's outputs. The stamp is cmake
+// bookkeeping the recovered command never writes; declaring it as a genrule out
+// fails the action with "declared output ... was not created". A stamp-only
+// target then falls through to the empty-outs drop (a pure side-effect with no
+// Bazel artifact form). Real artifact outputs are kept, so the genrule declares
+// only what the command actually produces.
 func filterCustomTargetStamps(outs []string, allByName map[string]bool) []string {
 	if len(allByName) == 0 {
 		return outs
 	}
-	kept := outs[:0:0]
+	// Filter in place: the caller replaces outs with the returned slice.
+	kept := outs[:0]
 	for _, o := range outs {
 		if customTargetStampName(o, allByName) == "" {
 			kept = append(kept, o)
