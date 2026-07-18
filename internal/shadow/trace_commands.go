@@ -2227,7 +2227,11 @@ func classifyTargetEventCommand(ev TraceEvent) (TargetEventCommandCall, bool) {
 		}
 		switch sec {
 		case secCommand:
-			currentCmd = append(currentCmd, a)
+			// A cmake list-valued COMMAND argument is recorded by --trace-expand
+			// as a single ;-joined token but split into separate argv elements
+			// before exec; split it back so each element is its own argv token
+			// (same handling as parseExecuteProcessArgs' COMMAND clause).
+			currentCmd = append(currentCmd, splitCMakeListArg(a)...)
 		case secByProducts:
 			call.ByProducts = append(call.ByProducts, a)
 		}

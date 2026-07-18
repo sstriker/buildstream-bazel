@@ -83,13 +83,7 @@ func lowerTargetEventCommands(calls []shadow.TargetEventCommandCall, cc *codegen
 			continue
 		}
 
-		var parts []string
-		for _, c := range call.Commands {
-			if len(c) > 0 {
-				parts = append(parts, strings.Join(c, " "))
-			}
-		}
-		cmd := strings.Join(parts, " && ")
+		cmd := targetEventCommandString(call.Commands)
 		// Source-tree abs paths -> package-relative; exec-root anchoring.
 		cmd = rewriteGenruleCmd(cmd, cmakeSrc, cmakeBuild, "", bazelPackagePath)
 		// Target-artifact refs (a POST_BUILD running on the binary) -> $(execpath
@@ -97,16 +91,24 @@ func lowerTargetEventCommands(calls []shadow.TargetEventCommandCall, cc *codegen
 		cmd, tools := rewriteToolFromTarget(cmd, cc.ArtifactToName, cc.ExecArtifacts, cc.Imports, cc.HostPrefixDir)
 
 		// Token-granular pass: anchor the declared outputs to $(RULEDIR) and
-		// recover source-tree inputs into srcs. Exact-token matching avoids a
-		// byproduct `foo.c` clobbering an input `foo.c.in` that shares its prefix
-		// (the substring hazard a blanket replace would hit).
+		// recover source-tree inputs into srcs. This runs AFTER rewriteGenruleCmd:
+		// the outSet keys are cmakeBuild-relative, and rewriteGenruleCmd is what
+		// relativizes an abs operand to that form AND (via stripLeadingCd +
+		// qualifyRedirectBasenames) synthesizes the build-dir-relative prefix for a
+		// bare-basename redirect target under a stripped `cd` — a form the raw argv
+		// doesn't carry — so the match can't move earlier without regressing those.
+		// Tokenize QUOTE-AWARE (not strings.Fields): a shell-quoted argument is one
+		// atomic token, so an output/source name appearing INSIDE a quoted arg
+		// (e.g. `'--msg=building foo.c now'`) can't be split out and clobbered with
+		// $(RULEDIR). Exact-token matching also avoids a byproduct `foo.c` clobbering
+		// an input `foo.c.in` that shares its prefix.
 		outSet := map[string]bool{}
 		for _, o := range outs {
 			outSet[o] = true
 		}
 		var srcs []string
 		seenSrc := map[string]bool{}
-		toks := strings.Fields(cmd)
+		toks := quoteAwareTokens(cmd)
 		for i, tok := range toks {
 			if outSet[tok] {
 				toks[i] = "$(RULEDIR)/" + tok
@@ -164,6 +166,113 @@ func lowerTargetEventCommands(calls []shadow.TargetEventCommandCall, cc *codegen
 			cc.OutToGenrule[o] = name
 		}
 	}
+}
+
+// targetEventCommandString renders the structured argv (one []string per
+// COMMAND) into the genrule shell string, shell-quoting each token — consistent
+// with the execute_process codegen path (stampCommandLine / rewriteArgvCodegen).
+// Joining the argv verbatim word-splits an argument containing spaces and lets a
+// token's shell metacharacters ( () $ ' " ) be reinterpreted by the shell —
+// parse errors or word-splits. shellQuoteArg leaves safe tokens (paths, flags,
+// byproduct/source operands) untouched so the downstream exec-root anchoring,
+// tool resolution, and $(RULEDIR)/src token passes still see them; only a
+// metacharacter-bearing token is wrapped.
+//
+// Bare shell control operators are preserved UNQUOTED. Unlike execute_process (a
+// direct exec), this command is lowered into a shell genrule and legitimately
+// carries shell operators — a `>` redirect is how cmake's Make/Ninja generators
+// run it, and inferTargetEventOutputs reads that redirect as an output — so a
+// bare control operator stays a control operator. Everything else is a literal
+// argument and gets quoted; the raw trace argv carries no Bazel make-vars at
+// this stage ($(RULEDIR)/$(location)/$(execpath) are injected downstream by
+// rewriteGenruleCmd, rewriteToolFromTarget, and the output-anchoring pass, all
+// of which emit them unquoted). (`;`-joined CMake list values are split into
+// separate tokens upstream in the shadow classifier, so they never reach here as
+// one token.)
+func targetEventCommandString(commands [][]string) string {
+	var parts []string
+	for _, c := range commands {
+		if len(c) == 0 {
+			continue
+		}
+		quoted := make([]string, len(c))
+		for i, tok := range c {
+			quoted[i] = quoteTargetEventToken(tok)
+		}
+		parts = append(parts, strings.Join(quoted, " "))
+	}
+	return strings.Join(parts, " && ")
+}
+
+// quoteTargetEventToken shell-quotes one command token, preserving a bare shell
+// control operator unquoted (see targetEventCommandString).
+func quoteTargetEventToken(tok string) string {
+	if isShellControlOperator(tok) {
+		return tok
+	}
+	return shellQuoteArg(tok)
+}
+
+// isShellControlOperator reports whether a token is a BARE shell control /
+// redirection operator the lowered genrule's shell must interpret as such —
+// preserved unquoted while ordinary argument tokens are shell-quoted. Only an
+// exact match counts: `>` is a redirect, but `a>b` or a `;`-joined list value
+// (`a;b;c`) is an argument that must be quoted. The set covers the pipes/lists
+// and redirection forms cmake's shell-wrapped COMMAND recipes emit.
+func isShellControlOperator(tok string) bool {
+	switch tok {
+	case "|", "||", "&&", ";", "&",
+		"<", "<<", "<<<",
+		">", ">>", ">&", "&>", "&>>",
+		"1>", "2>", "1>>", "2>>", "2>&1", "1>&2":
+		return true
+	}
+	return false
+}
+
+// quoteAwareTokens splits a shell command string into tokens on unquoted
+// whitespace, keeping a single-quoted span (and a backslash-escaped char outside
+// quotes) as part of its token — the shapes shellQuoteArg emits. Unlike
+// strings.Fields it does NOT split inside a quoted argument, so the
+// output-anchoring / source-recovery pass matches whole arguments and can't
+// rewrite a name that merely appears inside a quoted arg. Inter-token whitespace
+// is dropped (the caller rejoins with single spaces); whitespace inside a quote
+// is preserved.
+func quoteAwareTokens(cmd string) []string {
+	var toks []string
+	var cur strings.Builder
+	inSingle, escaped, started := false, false, false
+	flush := func() {
+		if started {
+			toks = append(toks, cur.String())
+			cur.Reset()
+			started = false
+		}
+	}
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		switch {
+		case escaped:
+			cur.WriteByte(c)
+			escaped = false
+			started = true
+		case c == '\\' && !inSingle:
+			cur.WriteByte(c)
+			escaped = true
+			started = true
+		case c == '\'':
+			cur.WriteByte(c)
+			inSingle = !inSingle
+			started = true
+		case (c == ' ' || c == '\t') && !inSingle:
+			flush()
+		default:
+			cur.WriteByte(c)
+			started = true
+		}
+	}
+	flush()
+	return toks
 }
 
 // inferTargetEventOutputs is the best-effort output signal for a TARGET-event
