@@ -88,6 +88,30 @@ build CMakeFiles/run_thing: CUSTOM_COMMAND
 	}
 }
 
+// TestLowerStandaloneCustomCommands_NonAllStampKeepsManual: a NON-ALL
+// add_custom_target with a real artifact still gets the `manual` tag even though
+// its stamp is filtered out of outs — the tag is computed from the pre-filter
+// outputs, so dropping the stamp must not lose the not-in-default-build signal.
+func TestLowerStandaloneCustomCommands_NonAllStampKeepsManual(t *testing.T) {
+	g := mustParseNinja(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build gen/out.h CMakeFiles/gen_headers: CUSTOM_COMMAND
+  COMMAND = mygen -o gen/out.h
+`)
+	tc := standaloneTraceContext{CustomTargets: []shadow.AddCustomTargetCall{{Name: "gen_headers", All: false}}}
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", "", nil, tc, nil, nil)
+	if len(got) != 1 {
+		t.Fatalf("want 1 genrule; got %d (%v)", len(got), got)
+	}
+	if !reflect.DeepEqual(got[0].GenruleOuts, []string{"gen/out.h"}) {
+		t.Errorf("outs = %v, want [gen/out.h] (stamp filtered)", got[0].GenruleOuts)
+	}
+	if !stringSliceContains(got[0].Tags, "manual") {
+		t.Errorf("non-ALL custom target must keep the manual tag after stamp filter: tags=%v", got[0].Tags)
+	}
+}
+
 // TestLowerStandaloneCustomCommands_BreadcrumbsInternalDrop pins that a
 // dropped cmake-internal edge (a scripted CDash dashboard target) is NOT
 // emitted as a genrule AND is recorded in the filteredInternal sink with its
