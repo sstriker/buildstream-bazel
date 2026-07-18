@@ -32,3 +32,21 @@ func TestExtractTargetEventCommands(t *testing.T) {
 		t.Errorf("out-of-tree TARGET event should be included now: %+v", got[2])
 	}
 }
+
+// TestExtractTargetEventCommands_SplitsListArg: a cmake list-valued COMMAND
+// argument recorded by --trace-expand as one `;`-joined token is split back into
+// separate argv elements (same as parseExecuteProcessArgs), so the lowering sees
+// one token per list element rather than a single `;`-bearing token the shell
+// would fan into separate commands.
+func TestExtractTargetEventCommands_SplitsListArg(t *testing.T) {
+	trace := `{"args":["TARGET","foo","PRE_LINK","COMMAND","/bin/gen","--items","a;b;c","-o","/src/build/out.h","BYPRODUCTS","/src/build/out.h"],"cmd":"add_custom_command","file":"/src/CMakeLists.txt","line":4}
+`
+	got := ExtractTargetEventCommands([]byte(trace))
+	if len(got) != 1 {
+		t.Fatalf("got %d calls, want 1: %+v", len(got), got)
+	}
+	want := [][]string{{"/bin/gen", "--items", "a", "b", "c", "-o", "/src/build/out.h"}}
+	if !reflect.DeepEqual(got[0].Commands, want) {
+		t.Errorf("`;`-joined list arg not split into separate argv elements:\n got %+v\nwant %+v", got[0].Commands, want)
+	}
+}

@@ -83,13 +83,7 @@ func lowerTargetEventCommands(calls []shadow.TargetEventCommandCall, cc *codegen
 			continue
 		}
 
-		var parts []string
-		for _, c := range call.Commands {
-			if len(c) > 0 {
-				parts = append(parts, strings.Join(c, " "))
-			}
-		}
-		cmd := strings.Join(parts, " && ")
+		cmd := targetEventCommandString(call.Commands)
 		// Source-tree abs paths -> package-relative; exec-root anchoring.
 		cmd = rewriteGenruleCmd(cmd, cmakeSrc, cmakeBuild, "", bazelPackagePath)
 		// Target-artifact refs (a POST_BUILD running on the binary) -> $(execpath
@@ -164,6 +158,73 @@ func lowerTargetEventCommands(calls []shadow.TargetEventCommandCall, cc *codegen
 			cc.OutToGenrule[o] = name
 		}
 	}
+}
+
+// targetEventCommandString renders the structured argv (one []string per
+// COMMAND) into the genrule shell string, shell-quoting each token — consistent
+// with the execute_process codegen path (stampCommandLine / rewriteArgvCodegen).
+// Joining the argv verbatim word-splits an argument containing spaces and lets a
+// token's shell metacharacters ( () $ ' " ) be reinterpreted by the shell —
+// parse errors or word-splits. shellQuoteArg leaves safe tokens (paths, flags,
+// byproduct/source operands) untouched so the downstream exec-root anchoring,
+// tool resolution, and $(RULEDIR)/src token passes still see them; only a
+// metacharacter-bearing token is wrapped.
+//
+// Two token classes are preserved UNQUOTED. Unlike execute_process (a direct
+// exec), this command is lowered into a shell genrule and legitimately carries
+// shell operators — a `>` redirect is how cmake's Make/Ninja generators run it,
+// and inferTargetEventOutputs reads that redirect as an output — so a bare
+// control operator stays a control operator. A `$(…)` Bazel make-var (a
+// $(RULEDIR) / $(location) / $(execpath) an anchoring pass may have injected) is
+// likewise left for Bazel to expand rather than quoted into a literal.
+// (`;`-joined CMake list values are split into separate tokens upstream in the
+// shadow classifier, so they never reach here as one token.)
+func targetEventCommandString(commands [][]string) string {
+	var parts []string
+	for _, c := range commands {
+		if len(c) == 0 {
+			continue
+		}
+		quoted := make([]string, len(c))
+		for i, tok := range c {
+			quoted[i] = quoteTargetEventToken(tok)
+		}
+		parts = append(parts, strings.Join(quoted, " "))
+	}
+	return strings.Join(parts, " && ")
+}
+
+// quoteTargetEventToken shell-quotes one command token, preserving bare shell
+// control operators and Bazel make-vars unquoted (see targetEventCommandString).
+func quoteTargetEventToken(tok string) string {
+	if isShellControlOperator(tok) || isBazelMakeVar(tok) {
+		return tok
+	}
+	return shellQuoteArg(tok)
+}
+
+// isBazelMakeVar reports whether a token is a single `$(…)` Bazel make-variable
+// reference (e.g. $(RULEDIR), $(location x), $(execpath :t)) that must reach the
+// genrule cmd unquoted so Bazel expands it.
+func isBazelMakeVar(tok string) bool {
+	return strings.HasPrefix(tok, "$(") && strings.HasSuffix(tok, ")")
+}
+
+// isShellControlOperator reports whether a token is a BARE shell control /
+// redirection operator the lowered genrule's shell must interpret as such —
+// preserved unquoted while ordinary argument tokens are shell-quoted. Only an
+// exact match counts: `>` is a redirect, but `a>b` or a `;`-joined list value
+// (`a;b;c`) is an argument that must be quoted. The set covers the pipes/lists
+// and redirection forms cmake's shell-wrapped COMMAND recipes emit.
+func isShellControlOperator(tok string) bool {
+	switch tok {
+	case "|", "||", "&&", ";", "&",
+		"<", "<<", "<<<",
+		">", ">>", ">&", "&>", "&>>",
+		"1>", "2>", "1>>", "2>>", "2>&1", "1>&2":
+		return true
+	}
+	return false
 }
 
 // inferTargetEventOutputs is the best-effort output signal for a TARGET-event
