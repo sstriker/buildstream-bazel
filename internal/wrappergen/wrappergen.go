@@ -158,9 +158,11 @@ func renderExecutable(b *strings.Builder, name string, ex *manifest.Export) {
 // LinkLibraries classification: routed linkopts (genuine externals only) plus
 // dep edges for LinkLibraries names the manifest owns.
 func renderLibrary(b *strings.Builder, name string, ex *manifest.Export, oldLabelToNew map[string]string, route linkRoute) {
-	archiveRel := archivePath(ex)
-	if archiveRel != "" {
-		fmt.Fprintf(b, "cc_import(\n    name = %q,\n", name+"_archive")
+	archives := archivePaths(ex)
+	archiveNames := make([]string, len(archives))
+	for i, archiveRel := range archives {
+		archiveNames[i] = archiveTargetName(name, i)
+		fmt.Fprintf(b, "cc_import(\n    name = %q,\n", archiveNames[i])
 		attr := "static_library"
 		if strings.Contains(path.Base(archiveRel), ".so") || strings.HasSuffix(archiveRel, ".dylib") {
 			attr = "shared_library"
@@ -174,6 +176,10 @@ func renderLibrary(b *strings.Builder, name string, ex *manifest.Export, oldLabe
 			b.WriteString("    alwayslink = True,\n")
 		}
 		b.WriteString("    visibility = [\"//visibility:private\"],\n)\n\n")
+	}
+	archiveRel := ""
+	if len(archives) > 0 {
+		archiveRel = archives[0]
 	}
 	fmt.Fprintf(b, "cc_library(\n    name = %q,\n", name)
 	incs := ex.InterfaceIncludes
@@ -206,7 +212,7 @@ func renderLibrary(b *strings.Builder, name string, ex *manifest.Export, oldLabe
 		}
 		b.WriteString("    ],\n")
 	}
-	deps := wrapperDeps(ex, name, archiveRel, oldLabelToNew, route.deps)
+	deps := wrapperDeps(ex, archiveNames, oldLabelToNew, route.deps)
 	if len(deps) > 0 {
 		b.WriteString("    deps = [\n")
 		for _, d := range deps {
@@ -276,6 +282,15 @@ func routeLinkLibraries(ex *manifest.Export, nameToExport map[string]*manifest.E
 		name := unwrapGenex(l)
 		if name == "" {
 			continue
+		}
+		// An archive-shaped token — a `:libfoo.a` label fragment or a bare
+		// `libfoo.a` filename (a malformed export whose archive was named only
+		// by a fragment, no link_paths) — names a library by its archive file.
+		// Normalize it to the provided -l name so it routes like any other name
+		// (matching this export's own archive → skip, a sibling → dep edge, else
+		// a clean `-lfoo`) instead of emitting the nonsense flag `-l:libfoo.a`.
+		if pn := manifest.ProvidedLibName(name); pn != "" {
+			name = pn
 		}
 		// A `-l<name>` spelling (a hand-written manifest can carry one) must
 		// route the SAME as a bare `<name>` — else it bypasses the resolver
@@ -377,8 +392,13 @@ func linkKeysOf(ex *manifest.Export) []string {
 	if k := normLinkKey(ex.CMakeTarget); k != "" {
 		keys = append(keys, k)
 	}
-	if k := normLinkKey(providedLibName(archivePath(ex))); k != "" {
-		keys = append(keys, k)
+	// Every archive the export ships provides its own -l name; all of them are
+	// self-provided, so a multi-archive export's secondary archive named in its
+	// own LinkLibraries is recognized here (rather than routed to a raw -l).
+	for _, rel := range archivePaths(ex) {
+		if k := normLinkKey(providedLibName(rel)); k != "" {
+			keys = append(keys, k)
+		}
 	}
 	return keys
 }
@@ -692,12 +712,15 @@ func breakRouteCycles(exports []*manifest.Export, oldToNew map[string]string, ro
 // then the declared closure with old export labels remapped onto their
 // wrappers, plus the link-derived deps (LinkLibraries names the manifest
 // owns, already wrapper labels) — sorted; deduped; never self-referential.
-func wrapperDeps(ex *manifest.Export, name, archiveRel string, oldToNew map[string]string, linkDeps []string) []string {
+func wrapperDeps(ex *manifest.Export, archiveNames []string, oldToNew map[string]string, linkDeps []string) []string {
 	var out []string
 	seen := map[string]bool{}
-	if archiveRel != "" {
-		out = append(out, ":"+name+"_archive")
-		seen[":"+name+"_archive"] = true
+	for _, an := range archiveNames {
+		label := ":" + an
+		if !seen[label] {
+			seen[label] = true
+			out = append(out, label)
+		}
 	}
 	self := oldToNew[ex.BazelLabel]
 	var closure []string
@@ -721,16 +744,27 @@ func wrapperDeps(ex *manifest.Export, name, archiveRel string, oldToNew map[stri
 	return append(out, closure...)
 }
 
-// archivePath returns the prefix-relative path of the export's first
-// anchored link_path ("" when the export ships no artifact — the
-// header-only / INTERFACE shape).
-func archivePath(ex *manifest.Export) string {
+// archivePaths returns the prefix-relative paths of ALL the export's anchored
+// link_paths — every archive it ships, each of which becomes its own cc_import
+// (a multi-archive export's secondary archives used to fall through to raw
+// `-l<name>` linkopts, which carry no file dependency and link the host copy).
+func archivePaths(ex *manifest.Export) []string {
+	var out []string
 	for _, lp := range ex.LinkPaths {
 		if rel, ok := strings.CutPrefix(lp, manifest.PrefixAnchor); ok && rel != "" {
-			return rel
+			out = append(out, rel)
 		}
 	}
-	return ""
+	return out
+}
+
+// archiveTargetName names an export's i-th cc_import: `<name>_archive` for the
+// first (stable, backward-compatible) and `<name>_archive<N>` for the rest.
+func archiveTargetName(name string, i int) string {
+	if i == 0 {
+		return name + "_archive"
+	}
+	return fmt.Sprintf("%s_archive%d", name, i+1)
 }
 
 // WrapperName derives the consumer-facing target name from the cmake
