@@ -243,6 +243,11 @@ type harvester struct {
 	byPath     map[string]*row // canonicalKey(anchored path) → row (dedup pc-vs-bundle)
 	warnings   []string
 
+	// libDirsMemo caches probeLibDirs — the multilib search dirs are invariant
+	// for a harvester instance, so the ReadDir/stat work runs once, not per
+	// archive probe. nil until first computed.
+	libDirsMemo []string
+
 	// cyclicGroups is the set of cmake target names named inside a
 	// $<LINK_GROUP:…> genex — a cyclic static-archive SCC cmake links with
 	// --start-group. markCyclicGroups flags their rows alwayslink.

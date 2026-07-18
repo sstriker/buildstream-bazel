@@ -297,12 +297,18 @@ func (h *harvester) appendProbedArtifacts(paths []string, dir, lib string) []str
 //
 //   - lib, lib64, lib32, libx32 — the standard {default,64,32,x32-ABI} split;
 //   - lib/<triplet> — Debian/Ubuntu multiarch (lib/x86_64-linux-gnu,
-//     lib/aarch64-linux-gnu, …). The triplet varies by arch, so glob rather
-//     than guess; appendProbedArtifacts stats each candidate, so a non-lib
-//     match here is harmless (it just won't contain lib<name>.{a,so}).
+//     lib/aarch64-linux-gnu, …). The triplet varies by arch, so lib/'s subdirs
+//     are ENUMERATED (os.ReadDir) and filtered by triplet shape rather than
+//     guessed; appendProbedArtifacts stats each candidate, so a non-lib dir here
+//     is harmless (it just won't contain lib<name>.{a,so}).
 //
-// The caller may prepend channel-specific search dirs (a .pc's own -L dirs).
+// The result is invariant per harvester instance and MEMOIZED, so the ReadDir
+// runs once regardless of how many archive fragments probe. The caller may
+// prepend channel-specific search dirs (a .pc's own -L dirs).
 func (h *harvester) probeLibDirs() []string {
+	if h.libDirsMemo != nil {
+		return h.libDirsMemo
+	}
 	var dirs []string
 	for _, d := range []string{"lib", "lib64", "lib32", "libx32"} {
 		dirs = append(dirs, filepath.Join(h.prefix, d))
@@ -322,6 +328,7 @@ func (h *harvester) probeLibDirs() []string {
 		sort.Strings(triplets)
 		dirs = append(dirs, triplets...)
 	}
+	h.libDirsMemo = dirs
 	return dirs
 }
 
