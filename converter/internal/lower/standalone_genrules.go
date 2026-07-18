@@ -144,33 +144,90 @@ type standaloneTraceContext struct {
 // genrule that merely happens to write under a CMakeFiles/ path is never
 // mis-tagged. Returns false on an empty map (no trace).
 func customTargetStampIsNonAll(outs []string, allByName map[string]bool) bool {
-	if len(allByName) == 0 {
-		return false
-	}
 	for _, o := range outs {
-		idx := strings.LastIndex(o, "CMakeFiles/")
-		if idx < 0 {
-			continue
-		}
-		base := o[idx+len("CMakeFiles/"):]
-		if strings.Contains(base, "/") {
-			continue // a deeper file under CMakeFiles/, not a target stamp
-		}
-		if all, ok := allByName[base]; ok {
-			if !all {
-				return true
-			}
-			continue
-		}
-		for _, cfg := range []string{"Debug", "Release", "RelWithDebInfo", "MinSizeRel"} {
-			if n, found := strings.CutSuffix(base, "-"+cfg); found {
-				if all, ok := allByName[n]; ok && !all {
-					return true
-				}
-			}
+		if name := customTargetStampName(o, allByName); name != "" && !allByName[name] {
+			return true
 		}
 	}
 	return false
+}
+
+// customTargetStampName returns the add_custom_target NAME whose completion
+// stamp an output path is — cmake places it at `<dir>/CMakeFiles/<name>` (Ninja
+// Multi-Config appends a `-<config>` suffix) — or "" when the output is not a
+// KNOWN custom target's stamp. Gated on allByName so an ordinary file that
+// merely lives under a CMakeFiles/ path is never matched. Returns "" on an empty
+// map (no trace).
+func customTargetStampName(o string, allByName map[string]bool) string {
+	if len(allByName) == 0 {
+		return ""
+	}
+	idx := strings.LastIndex(o, "CMakeFiles/")
+	if idx < 0 {
+		return ""
+	}
+	base := o[idx+len("CMakeFiles/"):]
+	if strings.Contains(base, "/") {
+		return "" // a deeper file under CMakeFiles/, not a target stamp
+	}
+	if _, ok := allByName[base]; ok {
+		return base
+	}
+	for _, cfg := range []string{"Debug", "Release", "RelWithDebInfo", "MinSizeRel"} {
+		if n, found := strings.CutSuffix(base, "-"+cfg); found {
+			if _, ok := allByName[n]; ok {
+				return n
+			}
+		}
+	}
+	return ""
+}
+
+// filterCustomTargetStamps drops add_custom_target completion-stamp paths
+// (`<dir>/CMakeFiles/<name>`) from a genrule's outputs. The stamp is cmake
+// bookkeeping the recovered command never writes; declaring it as a genrule out
+// fails the action with "declared output ... was not created". A stamp-only
+// target then falls through to the empty-outs drop (a pure side-effect with no
+// Bazel artifact form). Real artifact outputs are kept, so the genrule declares
+// only what the command actually produces.
+// standaloneEdgeOuts derives a standalone custom-command edge's genrule outputs
+// and reports whether the edge is a NON-ALL add_custom_target's stamp (→ the
+// `manual` tag), captured before the stamp is filtered:
+//
+//   - the ninja edge outputs (explicit + implicit), emitted build-dir-relative
+//     as cmake's Ninja generator records them;
+//   - minus unexpanded ninja variable references (`${cmake_ninja_workdir}foo`),
+//     the restat=1 shadow output a Bazel genrule can't declare;
+//   - re-anchored for CROSS-BOUNDARY nested codegen — a nested UTILITY writing
+//     its generated source UP into an ancestor build tree resolves to that
+//     owning build-relative form (no-op without ancestor builds);
+//   - minus the add_custom_target completion stamp (<dir>/CMakeFiles/<name>),
+//     cmake bookkeeping the recovered command never writes — declaring it would
+//     fail the action ("declared output ... was not created");
+//
+// then sorted + deduped for byte-stability.
+func standaloneEdgeOuts(b *ninja.Build, buildDir string, cc *codegenContext, customTargetAll map[string]bool) ([]string, bool) {
+	outs := append([]string(nil), b.Outputs...)
+	outs = append(outs, b.ImplicitOuts...)
+	outs = filterOutVarRefs(outs)
+	outs = reanchorCrossBoundaryOuts(outs, buildDir, cc)
+	nonAllStamp := customTargetStampIsNonAll(outs, customTargetAll)
+	outs = filterCustomTargetStamps(outs, customTargetAll)
+	sort.Strings(outs)
+	return dedupSorted(outs), nonAllStamp
+}
+
+func filterCustomTargetStamps(outs []string, allByName map[string]bool) []string {
+	if len(allByName) == 0 {
+		return outs
+	}
+	kept := outs[:0:0]
+	for _, o := range outs {
+		if customTargetStampName(o, allByName) == "" {
+			kept = append(kept, o)
+		}
+	}
+	return kept
 }
 
 // coveredOutsForStandalone builds the set of outputs the standalone pass must NOT
@@ -340,36 +397,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// from the add_custom_command trace (no-op for every other edge), so the
 		// nested-configure check, bake, and refusal all act on the real script.
 		cmd = cc.realCmakeCommandForEdge(b, cmd, buildDir)
-		// All outputs reference relative to the build dir's
-		// per-target convention; emit them as-is. Stripping
-		// buildDir isn't safe because the outputs are already
-		// build-dir-relative in cmake's Ninja generator.
-		outs := append([]string(nil), b.Outputs...)
-		outs = append(outs, b.ImplicitOuts...)
-		// Drop outputs that contain unexpanded ninja variable
-		// references (e.g. `${cmake_ninja_workdir}foo.txt`).
-		// cmake's Ninja generator pairs every real custom-command
-		// output with a `${cmake_ninja_workdir}<basename>`
-		// implicit-output shadow so the restat=1 semantics see
-		// both relative and absolute paths; a Bazel genrule can't
-		// declare an outs entry whose path is a ninja-time
-		// variable reference. The real (variable-free) output
-		// stays in the list and drives the genrule's outs / name.
-		outs = filterOutVarRefs(outs)
-		// CROSS-BOUNDARY nested codegen: in a nested lowering an output can land
-		// in an ANCESTOR (outer) build tree rather than this build dir — a nested
-		// UTILITY's custom command writing its generated source UP into the outer
-		// build dir (the consumer references it there). Resolve such an output to
-		// its OWNING (outer) build-relative form so the genrule declares a hermetic
-		// out (generated/x.c) instead of leaking the absolute convert-time path,
-		// and the parent's build-dir bake defers to this regenerating producer. A
-		// nested-owned / source-tree output is returned unchanged; a no-op when
-		// there are no ancestor builds (the outer lowering). Mirrors the per-target
-		// emitRecoveredGenrule path (genSrcRelToOwningBuild + the cmd reanchor below).
-		outs = reanchorCrossBoundaryOuts(outs, buildDir, cc)
-		// Sort for byte-stability and dedup.
-		sort.Strings(outs)
-		outs = dedupSorted(outs)
+		outs, customTargetNonAll := standaloneEdgeOuts(b, buildDir, cc, customTargetAll)
 		if len(outs) == 0 {
 			continue
 		}
@@ -576,8 +604,9 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 			tags = append(tags, genexTag)
 		}
 		// A non-ALL add_custom_target's stamp → `manual` (not in the
-		// default build; see customTargetAll above).
-		if customTargetStampIsNonAll(outs, customTargetAll) {
+		// default build; see customTargetAll above). Computed before the stamp
+		// was filtered from outs.
+		if customTargetNonAll {
 			tags = append(tags, "manual")
 		}
 		if len(inPlaceRenames) > 0 {

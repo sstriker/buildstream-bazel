@@ -48,6 +48,46 @@ build foo.o: CXX_COMPILER foo.cc
 	}
 }
 
+// TestLowerStandaloneCustomCommands_DropsCustomTargetStamp: a genrule lowered
+// from an add_custom_target that produces a real artifact AND cmake's internal
+// completion stamp (<dir>/CMakeFiles/<name>) declares ONLY the real artifact —
+// the recovered command never writes the stamp, so declaring it as a genrule out
+// would fail the action ("declared output ... was not created").
+func TestLowerStandaloneCustomCommands_DropsCustomTargetStamp(t *testing.T) {
+	g := mustParseNinja(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build gen/out.h CMakeFiles/gen_headers: CUSTOM_COMMAND
+  COMMAND = mygen -o gen/out.h
+`)
+	tc := standaloneTraceContext{CustomTargets: []shadow.AddCustomTargetCall{{Name: "gen_headers", All: true}}}
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", "", nil, tc, nil, nil)
+	if len(got) != 1 {
+		t.Fatalf("want 1 genrule; got %d (%v)", len(got), got)
+	}
+	if !reflect.DeepEqual(got[0].GenruleOuts, []string{"gen/out.h"}) {
+		t.Errorf("outs = %v, want [gen/out.h] (CMakeFiles/gen_headers stamp filtered)", got[0].GenruleOuts)
+	}
+}
+
+// TestLowerStandaloneCustomCommands_StampOnlyTargetDropped: an add_custom_target
+// whose ONLY output is its completion stamp is a pure side-effect with no Bazel
+// artifact form — after the stamp is filtered it has no outs, so no genrule is
+// emitted (rather than a broken one declaring an unwritten stamp).
+func TestLowerStandaloneCustomCommands_StampOnlyTargetDropped(t *testing.T) {
+	g := mustParseNinja(t, `rule CUSTOM_COMMAND
+  command = $COMMAND
+
+build CMakeFiles/run_thing: CUSTOM_COMMAND
+  COMMAND = echo building
+`)
+	tc := standaloneTraceContext{CustomTargets: []shadow.AddCustomTargetCall{{Name: "run_thing", All: false}}}
+	got := lowerStandaloneCustomCommands(g, nil, "", "/build", "", "", nil, tc, nil, nil)
+	if len(got) != 0 {
+		t.Fatalf("stamp-only custom target must emit no genrule; got %v", got)
+	}
+}
+
 // TestLowerStandaloneCustomCommands_BreadcrumbsInternalDrop pins that a
 // dropped cmake-internal edge (a scripted CDash dashboard target) is NOT
 // emitted as a genrule AND is recorded in the filteredInternal sink with its
