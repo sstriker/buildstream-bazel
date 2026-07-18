@@ -3,6 +3,7 @@ package harvest
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1135,6 +1136,41 @@ func TestApplyLinkEntry_ArchiveNameProbesPath(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("link_paths = %v, want to contain %q (probed archive)", r.linkPaths, want)
+	}
+}
+
+// TestNormalizeArchiveLinkLibs_FragmentToNameAndPath: the uniform cross-channel
+// normalization — a row that recorded an archive by a `:libfoo.a` fragment (a
+// `.pc` `Libs: -l:libfoo.a` whose `-l` strip leaves the fragment) with no
+// link_paths gets the well-formed shape: the bare provided name in link_libraries
+// PLUS the probed archive path in link_paths (now cc_import-able). A genuine
+// system lib (`pthread`) is left untouched.
+func TestNormalizeArchiveLinkLibs_FragmentToNameAndPath(t *testing.T) {
+	prefix := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(prefix, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(prefix, "lib", "libfoo.a"), []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := &harvester{prefix: prefix, realPrefix: prefix, byName: map[string]*row{}, byPath: map[string]*row{}}
+	r := &row{cmakeTarget: "pkgconfig::foo", linkLibs: []string{":libfoo.a", "pthread"}}
+	h.addRow(r)
+
+	h.normalizeArchiveLinkLibs()
+
+	if !reflect.DeepEqual(r.linkLibs, []string{"foo", "pthread"}) {
+		t.Errorf("linkLibs = %v, want [foo pthread] (fragment→name, system lib kept)", r.linkLibs)
+	}
+	want := manifest.PrefixAnchor + "lib/libfoo.a"
+	found := false
+	for _, p := range r.linkPaths {
+		if p == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("link_paths = %v, want to contain %q (probed archive → cc_import-able)", r.linkPaths, want)
 	}
 }
 

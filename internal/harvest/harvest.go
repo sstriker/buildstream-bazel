@@ -85,6 +85,7 @@ func HarvestWithRegistry(prefixDir, element, labelPkg string, registry map[strin
 	}
 	h.collectBareBinaries(element)
 	h.resolveBundleArchives()
+	h.normalizeArchiveLinkLibs()
 	h.resolveDeps()
 	h.markCyclicGroups()
 	h.breakDepCycles()
@@ -297,6 +298,53 @@ func (h *harvester) addRow(r *row) *row {
 		}
 	}
 	return r
+}
+
+// normalizeArchiveLinkLibs gives every archive-backed export the uniform shape a
+// well-formed one carries — a bare provided-lib NAME in link_libraries PLUS the
+// archive's probed absolute path(s) in link_paths — regardless of which channel
+// populated the row. A channel that recorded an archive by its FILENAME
+// (`libfoo.a`) or a label FRAGMENT (`:libfoo.a`, e.g. a `.pc` `Libs:` line using
+// GNU ld's `-l:libfoo.a` exact-filename syntax, whose `-l` strip leaves the
+// fragment) leaves the entry un-cc_import-able and unresolvable by exact-path
+// lookup. Rewrite each such entry to its provided name and probe the archive
+// (lib + lib64, the multilib variants) into link_paths. Mirrors
+// resolveBundleArchives (which already normalizes the cmake-bundle channel), but
+// runs over EVERY row after all channels — so pkg-config and any other channel
+// get the same shape. Idempotent: a bare name / -l flag isn't archive-shaped
+// (ProvidedLibName returns ""), so it is left untouched.
+func (h *harvester) normalizeArchiveLinkLibs() {
+	for _, r := range h.rows {
+		if r.aliasOf != "" {
+			continue
+		}
+		rewrote := false
+		for i, ll := range r.linkLibs {
+			name := manifest.ProvidedLibName(ll)
+			if name == "" {
+				continue // a bare -l name or a flag, not an archive filename/fragment
+			}
+			r.linkLibs[i] = name
+			rewrote = true
+			for _, dir := range []string{filepath.Join(h.prefix, "lib"), filepath.Join(h.prefix, "lib64")} {
+				for _, p := range h.appendProbedArtifacts(nil, dir, name) {
+					r.linkPaths = appendUnique(r.linkPaths, p)
+					if k := h.canonicalKey(p); h.byPath[k] == nil {
+						h.byPath[k] = r
+					}
+				}
+			}
+		}
+		if rewrote {
+			// The rewrite can collide a fragment onto an already-present bare
+			// name (`:libz.a` alongside `z`); dedup preserving first order.
+			var deduped []string
+			for _, l := range r.linkLibs {
+				deduped = appendUnique(deduped, l)
+			}
+			r.linkLibs = deduped
+		}
+	}
 }
 
 // resolveDeps maps each row's collected references onto labels:
