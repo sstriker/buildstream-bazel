@@ -708,10 +708,11 @@ func breakRouteCycles(exports []*manifest.Export, oldToNew map[string]string, ro
 	}
 }
 
-// wrapperDeps assembles the wrapper's dep list: its own archive first,
-// then the declared closure with old export labels remapped onto their
-// wrappers, plus the link-derived deps (LinkLibraries names the manifest
-// owns, already wrapper labels) — sorted; deduped; never self-referential.
+// wrapperDeps assembles the wrapper's dep list: its own archive cc_imports
+// first (one per anchored link_path, in link_path order), then the declared
+// closure with old export labels remapped onto their wrappers, plus the
+// link-derived deps (LinkLibraries names the manifest owns, already wrapper
+// labels) — sorted; deduped; never self-referential.
 func wrapperDeps(ex *manifest.Export, archiveNames []string, oldToNew map[string]string, linkDeps []string) []string {
 	var out []string
 	seen := map[string]bool{}
