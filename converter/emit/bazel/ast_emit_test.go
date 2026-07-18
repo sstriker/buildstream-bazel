@@ -147,6 +147,10 @@ func TestASTEmit_Genrule(t *testing.T) {
 		{Kind: ir.KindGenrule, Name: "g", GenruleOuts: []string{"out.h"}, GenruleCmd: "$(location //t:x) $@"},
 		{Kind: ir.KindGenrule, Name: "g", Srcs: []string{"in.txt"}, GenruleOuts: []string{"o.h"},
 			GenruleCmd: "cp $< $@", GenruleTools: []string{"//t:x"}, Tags: []string{"manual"}, Visibility: []string{"//v:__pkg__"}},
+		// Toolchain make-var genrule: carries a toolchains attribute.
+		{Kind: ir.KindGenrule, Name: "g", GenruleOuts: []string{"o.o"},
+			GenruleCmd:        "$(CC) -c foo.c -o $@",
+			GenruleToolchains: []string{"@bazel_tools//tools/cpp:current_cc_toolchain"}},
 		// Long outs list: layout is buildifier-owned now.
 		{Kind: ir.KindGenrule, Name: "g", GenruleCmd: "x",
 			GenruleOuts: []string{"gen/aaaaaaaa.h", "gen/bbbbbbbb.h", "gen/cccccccc.h", "gen/dddddddd.h"}},
@@ -156,6 +160,15 @@ func TestASTEmit_Genrule(t *testing.T) {
 		t.Run(string(rune('a'+i)), func(t *testing.T) {
 			assertKindByteIdentical(t, genruleExpr(tc), func(b *bytes.Buffer) error { return emitGenrule(b, tc) })
 		})
+	}
+	// The toolchains attribute renders (template path).
+	var b bytes.Buffer
+	if err := emitGenrule(&b, ir.Target{Kind: ir.KindGenrule, Name: "g", GenruleOuts: []string{"o.o"},
+		GenruleCmd: "$(CC) -c foo.c -o $@", GenruleToolchains: []string{"@bazel_tools//tools/cpp:current_cc_toolchain"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), `toolchains = ["@bazel_tools//tools/cpp:current_cc_toolchain"]`) {
+		t.Errorf("genrule missing toolchains attribute:\n%s", b.String())
 	}
 }
 

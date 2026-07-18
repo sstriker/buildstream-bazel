@@ -88,7 +88,7 @@ func lowerTargetEventCommands(calls []shadow.TargetEventCommandCall, cc *codegen
 		cmd = rewriteGenruleCmd(cmd, cmakeSrc, cmakeBuild, "", bazelPackagePath)
 		// Target-artifact refs (a POST_BUILD running on the binary) -> $(execpath
 		// :tgt) + a tools dep.
-		cmd, tools := rewriteToolFromTarget(cmd, cc.ArtifactToName, cc.ExecArtifacts, cc.Imports, cc.HostPrefixDir)
+		cmd, tools, toolchains := rewriteToolFromTarget(cmd, cc.ArtifactToName, cc.ExecArtifacts, cc.Imports, cc.HostPrefixDir, cc.toolchainTools())
 
 		// Token-granular pass: anchor the declared outputs to $(RULEDIR) and
 		// recover source-tree inputs into srcs. This runs AFTER rewriteGenruleCmd:
@@ -153,14 +153,15 @@ func lowerTargetEventCommands(calls []shadow.TargetEventCommandCall, cc *codegen
 			tags = append(tags, "cmake-codegen-target-event-inferred-output")
 		}
 		cc.appendExecProcGenrule(ir.Target{
-			Name:         name,
-			Kind:         ir.KindGenrule,
-			GenruleCmd:   cmd,
-			GenruleOuts:  outs,
-			GenruleTools: tools,
-			Srcs:         srcs,
-			Visibility:   []string{"//visibility:private"},
-			Tags:         tags,
+			Name:              name,
+			Kind:              ir.KindGenrule,
+			GenruleCmd:        cmd,
+			GenruleOuts:       outs,
+			GenruleTools:      tools,
+			GenruleToolchains: toolchains,
+			Srcs:              srcs,
+			Visibility:        []string{"//visibility:private"},
+			Tags:              tags,
 		})
 		for _, o := range outs {
 			cc.OutToGenrule[o] = name

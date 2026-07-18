@@ -529,7 +529,7 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// must see the pre-swap driver — otherwise --recognize-codegen +
 		// --tool-conventions together silently drop to the genrule.
 		preToolSwapCmd := rewrittenCmd
-		rewrittenCmd, tools := rewriteToolFromTarget(rewrittenCmd, artifactToName, execArtifacts, ccImports, ccHostPrefix)
+		rewrittenCmd, tools, toolchains := rewriteToolFromTarget(rewrittenCmd, artifactToName, execArtifacts, ccImports, ccHostPrefix, cc.toolchainTools())
 		// The tool-from-target lift hoisted the generator binary into
 		// `tools` and rewrote the cmd to $(location :tool); drop the
 		// now-redundant build artifact (e.g. the multi-config
@@ -598,14 +598,15 @@ func lowerStandaloneCustomCommands(g *ninja.Graph, existing []ir.Target, cmakeSr
 		// #include-driven consumer wires a direct deps edge to it; otherwise the
 		// genrule fallback below is emitted unchanged (flag-off → byte-identical).
 		fallback := ir.Target{
-			Name:         name,
-			Kind:         ir.KindGenrule,
-			Srcs:         srcs,
-			GenruleOuts:  outs,
-			GenruleCmd:   rewrittenCmd,
-			GenruleTools: tools,
-			Visibility:   visibility,
-			Tags:         tags,
+			Name:              name,
+			Kind:              ir.KindGenrule,
+			Srcs:              srcs,
+			GenruleOuts:       outs,
+			GenruleCmd:        rewrittenCmd,
+			GenruleTools:      tools,
+			GenruleToolchains: toolchains,
+			Visibility:        visibility,
+			Tags:              tags,
 		}
 		// When the edge is a cmake-generated `cmake -P`/`cmake -E` wrapper that
 		// hides the real tool, recognize on the trace's real command (the edge's

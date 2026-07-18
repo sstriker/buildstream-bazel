@@ -2094,10 +2094,27 @@ func (cc *codegenContext) seedConsumedDemand(r *fileapi.Reply, cmakeBuild string
 // The second return is the Phase-B fallback-placeholder package: non-nil
 // when execute_process refusals routed to emitFallbackPlaceholder, in
 // which case ToIR returns it directly (the original inline early-exit).
+// cacheOrVar returns a CMake variable value — the authoritative File-API cache
+// (r.Cache, always populated at configure) first, then the dump-vars variable
+// namespace as a fallback (which only carries it if the running cmake enumerated
+// the property). "" when neither has it.
+func cacheOrVar(r *fileapi.Reply, vars map[string]string, name string) string {
+	if r != nil {
+		if e := r.Cache.Get(name); e != nil && e.Value != "" {
+			return e.Value
+		}
+	}
+	return vars[name]
+}
+
 func recoverConfigureTimeArtifacts(r *fileapi.Reply, g *ninja.Graph, opts Options, cfg fileapi.Configuration, tf traceFacts, cmakeSrc, cmakeBuild, hostSrc string, cc *codegenContext) (*recoveredArtifacts, *ir.Package, error) {
 	cc.FileWriterIndex = buildFileWriterIndex(tf.decodedFileWriters, cmakeBuild)
 	cc.FileWriterTemplates = buildFileWriterTemplates(tf.decodedFileWriters, opts.NonExpandedFileWriters, cmakeBuild)
 	cc.CMakeVars = opts.CMakeVars
+	cc.CCompiler = cacheOrVar(r, opts.CMakeVars, "CMAKE_C_COMPILER")
+	cc.CxxCompiler = cacheOrVar(r, opts.CMakeVars, "CMAKE_CXX_COMPILER")
+	cc.ARTool = cacheOrVar(r, opts.CMakeVars, "CMAKE_AR")
+	cc.NMTool = cacheOrVar(r, opts.CMakeVars, "CMAKE_NM")
 	cc.LiftConfigureFile = opts.LiftConfigureFile
 	cc.LiftDownload = opts.LiftDownload
 	cc.RecognizeCodegen = opts.RecognizeCodegen

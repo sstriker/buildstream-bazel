@@ -1132,6 +1132,9 @@ var genruleTmpl = template.Must(template.New("genrule").Funcs(template.FuncMap{
 {{- if .Tools}}
     tools = {{strList .Tools}},
 {{- end}}
+{{- if .Toolchains}}
+    toolchains = {{strList .Toolchains}},
+{{- end}}
 {{- if .Tags}}
     tags = {{strList .Tags}},
 {{- end}}
@@ -1337,6 +1340,7 @@ type genruleView struct {
 	Srcs       []string
 	Outs       []string
 	Tools      []string
+	Toolchains []string
 	CmdLiteral string // already-quoted Starlark string literal
 	Tags       []string
 	Visibility []string
@@ -2439,6 +2443,7 @@ func emitGenrule(w *bytes.Buffer, t ir.Target) error {
 		Srcs:       sortedCopy(t.Srcs),
 		Outs:       sortedCopy(t.GenruleOuts),
 		Tools:      sortedCopy(t.GenruleTools),
+		Toolchains: sortedCopy(t.GenruleToolchains),
 		CmdLiteral: fmt.Sprintf("%q", t.GenruleCmd),
 		Tags:       sortedCopy(t.Tags),
 		Visibility: nonDefaultVisibility(t.Visibility),

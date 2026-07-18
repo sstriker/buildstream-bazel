@@ -62,14 +62,124 @@ import (
 // matches (e.g. `prefix/bin/X` containing `bin/X` as a suffix)
 // don't rewrite. Conservative because the alternative — substring
 // rewrite — would corrupt args like `--toolchain=bin/foo/include`.
-func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArtifacts map[string]bool, imports *manifest.Resolver, hostPrefix string) (string, []string) {
-	if cmd == "" || (len(artifactToName) == 0 && imports.Empty() && !imports.HasTools()) {
-		return cmd, nil
+// toolchainToolPaths carries the project's toolchain tool paths (from the CMake
+// cache: CMAKE_C_COMPILER / CMAKE_CXX_COMPILER / CMAKE_AR / CMAKE_NM). A genrule
+// tool token equal to one of them is routed to the Bazel cc_toolchain make-var
+// instead of a non-hermetic prebuilt lift, so a custom command that invokes the
+// compiler/archiver/nm runs through the same hermetic, config-correct toolchain
+// as normal compile/link actions.
+type toolchainToolPaths struct {
+	cCompiler   string
+	cxxCompiler string
+	cxxSibling  bool // dirname(cCompiler) == dirname(cxxCompiler)
+	ar          string
+	nm          string
+}
+
+func (tc toolchainToolPaths) empty() bool {
+	return tc.cCompiler == "" && tc.cxxCompiler == "" && tc.ar == "" && tc.nm == ""
+}
+
+// toolchainTools projects the codegenContext's recorded toolchain tool paths,
+// computing the C++/C sibling relationship the C++-driver derivation needs.
+func (cc *codegenContext) toolchainTools() toolchainToolPaths {
+	if cc == nil {
+		return toolchainToolPaths{}
+	}
+	return toolchainToolPaths{
+		cCompiler:   cc.CCompiler,
+		cxxCompiler: cc.CxxCompiler,
+		cxxSibling:  cc.CCompiler != "" && cc.CxxCompiler != "" && filepath.Dir(cc.CCompiler) == filepath.Dir(cc.CxxCompiler),
+		ar:          cc.ARTool,
+		nm:          cc.NMTool,
+	}
+}
+
+// currentCcToolchain is the make-var-supplying toolchain a genrule must declare
+// to expand $(CC) / $(AR) / $(NM).
+const currentCcToolchain = "@bazel_tools//tools/cpp:current_cc_toolchain"
+
+// toolchainMakeVar returns the cc_toolchain make-var substitution for a tool
+// token that equals one of the project's toolchain tools, plus the toolchain the
+// genrule must declare to expand it. C -> $(CC); AR/NM -> $(AR)/$(NM). The C++
+// driver has no $(CXX) make-var, so when it is a SIBLING of the C compiler
+// (same directory) it is derived at ACTION time as $$(dirname $(CC))/<cxx-base>
+// — config-correct, since $(CC) follows whatever C compiler the selected
+// toolchain provides and the C++ driver sits beside it. A non-sibling C++
+// compiler (a wrapper, a split install) returns ok=false so the caller keeps the
+// prebuilt lift (non-hermetic but correct).
+func (tc toolchainToolPaths) toolchainMakeVar(tok string) (repl, toolchain string, ok bool) {
+	switch {
+	case tc.cCompiler != "" && tok == tc.cCompiler:
+		return "$(CC)", currentCcToolchain, true
+	case tc.cxxCompiler != "" && tok == tc.cxxCompiler:
+		if tc.cxxSibling {
+			return "$$(dirname $(CC))/" + filepath.Base(tc.cxxCompiler), currentCcToolchain, true
+		}
+		return "", "", false
+	case tc.ar != "" && tok == tc.ar:
+		return "$(AR)", currentCcToolchain, true
+	case tc.nm != "" && tok == tc.nm:
+		return "$(NM)", currentCcToolchain, true
+	}
+	return "", "", false
+}
+
+// resolveImportedToolPath maps an absolute token onto a manifest export's label
+// via its recorded IMPORTED_LOCATION: the verbatim token first (hand-written
+// manifests), then the hostPrefix→anchor remapped form (orchestrator-emitted
+// manifests key link_paths in the ManifestPrefixAnchor form).
+func resolveImportedToolPath(p string, imports *manifest.Resolver, hostPrefix string) (string, bool) {
+	if !filepath.IsAbs(p) {
+		return "", false
+	}
+	if ex := imports.LookupLinkPath(p); ex != nil {
+		return ex.BazelLabel, true
+	}
+	if hostPrefix != "" && strings.HasPrefix(p, hostPrefix+string(filepath.Separator)) {
+		if ex := imports.LookupLinkPath(manifestPrefixAnchor + p[len(hostPrefix)+1:]); ex != nil {
+			return ex.BazelLabel, true
+		}
+	}
+	return "", false
+}
+
+// liftKeyedToolToken handles the `VAR=<tool-path>` form — a custom command
+// passing the tool as a cmake -D arg (VTK's `-DEXE_SQLITE3=bin/Debug/sqlitebin`,
+// where libproj hardcodes `$<TARGET_FILE:VTK::sqlitebin>`). Splits on the first
+// `=` and lifts the value when it names a converted target's artifact, an
+// imported IMPORTED_LOCATION, or a manifest tool — keeping the `VAR=` prefix.
+// Returns (prefix, in-tree target name OR "", imported/tool label OR "", ok):
+// exactly one of name/label is set when ok.
+func liftKeyedToolToken(tok string, artifactToName map[string]string, execArtifacts map[string]bool, imports *manifest.Resolver, resolveImported func(string) (string, bool)) (prefix, name, label string, ok bool) {
+	eq := strings.IndexByte(tok, '=')
+	if eq < 0 {
+		return "", "", "", false
+	}
+	prefix = tok[:eq+1]
+	val := strings.TrimPrefix(tok[eq+1:], "./")
+	if n, has := artifactToName[val]; has && val != "" && execArtifacts[val] {
+		return prefix, n, "", true
+	}
+	if l, has := resolveImported(tok[eq+1:]); has {
+		return prefix, "", l, true
+	}
+	if l, has := imports.LookupTool(val); has && val != "" {
+		return prefix, "", l, true
+	}
+	return "", "", "", false
+}
+
+func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArtifacts map[string]bool, imports *manifest.Resolver, hostPrefix string, tc toolchainToolPaths) (string, []string, []string) {
+	if cmd == "" || (len(artifactToName) == 0 && imports.Empty() && !imports.HasTools() && tc.empty()) {
+		return cmd, nil, nil
 	}
 	var b strings.Builder
 	b.Grow(len(cmd))
 	seenTools := map[string]bool{}
 	var tools []string
+	seenToolchains := map[string]bool{}
+	var toolchains []string
 
 	tokStart := 0
 	flush := func(end int) {
@@ -101,24 +211,20 @@ func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArt
 				tools = append(tools, label)
 			}
 		}
-		// resolveImported maps an absolute token onto a manifest
-		// export's label via its recorded IMPORTED_LOCATION: the
-		// verbatim token first (hand-written manifests), then the
-		// hostPrefix→anchor remapped form (orchestrator-emitted
-		// manifests; see the hostPrefix doc above).
 		resolveImported := func(p string) (string, bool) {
-			if !filepath.IsAbs(p) {
-				return "", false
+			return resolveImportedToolPath(p, imports, hostPrefix)
+		}
+		// Toolchain tool (compiler / ar / nm) — highest priority, so a compiler
+		// that ALSO happens to be a harvested bin/ export is routed to the
+		// hermetic, config-correct cc_toolchain make-var rather than the
+		// non-hermetic prebuilt lift.
+		if repl, toolchain, ok := tc.toolchainMakeVar(tok); ok {
+			b.WriteString(repl)
+			if toolchain != "" && !seenToolchains[toolchain] {
+				seenToolchains[toolchain] = true
+				toolchains = append(toolchains, toolchain)
 			}
-			if ex := imports.LookupLinkPath(p); ex != nil {
-				return ex.BazelLabel, true
-			}
-			if hostPrefix != "" && strings.HasPrefix(p, hostPrefix+string(filepath.Separator)) {
-				if ex := imports.LookupLinkPath(manifestPrefixAnchor + p[len(hostPrefix)+1:]); ex != nil {
-					return ex.BazelLabel, true
-				}
-			}
-			return "", false
+			return
 		}
 		key := strings.TrimPrefix(tok, "./")
 		if name, ok := artifactToName[key]; ok {
@@ -139,29 +245,16 @@ func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArt
 			emitImported(label)
 			return
 		}
-		// `VAR=<artifact-path>` form: a custom command passes the tool as a
-		// cmake -D arg, e.g. VTK's `-DEXE_SQLITE3=bin/Debug/sqlitebin-9.4`
-		// (libproj hardcodes `$<TARGET_FILE:VTK::sqlitebin>`, an in-tree built
-		// executable). The path is embedded after `=`, so the whole-token
-		// lookup misses; split on the first `=` and lift just the value when it
-		// names a converted target's artifact, keeping the `VAR=` prefix.
-		if eq := strings.IndexByte(tok, '='); eq >= 0 {
-			val := strings.TrimPrefix(tok[eq+1:], "./")
-			if name, ok := artifactToName[val]; ok && val != "" && execArtifacts[val] {
-				b.WriteString(tok[:eq+1])
+		// `VAR=<artifact-path>` form (VTK's `-DEXE_SQLITE3=bin/…`): the tool is
+		// embedded after `=`, so the whole-token lookups above miss it.
+		if prefix, name, label, ok := liftKeyedToolToken(tok, artifactToName, execArtifacts, imports, resolveImported); ok {
+			b.WriteString(prefix)
+			if name != "" {
 				emitTool(name)
-				return
-			}
-			if label, ok := resolveImported(tok[eq+1:]); ok {
-				b.WriteString(tok[:eq+1])
+			} else {
 				emitImported(label)
-				return
 			}
-			if label, ok := imports.LookupTool(val); ok && val != "" {
-				b.WriteString(tok[:eq+1])
-				emitImported(label)
-				return
-			}
+			return
 		}
 		b.WriteString(tok)
 	}
@@ -176,5 +269,5 @@ func rewriteToolFromTarget(cmd string, artifactToName map[string]string, execArt
 		}
 	}
 	flush(len(cmd))
-	return b.String(), tools
+	return b.String(), tools, toolchains
 }

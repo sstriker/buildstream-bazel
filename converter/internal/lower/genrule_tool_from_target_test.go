@@ -7,6 +7,53 @@ import (
 	"github.com/sstriker/buildstream-bazel/internal/manifest"
 )
 
+// TestRewriteToolFromTarget_ToolchainTools covers the toolchain-tool channel: a
+// tool token equal to CMAKE_C_COMPILER / CMAKE_CXX_COMPILER / CMAKE_AR /
+// CMAKE_NM is routed to the Bazel cc_toolchain make-var + a current_cc_toolchain
+// dep, instead of a non-hermetic prebuilt lift. The C++ driver, having no $(CXX),
+// is derived from $(CC)'s directory when it is a sibling; a non-sibling C++
+// compiler is left for the prebuilt lift.
+func TestRewriteToolFromTarget_ToolchainTools(t *testing.T) {
+	tc := toolchainToolPaths{
+		cCompiler:   "/usr/bin/gcc",
+		cxxCompiler: "/usr/bin/g++",
+		cxxSibling:  true,
+		ar:          "/usr/bin/ar",
+		nm:          "/usr/bin/nm",
+	}
+	check := func(name, in, wantCmd string, wantTC int) {
+		t.Helper()
+		cmd, _, tcs := rewriteToolFromTarget(in, nil, nil, nil, "", tc)
+		if cmd != wantCmd {
+			t.Errorf("%s: cmd = %q, want %q", name, cmd, wantCmd)
+		}
+		if len(tcs) != wantTC {
+			t.Errorf("%s: toolchains = %v, want %d", name, tcs, wantTC)
+		}
+		if wantTC > 0 && tcs[0] != currentCcToolchain {
+			t.Errorf("%s: toolchain = %q, want %q", name, tcs[0], currentCcToolchain)
+		}
+	}
+	check("C compiler", "/usr/bin/gcc -c foo.c -o foo.o", "$(CC) -c foo.c -o foo.o", 1)
+	check("C++ sibling", "/usr/bin/g++ -c foo.cpp -o foo.o", "$$(dirname $(CC))/g++ -c foo.cpp -o foo.o", 1)
+	check("AR", "/usr/bin/ar rcs libfoo.a foo.o", "$(AR) rcs libfoo.a foo.o", 1)
+	check("NM", "/usr/bin/nm -g libfoo.a", "$(NM) -g libfoo.a", 1)
+	// The toolchain dep is deduped across multiple toolchain tools in one cmd.
+	check("dedup", "/usr/bin/gcc -c a.c -o a.o && /usr/bin/ar rcs a.a a.o",
+		"$(CC) -c a.c -o a.o && $(AR) rcs a.a a.o", 1)
+
+	// Non-sibling C++ compiler is NOT routed (kept for the prebuilt lift): no
+	// make-var, no toolchain dep.
+	tcNon := toolchainToolPaths{cCompiler: "/usr/bin/gcc", cxxCompiler: "/opt/ccache/bin/g++", cxxSibling: false}
+	cmd, _, tcs := rewriteToolFromTarget("/opt/ccache/bin/g++ -c foo.cpp", nil, nil, nil, "", tcNon)
+	if cmd != "/opt/ccache/bin/g++ -c foo.cpp" {
+		t.Errorf("non-sibling C++ must stay verbatim: %q", cmd)
+	}
+	if len(tcs) != 0 {
+		t.Errorf("non-sibling C++ must add no toolchain: %v", tcs)
+	}
+}
+
 func TestRewriteToolFromTarget(t *testing.T) {
 	artifacts := map[string]string{
 		"bin/llvm-min-tblgen":     "llvm-min-tblgen",
@@ -91,7 +138,7 @@ func TestRewriteToolFromTarget(t *testing.T) {
 				m = nil
 				e = nil
 			}
-			gotCmd, gotTools := rewriteToolFromTarget(tc.in, m, e, nil, "")
+			gotCmd, gotTools, _ := rewriteToolFromTarget(tc.in, m, e, nil, "", toolchainToolPaths{})
 			if gotCmd != tc.wantCmd {
 				t.Errorf("cmd:\n  in:   %q\n  got:  %q\n  want: %q", tc.in, gotCmd, tc.wantCmd)
 			}
@@ -125,9 +172,9 @@ func TestRewriteToolFromTarget_ImportsManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd, tools := rewriteToolFromTarget(
+	cmd, tools, _ := rewriteToolFromTarget(
 		"/opt/foo/bin/gen --out x.c && other -DGEN=/opt/foo/bin/gen -DOTHER=/usr/bin/m4 sub/gen",
-		nil, nil, res, "")
+		nil, nil, res, "", toolchainToolPaths{})
 	want := "$(execpath //elements/foo:gen) --out x.c && other -DGEN=$(execpath //elements/foo:gen) -DOTHER=/usr/bin/m4 sub/gen"
 	if cmd != want {
 		t.Errorf("cmd = %q\nwant %q", cmd, want)
@@ -137,9 +184,9 @@ func TestRewriteToolFromTarget_ImportsManifest(t *testing.T) {
 	}
 
 	// In-tree lookup wins over (and coexists with) the manifest path.
-	cmd, tools = rewriteToolFromTarget(
+	cmd, tools, _ = rewriteToolFromTarget(
 		"bin/intree /opt/foo/bin/gen",
-		map[string]string{"bin/intree": "intree"}, map[string]bool{"bin/intree": true}, res, "")
+		map[string]string{"bin/intree": "intree"}, map[string]bool{"bin/intree": true}, res, "", toolchainToolPaths{})
 	if cmd != "$(location :intree) $(execpath //elements/foo:gen)" {
 		t.Errorf("mixed cmd = %q", cmd)
 	}
@@ -148,7 +195,7 @@ func TestRewriteToolFromTarget_ImportsManifest(t *testing.T) {
 	}
 
 	// Nil resolver: unchanged behavior (and no rewrite without in-tree map).
-	cmd, tools = rewriteToolFromTarget("/opt/foo/bin/gen --out x.c", nil, nil, nil, "")
+	cmd, tools, _ = rewriteToolFromTarget("/opt/foo/bin/gen --out x.c", nil, nil, nil, "", toolchainToolPaths{})
 	if cmd != "/opt/foo/bin/gen --out x.c" || tools != nil {
 		t.Errorf("nil-resolver = (%q, %v), want verbatim", cmd, tools)
 	}
@@ -177,9 +224,9 @@ func TestRewriteToolFromTarget_ImportsAnchoredPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	hostPrefix := "/tmp/synth-prefix"
-	cmd, tools := rewriteToolFromTarget(
+	cmd, tools, _ := rewriteToolFromTarget(
 		hostPrefix+"/bin/gen --out x.c -DGEN="+hostPrefix+"/bin/gen",
-		nil, nil, res, hostPrefix)
+		nil, nil, res, hostPrefix, toolchainToolPaths{})
 	want := "$(execpath //elements/foo:gen) --out x.c -DGEN=$(execpath //elements/foo:gen)"
 	if cmd != want {
 		t.Errorf("cmd = %q\nwant %q", cmd, want)
@@ -188,7 +235,7 @@ func TestRewriteToolFromTarget_ImportsAnchoredPrefix(t *testing.T) {
 		t.Errorf("tools = %v", tools)
 	}
 	// Without the hostPrefix the anchored key can't match: verbatim.
-	cmd, _ = rewriteToolFromTarget(hostPrefix+"/bin/gen --out x.c", nil, nil, res, "")
+	cmd, _, _ = rewriteToolFromTarget(hostPrefix+"/bin/gen --out x.c", nil, nil, res, "", toolchainToolPaths{})
 	if cmd != hostPrefix+"/bin/gen --out x.c" {
 		t.Errorf("no-prefix cmd = %q, want verbatim", cmd)
 	}
@@ -213,9 +260,9 @@ func TestRewriteToolFromTarget_ToolsMap(t *testing.T) {
 
 	// Basename driver (PATH-resolved) + an absolute-path script arg; a
 	// same-basenamed relative output (build/gen.py) is left untouched.
-	cmd, tools := rewriteToolFromTarget(
+	cmd, tools, _ := rewriteToolFromTarget(
 		"flatc --cpp foo.fbs && python /opt/host/bin/gen.py -o build/gen.py",
-		nil, nil, res, "")
+		nil, nil, res, "", toolchainToolPaths{})
 	want := "$(execpath @flatbuffers//:flatc) --cpp foo.fbs && python $(execpath //tools:gen) -o build/gen.py"
 	if cmd != want {
 		t.Errorf("cmd = %q\nwant %q", cmd, want)
@@ -225,20 +272,20 @@ func TestRewriteToolFromTarget_ToolsMap(t *testing.T) {
 	}
 
 	// Absolute path whose basename matches a basename entry also lifts.
-	cmd, _ = rewriteToolFromTarget("/usr/bin/flatc x.fbs", nil, nil, res, "")
+	cmd, _, _ = rewriteToolFromTarget("/usr/bin/flatc x.fbs", nil, nil, res, "", toolchainToolPaths{})
 	if cmd != "$(execpath @flatbuffers//:flatc) x.fbs" {
 		t.Errorf("abs-basename cmd = %q", cmd)
 	}
 
 	// VAR=<tool> form lifts the value, keeping the VAR= prefix.
-	cmd, _ = rewriteToolFromTarget("cmake -DFLATC=flatc .", nil, nil, res, "")
+	cmd, _, _ = rewriteToolFromTarget("cmake -DFLATC=flatc .", nil, nil, res, "", toolchainToolPaths{})
 	if cmd != "cmake -DFLATC=$(execpath @flatbuffers//:flatc) ." {
 		t.Errorf("VAR= cmd = %q", cmd)
 	}
 
 	// A tools-only manifest (no exports → Empty()==true) still drives the
 	// swap: the fast-path proceeds on HasTools().
-	cmd, _ = rewriteToolFromTarget("flatc x.fbs", nil, nil, res, "")
+	cmd, _, _ = rewriteToolFromTarget("flatc x.fbs", nil, nil, res, "", toolchainToolPaths{})
 	if cmd != "$(execpath @flatbuffers//:flatc) x.fbs" {
 		t.Errorf("tools-only cmd = %q", cmd)
 	}
@@ -270,8 +317,8 @@ func TestRewriteToolFromTarget_ProducerExecutableExport(t *testing.T) {
 		t.Fatal(err)
 	}
 	hostPrefix := "/tmp/synth-prefix"
-	cmd, tools := rewriteToolFromTarget(
-		hostPrefix+"/bin/gen --emit api.proto -o out.c", nil, nil, res, hostPrefix)
+	cmd, tools, _ := rewriteToolFromTarget(
+		hostPrefix+"/bin/gen --emit api.proto -o out.c", nil, nil, res, hostPrefix, toolchainToolPaths{})
 	want := "$(execpath //elements/toolpkg:gen) --emit api.proto -o out.c"
 	if cmd != want {
 		t.Errorf("cmd = %q\nwant %q", cmd, want)
