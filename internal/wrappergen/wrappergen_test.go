@@ -240,6 +240,66 @@ func TestGenerate_LinkLibrariesToLinkopts(t *testing.T) {
 	}
 }
 
+// TestGenerate_MultiArchiveEachCcImport: a multi-archive export emits a
+// cc_import for EVERY archive it ships (not just the first), and its secondary
+// archive named in its own LinkLibraries is recognized as self — so it does NOT
+// fall through to a raw `-l<name>` linkopt that carries no file dependency.
+func TestGenerate_MultiArchiveEachCcImport(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{{
+				CMakeTarget:   "Pkg::foo",
+				BazelLabel:    "//old:foo",
+				LinkPaths:     []string{"/opt/prefix/lib/libfoo.a", "/opt/prefix/lib/libfoo_extra.a"},
+				LinkLibraries: []string{"foo_extra"},
+			}},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	if !strings.Contains(s, `static_library = "lib/libfoo.a"`) || !strings.Contains(s, `static_library = "lib/libfoo_extra.a"`) {
+		t.Errorf("both archives must be cc_import'd:\n%s", s)
+	}
+	if strings.Contains(s, `"-lfoo_extra"`) {
+		t.Errorf("secondary archive must be a cc_import, not -lfoo_extra:\n%s", s)
+	}
+	if !strings.Contains(s, `":foo_archive"`) || !strings.Contains(s, `":foo_archive2"`) {
+		t.Errorf("both archive cc_imports must be wired into the wrapper's deps:\n%s", s)
+	}
+}
+
+// TestGenerate_ArchiveFragmentRoutesToSibling: an archive-shaped LinkLibraries
+// token (`:libbar.a`) is normalized to the provided lib name and routes to the
+// sibling wrapper as a dep, instead of emitting the nonsense `-l:libbar.a`.
+func TestGenerate_ArchiveFragmentRoutesToSibling(t *testing.T) {
+	im := &manifest.Imports{
+		Version: 1,
+		Elements: []*manifest.Element{{
+			Name: "pkg",
+			Exports: []*manifest.Export{
+				{CMakeTarget: "Pkg::bar", BazelLabel: "//old:bar", LinkPaths: []string{"/opt/prefix/lib/libbar.a"}},
+				{CMakeTarget: "Pkg::foo", BazelLabel: "//old:foo", LinkPaths: []string{"/opt/prefix/lib/libfoo.a"}, LinkLibraries: []string{":libbar.a"}},
+			},
+		}},
+	}
+	build, _, err := Generate(im, "prebuilts/pkg", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(build)
+	if strings.Contains(s, "-l:libbar.a") {
+		t.Errorf("archive fragment must not become the nonsense flag -l:libbar.a:\n%s", s)
+	}
+	if !strings.Contains(s, `"//prebuilts/pkg:bar"`) {
+		t.Errorf("archive fragment must route to the sibling dep //prebuilts/pkg:bar:\n%s", s)
+	}
+}
+
 // TestGenerate_LinkLibrariesSelfProvidedNotRoutedToAlias pins that an export's
 // OWN provided name is skipped even when a same-named alias/sibling wins the
 // shared index key. Here the alias (Pkg::Z, keyed "z") is indexed first, so a
