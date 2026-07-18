@@ -188,6 +188,9 @@ func (h *harvester) applyPCLibs(r *row, name, libsField string) []pcForeign {
 	// the later occurrence). Count occurrences so the SELF archive can be
 	// flagged whole-archive (alwayslink) below — the Bazel-native equivalent.
 	libCount := map[string]int{}
+	// The prefix multilib dirs are invariant per invocation; compute them once
+	// (each call globs/stats the tree) rather than per -l token.
+	libDirs := h.probeLibDirs()
 	for _, tok := range strings.Fields(libsField) {
 		switch {
 		case strings.HasPrefix(tok, "-L"):
@@ -195,7 +198,7 @@ func (h *harvester) applyPCLibs(r *row, name, libsField string) []pcForeign {
 		case strings.HasPrefix(tok, "-l"):
 			lib := strings.TrimPrefix(tok, "-l")
 			libCount[lib]++
-			dirs := append(append([]string{}, searchDirs...), h.probeLibDirs()...)
+			dirs := append(append([]string{}, searchDirs...), libDirs...)
 			var paths []string
 			for _, d := range dirs {
 				paths = h.appendProbedArtifacts(paths, d, lib)
@@ -304,13 +307,20 @@ func (h *harvester) probeLibDirs() []string {
 	for _, d := range []string{"lib", "lib64", "lib32", "libx32"} {
 		dirs = append(dirs, filepath.Join(h.prefix, d))
 	}
-	if matches, _ := filepath.Glob(filepath.Join(h.prefix, "lib", "*-*-*")); len(matches) > 0 {
-		sort.Strings(matches)
-		for _, m := range matches {
-			if st, err := os.Stat(m); err == nil && st.IsDir() {
-				dirs = append(dirs, m)
+	// Debian/Ubuntu multiarch: lib/<triplet>/ (arch-os-abi, e.g.
+	// x86_64-linux-gnu). Enumerate lib/'s subdirs rather than glob, so a prefix
+	// path containing glob metacharacters can't mis-match or swallow an error;
+	// a triplet has at least two hyphens, which excludes ordinary subdirs.
+	libDir := filepath.Join(h.prefix, "lib")
+	if ents, err := os.ReadDir(libDir); err == nil {
+		var triplets []string
+		for _, e := range ents {
+			if e.IsDir() && strings.Count(e.Name(), "-") >= 2 {
+				triplets = append(triplets, filepath.Join(libDir, e.Name()))
 			}
 		}
+		sort.Strings(triplets)
+		dirs = append(dirs, triplets...)
 	}
 	return dirs
 }
